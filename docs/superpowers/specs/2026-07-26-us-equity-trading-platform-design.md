@@ -66,17 +66,18 @@ Kafka나 Redpanda는 Outbox 처리량과 재처리 요구가 실제 한계를 �
 |---|---|---|---|
 | `identity` | `User`, `SessionService`, `TenantAccessGuard` | 가입, 로그인, 세션, 사용자 데이터 접근 검증 | `audit` |
 | `broker` | `BrokerAdapter`, `TossInvestBrokerAdapter`, `TossAuthClient`, `TossAccountClient`, `TossMarketDataClient`, `TossOrderClient`, `TossResponseMapper` | 외부 브로커 DTO와 오류를 내부 계약으로 변환 | `identity`, `audit` |
-| `account` | `BrokerAccount`, `AccountSnapshot`, `PositionSnapshot`, `AccountSyncService` | 계좌 연결, 잔고·보유종목 동기화, 동기화 상태 | `broker`, `identity`, `audit`, `outbox` |
+| `account` | `BrokerAccount`, `AccountSnapshot`, `AccountCapacitySnapshot`, `PositionSnapshot`, `AccountSyncService` | 계좌 연결, 보유종목·주문 가용성 동기화, 데이터 완전성 | `broker`, `identity`, `audit`, `outbox` |
 | `portfolio` | `PortfolioSnapshot`, `PortfolioExposure`, `PortfolioRiskSummary`, `PortfolioService` | 사용자 계좌를 포트폴리오 관점으로 집계 | `account`, `marketdata`, `analysis` 읽기 모델 |
 | `marketdata` | `Quote`, `OrderBook`, `Candle`, `MarketDataService`, `QuoteFreshnessPolicy` | 현재가·호가·캔들·환율·시장 일정 정규화와 최신성 판정 | `broker`, 외부 데이터 공급자 |
 | `analysis` | `AnalysisRequest`, `StockAnalysisSnapshot`, `AnalysisOrchestrator`, `AnalysisServiceClient` | 입력 스냅샷 확정, FastAPI 호출, 결과 검증·저장 | `marketdata`, `outbox`; 이벤트는 불변 `EventImpactInput`만 소비 |
 | `event` | `MarketEvent`, `EventSource`, `EventCompanyImpact`, `EventIngestionService` | 공식 소스 수집, 중복 제거, 구조화 요청, 영향 연결, 재분석 요청 발행 | `marketdata`, `outbox` |
 | `proposal` | `TradeProposal`, `ProposalPolicy`, `TradeProposalService` | 분석을 사용자별 주문 후보로 변환, 만료 관리 | `analysis`, `portfolio`, `risk` |
 | `risk` | `RiskPolicy`, `RiskEvaluation`, `PositionSizer`, `PreTradeRiskService` | 포지션 크기 계산, 포트폴리오 한도, 차단 사유 산출 | `account`, `portfolio`, `marketdata` |
-| `order` | `Order`, `Execution`, `OrderApprovalService`, `OrderSubmissionService`, `OrderReconciliationService` | 승인, 직전 재검증, 주문 제출, 정정·취소, 상태 동기화 | `risk`, `broker`, `account`, `marketdata`, `audit`, `outbox` |
+| `order` | `OrderIntent`, `SubmissionAttempt`, `BrokerOrder`, `ExecutionSnapshot`, `OrderApprovalService`, `OrderSubmissionService`, `OrderReconciliationService` | 승인된 주문 의도, 외부 전송 시도, 브로커 주문과 체결 증거를 분리해 관리 | `risk`, `broker`, `account`, `marketdata`, `audit`, `outbox`, `inbox` |
 | `performance` | `ModelPrediction`, `PredictionOutcome`, `StrategyPerformance` | 예측 사후 결과와 전략 중단 조건 계산 | `analysis`, `marketdata` |
 | `audit` | `AuditLog`, `AuditService` | 보안·분석·리스크·주문 행위의 변경 불가 추적 | 없음 |
 | `outbox` | `OutboxEvent`, `OutboxPublisher` | DB 커밋과 비동기 작업 발행의 원자성 보장 | 없음 |
+| `inbox` | `InboxMessage`, `InboxConsumer` | consumer별 이벤트 중복 수신 차단과 처리 원자성 | 없음 |
 
 ### 4.2 의존 규칙
 
@@ -95,6 +96,7 @@ audit  ◄────────── 모든 보안·주문 관련 모듈
 - `event`는 `analysis` application service를 직접 호출하지 않는다. `AnalysisRecalculationRequested`를 Outbox에 기록하고 `analysis`가 이벤트 entity가 아닌 `EventImpactInput`을 소비한다.
 - `FastAPI`는 Spring Boot DB에 접속할 수 없다.
 - `order`는 분석 점수를 직접 해석하지 않고 승인된 `TradeProposal`과 `RiskEvaluation`만 소비한다.
+- 사용자 의도는 `OrderIntent`, HTTP 전송은 `SubmissionAttempt`, 토스가 발급한 주문은 `BrokerOrder`가 소유한다. 세 객체의 상태를 하나의 `Order` enum으로 합치지 않는다.
 - 모든 사용자 소유 aggregate 조회는 `userId`를 필수 인자로 받는다. 전역 `findById(id)` 형태의 repository API를 금지한다.
 - 모듈 간 공유는 공개 application service와 불변 ID/DTO로 제한한다. JPA entity를 모듈 밖으로 노출하지 않는다.
 
@@ -220,7 +222,7 @@ class EventCompanyImpact {
 }
 ```
 
-### 5.4 주문 후보와 주문
+### 5.4 주문 후보와 실거래 원장
 
 ```java
 class TradeProposal {
@@ -240,26 +242,133 @@ class TradeProposal {
     Instant expiresAt;
 }
 
-class Order {
+class OrderIntent {
     UUID id;
     UserId userId;
     BrokerAccountId accountId;
     UUID tradeProposalId;
-    UUID internalIdempotencyKey;    // 내부에서 영구 unique
-    String tossClientOrderId;       // 최대 36자, 영구 unique
-    String brokerOrderId;           // nullable until confirmed
-    OrderStatus status;
     OrderSide side;
     OrderType type;
+    String symbol;
     BigDecimal quantity;
     BigDecimal limitPrice;
+    Currency tradingCurrency;
+    BigDecimal displayedMaximumLoss;
+    Instant expiresAt;
     Instant approvedAt;
-    Instant submittedAt;
-    long version;                   // optimistic lock
+    OrderIntentStatus status;
+    long version;
+}
+
+class SubmissionAttempt {
+    UUID id;
+    UUID orderIntentId;
+    int attemptNumber;
+    UUID internalIdempotencyKey;       // attempt 영구 unique
+    String brokerClientOrderId;        // 동일 intent retry 시 같은 값
+    String requestBodyHash;
+    SubmissionAttemptStatus status;    // CREATED, DISPATCHING, ACKNOWLEDGED,
+                                       // BROKER_REJECTED, UNKNOWN, RECONCILING,
+                                       // RECONCILED_NO_MATCH, RECONCILIATION_FAILED
+    UUID retryOfAttemptId;             // nullable
+    DispatchEvidence dispatchEvidence; // NOT_STARTED, REQUEST_STARTED, RESPONSE_RECEIVED
+    Instant brokerIdempotencyExpiresAt;
+    String brokerRequestId;
+    Instant startedAt;
+    Instant finishedAt;
+}
+
+class BrokerOrder {
+    UUID id;
+    UUID orderIntentId;
+    UUID acknowledgedByAttemptId;
+    String brokerOrderId;              // 토스 opaque orderId, 필수
+    String brokerClientOrderId;
+    UUID replacesBrokerOrderId;        // 정정으로 새 주문이 생기면 연결
+    BrokerOrderStatus status;
+    OrderSide side;
+    OrderType type;
+    String symbol;
+    BigDecimal quantity;
+    BigDecimal limitPrice;
+    Currency tradingCurrency;
+    Instant brokerOrderedAt;
+    long version;
 }
 ```
 
-### 5.5 리스크
+규칙:
+
+- `OrderIntent`는 사용자가 승인한 경제적 의도다. 승인 후 종목, 방향, 수량, 가격, 통화를 바꾸지 않는다.
+- 각 외부 HTTP 호출은 별도 `SubmissionAttempt`다. 요청 body hash와 전송 증거를 보존한다.
+- `BrokerOrder`는 토스 `orderId`가 확인된 뒤에만 생성한다.
+- 동일 intent의 UNKNOWN 복구 retry는 토스 멱등 시간 안에서 동일 `brokerClientOrderId`와 동일 body hash만 허용한다.
+- retry attempt는 `retryOfAttemptId`를 가지며 원 attempt와 intent, broker client order ID, body hash가 같아야 한다.
+- 정정으로 주문 조건이나 broker order ID가 바뀌면 기존 행을 덮지 않고 새 `BrokerOrder`를 연결한다.
+
+### 5.5 계좌 가용성, 통화와 체결 증거
+
+```java
+record Money(BigDecimal amount, Currency currency) {}
+
+class AccountCapacitySnapshot {
+    UUID id;
+    UserId userId;
+    BrokerAccountId accountId;
+    Map<Currency, BigDecimal> cashBuyingPower; // 현금 잔액이 아니라 주문 가능 금액
+    Map<String, BigDecimal> sellableQuantity;
+    SnapshotCompleteness completeness;
+    Instant holdingsAsOf;
+    Instant buyingPowerAsOf;
+    Instant sellableQuantityAsOf;
+}
+
+class FxRateSnapshot {
+    UUID id;
+    Currency baseCurrency;
+    Currency quoteCurrency;
+    BigDecimal rate;
+    FxRatePurpose purpose;                    // DISPLAY, RISK, PERFORMANCE, EXECUTION
+    String source;
+    Instant validFrom;
+    Instant validUntil;
+    Instant capturedAt;
+}
+
+class ExecutionSnapshot {
+    UUID id;
+    UUID brokerOrderId;
+    BrokerOrderStatus brokerStatus;
+    BigDecimal filledQuantity;
+    Money averageFilledPrice;
+    Money filledAmount;
+    Money commission;
+    Money tax;
+    LocalDate settlementDate;
+    String sourcePayloadHash;
+    Instant brokerUpdatedAt;
+    Instant capturedAt;
+}
+
+class InboxMessage {
+    UUID eventId;
+    String consumerName;
+    String payloadHash;
+    InboxStatus status;
+    Instant receivedAt;
+    Instant processedAt;
+}
+```
+
+- 토스 `buying-power`는 현금 기반 주문 가능 금액이며 회계상 현금 잔액으로 표시하지 않는다.
+- 토스 API가 제공하지 않는 총자산, 현금, 환율손익은 `UNKNOWN`으로 유지한다. buying power나 보유 평가액으로 임의 추정하지 않는다.
+- 모든 금액은 원통화 `Money`로 저장한다. KRW 보고값은 사용한 `FxRateSnapshot` ID와 함께 저장한다.
+- 환율은 `1 baseCurrency = rate × quoteCurrency`로 고정하고 `quoteAmount = baseAmount × rate` 공식을 사용한다. 사용자 보고통화는 기본 KRW이며 결과에도 통화를 명시한다.
+- 토스 환율은 참고용 표시 환율일 수 있으므로 실제 체결 환율·정산 환율과 구분한다.
+- 체결 정보는 polling 시점별 `ExecutionSnapshot`으로 append-only 저장한다. 공식 응답이 개별 fill을 제공하지 않으면 가상의 fill을 만들지 않는다.
+- Inbox consumer는 `UNIQUE(consumer_name, event_id)`를 먼저 확보하고 도메인 변경과 `processed_at` 기록을 같은 DB 트랜잭션으로 커밋한다.
+
+### 5.6 리스크
 
 ```java
 class RiskPolicy {
@@ -277,8 +386,8 @@ class RiskPolicy {
 class RiskEvaluation {
     UUID id;
     UserId userId;
-    UUID proposalId;
-    RiskEvaluationStage stage;      // PROPOSAL, PRE_SUBMIT
+    UUID orderIntentId;
+    RiskEvaluationStage stage;      // APPROVAL, PRE_SUBMIT
     RiskDecision decision;          // PASS, BLOCK, REVIEW
     List<RiskReason> reasons;
     BigDecimal allowedQuantity;
@@ -290,7 +399,7 @@ class RiskEvaluation {
 수량 계산:
 
 ```text
-riskBudget = accountEquity × maxRiskPerTradePct
+riskBudget = verifiedRiskCapitalBase × maxRiskPerTradePct
 stopBasedQuantity = floor(riskBudget / abs(entryPrice - invalidationPrice))
 allowedQuantity = min(
   stopBasedQuantity,
@@ -301,6 +410,8 @@ allowedQuantity = min(
   liquidityLimitQuantity
 )
 ```
+
+`verifiedRiskCapitalBase`를 계산할 데이터가 불완전하면 수량을 추정하지 않고 주문을 차단한다.
 
 ---
 
@@ -328,14 +439,21 @@ erDiagram
     USERS ||--o{ TRADE_PROPOSALS : receives
     STOCK_ANALYSIS_SNAPSHOTS ||--o{ TRADE_PROPOSALS : supports
     PORTFOLIO_SNAPSHOTS ||--o{ TRADE_PROPOSALS : contextualizes
-    TRADE_PROPOSALS ||--o{ RISK_EVALUATIONS : checked_by
-    TRADE_PROPOSALS ||--o| ORDERS : becomes
-    ORDERS ||--o{ EXECUTIONS : fills
-    ORDERS ||--o{ ORDER_STATE_TRANSITIONS : records
+    TRADE_PROPOSALS ||--o| ORDER_INTENTS : approved_as
+    ORDER_INTENTS ||--o{ RISK_EVALUATIONS : checked_by
+    ORDER_INTENTS ||--o{ SUBMISSION_ATTEMPTS : submitted_by
+    ORDER_INTENTS ||--o{ BROKER_ORDERS : materializes_as
+    SUBMISSION_ATTEMPTS ||--o{ RECONCILIATION_CHECKS : investigated_by
+    SUBMISSION_ATTEMPTS ||--o| BROKER_ORDERS : acknowledges
+    BROKER_ORDERS ||--o{ EXECUTION_SNAPSHOTS : observed_by
+    BROKER_ORDERS ||--o{ BROKER_ORDER_TRANSITIONS : records
+    BROKER_ACCOUNTS ||--o{ ACCOUNT_CAPACITY_SNAPSHOTS : measures
+    FX_RATE_SNAPSHOTS ||--o{ PORTFOLIO_SNAPSHOTS : converts
 
     USERS ||--o{ RISK_POLICIES : configures
     MODEL_PREDICTIONS ||--o| PREDICTION_OUTCOMES : evaluated_by
     STRATEGIES ||--o{ STRATEGY_PERFORMANCE : measured_by
+    OUTBOX_EVENTS ||--o{ INBOX_MESSAGES : consumed_as
 ```
 
 ### 6.1 주요 테이블
@@ -346,10 +464,12 @@ erDiagram
 | `broker_connections` | `id`, `user_id`, `broker_type`, 암호화 자격증명, `status`, `UNIQUE(user_id, broker_type)` |
 | `broker_accounts` | `id`, `user_id`, `connection_id`, `external_account_seq`, 암호화 계좌번호, `UNIQUE(user_id, connection_id, external_account_seq)` |
 | `account_sync_runs` | `id`, `user_id`, `account_id`, `status`, `started_at`, `finished_at`, `error_code`, `source_as_of` |
-| `account_snapshots` | `id`, `user_id`, `account_id`, 금액 컬럼, `as_of`, `sync_run_id` |
+| `account_snapshots` | `id`, `user_id`, `account_id`, 토스가 실제 제공한 보유자산 요약, `as_of`, `sync_run_id`; 미제공 금액은 `UNKNOWN` |
+| `account_capacity_snapshots` | `id`, `user_id`, `account_id`, 통화별 `cash_buying_power`, 종목별 `sellable_quantity`, `captured_at`, 각 source 시각과 completeness, `FK(user_id, account_id)` |
 | `position_snapshots` | `id`, `user_id`, `account_snapshot_id`, `company_id`, 수량·원가·평가액·손익 |
-| `portfolio_snapshots` | `id`, `user_id`, 총자산·현금·beta·volatility·VaR·ES·MDD, `as_of` |
+| `portfolio_snapshots` | `id`, `user_id`, 원통화별 자산·nullable 보고통화 총액·beta·volatility·VaR·ES·MDD, FX snapshot FK, valuation completeness, `as_of` |
 | `portfolio_exposures` | `snapshot_id`, `type`, `key`, `weight`, `risk_contribution` |
+| `fx_rate_snapshots` | `id`, base/quote currency, rate, purpose, source, validity, captured_at |
 | `companies` | `id`, `symbol`, `exchange`, `name`, `sector`, `industry`, `UNIQUE(symbol, exchange)` |
 | `company_financials` | `company_id`, `period`, `reported_at`, `available_at`, 원문 출처, 재무 필드 |
 | `company_exposures` | `company_id`, `exposure_key`, `direction`, `weight`, `confidence`, `valid_from`, `valid_to` |
@@ -362,15 +482,19 @@ erDiagram
 | `event_company_impacts` | `event_id`, `company_id`, relation, direction, magnitude, priced-in, confidence |
 | `trade_proposals` | `user_id`, 분석·포트폴리오·이벤트 FK, 가격범위, 수량, 상태, `expires_at` |
 | `risk_policies` | `user_id`, 정책 버전, 한도, `active_from`, `active_to` |
-| `risk_evaluations` | `proposal_id`, `stage`, 결정, 이유 JSON, 입력 스냅샷 FK, `valid_until` |
-| `orders` | `user_id`, `account_id`, `proposal_id UNIQUE`, `internal_idempotency_key UNIQUE`, `toss_client_order_id UNIQUE`, `broker_order_id`, 상태, `version` |
-| `executions` | `order_id`, 체결수량·평균가·수수료·세금·체결시각 |
-| `order_state_transitions` | `order_id`, from/to, reason, actor, occurred_at |
+| `order_intents` | `id`, `user_id`, `account_id`, `proposal_id UNIQUE`, 승인된 주문 조건·통화·최대손실·만료·상태·version |
+| `risk_evaluations` | `id`, `user_id`, `order_intent_id`, `stage`, 결정, 이유 JSON, account/quote/fx snapshot FK, `valid_until` |
+| `submission_attempts` | `id`, `user_id`, `order_intent_id`, `attempt_no`, `retry_of_attempt_id`, internal key UNIQUE, broker client ID, body hash, dispatch evidence, 멱등 만료, 상태, `UNIQUE(order_intent_id, attempt_no)` |
+| `reconciliation_checks` | `id`, `user_id`, attempt ID, OPEN/CLOSED, query window, cursor/page coverage, result hash, matched order ID, decision, checked_at |
+| `broker_orders` | `id`, `user_id`, `order_intent_id`, `acknowledged_by_attempt_id UNIQUE`, broker order ID UNIQUE, broker client ID, replaces ID, authoritative 상태·주문 조건 |
+| `execution_snapshots` | `id`, `user_id`, broker order ID, 상태·누적체결수량·평균가·금액·수수료·세금·정산일·broker_updated_at·captured_at |
+| `broker_order_transitions` | `id`, `user_id`, broker order ID, sequence, from/to, source, reason, occurred_at |
 | `model_predictions` | 분석 스냅샷 FK, horizon, prediction, confidence |
 | `prediction_outcomes` | prediction FK, 실제 수익·최대손실·평가시각 |
 | `strategy_performance` | strategy, 기간·국면·이벤트별 성과, enabled |
 | `audit_logs` | `user_id`, actor, action, entity, request_id, payload_hash, timestamp |
 | `outbox_events` | aggregate, type, payload, created/published timestamps, attempts |
+| `inbox_messages` | `consumer_name`, `event_id`, payload hash, status, received/processed timestamps, `UNIQUE(consumer_name, event_id)` |
 
 ### 6.2 다중 사용자 격리
 
@@ -383,12 +507,14 @@ erDiagram
 
 ### 6.3 불변성과 원장 제약
 
-- `account_snapshots`, `position_snapshots`, `portfolio_snapshots`, `analysis_input_snapshots`, `stock_analysis_snapshots`, `risk_evaluations`, `order_state_transitions`, `audit_logs`는 append-only다.
+- `account_snapshots`, `account_capacity_snapshots`, `position_snapshots`, `portfolio_snapshots`, `fx_rate_snapshots`, `analysis_input_snapshots`, `stock_analysis_snapshots`, `risk_evaluations`, `reconciliation_checks`, `execution_snapshots`, `broker_order_transitions`, `audit_logs`는 append-only다.
 - append-only 테이블에는 `created_at`과 필요한 경우 `superseded_by_id`를 두고 애플리케이션 DB role의 `UPDATE`/`DELETE` 권한을 제거한다.
-- `orders`는 현재 상태 projection이므로 상태·broker ID·version만 갱신할 수 있다. 종목, 방향, 수량, 가격, proposal, idempotency 값은 `PROPOSED` 이후 변경하지 않는다.
-- `order_state_transitions`에는 `sequence`를 두고 `UNIQUE(order_id, sequence)`를 강제한다.
-- `orders.proposal_id`, `orders.internal_idempotency_key`, `orders.toss_client_order_id`는 각각 unique다.
-- 주문 상태 변경과 transition/audit/outbox 추가는 한 DB 트랜잭션으로 커밋한다.
+- `order_intents`는 상태·version만 갱신하고 승인된 경제적 조건은 변경하지 않는다.
+- `submission_attempts`의 요청 ID, client order ID, body hash, dispatch evidence는 생성 후 변경하지 않는다.
+- retry attempt는 원 attempt와 같은 `order_intent_id`, `broker_client_order_id`, `request_body_hash`를 사용해야 하며 domain invariant와 DB trigger/contract test로 검증한다.
+- `broker_orders`는 현재 브로커 상태 projection이며 모든 상태 변화는 `broker_order_transitions`에도 추가한다.
+- `broker_order_transitions`에는 `UNIQUE(broker_order_id, sequence)`를 강제한다.
+- Inbox unique 확보, 도메인 변경, audit/outbox 추가는 같은 DB 트랜잭션으로 커밋한다.
 
 ---
 
@@ -436,11 +562,11 @@ public interface BrokerAdapter {
     OrderBook getOrderBook(String symbol);
     BuyingPower getBuyingPower(BrokerAccountRef account, Currency currency);
     SellableQuantity getSellableQuantity(BrokerAccountRef account, String symbol);
-    BrokerOrderResult placeOrder(BrokerOrderRequest request);
-    BrokerOrderResult modifyOrder(BrokerOrderModifyRequest request);
-    BrokerOrderResult cancelOrder(BrokerAccountRef account, String brokerOrderId);
-    List<BrokerOrder> getOrders(BrokerAccountRef account, BrokerOrderGroup group);
-    BrokerOrder getOrder(BrokerAccountRef account, String brokerOrderId);
+    BrokerSubmissionResult placeOrder(BrokerOrderRequest request);
+    BrokerSubmissionResult modifyOrder(BrokerOrderModifyRequest request);
+    BrokerSubmissionResult cancelOrder(BrokerAccountRef account, String brokerOrderId);
+    List<BrokerOrderView> getOrders(BrokerAccountRef account, BrokerOrderGroup group);
+    BrokerOrderView getOrder(BrokerAccountRef account, String brokerOrderId);
 }
 ```
 
@@ -468,17 +594,16 @@ TossInvestBrokerAdapter
 
 ### 7.4 주문 타임아웃 복구
 
-1. 주문 DB 행을 `SUBMITTING`으로 저장하고 Outbox를 같은 트랜잭션에 기록한다.
-2. 내부 UUID와 별개로 최대 36자의 영구 unique `tossClientOrderId`를 생성하고 완전히 동일한 요청 본문을 만든다.
-3. 성공 응답의 `orderId`를 저장하고 `SUBMITTED`로 전이한다.
-4. 타임아웃 또는 연결 종료 시 `UNKNOWN`으로 전이하고 즉시 중복 주문을 보내지 않는다.
-5. `GET /api/v1/orders?status=OPEN`과 좁은 시간 범위의 `CLOSED` 조회 결과를 대조한다.
-6. 일치 후보의 `orderId`를 찾으면 상세 조회로 확정한다.
-7. 일치 여부가 불명확하면 사용자에게 수동 확인 상태를 표시하고 전체 주문 중지 정책을 적용할 수 있다.
+1. 승인된 `OrderIntent`와 Outbox를 같은 트랜잭션에 기록한다.
+2. 각 HTTP 호출 전에 `SubmissionAttempt`를 만들고 client order ID, body hash, 토스 멱등 만료시각을 고정한다.
+3. 성공 응답의 `orderId`가 확인되면 `BrokerOrder`를 생성한다.
+4. 타임아웃 또는 연결 종료 시 attempt만 `UNKNOWN`으로 두고 새 broker order를 추정하지 않는다.
+5. `OPEN` 전체와 KST 시간 범위의 `CLOSED` 모든 page를 조회해 `ReconciliationCheck`를 남긴다.
+6. 정확한 client order ID 일치만 자동 확정한다. 종목·수량·가격·시각 일치는 후보 증거일 뿐이다.
+7. 10분 멱등 시간 안에는 동일 client order ID와 body hash로만 제한 retry한다. 이후에는 자동 재전송하지 않는다.
+8. `CLOSED` 미검색은 미접수 증거가 아니며 복구하지 못한 intent는 `MANUAL_REVIEW_REQUIRED`와 계좌 주문 잠금으로 전환한다.
 
-토스 멱등 보장 시간은 10분뿐이다. 10분이 지난 뒤 같은 `tossClientOrderId`를 다시 보내면 새 주문이 될 수 있으므로 자동 재전송하지 않는다. 복구하지 못한 주문은 `MANUAL_REVIEW_REQUIRED`로 전환한다.
-
-**미확정:** `clientOrderId` 전용 조회 필터는 공식 문서에서 확인되지 않았다. 주문 목록 응답에서 `clientOrderId`로 안전하게 조정 가능한지, 목록 지연 시간이 얼마인지 sandbox/소액 검증 전에는 자동 재제출을 허용하지 않는다.
+**미확정:** `clientOrderId` 전용 조회 필터와 주문 목록 반영 지연은 공식 문서에서 확인되지 않았다. 이 불확실성은 `ReconciliationCheck`와 운영 runbook으로 관리한다.
 
 ### 7.5 실거래 활성화 전 필수 확인
 
@@ -642,75 +767,90 @@ SourceDocumentDetected
 
 ## 10. 주문 및 리스크 상태 머신
 
-### 10.1 상태
+### 10.1 OrderIntent
 
 ```mermaid
 stateDiagram-v2
     [*] --> PROPOSED
-    PROPOSED --> APPROVED: 사용자 승인
-    PROPOSED --> REJECTED: 사용자 거절/정책 차단
-    APPROVED --> SUBMITTING: 직전 재검증 통과
-    APPROVED --> REJECTED: 직전 재검증 실패
-    SUBMITTING --> SUBMITTED: broker orderId 확인
-    SUBMITTING --> UNKNOWN: timeout/응답 불명
-    UNKNOWN --> SUBMITTED: 조회로 대기 주문 확인
-    UNKNOWN --> PARTIALLY_FILLED: 조회로 부분 체결 확인
-    UNKNOWN --> FILLED: 조회로 전체 체결 확인
-    UNKNOWN --> CANCELED: 조회로 취소 확인
-    UNKNOWN --> REJECTED: 조회로 거부 확인
-    UNKNOWN --> MANUAL_REVIEW_REQUIRED: 자동 조정 불가
-    SUBMITTED --> PARTIALLY_FILLED
-    SUBMITTED --> FILLED
-    SUBMITTED --> REJECTED
-    SUBMITTED --> CANCEL_REQUESTED
-    SUBMITTED --> REPLACE_REQUESTED
-    PARTIALLY_FILLED --> FILLED
-    PARTIALLY_FILLED --> CANCEL_REQUESTED
-    PARTIALLY_FILLED --> REPLACE_REQUESTED
-    CANCEL_REQUESTED --> CANCELED
-    CANCEL_REQUESTED --> CANCEL_REJECTED
-    CANCEL_REJECTED --> SUBMITTED: 기존 대기 상태 복원
-    CANCEL_REJECTED --> PARTIALLY_FILLED: 기존 부분체결 상태 복원
-    REPLACE_REQUESTED --> SUBMITTED: 정정 완료
-    REPLACE_REQUESTED --> REPLACE_REJECTED
-    REPLACE_REJECTED --> SUBMITTED: 기존 대기 상태 복원
-    REPLACE_REJECTED --> PARTIALLY_FILLED: 기존 부분체결 상태 복원
+    PROPOSED --> APPROVED: 사용자 최종 승인
+    PROPOSED --> CANCELED
+    PROPOSED --> EXPIRED
+    APPROVED --> REVALIDATING
+    REVALIDATING --> SUBMISSION_PENDING: 직전 검증 통과
+    REVALIDATING --> BLOCKED: 계좌/시세/리스크 실패
+    SUBMISSION_PENDING --> BROKER_CONFIRMED: broker orderId 확인
+    SUBMISSION_PENDING --> BROKER_REJECTED: 명시적 broker 거부
+    SUBMISSION_PENDING --> RECONCILIATION_REQUIRED: attempt UNKNOWN
+    RECONCILIATION_REQUIRED --> BROKER_CONFIRMED: 주문 발견
+    RECONCILIATION_REQUIRED --> SUBMISSION_PENDING: 동일 키 retry attempt 생성
+    RECONCILIATION_REQUIRED --> MANUAL_REVIEW_REQUIRED: 자동 판정 불가
 ```
 
-모든 전이는 `order_state_transitions`와 `audit_logs`에 함께 기록한다. 전이 명령은 optimistic lock과 상태 조건을 사용한다.
+### 10.2 SubmissionAttempt와 UNKNOWN 복구
 
-토스 상태는 다음처럼 정규화한다.
+```mermaid
+stateDiagram-v2
+    [*] --> CREATED
+    CREATED --> DISPATCHING
+    DISPATCHING --> ACKNOWLEDGED: orderId 응답
+    DISPATCHING --> BROKER_REJECTED: 명시적 거부
+    DISPATCHING --> UNKNOWN: timeout/connection reset
+    UNKNOWN --> RECONCILING
+    RECONCILING --> ACKNOWLEDGED: OPEN/CLOSED에서 일치 주문 발견
+    RECONCILING --> RECONCILED_NO_MATCH: 전체 조회 완료, 일치 없음
+    RECONCILING --> RECONCILIATION_FAILED: 검색 불완전/충돌
+```
 
-- `PENDING` → `SUBMITTED`
-- `PARTIAL_FILLED` → `PARTIALLY_FILLED`
-- `PENDING_CANCEL` → `CANCEL_REQUESTED`
-- `PENDING_REPLACE` → `REPLACE_REQUESTED`
-- `FILLED`/`CANCELED`/`REJECTED` → 동명의 내부 종료 상태
-- `CANCEL_REJECTED`/`REPLACE_REJECTED` → 거부 이력 기록 후 직전 주문 상태 복원
-- `REPLACED` → 정정 완료 transition을 기록하고 새 주문 조건을 authoritative projection에 반영
+UNKNOWN 복구 규칙:
 
-`UNKNOWN`을 미접수로 확정하려면 설정된 reconciliation window가 지난 뒤 `OPEN` 전체와 좁은 `from`/`to`·`symbol` 범위의 `CLOSED` 조회를 모두 완료해야 한다. 그래도 일치하지 않으면 자동 재제출이 아니라 `MANUAL_REVIEW_REQUIRED`로 보낸다.
+1. `OPEN` 전체와 `CLOSED`의 KST 시간 범위·모든 cursor page를 조회하고 `ReconciliationCheck`로 남긴다.
+2. `CLOSED`에서 찾지 못한 사실은 미접수 증거가 아니다. API 지연, 날짜 경계, pagination 누락 가능성을 보존한다.
+3. `ReconciliationCheck.decision`은 `BROKER_ORDER_FOUND`, `RETRY_SAME_KEY_ALLOWED`, `MANUAL_REVIEW_REQUIRED` 중 하나다.
+4. 토스 멱등 10분 안이고 client order ID와 body hash가 동일할 때만 decision을 `RETRY_SAME_KEY_ALLOWED`로 기록하고 새 attempt를 만든다.
+5. 10분 이후에는 새 키나 같은 키로 자동 재전송하지 않는다.
+6. 명시적 broker rejection 또는 HTTP 호출 시작 전 로컬 실패만 안전한 미접수 증거다.
+7. 결론이 나지 않으면 계좌 신규 주문을 잠그고 intent를 `MANUAL_REVIEW_REQUIRED`로 전환한다.
 
-### 10.2 승인 후 주문 직전 재검증
+### 10.3 BrokerOrder
 
-`APPROVED` 주문은 제출 직전에 다음을 다시 읽는다.
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> PARTIALLY_FILLED
+    PENDING --> FILLED
+    PENDING --> PENDING_CANCEL
+    PENDING --> PENDING_REPLACE
+    PARTIALLY_FILLED --> FILLED
+    PARTIALLY_FILLED --> PENDING_CANCEL
+    PARTIALLY_FILLED --> PENDING_REPLACE
+    PENDING_CANCEL --> CANCELED
+    PENDING_CANCEL --> CANCEL_REJECTED
+    PENDING_REPLACE --> REPLACED
+    PENDING_REPLACE --> REPLACE_REJECTED
+```
+
+각 poll 결과는 먼저 `ExecutionSnapshot`으로 저장한 뒤 `BrokerOrder` projection을 갱신한다. 정정된 주문은 기존 주문을 덮지 않고 `replacesBrokerOrderId`로 연결한다.
+
+### 10.4 승인 후 주문 직전 재검증
+
+`APPROVED` intent는 제출 직전에 다음을 다시 읽는다.
 
 1. 승인 사용자와 계좌 소유권
 2. TradeProposal 만료 여부
-3. 최신 계좌 동기화 성공 시각
+3. 최신 holdings와 `AccountCapacitySnapshot`의 완전성·시각
 4. 현재가·호가 timestamp와 가격 편차
-5. 매수 가능 금액 또는 매도 가능 수량
+5. 통화별 cash buying power 또는 종목별 sellable quantity
 6. 동일 종목 OPEN 주문
 7. 종목·테마·전체 투자 비중
 8. 일일·주간 손실
-9. 주문당 예상 손실
+9. 원통화 주문당 예상 손실과 명시된 FX snapshot 기준 KRW 환산 손실
 10. 전체 주문 중지 kill switch
 11. 전략 활성 상태
 12. 분석 snapshot과 portfolio snapshot의 허용 최대 나이
 
-하나라도 실패하면 브로커를 호출하지 않고 `REJECTED`와 구체적인 risk reason을 남긴다.
+하나라도 실패하면 브로커를 호출하지 않고 intent를 `BLOCKED`로 전환해 구체적인 risk reason을 남긴다.
 
-### 10.3 기본 차단 사유
+### 10.5 기본 차단 사유
 
 - `UNRELIABLE_EVENT_SOURCE`
 - `STALE_QUOTE`
@@ -819,7 +959,7 @@ SSE 이벤트는 화면 갱신 힌트다. 클라이언트는 수신 후 REST로 
 
 | 페이지 | 우선 정보 | 필수 상태 |
 |---|---|---|
-| Dashboard | 총자산, 오늘 손익, 현금, 시장 국면, 중요 이벤트, 주문 후보, kill switch | 동기화 지연, 장 상태, 데이터 stale |
+| Dashboard | 확인 가능한 자산, 오늘 손익, 통화별 buying power, 시장 국면, 중요 이벤트, 주문 후보, kill switch | 미제공 잔액, 동기화 지연, 장 상태, 데이터 stale |
 | Portfolio | 보유 종목, 섹터·테마·팩터, 상관관계, beta/VaR/ES, 목표 비중 | 빈 계좌, 부분 동기화 |
 | Stock Detail | 차트, 재무, 밸류, 기술, 이벤트, 시나리오, 반대 논리, 무효화 조건 | 분석 중, 데이터 부족 |
 | Event Radar | 공식 출처, 신뢰도, 관련 기업, 직접/간접/피해, 가격 반응 | 미확인, 검토 필요 |
@@ -844,12 +984,12 @@ SSE 이벤트는 화면 갱신 힌트다. 클라이언트는 수신 후 REST로 
 - Phase 0 확인 전에는 토스 credential 저장 API를 feature flag로 끄고 read-only fixture 또는 사용이 승인된 연결만 허용
 - 승인 후 사용자당 토스 계좌 1개 연결
 - 계좌·보유종목·현재가 읽기 동기화
-- 총자산, 현금, 손익, 비중 대시보드
+- 토스가 제공한 보유자산 요약, 통화별 buying power, 손익, 비중 대시보드
 - 기본 기술 분석과 단순 포트폴리오 집중도
 - SEC, 기업 IR, 연준 등 제한된 공식 이벤트 수집
 - 이벤트와 사전 정의된 회사 노출도 연결
 - 불변 분석·포트폴리오·이벤트 스냅샷
-- TradeProposal과 RiskEvaluation
+- TradeProposal, OrderIntent, SubmissionAttempt, BrokerOrder, ExecutionSnapshot, RiskEvaluation
 - PaperTradingBrokerAdapter
 - 주문·성과·감사 기록
 
@@ -872,82 +1012,61 @@ SSE 이벤트는 화면 갱신 힌트다. 클라이언트는 수신 후 REST로 
 3. 분석 입력과 결과를 같은 시점 기준으로 재현할 수 있다.
 4. 이벤트가 기존 분석을 새 스냅샷으로 재계산한다.
 5. Paper 주문은 승인 후 직전 재검증을 통과해야만 체결된다.
-6. 중복 승인·worker 재실행에도 주문은 한 번만 생성된다.
-7. UNKNOWN 상태는 자동 중복 제출 없이 조정된다.
+6. 중복 승인·Inbox 재수신·worker 재실행에도 intent와 broker order가 중복 생성되지 않는다.
+7. UNKNOWN attempt는 CLOSED 미검색을 미접수로 오판하지 않고 조정된다.
 
 ---
 
-## 14. 단계별 개발 계획
+## 14. 단계별 개발 우선순위
 
-### Phase 0. 실거래 타당성 확인
+### P0. 실거래 허용성과 공식 계약
 
-- 토스증권 다중 사용자 SaaS 이용 가능 여부 확인
-- 자격증명 보관·허용 IP·주문 대행 정책 확인
-- 공식 OpenAPI fixture와 rate-limit 계약 확보
-- 실거래는 비활성, Paper만 허용
+- 토스증권의 다중 사용자 SaaS, 자격증명 보관, 허용 IP, 주문 대행 허용 범위를 확정한다.
+- accounts, holdings, buying-power, sellable-quantity, order/history의 OpenAPI contract fixture를 고정한다.
 
-완료 조건: 법적·기술적 허용 범위가 문서로 확정됨.
+완료 조건: 미확정 계약이 실거래 코드 경로에 남지 않는다.
 
-### Phase 1. 기반과 계좌 읽기
+### P1. 원장 기반
 
-- Next.js, Spring Boot 21, FastAPI, PostgreSQL, Redis Docker Compose
-- 세션 인증, CSRF, 사용자 격리
-- 암호화 자격증명 저장
-- 토스 token/account/holdings/prices mapper
-- 계좌 동기화와 원문 redaction
+- `Money`, `FxRateSnapshot`, `OrderIntent`, `SubmissionAttempt`, `BrokerOrder`, `ExecutionSnapshot`을 먼저 구현한다.
+- Outbox/Inbox, append-only 제약, tenant 격리, 상태 전이 optimistic lock을 구현한다.
 
-완료 조건: 다중 사용자 격리 테스트와 read-only 계좌 대시보드 통과.
+완료 조건: 중복 이벤트와 중복 worker 실행이 intent·attempt·broker order를 중복 생성하지 않는다.
 
-### Phase 2. 포트폴리오
+### P2. 계좌 가용성
 
-- 포트폴리오 스냅샷, 손익, 비중, 현금
-- 섹터·테마 중복 노출
-- beta, volatility, 단순 historical VaR/ES
+- holdings와 buying power를 분리 저장하고 sellable quantity를 주문 직전에 조회한다.
+- 미제공 잔액은 `UNKNOWN`, buying power는 별도 지표로 유지한다.
+- 원통화와 목적별 FX snapshot을 적용한다.
 
-완료 조건: 동일 시점 입력으로 위험 지표 재현.
+완료 조건: 현금·총자산·환율손익을 근거 없이 추정하지 않는다.
 
-### Phase 3. 종목 분석
+### P3. Paper 주문과 복구
 
-- 데이터 계약, 입력 스냅샷
-- Fundamental/Valuation/Technical/Regime/Expectations 최소 구현
-- 예측 범위, 반대 논리, 데이터 부족 표시
+- 실제 Toss 상태를 모사하는 Paper adapter를 구현한다.
+- timeout, CLOSED pagination 누락, 10분 멱등 만료, 부분체결·정정·취소를 fault injection으로 검증한다.
 
-완료 조건: FastAPI 장애가 주문 영역에 영향을 주지 않고 실패 상태로 남음.
+완료 조건: UNKNOWN에서 새 키 자동 주문이 발생하지 않고 체결 스냅샷이 재현된다.
 
-### Phase 4. 이벤트
+### P4. 포트폴리오·분석·이벤트
 
-- 공식 소스 collector
-- 중복 제거와 구조화
-- 회사 노출도와 영향 계산
-- 재분석 Outbox 흐름과 Event Radar
+- 포트폴리오 위험, 종목 분석, 공식 이벤트, 주문 후보를 원장 위에 연결한다.
+- Inbox 멱등 처리로 재분석·후보 생성 중복을 차단한다.
 
-완료 조건: 같은 이벤트 재수집이 중복 분석 폭주를 만들지 않음.
+완료 조건: 같은 입력과 FX 기준으로 분석·위험·성과를 재현한다.
 
-### Phase 5. 모의투자
+### P5. 제한적 승인형 실거래
 
-- PaperTradingBrokerAdapter
-- 수수료, 환율, 슬리피지
-- 주문 상태 머신, 체결, 성과 평가
-- kill switch와 일일·주간 손실 한도
+- 소액 allowlist 계좌에서 승인, 직전 재검증, 제출, reconciliation runbook을 검증한다.
+- 계좌별 kill switch와 수동 `MANUAL_REVIEW_REQUIRED` 해제 절차를 운영한다.
 
-완료 조건: 승인·직전 재검증·멱등성·UNKNOWN 복구 테스트 통과.
+완료 조건: 소액 실거래 시나리오와 감사·복구 훈련이 통과된다.
 
-### Phase 6. 승인형 실거래
+### P6. 자동화
 
-- 토스 Order Info 사전 검증
-- create/modify/cancel/history
-- 소액 allowlist 계좌
-- 수동 조정 UI와 운영 runbook
+- 장기간 Paper·승인형 실거래에서 검증된 전략만 opt-in한다.
 
-완료 조건: 공식 허용 확인, sandbox/소액 시나리오 검증, 감사로그 검토 완료.
-
-### Phase 7. 제한 자동화
-
-- 검증된 전략만 opt-in
-- 종목·시간·금액 allowlist
-- 성과 저하 시 자동 전략 중단
-
-완료 조건: 별도 승인된 운영 정책과 장기간 Paper 성과 기준 충족.
+완료 조건: 전략 중단, 손실 한도, 운영자 개입 절차가 검증된다.
 
 ---
 
@@ -959,13 +1078,13 @@ SSE 이벤트는 화면 갱신 힌트다. 클라이언트는 수신 후 REST로 
 | 사용자 자격증명 유출 | 계좌 탈취 | KMS 봉투 암호화, 마스킹, 접근 감사, 회전 | 연결 폐기·주문 중지 |
 | 토큰 재발급 경쟁 | 이전 토큰 즉시 무효화 | 사용자 connection별 Redis lock과 단일 token cache | lock 실패 시 주문 차단 |
 | 허용 IP 변경/장애 | 모든 호출 실패 | 고정 egress IP, 다중 AZ 시 등록 정책 확인 | 신규 주문 중지 |
-| 주문 timeout·중복 | 중복 체결 | 내부 idempotency, 토스 `clientOrderId`, UNKNOWN 조정 | 자동 재전송 금지 |
+| 주문 timeout·중복 | 중복 체결 | intent/attempt/broker order 분리, 동일 키·body hash, reconciliation 증거 | 10분 이후 자동 재전송 금지 |
 | 주문 목록 반영 지연 | UNKNOWN 장기화 | OPEN/CLOSED 조회, 수동 조정 UI, 운영 알림 | 계좌별 신규 주문 잠금 |
 | 오래된 시세 | 잘못된 가격 주문 | source timestamp TTL, spread·entry range 재검증 | fail-closed |
 | 계좌 스냅샷 지연 | 한도 초과 | 승인 후 holdings/buying-power 재조회 | fail-closed |
 | Redis 장애 | 세션·락·캐시 장애 | Redis를 원장으로 사용하지 않음, health check | 주문 기능 중지 |
 | PostgreSQL 장애 | 원장 불일치 | DB 커밋 전 브로커 호출 금지, Outbox | 주문 기능 중지 |
-| Outbox 중복 전달 | 중복 분석/주문 | consumer idempotency key와 unique constraint | 중복 무시 |
+| Outbox 중복 전달 | 중복 분석/주문 | Inbox `UNIQUE(consumer_name,event_id)`와 도메인 변경의 단일 트랜잭션 | 중복 무시 |
 | FastAPI 장애 | 분석 지연 | timeout, circuit breaker, bounded retry | 신규 proposal 중지 |
 | 모델 과적합·드리프트 | 손실 증가 | walk-forward, calibration, 국면별 성과, 전략 자동 중단 | Paper 전환 |
 | 미래 데이터 누출 | 허위 성과 | `available_at`, point-in-time snapshot, 백테스트 분리 | 모델 배포 차단 |
