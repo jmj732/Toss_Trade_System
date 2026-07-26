@@ -1,15 +1,12 @@
 package com.jmj.trade.order;
 
-import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
+import com.jmj.trade.PostgresIntegrationTest;
 import org.flywaydb.core.Flyway;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -20,25 +17,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class OrderIntentLedgerSchemaTest {
+class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
 
-    private static EmbeddedPostgres postgres;
     private Flyway flyway;
-
-    @BeforeAll
-    static void startPostgres() throws IOException {
-        postgres = EmbeddedPostgres.start();
-    }
-
-    @AfterAll
-    static void stopPostgres() throws IOException {
-        postgres.close();
-    }
 
     @BeforeEach
     void migrateFreshSchema() {
         flyway = Flyway.configure()
-                .dataSource(postgres.getPostgresDatabase())
+                .dataSource(
+                        POSTGRES.getJdbcUrl(),
+                        POSTGRES.getUsername(),
+                        POSTGRES.getPassword())
                 .cleanDisabled(false)
                 .load();
 
@@ -309,7 +298,7 @@ class OrderIntentLedgerSchemaTest {
     }
 
     private String queryStatus(UUID intentId) throws SQLException {
-        try (Connection connection = postgres.getPostgresDatabase().getConnection();
+        try (Connection connection = POSTGRES.createConnection("");
              var statement = connection.prepareStatement(
                      "SELECT status FROM order_intents WHERE id = ?")) {
             statement.setObject(1, intentId);
@@ -321,7 +310,7 @@ class OrderIntentLedgerSchemaTest {
     }
 
     private int execute(String sql, Object... parameters) throws SQLException {
-        try (Connection connection = postgres.getPostgresDatabase().getConnection();
+        try (Connection connection = POSTGRES.createConnection("");
              var statement = connection.prepareStatement(sql)) {
             for (int index = 0; index < parameters.length; index++) {
                 statement.setObject(index + 1, parameters[index]);

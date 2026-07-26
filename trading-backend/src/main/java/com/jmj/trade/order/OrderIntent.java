@@ -67,6 +67,14 @@ public class OrderIntent {
         return id;
     }
 
+    public UUID getBrokerAccountId() {
+        return brokerAccountId;
+    }
+
+    public BigDecimal getQuantity() {
+        return quantity;
+    }
+
     public OrderIntentStatus getStatus() {
         return status;
     }

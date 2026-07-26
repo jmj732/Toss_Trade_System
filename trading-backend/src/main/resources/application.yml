@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/trade}
+    username: ${DATABASE_USERNAME:trade}
+    password: ${DATABASE_PASSWORD:trade}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false

@@ -1,22 +1,16 @@
 package com.jmj.trade.order;
 
-import io.zonky.test.db.postgres.embedded.EmbeddedPostgres;
+import com.jmj.trade.PostgresIntegrationTest;
+import com.jmj.trade.TradingBackendApplication;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.OptimisticLockException;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.SpringBootConfiguration;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
@@ -27,10 +21,8 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(classes = OrderIntentOptimisticLockTest.TestApplication.class)
-class OrderIntentOptimisticLockTest {
-
-    private static final EmbeddedPostgres POSTGRES = startPostgres();
+@SpringBootTest(classes = TradingBackendApplication.class)
+class OrderIntentOptimisticLockTest extends PostgresIntegrationTest {
 
     @Autowired
     private EntityManagerFactory entityManagerFactory;
@@ -38,24 +30,9 @@ class OrderIntentOptimisticLockTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    @DynamicPropertySource
-    static void databaseProperties(DynamicPropertyRegistry registry) {
-        registry.add(
-                "spring.datasource.url",
-                () -> POSTGRES.getJdbcUrl("postgres", "postgres"));
-        registry.add("spring.datasource.username", () -> "postgres");
-        registry.add("spring.datasource.password", () -> "");
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
-        registry.add("spring.jpa.open-in-view", () -> "false");
-    }
-
-    @AfterAll
-    static void stopPostgres() throws IOException {
-        POSTGRES.close();
-    }
-
     @BeforeEach
     void cleanLedger() {
+        jdbcTemplate.update("DELETE FROM execution_snapshots");
         jdbcTemplate.update("DELETE FROM broker_orders");
         jdbcTemplate.update("DELETE FROM order_intents");
         jdbcTemplate.update("DELETE FROM broker_accounts");
@@ -139,22 +116,8 @@ class OrderIntentOptimisticLockTest {
         return false;
     }
 
-    private static EmbeddedPostgres startPostgres() {
-        try {
-            return EmbeddedPostgres.start();
-        } catch (IOException exception) {
-            throw new ExceptionInInitializerError(exception);
-        }
-    }
-
     enum AttemptResult {
         COMMITTED,
         OPTIMISTIC_LOCK_REJECTED
-    }
-
-    @SpringBootConfiguration
-    @EnableAutoConfiguration
-    @EntityScan(basePackageClasses = OrderIntent.class)
-    static class TestApplication {
     }
 }
