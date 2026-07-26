@@ -27,12 +27,29 @@ class OrderIntentTest {
     }
 
     @Test
+    void recoveryCommandsFollowUnknownSubmissionPath() {
+        var intent = proposed("10");
+
+        intent.approve();
+        intent.startRevalidation();
+        intent.markSubmissionPending();
+        intent.requireReconciliation();
+        intent.requireManualReview();
+
+        assertThat(intent.getStatus()).isEqualTo(OrderIntentStatus.MANUAL_REVIEW_REQUIRED);
+    }
+
+    @Test
     void commandMethodsRejectInvalidTransitions() {
         var intent = proposed("10");
 
         assertThatThrownBy(intent::startRevalidation)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("PROPOSED -> REVALIDATING");
+
+        assertThatThrownBy(intent::requireReconciliation)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("PROPOSED -> RECONCILIATION_REQUIRED");
     }
 
     @Test

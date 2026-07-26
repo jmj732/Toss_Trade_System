@@ -7,12 +7,14 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
 @Entity
+@DynamicUpdate
 @Table(name = "order_intents")
 public class OrderIntent {
 
@@ -69,6 +71,14 @@ public class OrderIntent {
 
     public void markSubmissionPending() {
         transitionTo(OrderIntentStatus.SUBMISSION_PENDING);
+    }
+
+    public void requireReconciliation() {
+        transitionTo(OrderIntentStatus.RECONCILIATION_REQUIRED);
+    }
+
+    public void requireManualReview() {
+        transitionTo(OrderIntentStatus.MANUAL_REVIEW_REQUIRED);
     }
 
     public void activate() {

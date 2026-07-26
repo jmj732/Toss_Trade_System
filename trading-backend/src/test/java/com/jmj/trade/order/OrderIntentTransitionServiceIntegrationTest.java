@@ -12,9 +12,9 @@ import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
-import org.springframework.dao.OptimisticLockingFailureException;
 
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
@@ -56,7 +56,12 @@ class OrderIntentTransitionServiceIntegrationTest extends PostgresIntegrationTes
         jdbcTemplate.execute("DROP TRIGGER IF EXISTS trg_fail_order_intent_outbox_insert ON order_intent_outbox_events");
         jdbcTemplate.execute("DROP FUNCTION IF EXISTS fail_order_intent_outbox_insert()");
         jdbcTemplate.execute("""
-                TRUNCATE order_intent_outbox_events,
+                TRUNCATE order_submission_outbox_events,
+                         order_submission_audit_logs,
+                         reconciliation_checks,
+                         submission_attempts,
+                         submission_idempotency_keys,
+                         order_intent_outbox_events,
                          order_intent_audit_logs,
                          execution_snapshots,
                          broker_orders,
@@ -191,9 +196,10 @@ class OrderIntentTransitionServiceIntegrationTest extends PostgresIntegrationTes
                 intentId);
         jdbcTemplate.update("""
                 INSERT INTO broker_orders (
-                    id, order_intent_id, broker_account_id, broker_order_id, status
-                ) VALUES (?, ?, ?, ?, 'CANCELED')
-                """, brokerOrderId, intentId, brokerAccountId, UUID.randomUUID().toString());
+                    id, order_intent_id, broker_account_id, broker_order_id, client_order_id, status
+                ) VALUES (?, ?, ?, ?, ?, 'CANCELED')
+                """, brokerOrderId, intentId, brokerAccountId,
+                UUID.randomUUID().toString(), UUID.randomUUID().toString());
         jdbcTemplate.update("""
                 INSERT INTO execution_snapshots (id, broker_order_id, filled_quantity, captured_at)
                 VALUES (?, ?, ?, ?)

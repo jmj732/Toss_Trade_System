@@ -37,7 +37,7 @@ class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
 
     @Test
     void flywayCreatesOrderLedgerSchema() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
     }
 
     @Test
@@ -258,9 +258,9 @@ class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
         var id = UUID.randomUUID();
         execute("""
                 INSERT INTO broker_orders (
-                    id, order_intent_id, broker_account_id, broker_order_id, status
-                ) VALUES (?, ?, ?, ?, ?)
-                """, id, intentId, accountId, UUID.randomUUID().toString(), status);
+                    id, order_intent_id, broker_account_id, broker_order_id, client_order_id, status
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """, id, intentId, accountId, UUID.randomUUID().toString(), UUID.randomUUID().toString(), status);
         return id;
     }
 

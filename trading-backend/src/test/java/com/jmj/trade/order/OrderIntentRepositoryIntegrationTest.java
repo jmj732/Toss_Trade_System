@@ -33,7 +33,12 @@ class OrderIntentRepositoryIntegrationTest extends PostgresIntegrationTest {
     @BeforeEach
     void cleanLedger() {
         jdbcTemplate.execute("""
-                TRUNCATE order_intent_outbox_events,
+                TRUNCATE order_submission_outbox_events,
+                         order_submission_audit_logs,
+                         reconciliation_checks,
+                         submission_attempts,
+                         submission_idempotency_keys,
+                         order_intent_outbox_events,
                          order_intent_audit_logs,
                          execution_snapshots,
                          broker_orders,
@@ -44,7 +49,7 @@ class OrderIntentRepositoryIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void applicationRunsFlywayMigrationAgainstPostgres() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
     }
 
     @Test
