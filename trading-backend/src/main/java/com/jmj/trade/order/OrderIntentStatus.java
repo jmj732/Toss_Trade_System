@@ -1,0 +1,17 @@
+package com.jmj.trade.order;
+
+public enum OrderIntentStatus {
+    PROPOSED,
+    APPROVED,
+    REVALIDATING,
+    SUBMISSION_PENDING,
+    RECONCILIATION_REQUIRED,
+    MANUAL_REVIEW_REQUIRED,
+    ACTIVE,
+    COMPLETED,
+    PARTIALLY_COMPLETED,
+    CANCELED,
+    REJECTED,
+    EXPIRED,
+    BLOCKED
+}
