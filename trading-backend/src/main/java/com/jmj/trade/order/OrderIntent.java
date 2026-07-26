@@ -60,7 +60,135 @@ public class OrderIntent {
     }
 
     public void approve() {
-        status = OrderIntentStatus.APPROVED;
+        transitionTo(OrderIntentStatus.APPROVED);
+    }
+
+    public void startRevalidation() {
+        transitionTo(OrderIntentStatus.REVALIDATING);
+    }
+
+    public void markSubmissionPending() {
+        transitionTo(OrderIntentStatus.SUBMISSION_PENDING);
+    }
+
+    public void activate() {
+        transitionTo(OrderIntentStatus.ACTIVE);
+    }
+
+    public void terminate(
+            OrderIntentStatus terminalStatus,
+            String terminalReason,
+            Instant terminalAt,
+            BigDecimal finalFilledQuantity
+    ) {
+        requireOpen();
+        requireTerminalData(terminalStatus, terminalReason, terminalAt, finalFilledQuantity);
+        requireAllowedTransition(terminalStatus);
+        requireTerminalQuantity(terminalStatus, finalFilledQuantity);
+        this.status = terminalStatus;
+        this.terminalReason = terminalReason;
+        this.terminalAt = terminalAt;
+        this.finalFilledQuantity = finalFilledQuantity;
+        this.remainingQuantity = quantity.subtract(finalFilledQuantity);
+    }
+
+    private void transitionTo(OrderIntentStatus nextStatus) {
+        requireOpen();
+        requireAllowedTransition(nextStatus);
+        status = nextStatus;
+    }
+
+    private void requireOpen() {
+        if (isTerminal(status)) {
+            throw new IllegalStateException("terminal order intent is immutable");
+        }
+    }
+
+    private void requireAllowedTransition(OrderIntentStatus nextStatus) {
+        if (!isAllowedTransition(status, nextStatus)) {
+            throw new IllegalStateException("invalid order intent transition: " + status + " -> " + nextStatus);
+        }
+    }
+
+    private static boolean isAllowedTransition(OrderIntentStatus current, OrderIntentStatus next) {
+        return switch (current) {
+            case PROPOSED -> next == OrderIntentStatus.APPROVED
+                    || next == OrderIntentStatus.CANCELED
+                    || next == OrderIntentStatus.EXPIRED;
+            case APPROVED -> next == OrderIntentStatus.REVALIDATING
+                    || next == OrderIntentStatus.EXPIRED;
+            case REVALIDATING -> next == OrderIntentStatus.SUBMISSION_PENDING
+                    || next == OrderIntentStatus.BLOCKED
+                    || next == OrderIntentStatus.EXPIRED;
+            case SUBMISSION_PENDING -> next == OrderIntentStatus.ACTIVE
+                    || next == OrderIntentStatus.REJECTED
+                    || next == OrderIntentStatus.RECONCILIATION_REQUIRED;
+            case RECONCILIATION_REQUIRED -> next == OrderIntentStatus.ACTIVE
+                    || next == OrderIntentStatus.SUBMISSION_PENDING
+                    || next == OrderIntentStatus.MANUAL_REVIEW_REQUIRED;
+            case ACTIVE -> next == OrderIntentStatus.COMPLETED
+                    || next == OrderIntentStatus.PARTIALLY_COMPLETED
+                    || next == OrderIntentStatus.CANCELED
+                    || next == OrderIntentStatus.MANUAL_REVIEW_REQUIRED;
+            case MANUAL_REVIEW_REQUIRED -> next == OrderIntentStatus.ACTIVE
+                    || next == OrderIntentStatus.COMPLETED
+                    || next == OrderIntentStatus.PARTIALLY_COMPLETED
+                    || next == OrderIntentStatus.CANCELED
+                    || next == OrderIntentStatus.REJECTED;
+            case COMPLETED, PARTIALLY_COMPLETED, CANCELED, REJECTED, EXPIRED, BLOCKED -> false;
+        };
+    }
+
+    private static boolean isTerminal(OrderIntentStatus status) {
+        return status == OrderIntentStatus.COMPLETED
+                || status == OrderIntentStatus.PARTIALLY_COMPLETED
+                || status == OrderIntentStatus.CANCELED
+                || status == OrderIntentStatus.REJECTED
+                || status == OrderIntentStatus.EXPIRED
+                || status == OrderIntentStatus.BLOCKED;
+    }
+
+    private void requireTerminalData(
+            OrderIntentStatus terminalStatus,
+            String terminalReason,
+            Instant terminalAt,
+            BigDecimal finalFilledQuantity
+    ) {
+        if (!isTerminal(terminalStatus)) {
+            throw new IllegalArgumentException("terminalStatus must be terminal");
+        }
+        if (terminalReason == null || terminalReason.isBlank()) {
+            throw new IllegalArgumentException("terminalReason is required");
+        }
+        if (terminalAt == null) {
+            throw new IllegalArgumentException("terminalAt is required");
+        }
+        if (finalFilledQuantity == null) {
+            throw new IllegalArgumentException("finalFilledQuantity is required");
+        }
+        if (finalFilledQuantity.compareTo(BigDecimal.ZERO) < 0
+                || finalFilledQuantity.compareTo(quantity) > 0) {
+            throw new IllegalArgumentException("finalFilledQuantity must be between zero and quantity");
+        }
+    }
+
+    private void requireTerminalQuantity(OrderIntentStatus terminalStatus, BigDecimal finalFilledQuantity) {
+        if (terminalStatus == OrderIntentStatus.COMPLETED
+                && finalFilledQuantity.compareTo(quantity) != 0) {
+            throw new IllegalArgumentException("COMPLETED requires finalFilledQuantity equal to quantity");
+        }
+        if (terminalStatus == OrderIntentStatus.PARTIALLY_COMPLETED
+                && (finalFilledQuantity.compareTo(BigDecimal.ZERO) <= 0
+                || finalFilledQuantity.compareTo(quantity) >= 0)) {
+            throw new IllegalArgumentException("PARTIALLY_COMPLETED requires partial finalFilledQuantity");
+        }
+        if ((terminalStatus == OrderIntentStatus.CANCELED
+                || terminalStatus == OrderIntentStatus.REJECTED
+                || terminalStatus == OrderIntentStatus.EXPIRED
+                || terminalStatus == OrderIntentStatus.BLOCKED)
+                && finalFilledQuantity.compareTo(BigDecimal.ZERO) != 0) {
+            throw new IllegalArgumentException(terminalStatus + " requires zero finalFilledQuantity");
+        }
     }
 
     public UUID getId() {
@@ -81,5 +209,21 @@ public class OrderIntent {
 
     public long getVersion() {
         return version;
+    }
+
+    public String getTerminalReason() {
+        return terminalReason;
+    }
+
+    public Instant getTerminalAt() {
+        return terminalAt;
+    }
+
+    public BigDecimal getFinalFilledQuantity() {
+        return finalFilledQuantity;
+    }
+
+    public BigDecimal getRemainingQuantity() {
+        return remainingQuantity;
     }
 }

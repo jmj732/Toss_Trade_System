@@ -32,15 +32,19 @@ class OrderIntentRepositoryIntegrationTest extends PostgresIntegrationTest {
 
     @BeforeEach
     void cleanLedger() {
-        jdbcTemplate.update("DELETE FROM execution_snapshots");
-        jdbcTemplate.update("DELETE FROM broker_orders");
-        repository.deleteAll();
-        jdbcTemplate.update("DELETE FROM broker_accounts");
+        jdbcTemplate.execute("""
+                TRUNCATE order_intent_outbox_events,
+                         order_intent_audit_logs,
+                         execution_snapshots,
+                         broker_orders,
+                         order_intents,
+                         broker_accounts
+                """);
     }
 
     @Test
     void applicationRunsFlywayMigrationAgainstPostgres() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
     }
 
     @Test

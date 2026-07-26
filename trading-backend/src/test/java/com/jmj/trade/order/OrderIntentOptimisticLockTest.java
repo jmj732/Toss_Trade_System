@@ -32,10 +32,14 @@ class OrderIntentOptimisticLockTest extends PostgresIntegrationTest {
 
     @BeforeEach
     void cleanLedger() {
-        jdbcTemplate.update("DELETE FROM execution_snapshots");
-        jdbcTemplate.update("DELETE FROM broker_orders");
-        jdbcTemplate.update("DELETE FROM order_intents");
-        jdbcTemplate.update("DELETE FROM broker_accounts");
+        jdbcTemplate.execute("""
+                TRUNCATE order_intent_outbox_events,
+                         order_intent_audit_logs,
+                         execution_snapshots,
+                         broker_orders,
+                         order_intents,
+                         broker_accounts
+                """);
     }
 
     @Test
