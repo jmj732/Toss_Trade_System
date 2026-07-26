@@ -257,6 +257,10 @@ class OrderIntent {
     Instant expiresAt;
     Instant approvedAt;
     OrderIntentStatus status;
+    @Nullable OrderIntentTerminalReason terminalReason;
+    @Nullable Instant terminalAt;
+    @Nullable BigDecimal finalFilledQuantity;
+    @Nullable BigDecimal remainingQuantity;
     long version;
 }
 
@@ -301,6 +305,8 @@ class BrokerOrder {
 규칙:
 
 - `OrderIntent`는 사용자가 승인한 경제적 의도다. 승인 후 종목, 방향, 수량, 가격, 통화를 바꾸지 않는다.
+- 종료 전에는 `terminalReason`, `terminalAt`, `finalFilledQuantity`, `remainingQuantity`가 `null`이다. 종료 전환과 함께 네 값을 같은 트랜잭션에서 확정한다.
+- 종료 시 `finalFilledQuantity >= 0`, `remainingQuantity >= 0`, `finalFilledQuantity + remainingQuantity = quantity`를 강제한다.
 - 각 외부 HTTP 호출은 별도 `SubmissionAttempt`다. 요청 body hash와 전송 증거를 보존한다.
 - `BrokerOrder`는 토스 `orderId`가 확인된 뒤에만 생성한다.
 - 동일 intent의 UNKNOWN 복구 retry는 토스 멱등 시간 안에서 동일 `brokerClientOrderId`와 동일 body hash만 허용한다.
@@ -484,7 +490,7 @@ erDiagram
 | `event_company_impacts` | `event_id`, `company_id`, relation, direction, magnitude, priced-in, confidence |
 | `trade_proposals` | `user_id`, 분석·포트폴리오·이벤트 FK, 가격범위, 수량, 상태, `expires_at` |
 | `risk_policies` | `user_id`, 정책 버전, 한도, `active_from`, `active_to` |
-| `order_intents` | `id`, `user_id`, `account_id`, `proposal_id UNIQUE`, 승인된 주문 조건·통화·최대손실·만료·상태·version |
+| `order_intents` | `id`, `user_id`, `account_id`, `proposal_id UNIQUE`, 승인된 주문 조건·통화·최대손실·만료·상태·`terminal_reason NULL`·`terminal_at NULL`·`final_filled_quantity NULL`·`remaining_quantity NULL`·version |
 | `risk_evaluations` | `id`, `user_id`, `order_intent_id`, `stage`, 결정, 이유 JSON, account/quote/fx snapshot FK, `valid_until` |
 | `submission_attempts` | `id`, `user_id`, `order_intent_id`, `confirmed_broker_order_id NULL FK`, `attempt_no`, `retry_of_attempt_id`, internal key UNIQUE, broker client ID, body hash, dispatch evidence, 멱등 만료, 상태, `UNIQUE(order_intent_id, attempt_no)` |
 | `reconciliation_checks` | `id`, `user_id`, attempt ID, OPEN/CLOSED, query window, cursor/page coverage, result hash, matched order ID, decision, checked_at |
@@ -512,6 +518,8 @@ erDiagram
 - `account_snapshots`, `account_capacity_snapshots`, `position_snapshots`, `portfolio_snapshots`, `fx_rate_snapshots`, `analysis_input_snapshots`, `stock_analysis_snapshots`, `risk_evaluations`, `reconciliation_checks`, `execution_snapshots`, `broker_order_transitions`, `audit_logs`는 append-only다.
 - append-only 테이블에는 `created_at`과 필요한 경우 `superseded_by_id`를 두고 애플리케이션 DB role의 `UPDATE`/`DELETE` 권한을 제거한다.
 - `order_intents`는 상태·version만 갱신하고 승인된 경제적 조건은 변경하지 않는다.
+- `order_intents`가 종료 상태이면 terminal 필드 네 개는 모두 `NOT NULL`이고 수량 합계는 intent 수량과 같아야 한다. 비종료 상태이면 네 필드는 모두 `NULL`이어야 한다.
+- `EXPIRED`, `BLOCKED`, `REJECTED` 전환은 확인된 `BrokerOrder`가 없는 주문 접수 전 단계에서만 허용한다.
 - `submission_attempts`의 요청 ID, client order ID, body hash, dispatch evidence는 생성 후 변경하지 않는다.
 - retry attempt는 원 attempt와 같은 `order_intent_id`, `broker_client_order_id`, `request_body_hash`를 사용해야 하며 domain invariant와 DB trigger/contract test로 검증한다.
 - `broker_orders`는 `UNIQUE(broker_account_id, broker_order_id)`로 계좌 범위의 외부 주문 ID 중복을 차단한다.
@@ -791,25 +799,29 @@ stateDiagram-v2
     RECONCILIATION_REQUIRED --> SUBMISSION_PENDING: 동일 키 retry attempt 생성
     RECONCILIATION_REQUIRED --> MANUAL_REVIEW_REQUIRED: 자동 판정 불가
     ACTIVE --> COMPLETED: 의도 수량 전부 체결
-    ACTIVE --> PARTIALLY_COMPLETED: 일부 체결 후 모든 주문 종료
+    ACTIVE --> PARTIALLY_COMPLETED: 일부 체결 후 잔여 체결 불가
     ACTIVE --> CANCELED: 무체결 취소
-    ACTIVE --> REJECTED: 무체결 거부
     ACTIVE --> MANUAL_REVIEW_REQUIRED: broker 상태 불일치
     MANUAL_REVIEW_REQUIRED --> ACTIVE: 수동 조정으로 활성 주문 확인
     MANUAL_REVIEW_REQUIRED --> COMPLETED
     MANUAL_REVIEW_REQUIRED --> PARTIALLY_COMPLETED
     MANUAL_REVIEW_REQUIRED --> CANCELED
-    MANUAL_REVIEW_REQUIRED --> REJECTED
+    MANUAL_REVIEW_REQUIRED --> REJECTED: broker order 미확인 + 명시적 거부 확인
 ```
 
 `OrderIntent` 종료 상태:
 
 - `COMPLETED`: 누적 체결 수량이 intent 수량을 충족하고 활성 broker order가 없음
-- `PARTIALLY_COMPLETED`: 누적 체결이 0보다 크지만 잔량 주문이 모두 종료되어 추가 제출하지 않음
+- `PARTIALLY_COMPLETED`: `0 < finalFilledQuantity < quantity`이고, 모든 관련 broker order가 종료되어 `remainingQuantity`가 더 이상 체결될 수 없음
 - `CANCELED`: 체결 없이 사용자 또는 broker 취소로 종료
 - `REJECTED`: 체결 없이 명시적 broker 거부로 종료
 - `EXPIRED`: broker order 확인 전에 intent 유효시간 만료
 - `BLOCKED`: 제출 전 계좌·시세·리스크 검증 실패; 재사용하지 않고 새 intent 필요
+
+`EXPIRED`, `BLOCKED`, `REJECTED`는 `BrokerOrder`가 한 번도 확인되지 않은 주문 접수 전 단계에서만 허용한다. `ACTIVE` 이후에는 이 상태들로 전환할 수 없다.
+
+모든 종료 전환은 `terminalReason`, `terminalAt`, `finalFilledQuantity`, `remainingQuantity`를 원자적으로 저장한다.
+`COMPLETED`는 `(quantity, 0)`, `PARTIALLY_COMPLETED`는 `(0보다 크고 quantity보다 작은 값, 잔량)`, 무체결 `CANCELED`·`EXPIRED`·`BLOCKED`·`REJECTED`는 `(0, quantity)`를 저장한다.
 
 `MANUAL_REVIEW_REQUIRED`는 종료 상태가 아니라 계좌 주문을 잠그는 복구 상태다.
 
