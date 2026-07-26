@@ -267,6 +267,7 @@ class SubmissionAttempt {
     UUID internalIdempotencyKey;       // attempt 영구 unique
     String brokerClientOrderId;        // 동일 intent retry 시 같은 값
     String requestBodyHash;
+    UUID confirmedBrokerOrderId;       // nullable; 여러 attempt가 같은 BrokerOrder 확인 가능
     SubmissionAttemptStatus status;    // CREATED, DISPATCHING, ACKNOWLEDGED,
                                        // BROKER_REJECTED, UNKNOWN, RECONCILING,
                                        // RECONCILED_NO_MATCH, RECONCILIATION_FAILED
@@ -281,7 +282,7 @@ class SubmissionAttempt {
 class BrokerOrder {
     UUID id;
     UUID orderIntentId;
-    UUID acknowledgedByAttemptId;
+    BrokerAccountId brokerAccountId;
     String brokerOrderId;              // 토스 opaque orderId, 필수
     String brokerClientOrderId;
     UUID replacesBrokerOrderId;        // 정정으로 새 주문이 생기면 연결
@@ -342,8 +343,8 @@ class ExecutionSnapshot {
     BigDecimal filledQuantity;
     Money averageFilledPrice;
     Money filledAmount;
-    Money commission;
-    Money tax;
+    @Nullable Money commission;              // broker 미제공/미확정
+    @Nullable Money tax;                     // broker 미제공/미확정
     LocalDate settlementDate;
     String sourcePayloadHash;
     Instant brokerUpdatedAt;
@@ -366,6 +367,7 @@ class InboxMessage {
 - 환율은 `1 baseCurrency = rate × quoteCurrency`로 고정하고 `quoteAmount = baseAmount × rate` 공식을 사용한다. 사용자 보고통화는 기본 KRW이며 결과에도 통화를 명시한다.
 - 토스 환율은 참고용 표시 환율일 수 있으므로 실제 체결 환율·정산 환율과 구분한다.
 - 체결 정보는 polling 시점별 `ExecutionSnapshot`으로 append-only 저장한다. 공식 응답이 개별 fill을 제공하지 않으면 가상의 fill을 만들지 않는다.
+- 수수료·세금 `null`은 미제공 또는 미확정을 뜻한다. 이를 0으로 변환하지 않는다.
 - Inbox consumer는 `UNIQUE(consumer_name, event_id)`를 먼저 확보하고 도메인 변경과 `processed_at` 기록을 같은 DB 트랜잭션으로 커밋한다.
 
 ### 5.6 리스크
@@ -444,7 +446,7 @@ erDiagram
     ORDER_INTENTS ||--o{ SUBMISSION_ATTEMPTS : submitted_by
     ORDER_INTENTS ||--o{ BROKER_ORDERS : materializes_as
     SUBMISSION_ATTEMPTS ||--o{ RECONCILIATION_CHECKS : investigated_by
-    SUBMISSION_ATTEMPTS ||--o| BROKER_ORDERS : acknowledges
+    BROKER_ORDERS o|--o{ SUBMISSION_ATTEMPTS : confirmed_by
     BROKER_ORDERS ||--o{ EXECUTION_SNAPSHOTS : observed_by
     BROKER_ORDERS ||--o{ BROKER_ORDER_TRANSITIONS : records
     BROKER_ACCOUNTS ||--o{ ACCOUNT_CAPACITY_SNAPSHOTS : measures
@@ -484,10 +486,10 @@ erDiagram
 | `risk_policies` | `user_id`, 정책 버전, 한도, `active_from`, `active_to` |
 | `order_intents` | `id`, `user_id`, `account_id`, `proposal_id UNIQUE`, 승인된 주문 조건·통화·최대손실·만료·상태·version |
 | `risk_evaluations` | `id`, `user_id`, `order_intent_id`, `stage`, 결정, 이유 JSON, account/quote/fx snapshot FK, `valid_until` |
-| `submission_attempts` | `id`, `user_id`, `order_intent_id`, `attempt_no`, `retry_of_attempt_id`, internal key UNIQUE, broker client ID, body hash, dispatch evidence, 멱등 만료, 상태, `UNIQUE(order_intent_id, attempt_no)` |
+| `submission_attempts` | `id`, `user_id`, `order_intent_id`, `confirmed_broker_order_id NULL FK`, `attempt_no`, `retry_of_attempt_id`, internal key UNIQUE, broker client ID, body hash, dispatch evidence, 멱등 만료, 상태, `UNIQUE(order_intent_id, attempt_no)` |
 | `reconciliation_checks` | `id`, `user_id`, attempt ID, OPEN/CLOSED, query window, cursor/page coverage, result hash, matched order ID, decision, checked_at |
-| `broker_orders` | `id`, `user_id`, `order_intent_id`, `acknowledged_by_attempt_id UNIQUE`, broker order ID UNIQUE, broker client ID, replaces ID, authoritative 상태·주문 조건 |
-| `execution_snapshots` | `id`, `user_id`, broker order ID, 상태·누적체결수량·평균가·금액·수수료·세금·정산일·broker_updated_at·captured_at |
+| `broker_orders` | `id`, `user_id`, `order_intent_id`, `broker_account_id`, broker order ID, broker client ID, replaces ID, authoritative 상태·주문 조건, `UNIQUE(broker_account_id, broker_order_id)` |
+| `execution_snapshots` | `id`, `user_id`, broker order ID, 상태·누적체결수량·평균가·금액·`commission NULL`·`tax NULL`·정산일·broker_updated_at·captured_at |
 | `broker_order_transitions` | `id`, `user_id`, broker order ID, sequence, from/to, source, reason, occurred_at |
 | `model_predictions` | 분석 스냅샷 FK, horizon, prediction, confidence |
 | `prediction_outcomes` | prediction FK, 실제 수익·최대손실·평가시각 |
@@ -512,6 +514,8 @@ erDiagram
 - `order_intents`는 상태·version만 갱신하고 승인된 경제적 조건은 변경하지 않는다.
 - `submission_attempts`의 요청 ID, client order ID, body hash, dispatch evidence는 생성 후 변경하지 않는다.
 - retry attempt는 원 attempt와 같은 `order_intent_id`, `broker_client_order_id`, `request_body_hash`를 사용해야 하며 domain invariant와 DB trigger/contract test로 검증한다.
+- `broker_orders`는 `UNIQUE(broker_account_id, broker_order_id)`로 계좌 범위의 외부 주문 ID 중복을 차단한다.
+- `submission_attempts.confirmed_broker_order_id`는 nullable FK다. 여러 attempt가 같은 `broker_orders.id`를 참조할 수 있으며, composite FK로 attempt와 broker order의 `order_intent_id` 일치를 강제한다.
 - `broker_orders`는 현재 브로커 상태 projection이며 모든 상태 변화는 `broker_order_transitions`에도 추가한다.
 - `broker_order_transitions`에는 `UNIQUE(broker_order_id, sequence)`를 강제한다.
 - Inbox unique 확보, 도메인 변경, audit/outbox 추가는 같은 DB 트랜잭션으로 커밋한다.
@@ -776,15 +780,38 @@ stateDiagram-v2
     PROPOSED --> CANCELED
     PROPOSED --> EXPIRED
     APPROVED --> REVALIDATING
+    APPROVED --> EXPIRED
     REVALIDATING --> SUBMISSION_PENDING: 직전 검증 통과
     REVALIDATING --> BLOCKED: 계좌/시세/리스크 실패
-    SUBMISSION_PENDING --> BROKER_CONFIRMED: broker orderId 확인
-    SUBMISSION_PENDING --> BROKER_REJECTED: 명시적 broker 거부
+    REVALIDATING --> EXPIRED
+    SUBMISSION_PENDING --> ACTIVE: broker orderId 확인
+    SUBMISSION_PENDING --> REJECTED: 명시적 broker 거부
     SUBMISSION_PENDING --> RECONCILIATION_REQUIRED: attempt UNKNOWN
-    RECONCILIATION_REQUIRED --> BROKER_CONFIRMED: 주문 발견
+    RECONCILIATION_REQUIRED --> ACTIVE: 주문 발견
     RECONCILIATION_REQUIRED --> SUBMISSION_PENDING: 동일 키 retry attempt 생성
     RECONCILIATION_REQUIRED --> MANUAL_REVIEW_REQUIRED: 자동 판정 불가
+    ACTIVE --> COMPLETED: 의도 수량 전부 체결
+    ACTIVE --> PARTIALLY_COMPLETED: 일부 체결 후 모든 주문 종료
+    ACTIVE --> CANCELED: 무체결 취소
+    ACTIVE --> REJECTED: 무체결 거부
+    ACTIVE --> MANUAL_REVIEW_REQUIRED: broker 상태 불일치
+    MANUAL_REVIEW_REQUIRED --> ACTIVE: 수동 조정으로 활성 주문 확인
+    MANUAL_REVIEW_REQUIRED --> COMPLETED
+    MANUAL_REVIEW_REQUIRED --> PARTIALLY_COMPLETED
+    MANUAL_REVIEW_REQUIRED --> CANCELED
+    MANUAL_REVIEW_REQUIRED --> REJECTED
 ```
+
+`OrderIntent` 종료 상태:
+
+- `COMPLETED`: 누적 체결 수량이 intent 수량을 충족하고 활성 broker order가 없음
+- `PARTIALLY_COMPLETED`: 누적 체결이 0보다 크지만 잔량 주문이 모두 종료되어 추가 제출하지 않음
+- `CANCELED`: 체결 없이 사용자 또는 broker 취소로 종료
+- `REJECTED`: 체결 없이 명시적 broker 거부로 종료
+- `EXPIRED`: broker order 확인 전에 intent 유효시간 만료
+- `BLOCKED`: 제출 전 계좌·시세·리스크 검증 실패; 재사용하지 않고 새 intent 필요
+
+`MANUAL_REVIEW_REQUIRED`는 종료 상태가 아니라 계좌 주문을 잠그는 복구 상태다.
 
 ### 10.2 SubmissionAttempt와 UNKNOWN 복구
 
