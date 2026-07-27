@@ -2,7 +2,10 @@ package com.jmj.trade.broker.toss;
 
 import com.jmj.trade.broker.BrokerAdapter;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 
 import java.net.URI;
 import java.time.Duration;
@@ -14,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class TossBrokerConfigurationTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
-            .withUserConfiguration(TossBrokerConfiguration.class);
+            .withConfiguration(AutoConfigurations.of(TossBrokerConfiguration.class));
 
     @Test
     void doesNotCreateTossBeansWithoutCredentialProvider() {
@@ -28,8 +31,7 @@ class TossBrokerConfigurationTest {
     @Test
     void createsValidatedPropertiesOnlyWhenCredentialProviderExists() {
         contextRunner
-                .withBean(TossCredentialProvider.class, () -> brokerConnectionId ->
-                        new TossCredentials("client-id", "client-secret"))
+                .withUserConfiguration(TestCredentialProviderConfig.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(TossCredentialProvider.class);
                     assertThat(context).hasSingleBean(TossApiProperties.class);
@@ -49,8 +51,7 @@ class TossBrokerConfigurationTest {
     @Test
     void bindsCustomHttpProperties() {
         contextRunner
-                .withBean(TossCredentialProvider.class, () -> brokerConnectionId ->
-                        new TossCredentials("client-id", "client-secret"))
+                .withUserConfiguration(TestCredentialProviderConfig.class)
                 .withPropertyValues(
                         "broker.toss.base-url=https://example.test",
                         "broker.toss.connect-timeout=3s",
@@ -75,8 +76,7 @@ class TossBrokerConfigurationTest {
     @Test
     void rejectsTokenWaitTimeoutThatDoesNotExceedTokenRequestTimeout() {
         contextRunner
-                .withBean(TossCredentialProvider.class, () -> brokerConnectionId ->
-                        new TossCredentials("client-id", "client-secret"))
+                .withUserConfiguration(TestCredentialProviderConfig.class)
                 .withPropertyValues(
                         "broker.toss.token-request-timeout=5s",
                         "broker.toss.token-wait-timeout=5s")
@@ -90,8 +90,7 @@ class TossBrokerConfigurationTest {
     @Test
     void rejectsTokenLockTtlThatDoesNotExceedTokenRequestTimeout() {
         contextRunner
-                .withBean(TossCredentialProvider.class, () -> brokerConnectionId ->
-                        new TossCredentials("client-id", "client-secret"))
+                .withUserConfiguration(TestCredentialProviderConfig.class)
                 .withPropertyValues(
                         "broker.toss.token-request-timeout=5s",
                         "broker.toss.token-lock-ttl=5s")
@@ -105,8 +104,7 @@ class TossBrokerConfigurationTest {
     @Test
     void rejectsInvalidBaseUrlScheme() {
         contextRunner
-                .withBean(TossCredentialProvider.class, () -> brokerConnectionId ->
-                        new TossCredentials("client-id", "client-secret"))
+                .withUserConfiguration(TestCredentialProviderConfig.class)
                 .withPropertyValues(
                         "broker.toss.base-url=ftp://example.test")
                 .run(context -> {
@@ -117,10 +115,30 @@ class TossBrokerConfigurationTest {
     }
 
     @Test
+    void rejectsMalformedBaseUrlWithoutHost() {
+        contextRunner
+                .withUserConfiguration(TestCredentialProviderConfig.class)
+                .withPropertyValues(
+                        "broker.toss.base-url=http:/bad")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).hasRootCauseMessage(
+                            "baseUrl must include a host");
+                });
+    }
+
+    @Test
+    void rejectsBaseUrlWithUserInfoPathQueryOrFragment() {
+        assertInvalidBaseUrl("https://user@example.test", "baseUrl must not include user info");
+        assertInvalidBaseUrl("https://example.test/api", "baseUrl path must be empty or /");
+        assertInvalidBaseUrl("https://example.test?x=1", "baseUrl must not include query");
+        assertInvalidBaseUrl("https://example.test#docs", "baseUrl must not include fragment");
+    }
+
+    @Test
     void rejectsNonPositiveTimeoutsAndNegativeExpirySkew() {
         contextRunner
-                .withBean(TossCredentialProvider.class, () -> brokerConnectionId ->
-                        new TossCredentials("client-id", "client-secret"))
+                .withUserConfiguration(TestCredentialProviderConfig.class)
                 .withPropertyValues("broker.toss.connect-timeout=0s")
                 .run(context -> {
                     assertThat(context).hasFailed();
@@ -129,13 +147,22 @@ class TossBrokerConfigurationTest {
                 });
 
         contextRunner
-                .withBean(TossCredentialProvider.class, () -> brokerConnectionId ->
-                        new TossCredentials("client-id", "client-secret"))
+                .withUserConfiguration(TestCredentialProviderConfig.class)
                 .withPropertyValues("broker.toss.token-expiry-skew=-1s")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure()).hasRootCauseMessage(
                             "tokenExpirySkew must not be negative");
+                });
+    }
+
+    private void assertInvalidBaseUrl(String baseUrl, String message) {
+        contextRunner
+                .withUserConfiguration(TestCredentialProviderConfig.class)
+                .withPropertyValues("broker.toss.base-url=" + baseUrl)
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure()).hasRootCauseMessage(message);
                 });
     }
 
@@ -167,5 +194,14 @@ class TossBrokerConfigurationTest {
                     assertThat(method.getReturnType()).isEqualTo(TossCredentials.class);
                     assertThat(method.getParameterTypes()).containsExactly(UUID.class);
                 });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class TestCredentialProviderConfig {
+
+        @Bean
+        TossCredentialProvider tossCredentialProvider() {
+            return brokerConnectionId -> new TossCredentials("client-id", "client-secret");
+        }
     }
 }

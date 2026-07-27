@@ -48,6 +48,22 @@ public record TossApiProperties(
         if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
             throw new IllegalArgumentException("baseUrl must use http or https");
         }
+        if (uri.getHost() == null || uri.getHost().isBlank()) {
+            throw new IllegalArgumentException("baseUrl must include a host");
+        }
+        if (uri.getUserInfo() != null) {
+            throw new IllegalArgumentException("baseUrl must not include user info");
+        }
+        var path = uri.getPath();
+        if (path != null && !path.isEmpty() && !"/".equals(path)) {
+            throw new IllegalArgumentException("baseUrl path must be empty or /");
+        }
+        if (uri.getQuery() != null) {
+            throw new IllegalArgumentException("baseUrl must not include query");
+        }
+        if (uri.getFragment() != null) {
+            throw new IllegalArgumentException("baseUrl must not include fragment");
+        }
     }
 
     private static void requirePositive(Duration value, String name) {
