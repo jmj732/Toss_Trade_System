@@ -188,6 +188,43 @@ class TossTokenManagerRedisIntegrationTest {
     }
 
     @Test
+    void staleLockOwnerReleaseDoesNotDeleteNewerLockOwner() throws Exception {
+        stubToken("issued-token", 600, 0);
+        var lockAcquired = new CountDownLatch(1);
+        var unblockCredentials = new CountDownLatch(1);
+        var manager = new TossTokenManager(
+                redis,
+                brokerConnectionId -> {
+                    lockAcquired.countDown();
+                    try {
+                        assertThat(unblockCredentials.await(2, TimeUnit.SECONDS)).isTrue();
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(exception);
+                    }
+                    return new TossCredentials("client-" + brokerConnectionId, "secret-" + brokerConnectionId);
+                },
+                new TossOAuthClient(defaultProperties()),
+                defaultProperties());
+        var executor = Executors.newSingleThreadExecutor();
+
+        try {
+            var future = executor.submit(() -> manager.getAccessToken(CONNECTION_ID));
+            assertThat(lockAcquired.await(2, TimeUnit.SECONDS)).isTrue();
+            var lockKey = tokenKey(CONNECTION_ID) + ":lock";
+            assertThat(redis.opsForValue().get(lockKey)).isNotBlank();
+
+            redis.opsForValue().set(lockKey, "new-owner", Duration.ofSeconds(10));
+            unblockCredentials.countDown();
+
+            assertThat(future.get(5, TimeUnit.SECONDS)).isEqualTo("issued-token");
+            assertThat(redis.opsForValue().get(lockKey)).isEqualTo("new-owner");
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void interruptedWaitRestoresInterruptFlag() throws Exception {
         var lockKey = "broker:toss:oauth:v1:" + CONNECTION_ID + ":lock";
         redis.opsForValue().set(lockKey, "other-owner", Duration.ofSeconds(2));
