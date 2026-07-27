@@ -156,7 +156,7 @@ final class TossApiClient {
     private Optional<RateLimitSnapshot> rateLimit(HttpHeaders headers, Instant observedAt) {
         var limit = number(headers, "X-RateLimit-Limit");
         var remaining = number(headers, "X-RateLimit-Remaining");
-        var reset = seconds(headers, "X-RateLimit-Reset").map(observedAt::plus);
+        var reset = resetAt(headers, observedAt);
         var retryAfter = seconds(headers, "Retry-After");
         if (limit.isEmpty() && remaining.isEmpty() && reset.isEmpty() && retryAfter.isEmpty()) {
             return Optional.empty();
@@ -171,6 +171,16 @@ final class TossApiClient {
                 throw new IllegalArgumentException();
             }
             return value;
+        });
+    }
+
+    private Optional<Instant> resetAt(HttpHeaders headers, Instant observedAt) {
+        return parseHeader(headers, "X-RateLimit-Reset", () -> {
+            var seconds = Long.parseLong(headers.getFirst("X-RateLimit-Reset"));
+            if (seconds < 0) {
+                throw new IllegalArgumentException();
+            }
+            return observedAt.plus(Duration.ofSeconds(seconds));
         });
     }
 

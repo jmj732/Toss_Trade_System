@@ -124,6 +124,9 @@ class TossApiClientContractTest {
         assertContractError("""
                 {"result":[]}
                 """, "X-RateLimit-Limit", "-1");
+        assertContractError("""
+                {"result":[]}
+                """, "X-RateLimit-Reset", String.valueOf(Long.MAX_VALUE));
     }
 
     @Test
