@@ -1,0 +1,21 @@
+# Paper Order Workflow API Delta
+
+- One channel-neutral REST workflow serves web and messenger adapters.
+- Actual Slack/Kakao webhooks, SDKs, identity linking, and event buses are excluded.
+- Every mutating command requires `Idempotency-Key` and records channel, authenticated actor, action, and intent ID.
+- Supported channels are `WEB`, `MESSENGER`, and `API`; channel is audit metadata, not authorization.
+- The authenticated principal owns every command; clients cannot supply another actor.
+- `POST /api/v1/paper-orders` creates an owned `PROPOSED` intent only.
+- `GET /api/v1/paper-orders/{id}` returns intent state, risk decisions, status audit, and workflow commands.
+- `POST /api/v1/paper-orders/{id}/approve` is the only submission path.
+- Approval obtains a server-side quote; risk sizes limit orders at their stored limit price.
+- Approval performs approval risk validation, immediate final revalidation, then Paper execution internally.
+- No controller exposes `submit`, `execute`, or any Toss live-order operation.
+- `POST /api/v1/paper-orders/{id}/cancel` cancels only `PROPOSED` intents.
+- Messenger rejection maps to the same cancel command with reason `USER_REJECTED`.
+- Same idempotency key plus identical command replays the owned current result.
+- Reusing a key for a different action, intent, or body returns conflict.
+- Connection and intent rows are locked before state changes; non-PROPOSED approval/cancel is rejected.
+- Workflow command receipts are append-only and use a deferred intent foreign key so proposal creation is atomic.
+- Unexpected approval/Paper failures roll back command receipt, intent transitions, risk decisions, and Paper ledgers together.
+- Quote retrieval is read-only and occurs before the database transaction; Toss order submission remains forbidden.

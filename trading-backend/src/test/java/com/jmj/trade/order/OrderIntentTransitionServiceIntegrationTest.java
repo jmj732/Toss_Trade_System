@@ -56,7 +56,8 @@ class OrderIntentTransitionServiceIntegrationTest extends PostgresIntegrationTes
         jdbcTemplate.execute("DROP TRIGGER IF EXISTS trg_fail_order_intent_outbox_insert ON order_intent_outbox_events");
         jdbcTemplate.execute("DROP FUNCTION IF EXISTS fail_order_intent_outbox_insert()");
         jdbcTemplate.execute("""
-                TRUNCATE pre_trade_risk_decisions,
+                TRUNCATE paper_order_workflow_commands,
+                         pre_trade_risk_decisions,
                          order_submission_outbox_events,
                          order_submission_audit_logs,
                          reconciliation_checks,

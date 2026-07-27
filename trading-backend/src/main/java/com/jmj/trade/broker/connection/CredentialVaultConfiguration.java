@@ -7,6 +7,7 @@ import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.toss.TossCredentialProvider;
 import com.jmj.trade.order.OrderIntentRepository;
 import com.jmj.trade.order.OrderIntentTransitionService;
+import com.jmj.trade.order.PaperOrderWorkflowService;
 import com.jmj.trade.order.PaperTradingBroker;
 import com.jmj.trade.order.PreTradeRiskEngine;
 import org.springframework.beans.factory.annotation.Value;
@@ -116,5 +117,23 @@ public class CredentialVaultConfiguration {
                 maxUsdOrderAmount,
                 maxQuantity,
                 maxConcentration);
+    }
+
+    @Bean
+    PaperOrderWorkflowService paperOrderWorkflowService(
+            BrokerAdapter brokerAdapter,
+            OrderIntentRepository orderIntentRepository,
+            OrderIntentTransitionService transitionService,
+            PreTradeRiskEngine preTradeRiskEngine,
+            JdbcTemplate jdbcTemplate,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new PaperOrderWorkflowService(
+                brokerAdapter,
+                orderIntentRepository,
+                transitionService,
+                preTradeRiskEngine,
+                jdbcTemplate,
+                transactionManager);
     }
 }

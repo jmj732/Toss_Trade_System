@@ -13,7 +13,7 @@ public class SecurityConfiguration {
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
-                .requestMatchers("/api/v1/broker-connections/**").authenticated()
+                .requestMatchers("/api/v1/broker-connections/**", "/api/v1/paper-orders/**").authenticated()
                 .anyRequest().permitAll());
         http.httpBasic(httpBasic -> httpBasic.disable());
         http.formLogin(formLogin -> formLogin.disable());

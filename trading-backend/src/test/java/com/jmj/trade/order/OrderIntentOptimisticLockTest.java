@@ -33,7 +33,8 @@ class OrderIntentOptimisticLockTest extends PostgresIntegrationTest {
     @BeforeEach
     void cleanLedger() {
         jdbcTemplate.execute("""
-                TRUNCATE pre_trade_risk_decisions,
+                TRUNCATE paper_order_workflow_commands,
+                         pre_trade_risk_decisions,
                          order_submission_outbox_events,
                          order_submission_audit_logs,
                          reconciliation_checks,

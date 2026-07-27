@@ -73,7 +73,8 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
         jdbc.execute("DROP TRIGGER IF EXISTS trg_fail_risk_paper_outbox ON order_submission_outbox_events");
         jdbc.execute("DROP FUNCTION IF EXISTS fail_risk_paper_outbox()");
         jdbc.execute("""
-                TRUNCATE pre_trade_risk_decisions,
+                TRUNCATE paper_order_workflow_commands,
+                         pre_trade_risk_decisions,
                          order_submission_outbox_events,
                          order_submission_audit_logs,
                          reconciliation_checks,
