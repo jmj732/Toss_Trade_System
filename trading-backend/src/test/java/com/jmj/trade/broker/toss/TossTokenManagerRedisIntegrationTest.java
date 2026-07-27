@@ -7,13 +7,16 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -225,6 +228,52 @@ class TossTokenManagerRedisIntegrationTest {
     }
 
     @Test
+    void oauthPrimaryFailureIsNotReplacedByLockReleaseFailure() {
+        server.stubFor(post("/oauth2/token")
+                .willReturn(aResponse()
+                        .withStatus(401)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"error":"invalid_client","error_description":"bad client"}
+                                """)));
+        var manager = new TossTokenManager(
+                cleanupFailingRedis(),
+                provider(),
+                new TossOAuthClient(defaultProperties()),
+                defaultProperties());
+
+        assertThatThrownBy(() -> manager.getAccessToken(CONNECTION_ID))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.AUTHENTICATION);
+                    assertThat(exception.isRetriable()).isFalse();
+                    assertThat(exception.getSuppressed())
+                            .hasSize(1)
+                            .allSatisfy(suppressed -> assertThat(suppressed)
+                                    .isInstanceOfSatisfying(BrokerException.class, cleanup -> {
+                                        assertThat(cleanup.category()).isEqualTo(BrokerErrorCategory.TEMPORARY);
+                                        assertThat(cleanup.isRetriable()).isTrue();
+                                    }));
+                });
+    }
+
+    @Test
+    void lockReleaseFailureAfterSuccessfulIssueStaysTemporary() {
+        stubToken("issued-token", 600, 0);
+        var manager = new TossTokenManager(
+                cleanupFailingRedis(),
+                provider(),
+                new TossOAuthClient(defaultProperties()),
+                defaultProperties());
+
+        assertThatThrownBy(() -> manager.getAccessToken(CONNECTION_ID))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.TEMPORARY);
+                    assertThat(exception.isRetriable()).isTrue();
+                    assertThat(exception.getSuppressed()).isEmpty();
+                });
+    }
+
+    @Test
     void interruptedWaitRestoresInterruptFlag() throws Exception {
         var lockKey = "broker:toss:oauth:v1:" + CONNECTION_ID + ":lock";
         redis.opsForValue().set(lockKey, "other-owner", Duration.ofSeconds(2));
@@ -298,6 +347,15 @@ class TossTokenManagerRedisIntegrationTest {
     private void startRedisTemplate(String host, int port) {
         redisConnectionFactory = redisConnectionFactory(host, port);
         redis = new StringRedisTemplate(redisConnectionFactory);
+    }
+
+    private StringRedisTemplate cleanupFailingRedis() {
+        return new StringRedisTemplate(redisConnectionFactory) {
+            @Override
+            public <T> T execute(RedisScript<T> script, List<String> keys, Object... args) {
+                throw new DataAccessResourceFailureException("script failed");
+            }
+        };
     }
 
     private LettuceConnectionFactory redisConnectionFactory(String host, int port) {

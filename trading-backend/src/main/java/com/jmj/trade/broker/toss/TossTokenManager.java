@@ -46,6 +46,7 @@ final class TossTokenManager {
         var lockKey = tokenKey + ":lock";
         var lockOwner = UUID.randomUUID().toString();
         if (tryAcquire(lockKey, lockOwner)) {
+            RuntimeException primary = null;
             try {
                 cached = redisGet(tokenKey);
                 if (cached != null) {
@@ -55,8 +56,11 @@ final class TossTokenManager {
                 var token = oauthClient.issueToken(brokerConnectionId, credentials);
                 redisSet(tokenKey, token.accessToken(), cacheTtl(token.expiresIn()));
                 return token.accessToken();
+            } catch (RuntimeException exception) {
+                primary = exception;
+                throw exception;
             } finally {
-                deleteIfValueMatches(lockKey, lockOwner);
+                releaseLock(lockKey, lockOwner, primary);
             }
         }
 
@@ -125,6 +129,17 @@ final class TossTokenManager {
             redis.execute(DELETE_IF_VALUE_MATCHES, List.of(key), value);
         } catch (DataAccessException exception) {
             throw redisFailure("Toss OAuth token cache could not be invalidated");
+        }
+    }
+
+    private void releaseLock(String lockKey, String owner, RuntimeException primary) {
+        try {
+            deleteIfValueMatches(lockKey, owner);
+        } catch (RuntimeException cleanup) {
+            if (primary == null) {
+                throw cleanup;
+            }
+            primary.addSuppressed(cleanup);
         }
     }
 
