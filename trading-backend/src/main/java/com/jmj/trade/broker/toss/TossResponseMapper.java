@@ -43,8 +43,8 @@ final class TossResponseMapper {
     AccountSnapshot accountSnapshot(BrokerAccountRef account, TossApiDtos.Holdings holdings, BrokerCallMetadata metadata) {
         Objects.requireNonNull(account, "account");
         Objects.requireNonNull(metadata, "metadata");
-        if (holdings == null || holdings.marketValue() == null || holdings.profitLoss() == null
-                || holdings.dailyProfitLoss() == null) {
+        if (holdings == null || holdings.items() == null || holdings.marketValue() == null
+                || holdings.profitLoss() == null || holdings.dailyProfitLoss() == null) {
             throw contract();
         }
         return new AccountSnapshot(

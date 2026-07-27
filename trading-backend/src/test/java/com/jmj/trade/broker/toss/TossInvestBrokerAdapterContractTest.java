@@ -168,6 +168,19 @@ class TossInvestBrokerAdapterContractTest {
     }
 
     @Test
+    void accountSnapshotRejectsMissingRequiredItemsEvenThoughItDoesNotMapThem() {
+        server.stubFor(get("/api/v1/holdings").willReturn(json("""
+                {"result":{"totalPurchaseAmount":{"krw":"1"},"marketValue":{"amount":{"krw":"1"},"amountAfterCost":{"krw":"1"}},"profitLoss":{"amount":{"krw":"0"},"amountAfterCost":{"krw":"0"},"rate":"0","rateAfterCost":"0"},"dailyProfitLoss":{"amount":{"krw":"0"},"rate":"0"}}}
+                """)));
+
+        assertThatThrownBy(() -> adapter().getAccount(ACCOUNT))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT);
+                    assertThat(exception.isRetriable()).isFalse();
+                });
+    }
+
+    @Test
     void rejectsUnsafeAccountNumberAndNonTossBrokerWithoutOrderCalls() {
         server.stubFor(get("/api/v1/accounts").willReturn(json("""
                 {"result":[{"accountNo":"123","accountSeq":1,"accountType":"GENERAL"}]}
