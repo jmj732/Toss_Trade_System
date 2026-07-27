@@ -25,6 +25,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -62,14 +63,24 @@ public final class PortfolioAnalysisWorkflowService {
     }
 
     public AnalysisView execute(UUID userId, UUID connectionId) {
+        return execute(userId, connectionId, null).current();
+    }
+
+    public EventAnalysis executeForEvent(UUID userId, UUID connectionId, UUID eventId) {
+        requireId(eventId, "eventId");
+        return execute(userId, connectionId, eventId);
+    }
+
+    private EventAnalysis execute(UUID userId, UUID connectionId, UUID eventId) {
         requireId(userId, "userId");
         requireId(connectionId, "connectionId");
-        var started = transaction.execute(status -> start(userId, connectionId));
+        var started = transaction.execute(status -> start(userId, connectionId, eventId));
         try {
             var response = call(started.request());
             validate(started.request(), response);
             var responseJson = encode(response);
-            return transaction.execute(status -> complete(started, response, responseJson));
+            var current = transaction.execute(status -> complete(started, response, responseJson));
+            return new EventAnalysis(started.previousAnalysis(), current);
         } catch (RuntimeException exception) {
             try {
                 fail(started, errorCode(exception));
@@ -81,6 +92,11 @@ public final class PortfolioAnalysisWorkflowService {
     }
 
     public AnalysisView latest(UUID userId, UUID connectionId) {
+        return latestOptional(userId, connectionId).orElseThrow(() ->
+                new PortfolioAnalysisException(PortfolioAnalysisException.Code.RESULT_NOT_FOUND));
+    }
+
+    public Optional<AnalysisView> latestOptional(UUID userId, UUID connectionId) {
         requireId(userId, "userId");
         requireId(connectionId, "connectionId");
         if (!ownedConnection(userId, connectionId)) {
@@ -111,11 +127,49 @@ public final class PortfolioAnalysisWorkflowService {
                 resultSet.getObject("input_sync_run_id", UUID.class),
                 resultSet.getObject("completed_at", OffsetDateTime.class).toInstant(),
                 decode(resultSet.getString("response"))
-        ), userId, connectionId).stream().findFirst().orElseThrow(() ->
-                new PortfolioAnalysisException(PortfolioAnalysisException.Code.RESULT_NOT_FOUND));
+        ), userId, connectionId).stream().findFirst();
     }
 
-    private Start start(UUID userId, UUID connectionId) {
+    public Optional<EventAnalysis> completedEventAnalysis(
+            UUID userId,
+            UUID connectionId,
+            UUID eventId
+    ) {
+        requireId(userId, "userId");
+        requireId(connectionId, "connectionId");
+        requireId(eventId, "eventId");
+        if (!ownedConnection(userId, connectionId)) {
+            throw new PortfolioAnalysisException(PortfolioAnalysisException.Code.NOT_FOUND);
+        }
+        return jdbc.query("""
+                SELECT run.id, run.input_sync_run_id, run.completed_at,
+                       run.previous_analysis_run_id, result.response::text
+                  FROM analysis_runs run
+                  JOIN analysis_results result
+                    ON result.analysis_run_id = run.id
+                   AND result.user_id = run.user_id
+                   AND result.broker_connection_id = run.broker_connection_id
+                 WHERE run.user_id = ?
+                   AND run.broker_connection_id = ?
+                   AND run.trigger_event_id = ?
+                   AND run.status = 'SUCCEEDED'
+                """, (resultSet, rowNum) -> new StoredEventAnalysis(
+                new AnalysisView(
+                        resultSet.getObject("id", UUID.class),
+                        resultSet.getObject("input_sync_run_id", UUID.class),
+                        resultSet.getObject("completed_at", OffsetDateTime.class).toInstant(),
+                        decode(resultSet.getString("response"))),
+                resultSet.getObject("previous_analysis_run_id", UUID.class)
+        ), userId, connectionId, eventId).stream().findFirst().map(stored ->
+                new EventAnalysis(
+                        stored.previousRunId() == null
+                                ? null
+                                : analysisById(userId, connectionId, stored.previousRunId()),
+                        stored.current()));
+    }
+
+    private Start start(UUID userId, UUID connectionId, UUID eventId) {
+        var previous = eventId == null ? null : latestOptional(userId, connectionId).orElse(null);
         var selection = jdbc.query("""
                 SELECT latest.id AS latest_id,
                        success.id AS success_id,
@@ -157,12 +211,12 @@ public final class PortfolioAnalysisWorkflowService {
         var runId = UUID.randomUUID();
         var inserted = jdbc.update("""
                 INSERT INTO analysis_runs (
-                    id, user_id, broker_connection_id, input_sync_run_id, status, started_at
-                ) VALUES (?, ?, ?, ?, 'RUNNING', ?)
-                ON CONFLICT (user_id, broker_connection_id)
-                WHERE status = 'RUNNING'
-                DO NOTHING
-                """, runId, userId, connectionId, selection.successId(), now());
+                    id, user_id, broker_connection_id, input_sync_run_id,
+                    trigger_event_id, previous_analysis_run_id, status, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?)
+                ON CONFLICT DO NOTHING
+                """, runId, userId, connectionId, selection.successId(), eventId,
+                previous == null ? null : previous.runId(), now());
         if (inserted != 1) {
             throw new PortfolioAnalysisException(PortfolioAnalysisException.Code.ALREADY_RUNNING);
         }
@@ -207,7 +261,28 @@ public final class PortfolioAnalysisWorkflowService {
                 selection.completedAt().toInstant(),
                 quality,
                 List.copyOf(positions));
-        return new Start(runId, userId, connectionId, selection.successId(), request);
+        return new Start(runId, userId, connectionId, selection.successId(), previous, request);
+    }
+
+    private AnalysisView analysisById(UUID userId, UUID connectionId, UUID runId) {
+        return jdbc.query("""
+                SELECT run.id, run.input_sync_run_id, run.completed_at, result.response::text
+                  FROM analysis_runs run
+                  JOIN analysis_results result
+                    ON result.analysis_run_id = run.id
+                   AND result.user_id = run.user_id
+                   AND result.broker_connection_id = run.broker_connection_id
+                 WHERE run.id = ?
+                   AND run.user_id = ?
+                   AND run.broker_connection_id = ?
+                   AND run.status = 'SUCCEEDED'
+                """, (resultSet, rowNum) -> new AnalysisView(
+                resultSet.getObject("id", UUID.class),
+                resultSet.getObject("input_sync_run_id", UUID.class),
+                resultSet.getObject("completed_at", OffsetDateTime.class).toInstant(),
+                decode(resultSet.getString("response"))
+        ), runId, userId, connectionId).stream().findFirst().orElseThrow(() ->
+                new IllegalStateException("stored previous analysis result is missing"));
     }
 
     private PortfolioAnalysisContract.Response call(PortfolioAnalysisContract.Request request) {
@@ -430,8 +505,15 @@ public final class PortfolioAnalysisWorkflowService {
             UUID userId,
             UUID connectionId,
             UUID snapshotId,
+            AnalysisView previousAnalysis,
             PortfolioAnalysisContract.Request request
     ) {
+    }
+
+    private record StoredEventAnalysis(AnalysisView current, UUID previousRunId) {
+    }
+
+    public record EventAnalysis(AnalysisView previous, AnalysisView current) {
     }
 
     public record AnalysisView(

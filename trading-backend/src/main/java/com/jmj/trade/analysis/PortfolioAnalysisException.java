@@ -1,6 +1,6 @@
 package com.jmj.trade.analysis;
 
-final class PortfolioAnalysisException extends RuntimeException {
+public final class PortfolioAnalysisException extends RuntimeException {
 
     private final Code code;
 
@@ -14,11 +14,11 @@ final class PortfolioAnalysisException extends RuntimeException {
         this.code = code;
     }
 
-    Code code() {
+    public Code code() {
         return code;
     }
 
-    enum Code {
+    public enum Code {
         INVALID_USER,
         NOT_FOUND,
         SNAPSHOT_NOT_FOUND,
