@@ -1,0 +1,115 @@
+package com.jmj.trade.broker.toss;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
+import java.util.List;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+final class TossApiDtos {
+
+    private TossApiDtos() {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OAuthTokenResponse(String access_token, String token_type, Long expires_in) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OAuthErrorResponse(String error, String error_description) {
+    }
+
+    record OAuthToken(String accessToken, java.time.Duration expiresIn) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record RegularErrorEnvelope(RegularError error) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record RegularError(String requestId, String code, String message, Object data) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record AccountsEnvelope(List<Account> result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Account(String accountNo, Long accountSeq, String accountType) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingsEnvelope(Holdings result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Holdings(
+            PriceAmount totalPurchaseAmount,
+            HoldingsMarketValue marketValue,
+            HoldingsProfitLoss profitLoss,
+            HoldingsDailyProfitLoss dailyProfitLoss,
+            List<HoldingItem> items) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingItem(
+            String symbol,
+            String name,
+            String marketCountry,
+            String currency,
+            String quantity,
+            String lastPrice,
+            String averagePurchasePrice,
+            HoldingMarketValue marketValue,
+            HoldingProfitLoss profitLoss,
+            HoldingDailyProfitLoss dailyProfitLoss,
+            Cost cost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Cost(String commission, String tax) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record PricesEnvelope(List<Price> result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Price(String symbol, String timestamp, String lastPrice, String currency) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record BuyingPowerEnvelope(BuyingPower result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record BuyingPower(String currency, String cashBuyingPower) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record PriceAmount(String krw, String usd) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingsMarketValue(PriceAmount amount, PriceAmount amountAfterCost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingsProfitLoss(PriceAmount amount, PriceAmount amountAfterCost, String rate, String rateAfterCost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingsDailyProfitLoss(PriceAmount amount, String rate) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingMarketValue(String purchaseAmount, String amount, String amountAfterCost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingProfitLoss(String amount, String amountAfterCost, String rate, String rateAfterCost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingDailyProfitLoss(String amount, String rate) {
+    }
+}
