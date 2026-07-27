@@ -1,0 +1,22 @@
+# Pre-trade Risk Engine Delta
+
+- 기존 `OrderIntent` 상태와 `PortfolioReadService` 최신 성공 스냅샷 선택을 재사용한다.
+- 승인 판정은 `PROPOSED`, 제출 직전 재판정은 `APPROVED` 주문만 받는다.
+- 승인 통과 시 `APPROVED`, 제출 재판정 통과 시 `REVALIDATING -> SUBMISSION_PENDING` 후 Paper 제출한다.
+- 승인 거절은 재시도를 위해 `PROPOSED`를 유지하고 결정만 기록한다.
+- 제출 직전 거절은 `REVALIDATING -> BLOCKED`로 종료하고 Paper 제출을 호출하지 않는다.
+- 각 판정은 사용자·연결 소유권이 확인된 활성 broker connection 행을 잠근 뒤 수행한다.
+- 최신 실행이 최신 성공 실행과 다르면 stale로 차단한다.
+- account 또는 KRW/USD buying power가 빠진 partial 스냅샷은 차단한다.
+- `cashBalanceStatus=UNKNOWN`은 buying power 존재 여부와 무관하게 차단한다.
+- Toss adapter는 계속 `UNKNOWN`만 반환하며 실주문·미확인 Toss 필드는 추가하지 않는다.
+- `KNOWN`은 비-Toss/테스트 스냅샷 표현을 위해 허용하며 현금 금액은 만들지 않는다.
+- BUY buying power는 주문 통화의 `cashBuyingPower`에서 같은 snapshot의 선행 최종 승인 예약을 뺀다.
+- MARKET 주문 금액은 기준가, LIMIT 주문 금액은 지정가에 수량을 곱한다.
+- 최대 주문 금액은 KRW/USD 설정값을 분리하며 최대 수량은 공통 설정값이다.
+- 집중도는 BUY만 검사하고 `(동일 종목 평가액 + 예약 + 주문액) / (통화별 총 평가액 + 예약 + 주문액)`으로 계산한다.
+- 환율 변환 없이 주문 통화와 같은 통화 데이터만 사용한다.
+- 연결 행 `FOR UPDATE`와 snapshot별 최종 승인 예약 합계로 동시 주문의 한도 우회를 차단한다.
+- 결정 원장은 phase, outcome, reason codes, snapshot ID, 주문 금액·통화, 사용자·연결을 append-only로 기록한다.
+- 최종 승인 결정과 Paper 주문 원장은 한 트랜잭션이며 Paper 실패 시 최종 판정·전이가 함께 롤백된다.
+- 승인 판정 원장은 별도 트랜잭션으로 보존되어 제출 직전 재검증의 선행 근거가 된다.

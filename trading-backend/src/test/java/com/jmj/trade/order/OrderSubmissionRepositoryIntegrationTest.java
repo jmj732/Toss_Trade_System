@@ -55,7 +55,8 @@ class OrderSubmissionRepositoryIntegrationTest extends PostgresIntegrationTest {
     @BeforeEach
     void cleanLedger() {
         jdbcTemplate.execute("""
-                TRUNCATE order_submission_outbox_events,
+                TRUNCATE pre_trade_risk_decisions,
+                         order_submission_outbox_events,
                          order_submission_audit_logs,
                          reconciliation_checks,
                          submission_attempts,

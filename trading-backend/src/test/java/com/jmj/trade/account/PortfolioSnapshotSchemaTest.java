@@ -35,7 +35,7 @@ class PortfolioSnapshotSchemaTest extends PostgresIntegrationTest {
     void migratesThroughV5AndCreatesSnapshotTables() {
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("6");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("7");
         assertThatCode(() -> execute("SELECT 1 FROM account_sync_runs WHERE false"))
                 .doesNotThrowAnyException();
         assertThatCode(() -> execute("SELECT 1 FROM account_snapshots WHERE false"))

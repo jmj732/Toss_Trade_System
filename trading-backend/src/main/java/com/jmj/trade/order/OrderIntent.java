@@ -25,6 +25,12 @@ public class OrderIntent {
     @Column(name = "broker_account_id", nullable = false)
     private UUID brokerAccountId;
 
+    @Column(name = "user_id")
+    private UUID userId;
+
+    @Column(name = "broker_connection_id")
+    private UUID brokerConnectionId;
+
     @Column(nullable = false, precision = 28, scale = 10)
     private BigDecimal quantity;
 
@@ -111,6 +117,35 @@ public class OrderIntent {
         intent.symbol = symbol;
         intent.limitPrice = limitPrice;
         intent.tradingCurrency = tradingCurrency;
+        return intent;
+    }
+
+    public static OrderIntent proposed(
+            UUID id,
+            UUID brokerAccountId,
+            UUID userId,
+            UUID brokerConnectionId,
+            OrderSide side,
+            OrderType type,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal limitPrice,
+            Currency tradingCurrency
+    ) {
+        if (userId == null || brokerConnectionId == null) {
+            throw new IllegalArgumentException("userId and brokerConnectionId are required");
+        }
+        var intent = proposed(
+                id,
+                brokerAccountId,
+                side,
+                type,
+                symbol,
+                quantity,
+                limitPrice,
+                tradingCurrency);
+        intent.userId = userId;
+        intent.brokerConnectionId = brokerConnectionId;
         return intent;
     }
 
@@ -264,6 +299,14 @@ public class OrderIntent {
 
     public BigDecimal getQuantity() {
         return quantity;
+    }
+
+    public UUID getUserId() {
+        return userId;
+    }
+
+    public UUID getBrokerConnectionId() {
+        return brokerConnectionId;
     }
 
     public OrderSide getSide() {

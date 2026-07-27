@@ -5,6 +5,10 @@ import com.jmj.trade.account.AccountSyncTransactions;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.toss.TossCredentialProvider;
+import com.jmj.trade.order.OrderIntentRepository;
+import com.jmj.trade.order.OrderIntentTransitionService;
+import com.jmj.trade.order.PaperTradingBroker;
+import com.jmj.trade.order.PreTradeRiskEngine;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -88,5 +92,29 @@ public class CredentialVaultConfiguration {
     @Bean
     PortfolioReadService portfolioReadService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
         return new PortfolioReadService(jdbcTemplate, objectMapper);
+    }
+
+    @Bean
+    PreTradeRiskEngine preTradeRiskEngine(
+            PortfolioReadService portfolioReadService,
+            PaperTradingBroker paperTradingBroker,
+            OrderIntentRepository orderIntentRepository,
+            OrderIntentTransitionService transitionService,
+            JdbcTemplate jdbcTemplate,
+            @Value("${pre-trade-risk.max-order-amount.krw:10000000}") java.math.BigDecimal maxKrwOrderAmount,
+            @Value("${pre-trade-risk.max-order-amount.usd:10000}") java.math.BigDecimal maxUsdOrderAmount,
+            @Value("${pre-trade-risk.max-quantity:100}") java.math.BigDecimal maxQuantity,
+            @Value("${pre-trade-risk.max-concentration:0.25}") java.math.BigDecimal maxConcentration
+    ) {
+        return new PreTradeRiskEngine(
+                portfolioReadService,
+                paperTradingBroker,
+                orderIntentRepository,
+                transitionService,
+                jdbcTemplate,
+                maxKrwOrderAmount,
+                maxUsdOrderAmount,
+                maxQuantity,
+                maxConcentration);
     }
 }

@@ -34,9 +34,6 @@ public record AccountSnapshot(
         Objects.requireNonNull(dailyProfitLossRate, "dailyProfitLossRate");
         Objects.requireNonNull(cashBalanceStatus, "cashBalanceStatus");
         Objects.requireNonNull(observedAt, "observedAt");
-        if (cashBalanceStatus != CashBalanceStatus.UNKNOWN) {
-            throw new IllegalArgumentException("cashBalanceStatus must be UNKNOWN");
-        }
     }
 
     private static void requireNonNegative(MoneyByCurrency money, String name) {

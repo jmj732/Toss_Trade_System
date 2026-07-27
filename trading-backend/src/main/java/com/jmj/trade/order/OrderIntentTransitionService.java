@@ -73,6 +73,7 @@ public class OrderIntentTransitionService {
                 .orElseThrow(() -> new IllegalArgumentException("order intent not found: " + orderIntentId));
         var fromStatus = intent.getStatus();
         command.apply(intent);
+        orderIntentRepository.flush();
         var occurredAt = Instant.now();
         auditLogRepository.save(OrderIntentAuditLog.statusChanged(
                 intent.getId(),
