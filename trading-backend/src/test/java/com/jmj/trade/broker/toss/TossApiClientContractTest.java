@@ -52,14 +52,14 @@ class TossApiClientContractTest {
                         .withHeader("X-RateLimit-Remaining", "99")
                         .withHeader("X-RateLimit-Reset", "7")
                         .withBody("""
-                                {"result":[{"accountNo":"1234567890","accountSeq":"01","accountType":"GENERAL","extra":"ignored"}]}
+                                {"result":[{"accountNo":"1234567890","accountSeq":1,"accountType":"GENERAL","extra":"ignored"}]}
                                 """)));
 
         var response = client().getAccounts(CONNECTION_ID);
 
         assertThat(response.value()).hasSize(1);
         assertThat(response.value().getFirst().accountNo()).isEqualTo("1234567890");
-        assertThat(response.value().getFirst().accountSeq()).isEqualTo("01");
+        assertThat(response.value().getFirst().accountSeq()).isEqualTo(1L);
         assertThat(response.value().getFirst().accountType()).isEqualTo("GENERAL");
         assertThat(response.metadata().requestId()).isEqualTo("req-accounts");
         assertThat(response.metadata().rateLimit()).hasValueSatisfying(rateLimit -> {
@@ -79,12 +79,12 @@ class TossApiClientContractTest {
                 .withHeader("Authorization", equalTo("Bearer " + OLD_TOKEN))
                 .withHeader("X-Tossinvest-Account", equalTo(ACCOUNT_SEQ))
                 .willReturn(json("""
-                        {"result":{"summary":{"totalValue":{"currency":"USD","amount":"100.00"}},"items":[]}}
+                        {"result":{"totalPurchaseAmount":{"krw":"1000","usd":"100.00"},"marketValue":{"amount":{"krw":"1000","usd":"100.00"},"amountAfterCost":{"krw":"999","usd":"99.90"}},"profitLoss":{"amount":{"krw":"0","usd":"0"},"amountAfterCost":{"krw":"-1","usd":"-0.10"},"rate":"0","rateAfterCost":"-0.001"},"dailyProfitLoss":{"amount":{"krw":"0","usd":"0"},"rate":"0"},"items":[]}}
                         """)));
         server.stubFor(get(urlEqualTo("/api/v1/prices?symbols=AAPL"))
                 .withHeader("Authorization", equalTo("Bearer " + OLD_TOKEN))
                 .willReturn(json("""
-                        {"result":[{"symbol":"AAPL","price":"180.12","timestamp":"2026-07-27T01:02:03Z"}]}
+                        {"result":[{"symbol":"AAPL","lastPrice":"180.12","currency":"USD","timestamp":"2026-07-27T01:02:03Z"}]}
                         """)));
         server.stubFor(get(urlEqualTo("/api/v1/buying-power?currency=USD"))
                 .withHeader("Authorization", equalTo("Bearer " + OLD_TOKEN))

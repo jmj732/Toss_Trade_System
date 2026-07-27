@@ -6,6 +6,7 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.net.URI;
 import java.time.Duration;
@@ -13,6 +14,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 class TossBrokerConfigurationTest {
 
@@ -29,13 +31,18 @@ class TossBrokerConfigurationTest {
     }
 
     @Test
-    void createsValidatedPropertiesOnlyWhenCredentialProviderExists() {
+    void createsReadOnlyTossBeanGraphWhenCredentialProviderAndRedisExist() {
         contextRunner
-                .withUserConfiguration(TestCredentialProviderConfig.class)
+                .withUserConfiguration(TestCredentialProviderConfig.class, TestRedisConfig.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(TossCredentialProvider.class);
                     assertThat(context).hasSingleBean(TossApiProperties.class);
-                    assertThat(context).doesNotHaveBean(BrokerAdapter.class);
+                    assertThat(context).hasSingleBean(TossOAuthClient.class);
+                    assertThat(context).hasSingleBean(TossTokenManager.class);
+                    assertThat(context).hasSingleBean(TossApiClient.class);
+                    assertThat(context).hasSingleBean(TossResponseMapper.class);
+                    assertThat(context).hasSingleBean(BrokerAdapter.class);
+                    assertThat(context).getBean(BrokerAdapter.class).isInstanceOf(TossInvestBrokerAdapter.class);
 
                     var properties = context.getBean(TossApiProperties.class);
                     assertThat(properties.baseUrl()).isEqualTo(URI.create("https://openapi.tossinvest.com"));
@@ -202,6 +209,15 @@ class TossBrokerConfigurationTest {
         @Bean
         TossCredentialProvider tossCredentialProvider() {
             return brokerConnectionId -> new TossCredentials("client-id", "client-secret");
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class TestRedisConfig {
+
+        @Bean
+        StringRedisTemplate stringRedisTemplate() {
+            return mock(StringRedisTemplate.class);
         }
     }
 }

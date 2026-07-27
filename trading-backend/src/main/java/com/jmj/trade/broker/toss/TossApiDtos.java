@@ -34,7 +34,7 @@ final class TossApiDtos {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record Account(String accountNo, String accountSeq, String accountType) {
+    record Account(String accountNo, Long accountSeq, String accountType) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -42,21 +42,26 @@ final class TossApiDtos {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record Holdings(HoldingsSummary summary, List<HoldingItem> items) {
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    record HoldingsSummary(Money totalValue) {
+    record Holdings(
+            PriceAmount totalPurchaseAmount,
+            HoldingsMarketValue marketValue,
+            HoldingsProfitLoss profitLoss,
+            HoldingsDailyProfitLoss dailyProfitLoss,
+            List<HoldingItem> items) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record HoldingItem(
-            String market,
             String symbol,
             String name,
+            String marketCountry,
+            String currency,
             String quantity,
-            String averagePrice,
-            Money currentValue,
+            String lastPrice,
+            String averagePurchasePrice,
+            HoldingMarketValue marketValue,
+            HoldingProfitLoss profitLoss,
+            HoldingDailyProfitLoss dailyProfitLoss,
             Cost cost) {
     }
 
@@ -69,7 +74,7 @@ final class TossApiDtos {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record Price(String symbol, String price, String timestamp) {
+    record Price(String symbol, String timestamp, String lastPrice, String currency) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -81,6 +86,30 @@ final class TossApiDtos {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record Money(String currency, String amount) {
+    record PriceAmount(String krw, String usd) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingsMarketValue(PriceAmount amount, PriceAmount amountAfterCost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingsProfitLoss(PriceAmount amount, PriceAmount amountAfterCost, String rate, String rateAfterCost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingsDailyProfitLoss(PriceAmount amount, String rate) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingMarketValue(String purchaseAmount, String amount, String amountAfterCost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingProfitLoss(String amount, String amountAfterCost, String rate, String rateAfterCost) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record HoldingDailyProfitLoss(String amount, String rate) {
     }
 }
