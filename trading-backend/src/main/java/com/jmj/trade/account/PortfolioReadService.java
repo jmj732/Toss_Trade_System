@@ -2,6 +2,7 @@ package com.jmj.trade.account;
 
 import com.jmj.trade.broker.connection.BrokerConnectionException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
@@ -16,6 +17,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
+@Service
 public final class PortfolioReadService {
 
     private final JdbcTemplate jdbc;

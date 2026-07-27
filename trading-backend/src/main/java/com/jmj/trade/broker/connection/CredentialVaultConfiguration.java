@@ -18,7 +18,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import tools.jackson.databind.ObjectMapper;
 
 import java.security.SecureRandom;
 import java.time.Duration;
@@ -88,11 +87,6 @@ public class CredentialVaultConfiguration {
             BrokerAdapter brokerAdapter
     ) {
         return new AccountSyncService(transactions, brokerAdapter);
-    }
-
-    @Bean
-    PortfolioReadService portfolioReadService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
-        return new PortfolioReadService(jdbcTemplate, objectMapper);
     }
 
     @Bean
