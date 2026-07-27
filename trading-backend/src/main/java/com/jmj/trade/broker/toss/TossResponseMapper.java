@@ -47,6 +47,7 @@ final class TossResponseMapper {
                 || holdings.profitLoss() == null || holdings.dailyProfitLoss() == null) {
             throw contract();
         }
+        validateItems(account, holdings, metadata);
         return new AccountSnapshot(
                 account,
                 money(holdings.totalPurchaseAmount()),
@@ -68,8 +69,7 @@ final class TossResponseMapper {
         if (holdings == null || holdings.items() == null) {
             throw contract();
         }
-        return List.copyOf(holdings.items().stream()
-                .map(item -> position(account, item, metadata.observedAt()))
+        return List.copyOf(validateItems(account, holdings, metadata).stream()
                 .filter(position -> "US".equals(position.marketCountry()))
                 .toList());
     }
@@ -126,6 +126,13 @@ final class TossResponseMapper {
 
     BrokerAccountRef requireToss(BrokerAccountRef account) {
         Objects.requireNonNull(account, "account");
+        try {
+            if (Long.parseLong(account.brokerAccountId()) < 0) {
+                throw invalidRequest("Toss accountSeq is invalid");
+            }
+        } catch (NumberFormatException exception) {
+            throw invalidRequest("Toss accountSeq is invalid");
+        }
         return account;
     }
 
@@ -166,6 +173,12 @@ final class TossResponseMapper {
                 nonNegativeDecimal(item.cost().commission()),
                 item.cost().tax() == null ? null : nonNegativeDecimal(item.cost().tax()),
                 observedAt);
+    }
+
+    private List<Position> validateItems(BrokerAccountRef account, TossApiDtos.Holdings holdings, BrokerCallMetadata metadata) {
+        return holdings.items().stream()
+                .map(item -> position(account, item, metadata.observedAt()))
+                .toList();
     }
 
     private MoneyByCurrency money(TossApiDtos.PriceAmount source) {

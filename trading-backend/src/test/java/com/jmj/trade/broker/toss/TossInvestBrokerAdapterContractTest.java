@@ -181,6 +181,16 @@ class TossInvestBrokerAdapterContractTest {
     }
 
     @Test
+    void accountSnapshotRejectsMalformedItemsEvenThoughItDoesNotMapThem() {
+        assertInvalidAccountItem("""
+                {"result":{"totalPurchaseAmount":{"krw":"1"},"marketValue":{"amount":{"krw":"1"},"amountAfterCost":{"krw":"1"}},"profitLoss":{"amount":{"krw":"0"},"amountAfterCost":{"krw":"0"},"rate":"0","rateAfterCost":"0"},"dailyProfitLoss":{"amount":{"krw":"0"},"rate":"0"},"items":[null]}}
+                """);
+        assertInvalidAccountItem("""
+                {"result":{"totalPurchaseAmount":{"krw":"1"},"marketValue":{"amount":{"krw":"1"},"amountAfterCost":{"krw":"1"}},"profitLoss":{"amount":{"krw":"0"},"amountAfterCost":{"krw":"0"},"rate":"0","rateAfterCost":"0"},"dailyProfitLoss":{"amount":{"krw":"0"},"rate":"0"},"items":[{"symbol":"005930","name":"Samsung Electronics","marketCountry":"KR","currency":"KRW","quantity":"1","lastPrice":"80000","averagePurchasePrice":"70000","marketValue":{"purchaseAmount":"70000","amount":"80000","amountAfterCost":"79900"},"profitLoss":{"amount":"10000","amountAfterCost":"9900","rate":"bad","rateAfterCost":"0.1414"},"dailyProfitLoss":{"amount":"500","rate":"0.006"},"cost":{"commission":"100","tax":"0"}}]}}
+                """);
+    }
+
+    @Test
     void positionsRejectMalformedItemsBeforeFilteringByCountry() {
         assertInvalidPositionsItem("""
                 {"result":{"totalPurchaseAmount":{"krw":"1"},"marketValue":{"amount":{"krw":"1"},"amountAfterCost":{"krw":"1"}},"profitLoss":{"amount":{"krw":"0"},"amountAfterCost":{"krw":"0"},"rate":"0","rateAfterCost":"0"},"dailyProfitLoss":{"amount":{"krw":"0"},"rate":"0"},"items":[null]}}
@@ -209,6 +219,14 @@ class TossInvestBrokerAdapterContractTest {
                 .isInstanceOfSatisfying(BrokerException.class, exception ->
                         assertThat(exception.category()).isEqualTo(BrokerErrorCategory.INVALID_REQUEST));
         server.verify(0, anyRequestedFor(urlMatching(".*/orders.*")));
+    }
+
+    @Test
+    void rejectsInvalidTossAccountSeqBeforeHttpCall() {
+        assertInvalidAccountSeq("abc");
+        assertInvalidAccountSeq("-1");
+        assertInvalidAccountSeq("9223372036854775808");
+        server.verify(0, anyRequestedFor(urlMatching(".*")));
     }
 
     private TossInvestBrokerAdapter adapter() {
@@ -259,6 +277,31 @@ class TossInvestBrokerAdapterContractTest {
                     assertThat(exception.isRetriable()).isFalse();
                 });
         server.resetRequests();
+    }
+
+    private void assertInvalidAccountItem(String body) {
+        server.stubFor(get("/api/v1/holdings").willReturn(json(body)));
+
+        assertThatThrownBy(() -> adapter().getAccount(ACCOUNT))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT);
+                    assertThat(exception.isRetriable()).isFalse();
+                });
+        server.resetRequests();
+    }
+
+    private void assertInvalidAccountSeq(String brokerAccountId) {
+        var account = new BrokerAccountRef(CONNECTION_ID, brokerAccountId, "GENERAL", "******3210");
+
+        assertThatThrownBy(() -> adapter().getAccount(account))
+                .isInstanceOfSatisfying(BrokerException.class, exception ->
+                        assertThat(exception.category()).isEqualTo(BrokerErrorCategory.INVALID_REQUEST));
+        assertThatThrownBy(() -> adapter().getPositions(account))
+                .isInstanceOfSatisfying(BrokerException.class, exception ->
+                        assertThat(exception.category()).isEqualTo(BrokerErrorCategory.INVALID_REQUEST));
+        assertThatThrownBy(() -> adapter().getAccountCapacity(account, Currency.USD))
+                .isInstanceOfSatisfying(BrokerException.class, exception ->
+                        assertThat(exception.category()).isEqualTo(BrokerErrorCategory.INVALID_REQUEST));
     }
 
     private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder json(String body) {
