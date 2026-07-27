@@ -66,18 +66,25 @@ final class TossOAuthClient {
     }
 
     private TossApiDtos.OAuthToken decodeSuccess(String body) {
+        if (body == null || body.isBlank()) {
+            throw invalidSuccessResponse();
+        }
         try {
             return validate(objectMapper.readValue(body, TossApiDtos.OAuthTokenResponse.class));
         } catch (JacksonException exception) {
-            throw new BrokerException(
-                    BrokerErrorCategory.CONTRACT,
-                    200,
-                    null,
-                    null,
-                    null,
-                    false,
-                    "Toss OAuth token response was invalid");
+            throw invalidSuccessResponse();
         }
+    }
+
+    private BrokerException invalidSuccessResponse() {
+        return new BrokerException(
+                BrokerErrorCategory.CONTRACT,
+                200,
+                null,
+                null,
+                null,
+                false,
+                "Toss OAuth token response was invalid");
     }
 
     private TossApiDtos.OAuthToken validate(TossApiDtos.OAuthTokenResponse response) {

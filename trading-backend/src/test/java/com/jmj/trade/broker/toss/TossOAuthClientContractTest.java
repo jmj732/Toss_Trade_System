@@ -96,6 +96,12 @@ class TossOAuthClientContractTest {
     }
 
     @Test
+    void missingOrBlankSuccessBodyIsContractErrorWithoutRawBodyOrSecrets() {
+        assertInvalidSuccessBody(null);
+        assertInvalidSuccessBody("   ");
+    }
+
+    @Test
     void wrongTypeExpiresInSuccessIsContractErrorWithoutRawBodyOrSecrets() {
         startServer();
         server.stubFor(post("/oauth2/token")
@@ -214,6 +220,25 @@ class TossOAuthClientContractTest {
                     assertThat(exception.httpStatus()).contains(status);
                     assertThat(exception.brokerErrorCode()).contains(code);
                     assertThat(exception.isRetriable()).isEqualTo(retriable);
+                    assertNoSensitiveData(exception);
+                });
+        stopServer();
+    }
+
+    private void assertInvalidSuccessBody(String body) {
+        startServer();
+        var response = aResponse()
+                .withHeader("Content-Type", "application/json");
+        if (body != null) {
+            response.withBody(body);
+        }
+        server.stubFor(post("/oauth2/token").willReturn(response));
+
+        assertThatThrownBy(() -> client().issueToken(CONNECTION_ID, new TossCredentials(CLIENT_ID, CLIENT_SECRET)))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT);
+                    assertThat(exception.httpStatus()).contains(200);
+                    assertThat(exception.isRetriable()).isFalse();
                     assertNoSensitiveData(exception);
                 });
         stopServer();
