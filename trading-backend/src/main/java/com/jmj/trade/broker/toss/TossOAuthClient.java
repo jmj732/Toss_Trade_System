@@ -14,14 +14,16 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 final class TossOAuthClient {
 
     private final RestClient restClient;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    TossOAuthClient(TossApiProperties properties, TossSensitiveDataMasker masker) {
+    TossOAuthClient(TossApiProperties properties) {
         Objects.requireNonNull(properties, "properties");
-        Objects.requireNonNull(masker, "masker");
         var httpClient = HttpClient.newBuilder()
                 .connectTimeout(properties.connectTimeout())
                 .build();
@@ -47,8 +49,8 @@ final class TossOAuthClient {
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .body(form)
                     .retrieve()
-                    .body(TossApiDtos.OAuthTokenResponse.class);
-            return validate(response);
+                    .toEntity(String.class);
+            return decodeSuccess(response.getBody());
         } catch (RestClientResponseException exception) {
             throw mapHttpError(exception);
         } catch (RestClientException exception) {
@@ -60,6 +62,21 @@ final class TossOAuthClient {
                     null,
                     true,
                     "Toss OAuth request failed due to network error");
+        }
+    }
+
+    private TossApiDtos.OAuthToken decodeSuccess(String body) {
+        try {
+            return validate(objectMapper.readValue(body, TossApiDtos.OAuthTokenResponse.class));
+        } catch (JacksonException exception) {
+            throw new BrokerException(
+                    BrokerErrorCategory.CONTRACT,
+                    200,
+                    null,
+                    null,
+                    null,
+                    false,
+                    "Toss OAuth token response was invalid");
         }
     }
 

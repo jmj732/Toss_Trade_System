@@ -77,6 +77,44 @@ class TossOAuthClientContractTest {
     }
 
     @Test
+    void malformedJsonSuccessIsContractErrorWithoutRawBodyOrSecrets() {
+        startServer();
+        server.stubFor(post("/oauth2/token")
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"access_token":"test-access-token","expires_in":
+                                """)));
+
+        assertThatThrownBy(() -> client().issueToken(CONNECTION_ID, new TossCredentials(CLIENT_ID, CLIENT_SECRET)))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT);
+                    assertThat(exception.httpStatus()).contains(200);
+                    assertThat(exception.isRetriable()).isFalse();
+                    assertNoSensitiveData(exception);
+                });
+    }
+
+    @Test
+    void wrongTypeExpiresInSuccessIsContractErrorWithoutRawBodyOrSecrets() {
+        startServer();
+        server.stubFor(post("/oauth2/token")
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"access_token":"test-access-token","expires_in":"not-a-number","raw":"body"}
+                                """)));
+
+        assertThatThrownBy(() -> client().issueToken(CONNECTION_ID, new TossCredentials(CLIENT_ID, CLIENT_SECRET)))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT);
+                    assertThat(exception.httpStatus()).contains(200);
+                    assertThat(exception.isRetriable()).isFalse();
+                    assertNoSensitiveData(exception);
+                });
+    }
+
+    @Test
     void mapsOAuthErrorsToSafeBrokerExceptions() {
         assertOAuthError(400, "invalid_request", BrokerErrorCategory.INVALID_REQUEST, false);
         assertOAuthError(400, "unsupported_grant_type", BrokerErrorCategory.INVALID_REQUEST, false);
@@ -118,7 +156,35 @@ class TossOAuthClientContractTest {
                 Duration.ofMillis(200),
                 Duration.ofMillis(300),
                 Duration.ZERO);
-        var client = new TossOAuthClient(properties, new TossSensitiveDataMasker());
+        var client = new TossOAuthClient(properties);
+
+        assertThatThrownBy(() -> client.issueToken(CONNECTION_ID, new TossCredentials(CLIENT_ID, CLIENT_SECRET)))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.NETWORK);
+                    assertThat(exception.isRetriable()).isTrue();
+                    assertNoSensitiveData(exception);
+                });
+    }
+
+    @Test
+    void delayedSuccessBeyondTokenRequestTimeoutIsNetworkError() {
+        startServer();
+        server.stubFor(post("/oauth2/token")
+                .willReturn(aResponse()
+                        .withFixedDelay(500)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"access_token":"%s","token_type":"Bearer","expires_in":600}
+                                """.formatted(ACCESS_TOKEN))));
+        var properties = new TossApiProperties(
+                java.net.URI.create(server.baseUrl()),
+                Duration.ofMillis(100),
+                Duration.ofMillis(100),
+                Duration.ofMillis(100),
+                Duration.ofMillis(200),
+                Duration.ofMillis(300),
+                Duration.ZERO);
+        var client = new TossOAuthClient(properties);
 
         assertThatThrownBy(() -> client.issueToken(CONNECTION_ID, new TossCredentials(CLIENT_ID, CLIENT_SECRET)))
                 .isInstanceOfSatisfying(BrokerException.class, exception -> {
@@ -154,7 +220,7 @@ class TossOAuthClientContractTest {
     }
 
     private TossOAuthClient client() {
-        return new TossOAuthClient(properties(), new TossSensitiveDataMasker());
+        return new TossOAuthClient(properties());
     }
 
     private TossApiProperties properties() {
