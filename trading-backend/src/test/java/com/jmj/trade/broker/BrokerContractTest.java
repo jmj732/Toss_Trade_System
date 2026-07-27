@@ -60,6 +60,8 @@ class BrokerContractTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new BrokerAccountRef(CONNECTION_ID, "account-seq-1", "US_STOCK", "1234567890"))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new BrokerAccountRef(CONNECTION_ID, "account-seq-1", "US_STOCK", "12****34"))
+                .isInstanceOf(IllegalArgumentException.class);
 
         assertThat(ACCOUNT.displayAccountNumber()).isEqualTo("****1234");
     }
