@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -21,9 +22,14 @@ import java.util.UUID;
 public class EventIntelligenceController {
 
     private final EventIntelligenceService service;
+    private final EventReviewWorkflowService reviews;
 
-    EventIntelligenceController(EventIntelligenceService service) {
+    EventIntelligenceController(
+            EventIntelligenceService service,
+            EventReviewWorkflowService reviews
+    ) {
         this.service = service;
+        this.reviews = reviews;
     }
 
     @PostMapping
@@ -36,21 +42,21 @@ public class EventIntelligenceController {
     }
 
     @GetMapping
-    List<EventIntelligenceService.EventView> list(
+    List<EventReviewWorkflowService.ReviewSummary> list(
             Principal principal,
             @PathVariable UUID connectionId,
             @RequestParam(defaultValue = "50") int limit
     ) {
-        return service.list(userId(principal), connectionId, limit);
+        return reviews.list(userId(principal), connectionId, limit);
     }
 
     @GetMapping("/{eventId}")
-    EventIntelligenceService.EventView get(
+    EventReviewWorkflowService.ReviewDetail get(
             Principal principal,
             @PathVariable UUID connectionId,
             @PathVariable UUID eventId
     ) {
-        return service.get(userId(principal), connectionId, eventId);
+        return reviews.get(userId(principal), connectionId, eventId);
     }
 
     @PostMapping("/{eventId}/reanalyze")
@@ -71,6 +77,17 @@ public class EventIntelligenceController {
         return service.getComparison(userId(principal), connectionId, eventId);
     }
 
+    @PostMapping("/{eventId}/review")
+    EventReviewWorkflowService.ReviewDetail review(
+            Principal principal,
+            @PathVariable UUID connectionId,
+            @PathVariable UUID eventId,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody EventReviewWorkflowService.ReviewCommand command
+    ) {
+        return reviews.review(userId(principal), connectionId, eventId, idempotencyKey, command);
+    }
+
     @ExceptionHandler(EventIntelligenceException.class)
     ResponseEntity<PublicError> event(EventIntelligenceException exception) {
         return switch (exception.code()) {
@@ -84,6 +101,7 @@ public class EventIntelligenceController {
                     error(HttpStatus.CONFLICT, "EVENT_ALREADY_ANALYZED");
             case COMPARISON_NOT_FOUND ->
                     error(HttpStatus.NOT_FOUND, "EVENT_COMPARISON_NOT_FOUND");
+            case REVIEW_CONFLICT -> error(HttpStatus.CONFLICT, "EVENT_REVIEW_CONFLICT");
         };
     }
 

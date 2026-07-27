@@ -20,6 +20,7 @@ final class EventIntelligenceException extends RuntimeException {
         EVENT_NOT_FOUND,
         EVENT_ALREADY_EXISTS,
         EVENT_ALREADY_ANALYZED,
-        COMPARISON_NOT_FOUND
+        COMPARISON_NOT_FOUND,
+        REVIEW_CONFLICT
     }
 }

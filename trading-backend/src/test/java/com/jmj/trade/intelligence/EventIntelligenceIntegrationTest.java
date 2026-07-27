@@ -19,7 +19,10 @@ import org.springframework.web.context.WebApplicationContext;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
@@ -95,12 +98,16 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.sourceEventId").value("wire-42"))
                 .andExpect(jsonPath("$.affectedSymbols[0]").value("NVDA"))
                 .andExpect(jsonPath("$.occurredAt").value("2026-07-28T00:00:00Z"))
-                .andExpect(jsonPath("$.collectedAt").exists());
+                .andExpect(jsonPath("$.collectedAt").exists())
+                .andExpect(jsonPath("$.reviewStatus").value("PENDING"))
+                .andExpect(jsonPath("$.reviewVersion").value(0))
+                .andExpect(jsonPath("$.analysisComparison").doesNotExist());
 
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/events", connectionId)
                         .with(user(USER_ID.toString())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value(eventId.toString()));
+                .andExpect(jsonPath("$[0].id").value(eventId.toString()))
+                .andExpect(jsonPath("$[0].comparisonAvailable").value(false));
 
         mockMvc.perform(post("/api/v1/broker-connections/{connectionId}/events", connectionId)
                         .with(user(USER_ID.toString()))
@@ -150,6 +157,18 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.newAnalysisRunId").value(newRunId));
 
+        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/events/{eventId}",
+                        connectionId, eventId).with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.reviewStatus").value("PENDING"))
+                .andExpect(jsonPath("$.analysisComparison.newAnalysisRunId").value(newRunId))
+                .andExpect(jsonPath("$.analysisComparison.comparison.positions[0].symbol")
+                        .value("NVDA"));
+        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/events", connectionId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].comparisonAvailable").value(true));
+
         ANALYSIS.verify(2, postRequestedFor(urlEqualTo("/internal/v1/portfolio-analyses")));
         jdbc.execute("ALTER TABLE event_analysis_comparisons DISABLE TRIGGER "
                 + "trg_event_comparisons_append_only");
@@ -184,6 +203,75 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
                 eventId)).hasMessageContaining("append-only");
     }
 
+    @Test
+    void reviewCommandsAreOwnedIdempotentAndOptimisticallyConcurrent() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var eventId = postEvent(connectionId, "review-1");
+
+        var first = CompletableFuture.supplyAsync(() ->
+                postReview(connectionId, eventId, "review-a", "CONFIRMED", 0));
+        var second = CompletableFuture.supplyAsync(() ->
+                postReview(connectionId, eventId, "review-b", "HELD", 0));
+        var attempts = List.of(
+                first.get(2, TimeUnit.SECONDS),
+                second.get(2, TimeUnit.SECONDS));
+
+        assertThat(attempts).extracting(ReviewAttempt::status)
+                .containsExactlyInAnyOrder(200, 409);
+        var accepted = attempts.stream().filter(attempt -> attempt.status() == 200)
+                .findFirst().orElseThrow();
+
+        mockMvc.perform(post(
+                                "/api/v1/broker-connections/{connectionId}/events/{eventId}/review",
+                                connectionId, eventId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .header("Idempotency-Key", accepted.key())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewJson(accepted.reviewStatus(), 0)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.reviewVersion").value(1))
+                .andExpect(jsonPath("$.reviewStatus").value(accepted.reviewStatus()));
+
+        mockMvc.perform(post(
+                                "/api/v1/broker-connections/{connectionId}/events/{eventId}/review",
+                                connectionId, eventId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .header("Idempotency-Key", accepted.key())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewJson("IGNORED", 1)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("EVENT_REVIEW_CONFLICT"));
+
+        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/events/{eventId}",
+                        connectionId, eventId).with(user(OTHER_USER_ID.toString())))
+                .andExpect(status().isNotFound());
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM event_review_commands", Integer.class))
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM order_intents", Integer.class))
+                .isZero();
+    }
+
+    @Test
+    void sameIdempotencyKeyCannotRaceAcrossEvents() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var firstEvent = postEvent(connectionId, "review-race-1");
+        var secondEvent = postEvent(connectionId, "review-race-2");
+
+        var first = CompletableFuture.supplyAsync(() ->
+                postReview(connectionId, firstEvent, "shared-review", "CONFIRMED", 0));
+        var second = CompletableFuture.supplyAsync(() ->
+                postReview(connectionId, secondEvent, "shared-review", "IGNORED", 0));
+
+        assertThat(List.of(first.get(2, TimeUnit.SECONDS), second.get(2, TimeUnit.SECONDS)))
+                .extracting(ReviewAttempt::status)
+                .containsExactlyInAnyOrder(200, 409);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM event_review_commands", Integer.class))
+                .isEqualTo(1);
+    }
+
     private UUID postEvent(UUID connectionId, String sourceEventId) throws Exception {
         var body = mockMvc.perform(post("/api/v1/broker-connections/{connectionId}/events", connectionId)
                         .with(user(USER_ID.toString()))
@@ -202,6 +290,29 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         return jsonString(body, "runId");
+    }
+
+    private ReviewAttempt postReview(
+            UUID connectionId,
+            UUID eventId,
+            String key,
+            String reviewStatus,
+            int expectedVersion
+    ) {
+        try {
+            var status = mockMvc.perform(post(
+                                    "/api/v1/broker-connections/{connectionId}/events/{eventId}/review",
+                                    connectionId, eventId)
+                            .with(user(USER_ID.toString()))
+                            .with(csrf())
+                            .header("Idempotency-Key", key)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(reviewJson(reviewStatus, expectedVersion)))
+                    .andReturn().getResponse().getStatus();
+            return new ReviewAttempt(key, reviewStatus, status);
+        } catch (Exception exception) {
+            throw new AssertionError(exception);
+        }
     }
 
     private void stubAnalysis() {
@@ -318,6 +429,12 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
                 """.formatted(sourceEventId);
     }
 
+    private static String reviewJson(String status, int expectedVersion) {
+        return """
+                {"status":"%s","expectedVersion":%d}
+                """.formatted(status, expectedVersion);
+    }
+
     private static String jsonString(String json, String field) {
         var marker = "\"" + field + "\":\"";
         var start = json.indexOf(marker);
@@ -326,5 +443,8 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
         }
         start += marker.length();
         return json.substring(start, json.indexOf('"', start));
+    }
+
+    private record ReviewAttempt(String key, String reviewStatus, int status) {
     }
 }

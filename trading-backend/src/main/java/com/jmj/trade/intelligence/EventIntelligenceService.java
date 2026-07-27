@@ -130,7 +130,7 @@ public final class EventIntelligenceService {
 
     ComparisonView reanalyze(UUID userId, UUID connectionId, UUID eventId) {
         var event = get(userId, connectionId, eventId);
-        if (comparison(userId, connectionId, eventId).isPresent()) {
+        if (findComparison(userId, connectionId, eventId).isPresent()) {
             throw new EventIntelligenceException(
                     EventIntelligenceException.Code.EVENT_ALREADY_ANALYZED);
         }
@@ -160,12 +160,12 @@ public final class EventIntelligenceService {
 
     ComparisonView getComparison(UUID userId, UUID connectionId, UUID eventId) {
         get(userId, connectionId, eventId);
-        return comparison(userId, connectionId, eventId).orElseThrow(() ->
+        return findComparison(userId, connectionId, eventId).orElseThrow(() ->
                 new EventIntelligenceException(
                         EventIntelligenceException.Code.COMPARISON_NOT_FOUND));
     }
 
-    private java.util.Optional<ComparisonView> comparison(
+    java.util.Optional<ComparisonView> findComparison(
             UUID userId,
             UUID connectionId,
             UUID eventId
