@@ -121,6 +121,19 @@ class TossOAuthClientContractTest {
     }
 
     @Test
+    void missingOrNonBearerTokenTypeIsContractErrorWithoutRawBodyOrSecrets() {
+        assertInvalidTokenType("""
+                {"access_token":"test-access-token","expires_in":600}
+                """);
+        assertInvalidTokenType("""
+                {"access_token":"test-access-token","token_type":"bearer","expires_in":600}
+                """);
+        assertInvalidTokenType("""
+                {"access_token":"test-access-token","token_type":"MAC","expires_in":600}
+                """);
+    }
+
+    @Test
     void mapsOAuthErrorsToSafeBrokerExceptions() {
         assertOAuthError(400, "invalid_request", BrokerErrorCategory.INVALID_REQUEST, false);
         assertOAuthError(400, "unsupported_grant_type", BrokerErrorCategory.INVALID_REQUEST, false);
@@ -233,6 +246,23 @@ class TossOAuthClientContractTest {
             response.withBody(body);
         }
         server.stubFor(post("/oauth2/token").willReturn(response));
+
+        assertThatThrownBy(() -> client().issueToken(CONNECTION_ID, new TossCredentials(CLIENT_ID, CLIENT_SECRET)))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT);
+                    assertThat(exception.httpStatus()).contains(200);
+                    assertThat(exception.isRetriable()).isFalse();
+                    assertNoSensitiveData(exception);
+                });
+        stopServer();
+    }
+
+    private void assertInvalidTokenType(String body) {
+        startServer();
+        server.stubFor(post("/oauth2/token")
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", "application/json")
+                        .withBody(body)));
 
         assertThatThrownBy(() -> client().issueToken(CONNECTION_ID, new TossCredentials(CLIENT_ID, CLIENT_SECRET)))
                 .isInstanceOfSatisfying(BrokerException.class, exception -> {

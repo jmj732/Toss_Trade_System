@@ -69,8 +69,8 @@ final class TossResponseMapper {
             throw contract();
         }
         return List.copyOf(holdings.items().stream()
-                .filter(item -> "US".equals(item.marketCountry()))
                 .map(item -> position(account, item, metadata.observedAt()))
+                .filter(position -> "US".equals(position.marketCountry()))
                 .toList());
     }
 

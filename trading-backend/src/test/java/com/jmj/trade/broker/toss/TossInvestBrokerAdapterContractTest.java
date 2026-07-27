@@ -181,6 +181,19 @@ class TossInvestBrokerAdapterContractTest {
     }
 
     @Test
+    void positionsRejectMalformedItemsBeforeFilteringByCountry() {
+        assertInvalidPositionsItem("""
+                {"result":{"totalPurchaseAmount":{"krw":"1"},"marketValue":{"amount":{"krw":"1"},"amountAfterCost":{"krw":"1"}},"profitLoss":{"amount":{"krw":"0"},"amountAfterCost":{"krw":"0"},"rate":"0","rateAfterCost":"0"},"dailyProfitLoss":{"amount":{"krw":"0"},"rate":"0"},"items":[null]}}
+                """);
+        assertInvalidPositionsItem("""
+                {"result":{"totalPurchaseAmount":{"krw":"1"},"marketValue":{"amount":{"krw":"1"},"amountAfterCost":{"krw":"1"}},"profitLoss":{"amount":{"krw":"0"},"amountAfterCost":{"krw":"0"},"rate":"0","rateAfterCost":"0"},"dailyProfitLoss":{"amount":{"krw":"0"},"rate":"0"},"items":[{"symbol":"005930","name":"Samsung Electronics","currency":"KRW","quantity":"1","lastPrice":"80000","averagePurchasePrice":"70000","marketValue":{"purchaseAmount":"70000","amount":"80000","amountAfterCost":"79900"},"profitLoss":{"amount":"10000","amountAfterCost":"9900","rate":"0.1428","rateAfterCost":"0.1414"},"dailyProfitLoss":{"amount":"500","rate":"0.006"},"cost":{"commission":"100","tax":"0"}}]}}
+                """);
+        assertInvalidPositionsItem("""
+                {"result":{"totalPurchaseAmount":{"krw":"1"},"marketValue":{"amount":{"krw":"1"},"amountAfterCost":{"krw":"1"}},"profitLoss":{"amount":{"krw":"0"},"amountAfterCost":{"krw":"0"},"rate":"0","rateAfterCost":"0"},"dailyProfitLoss":{"amount":{"krw":"0"},"rate":"0"},"items":[{"symbol":"005930","name":"Samsung Electronics","marketCountry":"KR","currency":"KRW","quantity":"1","lastPrice":"80000","averagePurchasePrice":"70000","marketValue":{"purchaseAmount":"70000","amount":"80000","amountAfterCost":"79900"},"profitLoss":{"amount":"10000","amountAfterCost":"9900","rate":"bad","rateAfterCost":"0.1414"},"dailyProfitLoss":{"amount":"500","rate":"0.006"},"cost":{"commission":"100","tax":"0"}}]}}
+                """);
+    }
+
+    @Test
     void rejectsUnsafeAccountNumberAndNonTossBrokerWithoutOrderCalls() {
         server.stubFor(get("/api/v1/accounts").willReturn(json("""
                 {"result":[{"accountNo":"123","accountSeq":1,"accountType":"GENERAL"}]}
@@ -235,6 +248,17 @@ class TossInvestBrokerAdapterContractTest {
                     {"symbol":"005930","name":"Samsung Electronics","marketCountry":"KR","currency":"KRW","quantity":"1","lastPrice":"80000","averagePurchasePrice":"70000","marketValue":{"purchaseAmount":"70000","amount":"80000","amountAfterCost":"79900"},"profitLoss":{"amount":"10000","amountAfterCost":"9900","rate":"0.1428","rateAfterCost":"0.1414"},"dailyProfitLoss":{"amount":"500","rate":"0.006"},"cost":{"commission":"100","tax":"0"}}
                   ]}}
                 """)));
+    }
+
+    private void assertInvalidPositionsItem(String body) {
+        server.stubFor(get("/api/v1/holdings").willReturn(json(body)));
+
+        assertThatThrownBy(() -> adapter().getPositions(ACCOUNT))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT);
+                    assertThat(exception.isRetriable()).isFalse();
+                });
+        server.resetRequests();
     }
 
     private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder json(String body) {

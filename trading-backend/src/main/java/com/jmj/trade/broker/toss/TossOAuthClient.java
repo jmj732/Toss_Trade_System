@@ -89,6 +89,7 @@ final class TossOAuthClient {
 
     private TossApiDtos.OAuthToken validate(TossApiDtos.OAuthTokenResponse response) {
         if (response == null || response.access_token() == null || response.access_token().isBlank()
+                || !"Bearer".equals(response.token_type())
                 || response.expires_in() == null || response.expires_in() <= 0) {
             throw new BrokerException(
                     BrokerErrorCategory.CONTRACT,
