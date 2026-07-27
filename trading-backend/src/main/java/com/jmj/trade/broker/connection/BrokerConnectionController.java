@@ -1,8 +1,10 @@
 package com.jmj.trade.broker.connection;
 
+import com.jmj.trade.account.PortfolioReadService;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -20,13 +22,16 @@ public class BrokerConnectionController {
 
     private final BrokerConnectionService connectionService;
     private final BrokerConnectionValidationService validationService;
+    private final PortfolioReadService portfolioReadService;
 
     BrokerConnectionController(
             BrokerConnectionService connectionService,
-            BrokerConnectionValidationService validationService
+            BrokerConnectionValidationService validationService,
+            PortfolioReadService portfolioReadService
     ) {
         this.connectionService = connectionService;
         this.validationService = validationService;
+        this.portfolioReadService = portfolioReadService;
     }
 
     @PostMapping("/toss")
@@ -55,6 +60,11 @@ public class BrokerConnectionController {
     @PostMapping("/{id}/verify")
     BrokerConnectionResponse verify(Principal principal, @PathVariable UUID id) {
         return BrokerConnectionResponse.from(validationService.validateToss(userId(principal), id));
+    }
+
+    @GetMapping("/{id}/portfolio")
+    PortfolioReadService.PortfolioView portfolio(Principal principal, @PathVariable UUID id) {
+        return portfolioReadService.read(userId(principal), id);
     }
 
     @DeleteMapping("/{id}")

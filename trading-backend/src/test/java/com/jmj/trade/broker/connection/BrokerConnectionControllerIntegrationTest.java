@@ -31,6 +31,8 @@ import org.springframework.web.context.WebApplicationContext;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -61,6 +63,8 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     private static final String OTHER_USER_ID = "22222222-2222-2222-2222-222222222222";
     private static final String CANARY_ID = "controller-canary-client-id";
     private static final String CANARY_SECRET = "controller-canary-client-secret";
+    private static final OffsetDateTime SNAPSHOT_TIME =
+            OffsetDateTime.of(2026, 7, 28, 0, 0, 0, 0, ZoneOffset.UTC);
 
     private MockMvc mockMvc;
 
@@ -280,6 +284,83 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         assertThat(exceptionHandlerTypes()).doesNotContain(IllegalStateException.class);
     }
 
+    @Test
+    void readsLatestSuccessfulPortfolioWithSeparatedBuyingPowerAndExplicitUnknowns() throws Exception {
+        var connectionId = insertActiveConnection(UUID.fromString(USER_ID));
+        var runId = insertSuccessfulPortfolio(connectionId, UUID.fromString(USER_ID), true);
+
+        mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", connectionId)
+                        .with(user(USER_ID)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.syncRunId").value(runId.toString()))
+                .andExpect(jsonPath("$.stale").value(false))
+                .andExpect(jsonPath("$.staleReason").doesNotExist())
+                .andExpect(jsonPath("$.partial").value(false))
+                .andExpect(jsonPath("$.missingSections").isEmpty())
+                .andExpect(jsonPath("$.account.displayAccountNumber").value("****5678"))
+                .andExpect(jsonPath("$.account.cashBalanceStatus").value("UNKNOWN"))
+                .andExpect(jsonPath("$.positions[0].symbol").value("NVDA"))
+                .andExpect(jsonPath("$.buyingPower.KRW.cashBuyingPower").value(1000000))
+                .andExpect(jsonPath("$.buyingPower.USD.cashBuyingPower").value(1000))
+                .andExpect(jsonPath("$.unknownFields[0]").value("account.cashBalance"));
+    }
+
+    @Test
+    void fallsBackToPreviousSuccessWhenLatestRunFailed() throws Exception {
+        var userId = UUID.fromString(USER_ID);
+        var connectionId = insertActiveConnection(userId);
+        var successfulRunId = insertSuccessfulPortfolio(connectionId, userId, true);
+        insertRun(
+                connectionId,
+                userId,
+                UUID.randomUUID(),
+                "FAILED",
+                "BROKER_TEMPORARY",
+                SNAPSHOT_TIME.plusMinutes(1),
+                SNAPSHOT_TIME.plusMinutes(2));
+
+        mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", connectionId)
+                        .with(user(USER_ID)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.syncRunId").value(successfulRunId.toString()))
+                .andExpect(jsonPath("$.stale").value(true))
+                .andExpect(jsonPath("$.staleReason").value("LATEST_SYNC_FAILED"))
+                .andExpect(jsonPath("$.partial").value(false));
+    }
+
+    @Test
+    void marksMissingUsdBuyingPowerAsPartialWithoutInventingAValue() throws Exception {
+        var userId = UUID.fromString(USER_ID);
+        var connectionId = insertActiveConnection(userId);
+        insertSuccessfulPortfolio(connectionId, userId, false);
+
+        mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", connectionId)
+                        .with(user(USER_ID)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.partial").value(true))
+                .andExpect(jsonPath("$.missingSections[0]").value("BUYING_POWER_USD"))
+                .andExpect(jsonPath("$.buyingPower.KRW").exists())
+                .andExpect(jsonPath("$.buyingPower.USD").doesNotExist());
+    }
+
+    @Test
+    void crossOwnerAndMissingSnapshotReturnIndistinguishableOwnershipSafeErrors() throws Exception {
+        var userId = UUID.fromString(USER_ID);
+        var connectionId = insertActiveConnection(userId);
+        insertSuccessfulPortfolio(connectionId, userId, true);
+
+        mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", connectionId)
+                        .with(user(OTHER_USER_ID)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
+
+        var emptyConnectionId = insertActiveConnection(UUID.fromString(OTHER_USER_ID));
+        mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", emptyConnectionId)
+                        .with(user(OTHER_USER_ID)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PORTFOLIO_SNAPSHOT_NOT_FOUND"));
+    }
+
     private void assertSecretFree(String body) {
         assertThat(body).doesNotContain(CANARY_ID, CANARY_SECRET, "broker message");
     }
@@ -292,6 +373,96 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         return jdbcTemplate.queryForObject("SELECT user_id FROM broker_connections WHERE id = ?",
                 UUID.class,
                 UUID.fromString(connectionId));
+    }
+
+    private UUID insertActiveConnection(UUID userId) {
+        var connectionId = UUID.randomUUID();
+        jdbcTemplate.update("INSERT INTO users (id) VALUES (?) ON CONFLICT DO NOTHING", userId);
+        jdbcTemplate.update("""
+                INSERT INTO broker_connections (
+                    id, user_id, broker_type, status, credential_ciphertext, credential_nonce,
+                    credential_key_version, credential_revision, created_at, updated_at, version
+                ) VALUES (?, ?, 'TOSS_INVEST', 'ACTIVE', ?, ?, 1, 1, ?, ?, 0)
+                """, connectionId, userId, new byte[17], new byte[12], SNAPSHOT_TIME, SNAPSHOT_TIME);
+        return connectionId;
+    }
+
+    private UUID insertSuccessfulPortfolio(UUID connectionId, UUID userId, boolean includeUsd) {
+        var runId = UUID.randomUUID();
+        insertRun(
+                connectionId,
+                userId,
+                runId,
+                "SUCCEEDED",
+                null,
+                SNAPSHOT_TIME,
+                SNAPSHOT_TIME.plusSeconds(1));
+        jdbcTemplate.update("""
+                INSERT INTO account_snapshots (
+                    id, sync_run_id, user_id, broker_connection_id, account_type,
+                    display_account_number, total_purchase_amounts, market_value_amounts,
+                    market_value_after_cost_amounts, profit_loss_amounts,
+                    profit_loss_after_cost_amounts, daily_profit_loss_amounts,
+                    profit_loss_rate, profit_loss_rate_after_cost, daily_profit_loss_rate,
+                    cash_balance_status, observed_at, created_at
+                ) VALUES (
+                    ?, ?, ?, ?, 'GENERAL', '****5678',
+                    '{"USD":100}'::jsonb, '{"USD":120}'::jsonb, '{"USD":119}'::jsonb,
+                    '{"USD":20}'::jsonb, '{"USD":19}'::jsonb, '{"USD":1}'::jsonb,
+                    0.20, 0.19, 0.01, 'UNKNOWN', ?, ?
+                )
+                """, UUID.randomUUID(), runId, userId, connectionId, SNAPSHOT_TIME, SNAPSHOT_TIME);
+        jdbcTemplate.update("""
+                INSERT INTO position_snapshots (
+                    id, sync_run_id, user_id, broker_connection_id, symbol, name,
+                    market_country, quantity, currency, average_price, last_price,
+                    purchase_amount, market_value_amount, market_value_after_cost,
+                    profit_loss_amount, profit_loss_after_cost, profit_loss_rate,
+                    profit_loss_rate_after_cost, daily_profit_loss_amount,
+                    daily_profit_loss_rate, commission, tax, observed_at, created_at
+                ) VALUES (
+                    ?, ?, ?, ?, 'NVDA', 'NVIDIA', 'US', 1, 'USD', 100, 120,
+                    100, 120, 119, 20, 19, 0.20, 0.19, 1, 0.01, 1, NULL, ?, ?
+                )
+                """, UUID.randomUUID(), runId, userId, connectionId, SNAPSHOT_TIME, SNAPSHOT_TIME);
+        insertCapacity(runId, userId, connectionId, "KRW", "1000000");
+        if (includeUsd) {
+            insertCapacity(runId, userId, connectionId, "USD", "1000");
+        }
+        return runId;
+    }
+
+    private void insertRun(
+            UUID connectionId,
+            UUID userId,
+            UUID runId,
+            String status,
+            String errorCode,
+            OffsetDateTime startedAt,
+            OffsetDateTime completedAt
+    ) {
+        jdbcTemplate.update("""
+                INSERT INTO account_sync_runs (
+                    id, user_id, broker_connection_id, credential_revision,
+                    status, error_code, started_at, completed_at
+                ) VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+                """, runId, userId, connectionId, status, errorCode, startedAt, completedAt);
+    }
+
+    private void insertCapacity(
+            UUID runId,
+            UUID userId,
+            UUID connectionId,
+            String currency,
+            String amount
+    ) {
+        jdbcTemplate.update("""
+                INSERT INTO account_capacity_snapshots (
+                    id, sync_run_id, user_id, broker_connection_id, currency,
+                    cash_buying_power, observed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, CAST(? AS numeric), ?, ?)
+                """, UUID.randomUUID(), runId, userId, connectionId, currency,
+                amount, SNAPSHOT_TIME, SNAPSHOT_TIME);
     }
 
     private static String credentialsJson(String clientId, String clientSecret) {

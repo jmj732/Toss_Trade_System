@@ -1,5 +1,6 @@
 package com.jmj.trade.broker.connection;
 
+import com.jmj.trade.account.PortfolioReadException;
 import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import org.springframework.http.HttpStatus;
@@ -29,6 +30,11 @@ public class BrokerConnectionErrorHandler {
     @ExceptionHandler(CredentialUnavailableException.class)
     ResponseEntity<PublicError> credentialUnavailable() {
         return error(HttpStatus.SERVICE_UNAVAILABLE, "BROKER_CREDENTIAL_UNAVAILABLE");
+    }
+
+    @ExceptionHandler(PortfolioReadException.class)
+    ResponseEntity<PublicError> portfolioSnapshotNotFound() {
+        return error(HttpStatus.NOT_FOUND, "PORTFOLIO_SNAPSHOT_NOT_FOUND");
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
