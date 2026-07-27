@@ -1,0 +1,38 @@
+{
+  "requestId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "schemaVersion": "1",
+  "asOf": "2026-07-28T06:00:00Z",
+  "quality": {
+    "stale": true,
+    "partial": true,
+    "unknownFields": [
+      "positions[2].profitLoss"
+    ]
+  },
+  "positions": [
+    {
+      "symbol": "AAPL",
+      "currency": "USD",
+      "marketValue": "600",
+      "profitLoss": "60"
+    },
+    {
+      "symbol": "MSFT",
+      "currency": "USD",
+      "marketValue": "400",
+      "profitLoss": "20"
+    },
+    {
+      "symbol": "005930",
+      "currency": "KRW",
+      "marketValue": "700000",
+      "profitLoss": null
+    },
+    {
+      "symbol": "000660",
+      "currency": "KRW",
+      "marketValue": "300000",
+      "profitLoss": "50000"
+    }
+  ]
+}
