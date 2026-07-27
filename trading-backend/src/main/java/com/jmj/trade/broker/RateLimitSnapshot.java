@@ -17,6 +17,8 @@ public record RateLimitSnapshot(
         retryAfter = BrokerPreconditions.optional(retryAfter, "retryAfter");
         limit.ifPresent(value -> requireNonNegative(value, "limit"));
         remaining.ifPresent(value -> requireNonNegative(value, "remaining"));
+        resetAt.ifPresent(value -> BrokerPreconditions.nonNegative(value, "resetAt"));
+        retryAfter.ifPresent(value -> BrokerPreconditions.nonNegative(value, "retryAfter"));
     }
 
     private static void requireNonNegative(int value, String name) {

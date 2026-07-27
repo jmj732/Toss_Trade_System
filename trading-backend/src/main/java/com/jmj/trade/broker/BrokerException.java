@@ -29,7 +29,7 @@ public class BrokerException extends RuntimeException {
         this.httpStatus = httpStatus;
         this.brokerErrorCode = BrokerPreconditions.nullableNonBlank(brokerErrorCode, "brokerErrorCode");
         this.requestId = BrokerPreconditions.nullableNonBlank(requestId, "requestId");
-        this.retryAfter = retryAfter;
+        this.retryAfter = retryAfter == null ? null : BrokerPreconditions.nonNegative(retryAfter, "retryAfter");
         this.retriable = retriable;
     }
 

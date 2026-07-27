@@ -102,8 +102,15 @@ class BrokerContractTest {
     void accountSnapshotKeepsCashUnknownAndCapacitySeparate() {
         var snapshot = new AccountSnapshot(
                 ACCOUNT,
-                new MoneyByCurrency(Map.of(Currency.USD, new BigDecimal("10000"))),
-                new MoneyByCurrency(Map.of(Currency.USD, new BigDecimal("8000"))),
+                money("10000"),
+                money("12000"),
+                money("11990"),
+                money("-2000"),
+                money("-1990"),
+                new BigDecimal("-0.20"),
+                new BigDecimal("-0.199"),
+                money("-150"),
+                new BigDecimal("-0.0125"),
                 CashBalanceStatus.UNKNOWN,
                 OBSERVED_AT);
         var capacity = new AccountCapacitySnapshot(
@@ -113,6 +120,10 @@ class BrokerContractTest {
                 OBSERVED_AT);
 
         assertThat(snapshot.cashBalanceStatus()).isEqualTo(CashBalanceStatus.UNKNOWN);
+        assertThat(snapshot.totalPurchaseAmount().amounts()).containsEntry(Currency.USD, new BigDecimal("10000"));
+        assertThat(snapshot.marketValueAmountAfterCost().amounts()).containsEntry(Currency.USD, new BigDecimal("11990"));
+        assertThat(snapshot.profitLossRateAfterCost()).isEqualByComparingTo("-0.199");
+        assertThat(snapshot.dailyProfitLossRate()).isEqualByComparingTo("-0.0125");
         assertThat(capacity.cashBuyingPower()).isEqualByComparingTo("2500");
         assertThat(Arrays.stream(AccountSnapshot.class.getRecordComponents())
                 .map(component -> component.getName().toLowerCase())
@@ -130,29 +141,69 @@ class BrokerContractTest {
                 ACCOUNT,
                 "NVDA",
                 "NVIDIA Corp",
+                "US",
                 new BigDecimal("2"),
                 Currency.USD,
                 new BigDecimal("100"),
                 new BigDecimal("120"),
+                new BigDecimal("200"),
                 new BigDecimal("240"),
+                new BigDecimal("238.75"),
                 new BigDecimal("40"),
+                new BigDecimal("38.75"),
+                new BigDecimal("0.20"),
+                new BigDecimal("0.19375"),
+                new BigDecimal("4"),
                 new BigDecimal("0.12"),
                 new BigDecimal("1.25"),
                 null,
                 OBSERVED_AT);
 
+        assertThat(position.marketCountry()).isEqualTo("US");
+        assertThat(position.marketValueAmountAfterCost()).isEqualByComparingTo("238.75");
+        assertThat(position.profitLossRateAfterCost()).isEqualByComparingTo("0.19375");
+        assertThat(position.dailyProfitLossAmount()).isEqualByComparingTo("4");
         assertThat(position.commission()).isEqualByComparingTo("1.25");
         assertThat(position.tax()).isNull();
         assertThatThrownBy(() -> new Position(
                 ACCOUNT,
                 "NVDA",
                 "NVIDIA Corp",
+                " ",
                 new BigDecimal("2"),
                 Currency.USD,
                 new BigDecimal("100"),
                 new BigDecimal("120"),
+                new BigDecimal("200"),
                 new BigDecimal("240"),
+                new BigDecimal("238.75"),
                 new BigDecimal("40"),
+                new BigDecimal("38.75"),
+                new BigDecimal("0.20"),
+                new BigDecimal("0.19375"),
+                new BigDecimal("4"),
+                new BigDecimal("0.12"),
+                new BigDecimal("1.25"),
+                null,
+                OBSERVED_AT))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new Position(
+                ACCOUNT,
+                "NVDA",
+                "NVIDIA Corp",
+                "US",
+                new BigDecimal("2"),
+                Currency.USD,
+                new BigDecimal("100"),
+                new BigDecimal("120"),
+                new BigDecimal("200"),
+                new BigDecimal("240"),
+                new BigDecimal("238.75"),
+                new BigDecimal("40"),
+                new BigDecimal("38.75"),
+                new BigDecimal("0.20"),
+                new BigDecimal("0.19375"),
+                new BigDecimal("4"),
                 new BigDecimal("0.12"),
                 null,
                 null,
@@ -218,6 +269,18 @@ class BrokerContractTest {
                 Optional.empty(),
                 Optional.empty()))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new RateLimitSnapshot(
+                Optional.empty(),
+                Optional.empty(),
+                Optional.of(Instant.EPOCH.minusNanos(1)),
+                Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new RateLimitSnapshot(
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.of(Duration.ofNanos(-1))))
+                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new BrokerException(
                 BrokerErrorCategory.UNKNOWN,
                 99,
@@ -236,5 +299,18 @@ class BrokerContractTest {
                 false,
                 "broker call failed"))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new BrokerException(
+                BrokerErrorCategory.UNKNOWN,
+                500,
+                "SAFE_CODE",
+                "request-1",
+                Duration.ofNanos(-1),
+                false,
+                "broker call failed"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private static MoneyByCurrency money(String usdAmount) {
+        return new MoneyByCurrency(Map.of(Currency.USD, new BigDecimal(usdAmount)));
     }
 }

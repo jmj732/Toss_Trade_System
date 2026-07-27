@@ -8,13 +8,20 @@ public record Position(
         BrokerAccountRef account,
         String symbol,
         String name,
+        String marketCountry,
         BigDecimal quantity,
         Currency currency,
         BigDecimal averagePrice,
-        BigDecimal currentPrice,
-        BigDecimal marketValue,
-        BigDecimal unrealizedProfitLoss,
-        BigDecimal portfolioWeight,
+        BigDecimal lastPrice,
+        BigDecimal purchaseAmount,
+        BigDecimal marketValueAmount,
+        BigDecimal marketValueAmountAfterCost,
+        BigDecimal profitLossAmount,
+        BigDecimal profitLossAmountAfterCost,
+        BigDecimal profitLossRate,
+        BigDecimal profitLossRateAfterCost,
+        BigDecimal dailyProfitLossAmount,
+        BigDecimal dailyProfitLossRate,
         BigDecimal commission,
         BigDecimal tax,
         Instant observedAt) {
@@ -23,13 +30,20 @@ public record Position(
         Objects.requireNonNull(account, "account");
         symbol = BrokerPreconditions.nonBlank(symbol, "symbol");
         name = BrokerPreconditions.nonBlank(name, "name");
+        marketCountry = BrokerPreconditions.nonBlank(marketCountry, "marketCountry");
         quantity = BrokerPreconditions.nonNegative(quantity, "quantity");
         Objects.requireNonNull(currency, "currency");
         averagePrice = BrokerPreconditions.nonNegative(averagePrice, "averagePrice");
-        currentPrice = BrokerPreconditions.nonNegative(currentPrice, "currentPrice");
-        marketValue = BrokerPreconditions.nonNegative(marketValue, "marketValue");
-        Objects.requireNonNull(unrealizedProfitLoss, "unrealizedProfitLoss");
-        portfolioWeight = BrokerPreconditions.nonNegative(portfolioWeight, "portfolioWeight");
+        lastPrice = BrokerPreconditions.nonNegative(lastPrice, "lastPrice");
+        purchaseAmount = BrokerPreconditions.nonNegative(purchaseAmount, "purchaseAmount");
+        marketValueAmount = BrokerPreconditions.nonNegative(marketValueAmount, "marketValueAmount");
+        marketValueAmountAfterCost = BrokerPreconditions.nonNegative(marketValueAmountAfterCost, "marketValueAmountAfterCost");
+        Objects.requireNonNull(profitLossAmount, "profitLossAmount");
+        Objects.requireNonNull(profitLossAmountAfterCost, "profitLossAmountAfterCost");
+        Objects.requireNonNull(profitLossRate, "profitLossRate");
+        Objects.requireNonNull(profitLossRateAfterCost, "profitLossRateAfterCost");
+        Objects.requireNonNull(dailyProfitLossAmount, "dailyProfitLossAmount");
+        Objects.requireNonNull(dailyProfitLossRate, "dailyProfitLossRate");
         commission = BrokerPreconditions.nonNegative(commission, "commission");
         if (tax != null) {
             tax = BrokerPreconditions.nonNegative(tax, "tax");

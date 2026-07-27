@@ -12,7 +12,7 @@ public record MoneyByCurrency(Map<Currency, BigDecimal> amounts) {
         var copy = new EnumMap<Currency, BigDecimal>(Currency.class);
         amounts.forEach((currency, amount) -> copy.put(
                 Objects.requireNonNull(currency, "currency"),
-                BrokerPreconditions.nonNegative(amount, "amount")));
+                Objects.requireNonNull(amount, "amount")));
         amounts = Map.copyOf(copy);
     }
 }
