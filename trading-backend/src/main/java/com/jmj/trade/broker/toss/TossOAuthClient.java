@@ -113,10 +113,10 @@ final class TossOAuthClient {
             return BrokerErrorCategory.RATE_LIMITED;
         }
         if (status >= 500) {
-            return BrokerErrorCategory.BROKER_UNAVAILABLE;
+            return BrokerErrorCategory.TEMPORARY;
         }
         if (status == 400 && ("invalid_request".equals(code) || "unsupported_grant_type".equals(code))) {
-            return BrokerErrorCategory.VALIDATION;
+            return BrokerErrorCategory.INVALID_REQUEST;
         }
         return BrokerErrorCategory.UNKNOWN;
     }

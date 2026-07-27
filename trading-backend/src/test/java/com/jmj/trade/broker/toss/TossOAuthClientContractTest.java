@@ -78,11 +78,11 @@ class TossOAuthClientContractTest {
 
     @Test
     void mapsOAuthErrorsToSafeBrokerExceptions() {
-        assertOAuthError(400, "invalid_request", BrokerErrorCategory.VALIDATION, false);
-        assertOAuthError(400, "unsupported_grant_type", BrokerErrorCategory.VALIDATION, false);
+        assertOAuthError(400, "invalid_request", BrokerErrorCategory.INVALID_REQUEST, false);
+        assertOAuthError(400, "unsupported_grant_type", BrokerErrorCategory.INVALID_REQUEST, false);
         assertOAuthError(401, "invalid_client", BrokerErrorCategory.AUTHENTICATION, false);
         assertOAuthError(403, "access_denied", BrokerErrorCategory.AUTHORIZATION, false);
-        assertOAuthError(500, "server_error", BrokerErrorCategory.BROKER_UNAVAILABLE, true);
+        assertOAuthError(500, "server_error", BrokerErrorCategory.TEMPORARY, true);
     }
 
     @Test
