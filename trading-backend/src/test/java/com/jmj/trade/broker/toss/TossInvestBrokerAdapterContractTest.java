@@ -224,7 +224,9 @@ class TossInvestBrokerAdapterContractTest {
     @Test
     void rejectsInvalidTossAccountSeqBeforeHttpCall() {
         assertInvalidAccountSeq("abc");
+        assertInvalidAccountSeq("+1");
         assertInvalidAccountSeq("-1");
+        assertInvalidAccountSeq(" 1");
         assertInvalidAccountSeq("9223372036854775808");
         server.verify(0, anyRequestedFor(urlMatching(".*")));
     }

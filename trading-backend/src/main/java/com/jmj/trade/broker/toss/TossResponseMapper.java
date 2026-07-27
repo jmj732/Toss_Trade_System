@@ -126,6 +126,9 @@ final class TossResponseMapper {
 
     BrokerAccountRef requireToss(BrokerAccountRef account) {
         Objects.requireNonNull(account, "account");
+        if (!account.brokerAccountId().matches("\\d+")) {
+            throw invalidRequest("Toss accountSeq is invalid");
+        }
         try {
             if (Long.parseLong(account.brokerAccountId()) < 0) {
                 throw invalidRequest("Toss accountSeq is invalid");
