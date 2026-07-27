@@ -1,5 +1,6 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.broker.Currency;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -146,7 +147,11 @@ public class OrderSubmissionService {
                 brokerOrder.getId(),
                 new DispatchEvidence(confirmation.brokerReturnedClientOrderId(), "confirmed"));
         attemptRepository.saveAndFlush(attempt);
-        insertExecutionSnapshot(brokerOrder.getId(), confirmation.cumulativeFilledQuantity(), confirmation.capturedAt());
+        insertExecutionSnapshot(
+                brokerOrder.getId(),
+                confirmation.cumulativeFilledQuantity(),
+                confirmation.execution(),
+                confirmation.capturedAt());
         applyBrokerOutcome(
                 intent,
                 confirmation.brokerStatus(),
@@ -156,6 +161,28 @@ public class OrderSubmissionService {
         submissionLedger(intent.getId(), "SubmissionAttempt", attempt.getId(),
                 "BrokerOrderConfirmed", "BrokerOrderConfirmed", actor,
                 "{\"brokerOrderId\":\"%s\"}".formatted(brokerOrder.getId()), confirmation.capturedAt());
+    }
+
+    @Transactional
+    public void recordBrokerOrderUpdate(
+            UUID brokerOrderId,
+            BrokerOrderStatus brokerStatus,
+            BigDecimal cumulativeFilledQuantity,
+            Execution execution,
+            Instant capturedAt,
+            String actor
+    ) {
+        requireActor(actor);
+        var brokerOrder = brokerOrderRepository.findById(brokerOrderId)
+                .orElseThrow(() -> new IllegalArgumentException("broker order not found: " + brokerOrderId));
+        var intent = intent(brokerOrder.getOrderIntentId());
+        insertExecutionSnapshot(brokerOrderId, cumulativeFilledQuantity, execution, capturedAt);
+        brokerOrder.updateProjection(brokerStatus);
+        brokerOrderRepository.saveAndFlush(brokerOrder);
+        applyBrokerOutcome(intent, brokerStatus, cumulativeFilledQuantity, actor, capturedAt);
+        submissionLedger(intent.getId(), "BrokerOrder", brokerOrder.getId(),
+                "BrokerOrderUpdated", "BrokerOrderUpdated", actor,
+                "{\"brokerOrderId\":\"%s\"}".formatted(brokerOrder.getId()), capturedAt);
     }
 
     @Transactional
@@ -271,7 +298,11 @@ public class OrderSubmissionService {
                 brokerOrder.getId(),
                 new DispatchEvidence(attempt.getClientOrderId(), "reconciled"));
         attemptRepository.saveAndFlush(attempt);
-        insertExecutionSnapshot(brokerOrder.getId(), result.cumulativeFilledQuantity(), result.checkedAt());
+        insertExecutionSnapshot(
+                brokerOrder.getId(),
+                result.cumulativeFilledQuantity(),
+                result.execution(),
+                result.checkedAt());
         applyBrokerOutcome(intent, result.brokerStatus(), result.cumulativeFilledQuantity(), actor, result.checkedAt());
         submissionLedger(intent.getId(), "SubmissionAttempt", attempt.getId(),
                 "BrokerOrderFound", "BrokerOrderFound", actor,
@@ -348,10 +379,10 @@ public class OrderSubmissionService {
             return;
         }
         if (isOpen(brokerStatus)) {
-            transitionIntent(intent, actor, occurredAt, null, OrderIntent::activate);
+            activateIfNeeded(intent, actor, occurredAt);
             return;
         }
-        transitionIntent(intent, actor, occurredAt, null, OrderIntent::activate);
+        activateIfNeeded(intent, actor, occurredAt);
         if (brokerStatus == BrokerOrderStatus.FILLED && filled.compareTo(intent.getQuantity()) == 0) {
             transitionIntent(intent, actor, occurredAt, "BROKER_FILLED",
                     i -> i.terminate(OrderIntentStatus.COMPLETED, "BROKER_FILLED", occurredAt, filled));
@@ -363,6 +394,12 @@ public class OrderSubmissionService {
             transitionIntent(intent, actor, occurredAt, "BROKER_CLOSED_PARTIAL_FILL",
                     i -> i.terminate(OrderIntentStatus.PARTIALLY_COMPLETED, "BROKER_CLOSED_PARTIAL_FILL",
                             occurredAt, filled));
+        }
+    }
+
+    private void activateIfNeeded(OrderIntent intent, String actor, Instant occurredAt) {
+        if (intent.getStatus() != OrderIntentStatus.ACTIVE) {
+            transitionIntent(intent, actor, occurredAt, null, OrderIntent::activate);
         }
     }
 
@@ -416,11 +453,22 @@ public class OrderSubmissionService {
                 result.checkedAt());
     }
 
-    private void insertExecutionSnapshot(UUID brokerOrderId, BigDecimal filledQuantity, Instant capturedAt) {
+    private void insertExecutionSnapshot(
+            UUID brokerOrderId,
+            BigDecimal filledQuantity,
+            Execution execution,
+            Instant capturedAt
+    ) {
         jdbcTemplate.update("""
-                INSERT INTO execution_snapshots (id, broker_order_id, filled_quantity, captured_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO execution_snapshots (
+                    id, broker_order_id, filled_quantity, average_filled_price,
+                    filled_amount, commission, tax, currency, captured_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, UUID.randomUUID(), brokerOrderId, filledQuantity,
+                execution.averageFilledPrice(), execution.filledAmount(),
+                execution.commission(), execution.tax(),
+                execution.currency() == null ? null : execution.currency().name(),
                 OffsetDateTime.ofInstant(capturedAt, ZoneOffset.UTC));
     }
 
@@ -488,8 +536,37 @@ public class OrderSubmissionService {
             String brokerReturnedClientOrderId,
             BrokerOrderStatus brokerStatus,
             BigDecimal cumulativeFilledQuantity,
-            Instant checkedAt
+            Instant checkedAt,
+            Execution execution
     ) {
+        public ReconciliationResult(
+                boolean openOrdersComplete,
+                boolean closedOrdersComplete,
+                Instant closedWindowStart,
+                Instant closedWindowEnd,
+                boolean allPagesRead,
+                String resultHash,
+                String brokerOrderId,
+                String brokerReturnedClientOrderId,
+                BrokerOrderStatus brokerStatus,
+                BigDecimal cumulativeFilledQuantity,
+                Instant checkedAt
+        ) {
+            this(
+                    openOrdersComplete,
+                    closedOrdersComplete,
+                    closedWindowStart,
+                    closedWindowEnd,
+                    allPagesRead,
+                    resultHash,
+                    brokerOrderId,
+                    brokerReturnedClientOrderId,
+                    brokerStatus,
+                    cumulativeFilledQuantity,
+                    checkedAt,
+                    Execution.unknown());
+        }
+
         public ReconciliationResult {
             if (resultHash == null || resultHash.isBlank()) {
                 throw new IllegalArgumentException("resultHash is required");
@@ -499,6 +576,9 @@ public class OrderSubmissionService {
             }
             if (checkedAt == null) {
                 throw new IllegalArgumentException("checkedAt is required");
+            }
+            if (execution == null) {
+                throw new IllegalArgumentException("execution is required");
             }
             if (brokerOrderId != null) {
                 if (brokerReturnedClientOrderId == null || brokerReturnedClientOrderId.isBlank()) {
@@ -517,8 +597,25 @@ public class OrderSubmissionService {
             String brokerReturnedClientOrderId,
             BrokerOrderStatus brokerStatus,
             BigDecimal cumulativeFilledQuantity,
-            Instant capturedAt
+            Instant capturedAt,
+            Execution execution
     ) {
+        public BrokerConfirmation(
+                String brokerOrderId,
+                String brokerReturnedClientOrderId,
+                BrokerOrderStatus brokerStatus,
+                BigDecimal cumulativeFilledQuantity,
+                Instant capturedAt
+        ) {
+            this(
+                    brokerOrderId,
+                    brokerReturnedClientOrderId,
+                    brokerStatus,
+                    cumulativeFilledQuantity,
+                    capturedAt,
+                    Execution.unknown());
+        }
+
         public BrokerConfirmation {
             if (brokerOrderId == null || brokerOrderId.isBlank()) {
                 throw new IllegalArgumentException("brokerOrderId is required");
@@ -534,6 +631,34 @@ public class OrderSubmissionService {
             }
             if (capturedAt == null) {
                 throw new IllegalArgumentException("capturedAt is required");
+            }
+            if (execution == null) {
+                throw new IllegalArgumentException("execution is required");
+            }
+        }
+    }
+
+    public record Execution(
+            BigDecimal averageFilledPrice,
+            BigDecimal filledAmount,
+            BigDecimal commission,
+            BigDecimal tax,
+            Currency currency
+    ) {
+        public Execution {
+            requireNonNegative(averageFilledPrice, "averageFilledPrice");
+            requireNonNegative(filledAmount, "filledAmount");
+            requireNonNegative(commission, "commission");
+            requireNonNegative(tax, "tax");
+        }
+
+        public static Execution unknown() {
+            return new Execution(null, null, null, null, null);
+        }
+
+        private static void requireNonNegative(BigDecimal value, String fieldName) {
+            if (value != null && value.compareTo(BigDecimal.ZERO) < 0) {
+                throw new IllegalArgumentException(fieldName + " must not be negative");
             }
         }
     }

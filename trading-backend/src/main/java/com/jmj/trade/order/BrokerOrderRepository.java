@@ -7,4 +7,6 @@ import java.util.UUID;
 
 public interface BrokerOrderRepository extends JpaRepository<BrokerOrder, UUID> {
     Optional<BrokerOrder> findByBrokerAccountIdAndBrokerOrderId(UUID brokerAccountId, String brokerOrderId);
+
+    Optional<BrokerOrder> findFirstByOrderIntentIdOrderByIdAsc(UUID orderIntentId);
 }

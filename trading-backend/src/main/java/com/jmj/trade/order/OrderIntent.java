@@ -1,5 +1,6 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.broker.Currency;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -26,6 +27,24 @@ public class OrderIntent {
 
     @Column(nullable = false, precision = 28, scale = 10)
     private BigDecimal quantity;
+
+    @Enumerated(EnumType.STRING)
+    @Column(length = 10)
+    private OrderSide side;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "order_type", length = 10)
+    private OrderType type;
+
+    @Column(length = 30)
+    private String symbol;
+
+    @Column(name = "limit_price", precision = 28, scale = 10)
+    private BigDecimal limitPrice;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "trading_currency", length = 3)
+    private Currency tradingCurrency;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 40)
@@ -59,6 +78,40 @@ public class OrderIntent {
 
     public static OrderIntent proposed(UUID id, UUID brokerAccountId, BigDecimal quantity) {
         return new OrderIntent(id, brokerAccountId, quantity);
+    }
+
+    public static OrderIntent proposed(
+            UUID id,
+            UUID brokerAccountId,
+            OrderSide side,
+            OrderType type,
+            String symbol,
+            BigDecimal quantity,
+        BigDecimal limitPrice,
+            Currency tradingCurrency
+    ) {
+        var intent = new OrderIntent(id, brokerAccountId, quantity);
+        if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("quantity must be positive");
+        }
+        if (side == null || type == null || tradingCurrency == null) {
+            throw new IllegalArgumentException("side, type and tradingCurrency are required");
+        }
+        if (symbol == null || symbol.isBlank() || symbol.length() > 30) {
+            throw new IllegalArgumentException("symbol must contain 1 to 30 characters");
+        }
+        if (type == OrderType.MARKET && limitPrice != null) {
+            throw new IllegalArgumentException("MARKET order must not have limitPrice");
+        }
+        if (type == OrderType.LIMIT && (limitPrice == null || limitPrice.compareTo(BigDecimal.ZERO) <= 0)) {
+            throw new IllegalArgumentException("LIMIT order requires positive limitPrice");
+        }
+        intent.side = side;
+        intent.type = type;
+        intent.symbol = symbol;
+        intent.limitPrice = limitPrice;
+        intent.tradingCurrency = tradingCurrency;
+        return intent;
     }
 
     public void approve() {
@@ -211,6 +264,26 @@ public class OrderIntent {
 
     public BigDecimal getQuantity() {
         return quantity;
+    }
+
+    public OrderSide getSide() {
+        return side;
+    }
+
+    public OrderType getType() {
+        return type;
+    }
+
+    public String getSymbol() {
+        return symbol;
+    }
+
+    public BigDecimal getLimitPrice() {
+        return limitPrice;
+    }
+
+    public Currency getTradingCurrency() {
+        return tradingCurrency;
     }
 
     public OrderIntentStatus getStatus() {
