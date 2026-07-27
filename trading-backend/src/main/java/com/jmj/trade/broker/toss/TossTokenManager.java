@@ -13,7 +13,7 @@ import java.util.UUID;
 
 final class TossTokenManager {
 
-    private static final String KEY_PREFIX = "broker:toss:oauth:v1:";
+    private static final String KEY_PREFIX = "broker:toss:oauth:v2:";
     private static final DefaultRedisScript<Long> DELETE_IF_VALUE_MATCHES = new DefaultRedisScript<>(
             "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
             Long.class);
@@ -35,12 +35,14 @@ final class TossTokenManager {
         this.properties = Objects.requireNonNull(properties, "properties");
     }
 
-    String getAccessToken(UUID brokerConnectionId) {
+    TossAccessToken getAccessToken(UUID brokerConnectionId) {
         Objects.requireNonNull(brokerConnectionId, "brokerConnectionId");
-        var tokenKey = tokenKey(brokerConnectionId);
+        var metadata = credentialProvider.current(brokerConnectionId);
+        var credentialRevision = metadata.credentialRevision();
+        var tokenKey = tokenKey(brokerConnectionId, credentialRevision);
         var cached = redisGet(tokenKey);
         if (cached != null) {
-            return cached;
+            return new TossAccessToken(cached, credentialRevision);
         }
 
         var lockKey = tokenKey + ":lock";
@@ -50,12 +52,16 @@ final class TossTokenManager {
             try {
                 cached = redisGet(tokenKey);
                 if (cached != null) {
-                    return cached;
+                    return new TossAccessToken(cached, credentialRevision);
                 }
-                var credentials = credentialProvider.get(brokerConnectionId);
+                var credentials = credentialProvider.decrypt(brokerConnectionId, credentialRevision);
                 var token = oauthClient.issueToken(brokerConnectionId, credentials);
+                var latest = credentialProvider.current(brokerConnectionId);
+                if (latest.credentialRevision() != credentialRevision) {
+                    throw temporary("Toss credential revision changed during OAuth token issue");
+                }
                 redisSet(tokenKey, token.accessToken(), cacheTtl(token.expiresIn()));
-                return token.accessToken();
+                return new TossAccessToken(token.accessToken(), credentialRevision);
             } catch (RuntimeException exception) {
                 primary = exception;
                 throw exception;
@@ -64,15 +70,15 @@ final class TossTokenManager {
             }
         }
 
-        return waitForCachedToken(tokenKey);
+        return waitForCachedToken(tokenKey, credentialRevision);
     }
 
-    void invalidateIfCurrent(UUID brokerConnectionId, String accessToken) {
+    void invalidateIfCurrent(UUID brokerConnectionId, long credentialRevision, String accessToken) {
         Objects.requireNonNull(brokerConnectionId, "brokerConnectionId");
         if (accessToken == null || accessToken.isBlank()) {
             return;
         }
-        deleteIfValueMatches(tokenKey(brokerConnectionId), accessToken);
+        deleteIfValueMatches(tokenKey(brokerConnectionId, credentialRevision), accessToken);
     }
 
     private boolean tryAcquire(String lockKey, String owner) {
@@ -83,14 +89,18 @@ final class TossTokenManager {
         }
     }
 
-    private String waitForCachedToken(String tokenKey) {
+    private TossAccessToken waitForCachedToken(String tokenKey, long credentialRevision) {
         var deadline = System.nanoTime() + properties.tokenWaitTimeout().toNanos();
         while (System.nanoTime() < deadline) {
             var cached = redisGet(tokenKey);
             if (cached != null) {
-                return cached;
+                return new TossAccessToken(cached, credentialRevision);
             }
             sleepUntilNextPoll(deadline);
+        }
+        var cached = redisGet(tokenKey);
+        if (cached != null) {
+            return new TossAccessToken(cached, credentialRevision);
         }
         throw temporary("Toss OAuth token lock wait timed out");
     }
@@ -148,8 +158,8 @@ final class TossTokenManager {
         return ttl.isPositive() ? ttl : Duration.ofSeconds(1);
     }
 
-    private String tokenKey(UUID brokerConnectionId) {
-        return KEY_PREFIX + brokerConnectionId;
+    private String tokenKey(UUID brokerConnectionId, long credentialRevision) {
+        return KEY_PREFIX + brokerConnectionId + ":" + credentialRevision;
     }
 
     private BrokerException redisFailure(String message) {
@@ -158,5 +168,19 @@ final class TossTokenManager {
 
     private BrokerException temporary(String message) {
         return new BrokerException(BrokerErrorCategory.TEMPORARY, null, null, null, null, true, message);
+    }
+}
+
+record TossAccessToken(String value, long credentialRevision) {
+
+    TossAccessToken {
+        if (Objects.requireNonNull(value, "value").isBlank()) {
+            throw new IllegalArgumentException("value must not be blank");
+        }
+    }
+
+    @Override
+    public String toString() {
+        return "TossAccessToken[****]";
     }
 }

@@ -171,7 +171,8 @@ class TossApiClientContractTest {
     @Test
     void secondUnauthorizedAfterRefreshFailsWithoutThirdAttempt() {
         startServer();
-        when(tokenManager().getAccessToken(CONNECTION_ID)).thenReturn(OLD_TOKEN, NEW_TOKEN);
+        when(tokenManager().getAccessToken(CONNECTION_ID))
+                .thenReturn(new TossAccessToken(OLD_TOKEN, 1), new TossAccessToken(NEW_TOKEN, 2));
         server.stubFor(get("/api/v1/accounts")
                 .willReturn(aResponse()
                         .withStatus(401)
@@ -184,7 +185,7 @@ class TossApiClientContractTest {
                     assertThat(exception.isRetriable()).isFalse();
                 });
 
-        verify(tokenManager).invalidateIfCurrent(CONNECTION_ID, OLD_TOKEN);
+        verify(tokenManager).invalidateIfCurrent(CONNECTION_ID, 1, OLD_TOKEN);
         server.verify(2, getRequestedFor(urlEqualTo("/api/v1/accounts")));
     }
 
@@ -200,7 +201,7 @@ class TossApiClientContractTest {
 
         assertThatThrownBy(() -> client().getAccounts(CONNECTION_ID))
                 .isInstanceOf(BrokerException.class);
-        verify(tokenManager, never()).invalidateIfCurrent(CONNECTION_ID, OLD_TOKEN);
+        verify(tokenManager, never()).invalidateIfCurrent(CONNECTION_ID, 1, OLD_TOKEN);
         server.verify(1, getRequestedFor(urlEqualTo("/api/v1/accounts")));
     }
 
@@ -226,7 +227,8 @@ class TossApiClientContractTest {
 
     private void assertRefreshesOnce(String code) {
         startServer();
-        when(tokenManager().getAccessToken(CONNECTION_ID)).thenReturn(OLD_TOKEN, NEW_TOKEN);
+        when(tokenManager().getAccessToken(CONNECTION_ID))
+                .thenReturn(new TossAccessToken(OLD_TOKEN, 1), new TossAccessToken(NEW_TOKEN, 2));
         server.stubFor(get("/api/v1/accounts")
                 .withHeader("Authorization", equalTo("Bearer " + OLD_TOKEN))
                 .willReturn(aResponse()
@@ -242,7 +244,7 @@ class TossApiClientContractTest {
         var response = client().getAccounts(CONNECTION_ID);
 
         assertThat(response.value()).isEmpty();
-        verify(tokenManager).invalidateIfCurrent(CONNECTION_ID, OLD_TOKEN);
+        verify(tokenManager).invalidateIfCurrent(CONNECTION_ID, 1, OLD_TOKEN);
         server.verify(2, getRequestedFor(urlEqualTo("/api/v1/accounts")));
         stopServer();
         tokenManager = null;
@@ -324,7 +326,7 @@ class TossApiClientContractTest {
     }
 
     private void withToken(String token) {
-        when(tokenManager().getAccessToken(CONNECTION_ID)).thenReturn(token);
+        when(tokenManager().getAccessToken(CONNECTION_ID)).thenReturn(new TossAccessToken(token, 1));
     }
 
     private void startServer() {

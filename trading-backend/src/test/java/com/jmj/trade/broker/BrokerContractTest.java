@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BrokerContractTest {
 
     private static final UUID CONNECTION_ID = UUID.fromString("018f0000-0000-7000-8000-000000000001");
-    private static final BrokerConnectionRef CONNECTION = new BrokerConnectionRef(CONNECTION_ID, "toss");
+    private static final BrokerConnectionRef CONNECTION = new BrokerConnectionRef(CONNECTION_ID);
     private static final BrokerAccountRef ACCOUNT = new BrokerAccountRef(
             CONNECTION_ID,
             "account-seq-1",
@@ -52,10 +52,11 @@ class BrokerContractTest {
 
     @Test
     void refsRejectMissingIdsAndUnsafeAccountDisplayNumbers() {
-        assertThatThrownBy(() -> new BrokerConnectionRef(null, "toss"))
+        assertThat(Arrays.stream(BrokerConnectionRef.class.getRecordComponents())
+                .map(component -> component.getName())
+                .toList()).containsExactly("brokerConnectionId");
+        assertThatThrownBy(() -> new BrokerConnectionRef(null))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> new BrokerConnectionRef(CONNECTION_ID, " "))
-                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new BrokerAccountRef(CONNECTION_ID, "", "US_STOCK", "****1234"))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new BrokerAccountRef(CONNECTION_ID, "account-seq-1", "US_STOCK", "1234567890"))

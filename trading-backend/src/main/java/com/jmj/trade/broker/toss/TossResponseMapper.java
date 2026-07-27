@@ -24,8 +24,6 @@ import java.util.Objects;
 
 final class TossResponseMapper {
 
-    private static final String BROKER = "toss";
-
     BrokerAccountView account(BrokerConnectionRef connection, TossApiDtos.Account account) {
         Objects.requireNonNull(connection, "connection");
         if (account == null || account.accountSeq() == null) {
@@ -110,18 +108,7 @@ final class TossResponseMapper {
     }
 
     BrokerConnectionRef requireToss(BrokerConnectionRef connection) {
-        Objects.requireNonNull(connection, "connection");
-        if (!BROKER.equals(connection.broker().toLowerCase(Locale.ROOT))) {
-            throw new BrokerException(
-                    BrokerErrorCategory.INVALID_REQUEST,
-                    null,
-                    null,
-                    null,
-                    null,
-                    false,
-                    "Broker connection is not Toss");
-        }
-        return connection;
+        return Objects.requireNonNull(connection, "connection");
     }
 
     BrokerAccountRef requireToss(BrokerAccountRef account) {

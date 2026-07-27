@@ -8,8 +8,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.lang.reflect.Modifier;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -194,12 +196,21 @@ class TossBrokerConfigurationTest {
     @Test
     void credentialProviderIsOnlyAPort() {
         assertThat(TossCredentialProvider.class).isInterface();
-        assertThat(TossCredentialProvider.class.getDeclaredMethods())
-                .singleElement()
-                .satisfies(method -> {
-                    assertThat(method.getName()).isEqualTo("get");
-                    assertThat(method.getReturnType()).isEqualTo(TossCredentials.class);
+        var methods = Arrays.stream(TossCredentialProvider.class.getDeclaredMethods())
+                .filter(method -> Modifier.isPublic(method.getModifiers()))
+                .toList();
+        assertThat(methods).extracting("name")
+                .containsExactlyInAnyOrder("current", "decrypt");
+        assertThat(methods)
+                .anySatisfy(method -> {
+                    assertThat(method.getName()).isEqualTo("current");
+                    assertThat(method.getReturnType()).isEqualTo(TossCredentialMetadata.class);
                     assertThat(method.getParameterTypes()).containsExactly(UUID.class);
+                })
+                .anySatisfy(method -> {
+                    assertThat(method.getName()).isEqualTo("decrypt");
+                    assertThat(method.getReturnType()).isEqualTo(TossCredentials.class);
+                    assertThat(method.getParameterTypes()).containsExactly(UUID.class, long.class);
                 });
     }
 
@@ -208,7 +219,17 @@ class TossBrokerConfigurationTest {
 
         @Bean
         TossCredentialProvider tossCredentialProvider() {
-            return brokerConnectionId -> new TossCredentials("client-id", "client-secret");
+            return new TossCredentialProvider() {
+                @Override
+                public TossCredentialMetadata current(UUID brokerConnectionId) {
+                    return new TossCredentialMetadata(1);
+                }
+
+                @Override
+                public TossCredentials decrypt(UUID brokerConnectionId, long expectedRevision) {
+                    return new TossCredentials("client-id", "client-secret");
+                }
+            };
         }
     }
 

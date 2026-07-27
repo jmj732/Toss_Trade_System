@@ -95,14 +95,14 @@ final class TossApiClient {
             if (!isRefreshableUnauthorized(exception)) {
                 throw exception;
             }
-            tokenManager.invalidateIfCurrent(brokerConnectionId, token);
+            tokenManager.invalidateIfCurrent(brokerConnectionId, token.credentialRevision(), token.value());
             return call(request, tokenManager.getAccessToken(brokerConnectionId), responseType);
         }
     }
 
-    private <T> TossApiResponse<T> call(TossReadRequest request, String token, Class<T> responseType) {
+    private <T> TossApiResponse<T> call(TossReadRequest request, TossAccessToken token, Class<T> responseType) {
         try {
-            var response = request.execute(token);
+            var response = request.execute(token.value());
             var metadata = metadata(response.getHeaders());
             return new TossApiResponse<>(decodeSuccess(response.getBody(), responseType), metadata);
         } catch (RestClientResponseException exception) {

@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class TossInvestBrokerAdapterContractTest {
 
     private static final UUID CONNECTION_ID = UUID.fromString("018f0000-0000-7000-8000-000000000001");
-    private static final BrokerConnectionRef CONNECTION = new BrokerConnectionRef(CONNECTION_ID, "toss");
+    private static final BrokerConnectionRef CONNECTION = new BrokerConnectionRef(CONNECTION_ID);
     private static final BrokerAccountRef ACCOUNT = new BrokerAccountRef(CONNECTION_ID, "9876543210", "UNKNOWN_RAW", "******3210");
 
     static final GenericContainer<?> REDIS = new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
@@ -204,7 +204,7 @@ class TossInvestBrokerAdapterContractTest {
     }
 
     @Test
-    void rejectsUnsafeAccountNumberAndNonTossBrokerWithoutOrderCalls() {
+    void rejectsUnsafeAccountNumberWithoutOrderCalls() {
         server.stubFor(get("/api/v1/accounts").willReturn(json("""
                 {"result":[{"accountNo":"123","accountSeq":1,"accountType":"GENERAL"}]}
                 """)));
@@ -215,9 +215,6 @@ class TossInvestBrokerAdapterContractTest {
         assertThatThrownBy(() -> adapter().getAccounts(CONNECTION))
                 .isInstanceOfSatisfying(BrokerException.class, exception ->
                         assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT));
-        assertThatThrownBy(() -> adapter().getAccounts(new BrokerConnectionRef(CONNECTION_ID, "paper")))
-                .isInstanceOfSatisfying(BrokerException.class, exception ->
-                        assertThat(exception.category()).isEqualTo(BrokerErrorCategory.INVALID_REQUEST));
         server.verify(0, anyRequestedFor(urlMatching(".*/orders.*")));
     }
 
@@ -242,10 +239,24 @@ class TossInvestBrokerAdapterContractTest {
                 Duration.ZERO);
         var tokenManager = new TossTokenManager(
                 redis,
-                brokerConnectionId -> new TossCredentials("client-id", "client-secret"),
+                provider(),
                 new TossOAuthClient(properties),
                 properties);
         return new TossInvestBrokerAdapter(new TossApiClient(properties, tokenManager), new TossResponseMapper());
+    }
+
+    private TossCredentialProvider provider() {
+        return new TossCredentialProvider() {
+            @Override
+            public TossCredentialMetadata current(UUID brokerConnectionId) {
+                return new TossCredentialMetadata(1);
+            }
+
+            @Override
+            public TossCredentials decrypt(UUID brokerConnectionId, long expectedRevision) {
+                return new TossCredentials("client-id", "client-secret");
+            }
+        };
     }
 
     private void stubToken() {

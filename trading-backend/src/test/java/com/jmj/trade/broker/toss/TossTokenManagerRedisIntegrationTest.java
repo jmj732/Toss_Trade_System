@@ -23,6 +23,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
@@ -79,7 +81,7 @@ class TossTokenManagerRedisIntegrationTest {
             tasks.add(() -> {
                 ready.countDown();
                 assertThat(start.await(2, TimeUnit.SECONDS)).isTrue();
-                return manager.getAccessToken(CONNECTION_ID);
+                return manager.getAccessToken(CONNECTION_ID).value();
             });
         }
 
@@ -99,12 +101,12 @@ class TossTokenManagerRedisIntegrationTest {
         stubToken("token-one", 600, 0);
         var manager = manager(defaultProperties());
 
-        assertThat(manager.getAccessToken(CONNECTION_ID)).isEqualTo("token-one");
+        assertThat(manager.getAccessToken(CONNECTION_ID).value()).isEqualTo("token-one");
 
         server.resetRequests();
         stubToken("token-two", 600, 0);
-        assertThat(manager.getAccessToken(OTHER_CONNECTION_ID)).isEqualTo("token-two");
-        assertThat(manager.getAccessToken(CONNECTION_ID)).isEqualTo("token-one");
+        assertThat(manager.getAccessToken(OTHER_CONNECTION_ID).value()).isEqualTo("token-two");
+        assertThat(manager.getAccessToken(CONNECTION_ID).value()).isEqualTo("token-one");
         server.verify(1, postRequestedFor(urlEqualTo("/oauth2/token")));
     }
 
@@ -117,7 +119,7 @@ class TossTokenManagerRedisIntegrationTest {
         Callable<String> call = () -> {
             ready.countDown();
             assertThat(ready.await(2, TimeUnit.SECONDS)).isTrue();
-            return manager.getAccessToken(CONNECTION_ID);
+            return manager.getAccessToken(CONNECTION_ID).value();
         };
 
         var first = executor.submit(call);
@@ -131,7 +133,7 @@ class TossTokenManagerRedisIntegrationTest {
 
     @Test
     void lockLoserTimeoutDoesNotIssueUnlockedToken() throws Exception {
-        var lockKey = "broker:toss:oauth:v1:" + CONNECTION_ID + ":lock";
+        var lockKey = tokenKey(CONNECTION_ID, 1) + ":lock";
         redis.opsForValue().set(lockKey, "other-owner", Duration.ofSeconds(2));
         stubToken("must-not-be-issued", 600, 0);
         var manager = manager(properties(Duration.ofMillis(300), Duration.ofMillis(500), Duration.ofSeconds(2)));
@@ -170,24 +172,27 @@ class TossTokenManagerRedisIntegrationTest {
         stubToken("short-token", 3, 0);
         var manager = manager(properties(Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(10), Duration.ofSeconds(10)));
 
-        assertThat(manager.getAccessToken(CONNECTION_ID)).isEqualTo("short-token");
+        assertThat(manager.getAccessToken(CONNECTION_ID).value()).isEqualTo("short-token");
 
-        var ttlSeconds = redis.getExpire(tokenKey(CONNECTION_ID));
+        var ttlSeconds = redis.getExpire(tokenKey(CONNECTION_ID, 1));
         assertThat(ttlSeconds).isBetween(0L, 1L);
     }
 
     @Test
-    void invalidateIfCurrentOnlyDeletesMatchingToken() {
-        redis.opsForValue().set(tokenKey(CONNECTION_ID), "new-token", Duration.ofSeconds(60));
+    void invalidateIfCurrentOnlyDeletesMatchingTokenSnapshot() {
+        redis.opsForValue().set(tokenKey(CONNECTION_ID, 1), "old-token", Duration.ofSeconds(60));
+        redis.opsForValue().set(tokenKey(CONNECTION_ID, 2), "new-token", Duration.ofSeconds(60));
         var manager = manager(defaultProperties());
 
-        manager.invalidateIfCurrent(CONNECTION_ID, "old-token");
+        manager.invalidateIfCurrent(CONNECTION_ID, 1, "wrong-token");
 
-        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID))).isEqualTo("new-token");
+        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID, 1))).isEqualTo("old-token");
+        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID, 2))).isEqualTo("new-token");
 
-        manager.invalidateIfCurrent(CONNECTION_ID, "new-token");
+        manager.invalidateIfCurrent(CONNECTION_ID, 1, "old-token");
 
-        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID))).isNull();
+        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID, 1))).isNull();
+        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID, 2))).isEqualTo("new-token");
     }
 
     @Test
@@ -197,24 +202,15 @@ class TossTokenManagerRedisIntegrationTest {
         var unblockCredentials = new CountDownLatch(1);
         var manager = new TossTokenManager(
                 redis,
-                brokerConnectionId -> {
-                    lockAcquired.countDown();
-                    try {
-                        assertThat(unblockCredentials.await(2, TimeUnit.SECONDS)).isTrue();
-                    } catch (InterruptedException exception) {
-                        Thread.currentThread().interrupt();
-                        throw new AssertionError(exception);
-                    }
-                    return new TossCredentials("client-" + brokerConnectionId, "secret-" + brokerConnectionId);
-                },
+                blockingProvider(lockAcquired, unblockCredentials),
                 new TossOAuthClient(defaultProperties()),
                 defaultProperties());
         var executor = Executors.newSingleThreadExecutor();
 
         try {
-            var future = executor.submit(() -> manager.getAccessToken(CONNECTION_ID));
+            var future = executor.submit(() -> manager.getAccessToken(CONNECTION_ID).value());
             assertThat(lockAcquired.await(2, TimeUnit.SECONDS)).isTrue();
-            var lockKey = tokenKey(CONNECTION_ID) + ":lock";
+            var lockKey = tokenKey(CONNECTION_ID, 1) + ":lock";
             assertThat(redis.opsForValue().get(lockKey)).isNotBlank();
 
             redis.opsForValue().set(lockKey, "new-owner", Duration.ofSeconds(10));
@@ -275,7 +271,7 @@ class TossTokenManagerRedisIntegrationTest {
 
     @Test
     void interruptedWaitRestoresInterruptFlag() throws Exception {
-        var lockKey = "broker:toss:oauth:v1:" + CONNECTION_ID + ":lock";
+        var lockKey = tokenKey(CONNECTION_ID, 1) + ":lock";
         redis.opsForValue().set(lockKey, "other-owner", Duration.ofSeconds(2));
         var manager = manager(properties(Duration.ofSeconds(2), Duration.ofSeconds(3), Duration.ofSeconds(4)));
         var interrupted = new AtomicBoolean();
@@ -294,12 +290,117 @@ class TossTokenManagerRedisIntegrationTest {
         assertThat(interrupted).isTrue();
     }
 
+    @Test
+    void cacheHitReadsCurrentButDoesNotDecryptOrIssueToken() {
+        redis.opsForValue().set(tokenKey(CONNECTION_ID, 7), "cached-token", Duration.ofSeconds(60));
+        var provider = new CountingProvider(7);
+        var manager = new TossTokenManager(redis, provider, new TossOAuthClient(defaultProperties()), defaultProperties());
+
+        var token = manager.getAccessToken(CONNECTION_ID);
+
+        assertThat(token.value()).isEqualTo("cached-token");
+        assertThat(token.credentialRevision()).isEqualTo(7);
+        assertThat(provider.currentCalls).hasValue(1);
+        assertThat(provider.decryptCalls).hasValue(0);
+        server.verify(0, postRequestedFor(urlEqualTo("/oauth2/token")));
+    }
+
+    @Test
+    void missLocksRevisionRechecksCacheThenDecryptsOnce() {
+        stubToken("issued-token", 600, 0);
+        var provider = new CountingProvider(3);
+        var manager = new TossTokenManager(redis, provider, new TossOAuthClient(defaultProperties()), defaultProperties());
+
+        var token = manager.getAccessToken(CONNECTION_ID);
+
+        assertThat(token.value()).isEqualTo("issued-token");
+        assertThat(token.credentialRevision()).isEqualTo(3);
+        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID, 3))).isEqualTo("issued-token");
+        assertThat(provider.currentCalls).hasValue(2);
+        assertThat(provider.decryptCalls).hasValue(1);
+        server.verify(1, postRequestedFor(urlEqualTo("/oauth2/token")));
+    }
+
+    @Test
+    void exactRevisionMismatchBeforeDecryptFailsWithoutOAuth() {
+        var provider = new CountingProvider(4) {
+            @Override
+            public TossCredentials decrypt(UUID brokerConnectionId, long expectedRevision) {
+                super.decrypt(brokerConnectionId, expectedRevision);
+                throw temporary("credential revision changed");
+            }
+        };
+        var manager = new TossTokenManager(redis, provider, new TossOAuthClient(defaultProperties()), defaultProperties());
+
+        assertThatThrownBy(() -> manager.getAccessToken(CONNECTION_ID))
+                .isInstanceOf(BrokerException.class);
+        assertThat(provider.decryptCalls).hasValue(1);
+        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID, 4))).isNull();
+        server.verify(0, postRequestedFor(urlEqualTo("/oauth2/token")));
+    }
+
+    @Test
+    void replacementBeforeOauthCompletionDiscardsTokenAndWritesNoCache() {
+        stubToken("stale-token", 600, 0);
+        var revision = new AtomicLong(5);
+        var provider = new CountingProvider(revision);
+        provider.afterDecrypt = () -> revision.set(6);
+        var manager = new TossTokenManager(redis, provider, new TossOAuthClient(defaultProperties()), defaultProperties());
+
+        assertThatThrownBy(() -> manager.getAccessToken(CONNECTION_ID))
+                .isInstanceOf(BrokerException.class);
+
+        assertThat(provider.currentCalls).hasValue(2);
+        assertThat(provider.decryptCalls).hasValue(1);
+        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID, 5))).isNull();
+        assertThat(redis.opsForValue().get(tokenKey(CONNECTION_ID, 6))).isNull();
+        server.verify(1, postRequestedFor(urlEqualTo("/oauth2/token")));
+    }
+
+    @Test
+    void tokenSnapshotToStringIsMasked() {
+        assertThat(new TossAccessToken("secret-token", 9).toString())
+                .doesNotContain("secret-token")
+                .contains("****");
+    }
+
     private TossTokenManager manager(TossApiProperties properties) {
         return new TossTokenManager(redis, provider(), new TossOAuthClient(properties), properties);
     }
 
     private TossCredentialProvider provider() {
-        return brokerConnectionId -> new TossCredentials("client-" + brokerConnectionId, "secret-" + brokerConnectionId);
+        return new TossCredentialProvider() {
+            @Override
+            public TossCredentialMetadata current(UUID brokerConnectionId) {
+                return new TossCredentialMetadata(1);
+            }
+
+            @Override
+            public TossCredentials decrypt(UUID brokerConnectionId, long expectedRevision) {
+                return new TossCredentials("client-" + brokerConnectionId, "secret-" + brokerConnectionId);
+            }
+        };
+    }
+
+    private TossCredentialProvider blockingProvider(CountDownLatch lockAcquired, CountDownLatch unblockCredentials) {
+        return new TossCredentialProvider() {
+            @Override
+            public TossCredentialMetadata current(UUID brokerConnectionId) {
+                return new TossCredentialMetadata(1);
+            }
+
+            @Override
+            public TossCredentials decrypt(UUID brokerConnectionId, long expectedRevision) {
+                lockAcquired.countDown();
+                try {
+                    assertThat(unblockCredentials.await(2, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(exception);
+                }
+                return new TossCredentials("client-" + brokerConnectionId, "secret-" + brokerConnectionId);
+            }
+        };
     }
 
     private TossApiProperties defaultProperties() {
@@ -335,8 +436,43 @@ class TossTokenManagerRedisIntegrationTest {
                                 """.formatted(token, expiresInSeconds))));
     }
 
-    private String tokenKey(UUID brokerConnectionId) {
-        return "broker:toss:oauth:v1:" + brokerConnectionId;
+    private String tokenKey(UUID brokerConnectionId, long credentialRevision) {
+        return "broker:toss:oauth:v2:" + brokerConnectionId + ":" + credentialRevision;
+    }
+
+    private static BrokerException temporary(String message) {
+        return new BrokerException(BrokerErrorCategory.TEMPORARY, null, null, null, null, true, message);
+    }
+
+    private static class CountingProvider implements TossCredentialProvider {
+        final AtomicInteger currentCalls = new AtomicInteger();
+        final AtomicInteger decryptCalls = new AtomicInteger();
+        final AtomicLong revision;
+        Runnable afterDecrypt = () -> { };
+
+        CountingProvider(long revision) {
+            this(new AtomicLong(revision));
+        }
+
+        CountingProvider(AtomicLong revision) {
+            this.revision = revision;
+        }
+
+        @Override
+        public TossCredentialMetadata current(UUID brokerConnectionId) {
+            currentCalls.incrementAndGet();
+            return new TossCredentialMetadata(revision.get());
+        }
+
+        @Override
+        public TossCredentials decrypt(UUID brokerConnectionId, long expectedRevision) {
+            decryptCalls.incrementAndGet();
+            if (expectedRevision != revision.get()) {
+                throw temporary("credential revision changed");
+            }
+            afterDecrypt.run();
+            return new TossCredentials("client-" + brokerConnectionId, "secret-" + brokerConnectionId);
+        }
     }
 
     private void startServer() {
