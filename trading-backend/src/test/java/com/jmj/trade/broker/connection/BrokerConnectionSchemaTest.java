@@ -38,6 +38,14 @@ class BrokerConnectionSchemaTest extends PostgresIntegrationTest {
 
     @Test
     void migratesEmptyDatabaseThroughV4() {
+        flyway = Flyway.configure()
+                .dataSource(
+                        POSTGRES.getJdbcUrl(),
+                        POSTGRES.getUsername(),
+                        POSTGRES.getPassword())
+                .target("4")
+                .cleanDisabled(false)
+                .load();
         flyway.migrate();
 
         assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("4");
@@ -61,6 +69,7 @@ class BrokerConnectionSchemaTest extends PostgresIntegrationTest {
                         POSTGRES.getJdbcUrl(),
                         POSTGRES.getUsername(),
                         POSTGRES.getPassword())
+                .target("4")
                 .cleanDisabled(false)
                 .load();
         flyway.migrate();

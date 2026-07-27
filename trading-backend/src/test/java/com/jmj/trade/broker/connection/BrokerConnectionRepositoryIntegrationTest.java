@@ -40,7 +40,7 @@ class BrokerConnectionRepositoryIntegrationTest extends PostgresIntegrationTest 
 
     @BeforeEach
     void cleanConnections() {
-        jdbcTemplate.execute("TRUNCATE broker_connections, users");
+        jdbcTemplate.execute("TRUNCATE broker_connections, users CASCADE");
     }
 
     @Test

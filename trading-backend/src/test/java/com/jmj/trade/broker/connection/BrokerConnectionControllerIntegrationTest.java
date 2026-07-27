@@ -78,7 +78,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext)
                 .apply(springSecurity())
                 .build();
-        jdbcTemplate.execute("TRUNCATE broker_connections, users");
+        jdbcTemplate.execute("TRUNCATE broker_connections, users CASCADE");
         brokerAdapter.reset();
     }
 

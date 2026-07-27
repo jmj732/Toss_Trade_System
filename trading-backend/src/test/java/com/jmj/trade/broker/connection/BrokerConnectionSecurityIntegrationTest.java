@@ -134,7 +134,7 @@ class BrokerConnectionSecurityIntegrationTest extends PostgresIntegrationTest {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext)
                 .apply(springSecurity())
                 .build();
-        jdbcTemplate.execute("TRUNCATE broker_connections, users");
+        jdbcTemplate.execute("TRUNCATE broker_connections, users CASCADE");
         brokerAdapter.reset();
         startRedisTemplate();
         redis.getConnectionFactory().getConnection().serverCommands().flushAll();
