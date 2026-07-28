@@ -4,16 +4,22 @@ import { createElement as h, useEffect, useRef, useState } from "react";
 
 import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
+import { EventWorkflow } from "./event-workflow.js";
 import {
   actOnProposal,
   analyzePortfolio,
   createBrokerConnection,
+  createEvent,
   createSingleFlight,
   deleteBrokerConnection,
+  listEvents,
   loadDashboard,
+  loadEvent,
   loadSession,
   logout,
+  reanalyzeEvent,
   replaceBrokerCredentials,
+  reviewEvent,
   syncPortfolio,
   verifyBrokerConnection
 } from "../lib/api.js";
@@ -23,6 +29,8 @@ export default function Home() {
   const [connectionId, setConnectionId] = useState("");
   const [connection, setConnection] = useState(null);
   const [dashboard, setDashboard] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [selectedEvent, setSelectedEvent] = useState(null);
   const [busyAction, setBusyAction] = useState(null);
   const [busyOrderId, setBusyOrderId] = useState(null);
   const [error, setError] = useState("");
@@ -37,7 +45,13 @@ export default function Home() {
     event.preventDefault();
     setError("");
     try {
-      setDashboard(await loadDashboard(connectionId.trim()));
+      const id = connectionId.trim();
+      const [nextDashboard, nextEvents] = await Promise.all([
+        loadDashboard(id),
+        listEvents(id)
+      ]);
+      setDashboard(nextDashboard);
+      setEvents(nextEvents);
     } catch (value) {
       setError(value.message);
     }
@@ -106,7 +120,53 @@ export default function Home() {
         setConnectionId("");
         setConnection(null);
         setDashboard(null);
+        setEvents([]);
+        setSelectedEvent(null);
       }
+    });
+  }
+
+  function eventCreate(command) {
+    const id = connectionId.trim();
+    return runMutation("event-create", async () => {
+      const created = await createEvent(id, command, session);
+      const [nextDashboard, nextEvents, detail] = await Promise.all([
+        loadDashboard(id),
+        listEvents(id),
+        loadEvent(id, created.id)
+      ]);
+      setDashboard(nextDashboard);
+      setEvents(nextEvents);
+      setSelectedEvent(detail);
+    });
+  }
+
+  function eventSelect(eventId) {
+    return runMutation("event-load", async () => {
+      setSelectedEvent(await loadEvent(connectionId.trim(), eventId));
+    });
+  }
+
+  function eventReanalyze(eventId) {
+    const id = connectionId.trim();
+    return runMutation("event-analysis", async () => {
+      await reanalyzeEvent(id, eventId, session);
+      const [nextEvents, detail] = await Promise.all([
+        listEvents(id),
+        loadEvent(id, eventId)
+      ]);
+      setEvents(nextEvents);
+      setSelectedEvent(detail);
+    });
+  }
+
+  function eventReview(eventId, status, version) {
+    const id = connectionId.trim();
+    return runMutation("event-review", async () => {
+      const detail = await reviewEvent(
+        id, eventId, status, version, session, crypto.randomUUID());
+      setSelectedEvent(detail);
+      setEvents(await listEvents(id));
     });
   }
 
@@ -149,6 +209,8 @@ export default function Home() {
             setConnectionId(event.target.value);
             setConnection(null);
             setDashboard(null);
+            setEvents([]);
+            setSelectedEvent(null);
           },
           placeholder: "00000000-0000-0000-0000-000000000000",
           required: true
@@ -162,6 +224,18 @@ export default function Home() {
         busyAction,
         onCredentials: credentialsAction,
         onCommand: brokerAction
+      }),
+      h(EventWorkflow, {
+        key: connectionId.trim(),
+        positions: dashboard?.portfolio?.data?.positions ?? [],
+        events,
+        selectedEvent,
+        connectionId: connectionId.trim(),
+        busyAction,
+        onCreate: eventCreate,
+        onSelect: eventSelect,
+        onReanalyze: eventReanalyze,
+        onReview: eventReview
       })),
     dashboard ? h(DashboardView, {
       dashboard,

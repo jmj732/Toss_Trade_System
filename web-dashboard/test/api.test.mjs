@@ -5,12 +5,17 @@ import {
   actOnProposal,
   analyzePortfolio,
   createBrokerConnection,
+  createEvent,
   createSingleFlight,
   deleteBrokerConnection,
+  listEvents,
   loadDashboard,
+  loadEvent,
   loadSession,
   logout,
+  reanalyzeEvent,
   replaceBrokerCredentials,
+  reviewEvent,
   syncPortfolio,
   verifyBrokerConnection
 } from "../lib/api.js";
@@ -159,4 +164,66 @@ test("single-flight returns one promise and runs one mutation", async () => {
   assert.equal(calls, 1);
   finish("done");
   assert.equal(await first, "done");
+});
+
+test("manual event commands use owned paths, CSRF, version, and idempotency", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json(url.endsWith("/events")
+      ? [{ id: "event-1", reviewStatus: "PENDING" }]
+      : { id: "event-1", reviewStatus: "CONFIRMED" });
+  };
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+  const command = {
+    source: "MANUAL",
+    sourceEventId: "fed-rate-1",
+    type: "MACRO",
+    summary: "Rate decision",
+    affectedSymbols: ["NVDA"],
+    occurredAt: "2026-07-28T00:00:00.000Z"
+  };
+
+  await createEvent("connection/1", command, session, fetcher);
+  await listEvents("connection/1", fetcher);
+  await loadEvent("connection/1", "event/1", fetcher);
+  await reanalyzeEvent("connection/1", "event/1", session, fetcher);
+  await reviewEvent(
+    "connection/1", "event/1", "CONFIRMED", 2, session, "idem-1", fetcher);
+
+  assert.deepEqual(calls.map(([url, options]) => [
+    url,
+    options.method,
+    options.headers?.["X-CSRF-TOKEN"],
+    options.headers?.["Idempotency-Key"],
+    options.body && JSON.parse(options.body)
+  ]), [
+    ["/api/v1/broker-connections/connection%2F1/events",
+      "POST", "csrf", undefined, command],
+    ["/api/v1/broker-connections/connection%2F1/events",
+      undefined, undefined, undefined, undefined],
+    ["/api/v1/broker-connections/connection%2F1/events/event%2F1",
+      undefined, undefined, undefined, undefined],
+    ["/api/v1/broker-connections/connection%2F1/events/event%2F1/reanalyze",
+      "POST", "csrf", undefined, undefined],
+    ["/api/v1/broker-connections/connection%2F1/events/event%2F1/review",
+      "POST", "csrf", "idem-1", { status: "CONFIRMED", expectedVersion: 2 }]
+  ]);
+});
+
+test("manual event duplicate exposes only public code", async () => {
+  await assert.rejects(
+    createEvent(
+      "connection-1",
+      {
+        source: "MANUAL",
+        sourceEventId: "duplicate",
+        type: "MACRO",
+        summary: "Duplicate",
+        affectedSymbols: ["NVDA"],
+        occurredAt: "2026-07-28T00:00:00.000Z"
+      },
+      { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" },
+      async () => json({ code: "EVENT_ALREADY_EXISTS" }, 409)),
+    { message: "EVENT_ALREADY_EXISTS", status: 409 });
 });

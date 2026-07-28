@@ -58,8 +58,18 @@ export async function logout(session, fetcher = fetch) {
   return body(response);
 }
 
-async function brokerCommand(path, method, session, payload, fetcher) {
-  const headers = { [session.csrfHeaderName]: session.csrfToken };
+async function brokerCommand(
+  path,
+  method,
+  session,
+  payload,
+  fetcher,
+  extraHeaders = {}
+) {
+  const headers = {
+    ...extraHeaders,
+    [session.csrfHeaderName]: session.csrfToken
+  };
   if (payload) {
     headers["content-type"] = "application/json";
   }
@@ -138,4 +148,53 @@ export function createSingleFlight() {
     });
     return active;
   };
+}
+
+function eventPath(connectionId, suffix = "") {
+  return `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/events${suffix}`;
+}
+
+async function readEvent(path, fetcher) {
+  return body(await fetcher(path, { credentials: "same-origin" }));
+}
+
+export function createEvent(connectionId, command, session, fetcher = fetch) {
+  return brokerCommand(
+    eventPath(connectionId), "POST", session, command, fetcher);
+}
+
+export function listEvents(connectionId, fetcher = fetch) {
+  return readEvent(eventPath(connectionId), fetcher);
+}
+
+export function loadEvent(connectionId, eventId, fetcher = fetch) {
+  return readEvent(
+    eventPath(connectionId, `/${encodeURIComponent(eventId)}`), fetcher);
+}
+
+export function reanalyzeEvent(connectionId, eventId, session, fetcher = fetch) {
+  return brokerCommand(
+    eventPath(connectionId, `/${encodeURIComponent(eventId)}/reanalyze`),
+    "POST",
+    session,
+    null,
+    fetcher);
+}
+
+export function reviewEvent(
+  connectionId,
+  eventId,
+  status,
+  expectedVersion,
+  session,
+  idempotencyKey,
+  fetcher = fetch
+) {
+  return brokerCommand(
+    eventPath(connectionId, `/${encodeURIComponent(eventId)}/review`),
+    "POST",
+    session,
+    { status, expectedVersion },
+    fetcher,
+    { "Idempotency-Key": idempotencyKey });
 }
