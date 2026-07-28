@@ -1,24 +1,46 @@
 package com.jmj.trade.security;
 
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.authentication.logout.HttpStatusReturningLogoutSuccessHandler;
 
 @Configuration(proxyBeanMethods = false)
 public class SecurityConfiguration {
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            ObjectProvider<ClientRegistrationRepository> registrations,
+            ObjectProvider<InternalOidcUserService> oidcUsers
+    ) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
-                .requestMatchers("/api/v1/broker-connections/**", "/api/v1/paper-orders/**").authenticated()
+                .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll());
         http.httpBasic(httpBasic -> httpBasic.disable());
         http.formLogin(formLogin -> formLogin.disable());
+        http.csrf(Customizer.withDefaults());
+        http.sessionManagement(session ->
+                session.sessionFixation(fixation -> fixation.changeSessionId()));
+        http.logout(logout -> logout
+                .invalidateHttpSession(true)
+                .clearAuthentication(true)
+                .deleteCookies("JSESSIONID")
+                .logoutSuccessHandler(new HttpStatusReturningLogoutSuccessHandler(
+                        HttpStatus.NO_CONTENT)));
         http.exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)));
+        if (registrations.getIfAvailable() != null) {
+            http.oauth2Login(oauth2 -> oauth2
+                    .userInfoEndpoint(userInfo ->
+                            userInfo.oidcUserService(oidcUsers.getObject())));
+        }
         return http.build();
     }
 }
