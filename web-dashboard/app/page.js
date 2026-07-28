@@ -7,6 +7,7 @@ import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
 import { NotificationCenter } from "./notification-center.js";
 import { PortfolioHistoryView } from "./portfolio-history-view.js";
+import { RiskPolicyPanel } from "./risk-policy-view.js";
 import {
   actOnProposal,
   analyzePortfolio,
@@ -19,6 +20,8 @@ import {
   loadDashboard,
   loadEvent,
   loadPortfolioHistory,
+  loadRiskPolicy,
+  loadRiskPolicyHistory,
   loadSession,
   loadUnreadCount,
   logout,
@@ -27,6 +30,7 @@ import {
   replaceBrokerCredentials,
   reviewEvent,
   syncPortfolio,
+  updateRiskPolicy,
   verifyBrokerConnection
 } from "../lib/api.js";
 
@@ -48,6 +52,9 @@ export default function Home() {
   const [portfolioHistory, setPortfolioHistory] = useState(null);
   const [historyQuery, setHistoryQuery] = useState(DEFAULT_HISTORY_QUERY);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [riskPolicyOpen, setRiskPolicyOpen] = useState(false);
+  const [riskPolicy, setRiskPolicy] = useState(null);
+  const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
   const singleFlight = useRef();
   singleFlight.current ??= createSingleFlight();
 
@@ -60,6 +67,7 @@ export default function Home() {
       return;
     }
     loadUnreadCount().then(result => setUnreadCount(result.count)).catch(() => {});
+    loadRiskPolicy().then(setRiskPolicy).catch(value => setError(value.message));
   }, [session]);
 
   async function openDashboard(event) {
@@ -232,6 +240,35 @@ export default function Home() {
     });
   }
 
+  function riskPolicyToggle() {
+    setRiskPolicyOpen(open => !open);
+  }
+
+  function riskPolicyUpdate(input) {
+    return runMutation("risk-policy-update", async () => {
+      try {
+        setRiskPolicy(await updateRiskPolicy(input, session));
+      } catch (value) {
+        // A stale expectedVersion means someone else's edit already landed — refresh so the
+        // next Save attempt uses the real current version instead of retrying the same one
+        // forever.
+        if (value.message === "RISK_POLICY_VERSION_CONFLICT") {
+          setRiskPolicy(await loadRiskPolicy());
+        }
+        throw value;
+      }
+      if (riskPolicyHistory.length > 0) {
+        setRiskPolicyHistory(await loadRiskPolicyHistory(50));
+      }
+    });
+  }
+
+  function riskPolicyLoadHistory() {
+    return runMutation("risk-policy-history", async () => {
+      setRiskPolicyHistory(await loadRiskPolicyHistory(50));
+    });
+  }
+
   async function signOut() {
     setError("");
     try {
@@ -261,6 +298,15 @@ export default function Home() {
         h("p", { className: "eyebrow" }, "TRADE CONTROL"),
         h("h1", null, "Portfolio cockpit")),
       h("div", { className: "topbar-actions" },
+        h(RiskPolicyPanel, {
+          policy: riskPolicy,
+          history: riskPolicyHistory,
+          open: riskPolicyOpen,
+          busy: Boolean(busyAction),
+          onToggle: riskPolicyToggle,
+          onUpdate: riskPolicyUpdate,
+          onLoadHistory: riskPolicyLoadHistory
+        }),
         h(NotificationCenter, {
           unreadCount,
           notifications,

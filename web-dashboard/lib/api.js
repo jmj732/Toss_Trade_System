@@ -249,3 +249,24 @@ export function markNotificationRead(notificationId, session, fetcher = fetch) {
     null,
     fetcher);
 }
+
+function riskPolicyPath(suffix = "") {
+  return `/api/v1/risk-policy${suffix}`;
+}
+
+export function loadRiskPolicy(fetcher = fetch) {
+  return readEvent(riskPolicyPath(), fetcher);
+}
+
+export function loadRiskPolicyHistory(limit, fetcher = fetch) {
+  const params = new URLSearchParams();
+  if (limit) {
+    params.set("limit", String(limit));
+  }
+  const query = params.toString();
+  return readEvent(riskPolicyPath(`/history${query ? `?${query}` : ""}`), fetcher);
+}
+
+export function updateRiskPolicy(input, session, fetcher = fetch) {
+  return brokerCommand(riskPolicyPath(), "PUT", session, input, fetcher);
+}

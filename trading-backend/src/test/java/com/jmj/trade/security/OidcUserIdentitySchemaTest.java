@@ -35,7 +35,7 @@ class OidcUserIdentitySchemaTest extends PostgresIntegrationTest {
                 VALUES (?, 'https://issuer.example', 'subject-1')
                 """, mappedId);
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("14");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("15");
         assertThat(queryId("https://issuer.example", "subject-1")).isEqualTo(mappedId);
     }
 

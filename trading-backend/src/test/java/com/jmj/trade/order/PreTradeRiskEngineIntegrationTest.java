@@ -86,6 +86,8 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
                          broker_orders,
                          order_intents,
                          broker_accounts,
+                         risk_policy_history,
+                         risk_policies,
                          broker_connections,
                          users
                 CASCADE
@@ -286,6 +288,94 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
         assertThat(orderIntentRepository.findById(intentId).orElseThrow().getStatus())
                 .isEqualTo(OrderIntentStatus.APPROVED);
         assertThat(attemptRepository.count()).isZero();
+    }
+
+    @Test
+    void perUserPolicyOverridesGlobalDefaultsAndIsRecordedOnTheDecision() {
+        var owner = owner();
+        successfulSnapshot(owner, "KNOWN", true, "1000", "1000", "MSFT", "100");
+        // Global default max-quantity is 5 (test class properties); a tighter per-user
+        // policy of 2 must block a quantity-of-3 order the global default would approve.
+        seedPolicy(owner.userId(), 1, "1000000", "1000", "2", "0.50");
+
+        var intentId = intent(owner, OrderSide.BUY, OrderType.MARKET, "AAPL", "3", null);
+        var decision = riskEngine.approve(command(owner, intentId, "1", T0));
+
+        assertThat(decision.approved()).isFalse();
+        assertThat(decision.reasons()).extracting(Enum::name).contains("MAX_QUANTITY_EXCEEDED");
+        assertThat(jdbc.queryForObject(
+                "SELECT risk_policy_version FROM pre_trade_risk_decisions WHERE order_intent_id = ?",
+                Long.class, intentId)).isEqualTo(1L);
+    }
+
+    @Test
+    void existingDecisionsKeepThePolicyVersionThatWasActiveWhenTheyWereMade() {
+        var owner = owner();
+        successfulSnapshot(owner, "KNOWN", true, "1000", "1000", "MSFT", "100");
+        // v1 is permissive enough to approve a quantity-1 order.
+        seedPolicy(owner.userId(), 1, "1000000", "1000", "5", "0.50");
+        var firstIntentId = intent(owner, OrderSide.BUY, OrderType.MARKET, "AAPL", "1", null);
+        var firstDecision = riskEngine.approve(command(owner, firstIntentId, "1", T0));
+        assertThat(firstDecision.approved()).isTrue();
+
+        // v2 is tight enough that the SAME quantity-1 order would now be blocked — proving
+        // this is a real threshold change, not just a version-number bump.
+        seedPolicy(owner.userId(), 2, "1000000", "1000", "0.5", "0.50");
+        var secondIntentId = intent(owner, OrderSide.BUY, OrderType.MARKET, "AAPL", "1", null);
+        var secondDecision = riskEngine.approve(command(owner, secondIntentId, "1", T0));
+        assertThat(secondDecision.approved()).isFalse();
+
+        // The policy edit must not retroactively alter what was already decided under v1.
+        assertThat(jdbc.queryForMap("""
+                SELECT outcome, risk_policy_version FROM pre_trade_risk_decisions
+                 WHERE order_intent_id = ?
+                """, firstIntentId))
+                .containsEntry("outcome", "APPROVED")
+                .containsEntry("risk_policy_version", 1L);
+        assertThat(jdbc.queryForMap("""
+                SELECT outcome, risk_policy_version FROM pre_trade_risk_decisions
+                 WHERE order_intent_id = ?
+                """, secondIntentId))
+                .containsEntry("outcome", "BLOCKED")
+                .containsEntry("risk_policy_version", 2L);
+    }
+
+    @Test
+    void decisionsWithNoCustomPolicyRecordVersionZero() {
+        var owner = owner();
+        successfulSnapshot(owner, "KNOWN", true, "1000", "1000", "MSFT", "100");
+        var intentId = intent(owner, OrderSide.BUY, OrderType.MARKET, "AAPL", "1", null);
+
+        riskEngine.approve(command(owner, intentId, "1", T0));
+
+        assertThat(jdbc.queryForObject(
+                "SELECT risk_policy_version FROM pre_trade_risk_decisions WHERE order_intent_id = ?",
+                Long.class, intentId)).isEqualTo(0L);
+    }
+
+    private void seedPolicy(
+            UUID userId,
+            long version,
+            String maxOrderAmountKrw,
+            String maxOrderAmountUsd,
+            String maxQuantity,
+            String maxConcentration
+    ) {
+        jdbc.update("""
+                INSERT INTO risk_policies (
+                    user_id, version, max_order_amount_krw, max_order_amount_usd,
+                    max_quantity, max_concentration, updated_at, updated_by
+                ) VALUES (?, ?, CAST(? AS numeric), CAST(? AS numeric), CAST(? AS numeric),
+                          CAST(? AS numeric), ?, 'test')
+                ON CONFLICT (user_id) DO UPDATE SET
+                    version = EXCLUDED.version,
+                    max_order_amount_krw = EXCLUDED.max_order_amount_krw,
+                    max_order_amount_usd = EXCLUDED.max_order_amount_usd,
+                    max_quantity = EXCLUDED.max_quantity,
+                    max_concentration = EXCLUDED.max_concentration,
+                    updated_at = EXCLUDED.updated_at
+                """, userId, version, maxOrderAmountKrw, maxOrderAmountUsd, maxQuantity,
+                maxConcentration, at(T0));
     }
 
     private void assertBlocked(Owner owner, String reason) {

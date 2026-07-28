@@ -13,6 +13,8 @@ import {
   loadDashboard,
   loadEvent,
   loadPortfolioHistory,
+  loadRiskPolicy,
+  loadRiskPolicyHistory,
   loadSession,
   loadUnreadCount,
   logout,
@@ -21,6 +23,7 @@ import {
   replaceBrokerCredentials,
   reviewEvent,
   syncPortfolio,
+  updateRiskPolicy,
   verifyBrokerConnection
 } from "../lib/api.js";
 import nextConfig from "../next.config.js";
@@ -279,6 +282,45 @@ test("loads portfolio history with an optional from/to/maxPoints query", async (
     ["/api/v1/broker-connections/connection%2F1/portfolio-history"
       + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&maxPoints=30", "same-origin"]
   ]);
+});
+
+test("loads the risk policy and its optional-limit history", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json(url.includes("history") ? [] : { version: 0, customized: false });
+  };
+
+  await loadRiskPolicy(fetcher);
+  await loadRiskPolicyHistory(undefined, fetcher);
+  await loadRiskPolicyHistory(25, fetcher);
+
+  assert.deepEqual(calls.map(([url, options]) => [url, options.credentials]), [
+    ["/api/v1/risk-policy", "same-origin"],
+    ["/api/v1/risk-policy/history", "same-origin"],
+    ["/api/v1/risk-policy/history?limit=25", "same-origin"]
+  ]);
+});
+
+test("updates the risk policy with the session CSRF token", async () => {
+  let call;
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+  const input = {
+    expectedVersion: 0, maxOrderAmountKrw: 500000, maxOrderAmountUsd: 500,
+    maxQuantity: 2, maxConcentration: 0.3
+  };
+
+  await updateRiskPolicy(input, session, async (...args) => {
+    call = args;
+    return json({ version: 1, customized: true });
+  });
+
+  const [url, options] = call;
+  assert.equal(url, "/api/v1/risk-policy");
+  assert.equal(options.method, "PUT");
+  assert.equal(options.credentials, "same-origin");
+  assert.equal(options.headers["X-CSRF-TOKEN"], "csrf");
+  assert.deepEqual(JSON.parse(options.body), input);
 });
 
 test("manual event duplicate exposes only public code", async () => {

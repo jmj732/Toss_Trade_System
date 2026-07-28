@@ -11,6 +11,7 @@ import com.jmj.trade.order.OrderIntentTransitionService;
 import com.jmj.trade.order.PaperOrderWorkflowService;
 import com.jmj.trade.order.PaperTradingBroker;
 import com.jmj.trade.order.PreTradeRiskEngine;
+import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -99,10 +100,7 @@ public class CredentialVaultConfiguration {
             OrderIntentRepository orderIntentRepository,
             OrderIntentTransitionService transitionService,
             JdbcTemplate jdbcTemplate,
-            @Value("${pre-trade-risk.max-order-amount.krw:10000000}") java.math.BigDecimal maxKrwOrderAmount,
-            @Value("${pre-trade-risk.max-order-amount.usd:10000}") java.math.BigDecimal maxUsdOrderAmount,
-            @Value("${pre-trade-risk.max-quantity:100}") java.math.BigDecimal maxQuantity,
-            @Value("${pre-trade-risk.max-concentration:0.25}") java.math.BigDecimal maxConcentration
+            RiskPolicyService riskPolicyService
     ) {
         return new PreTradeRiskEngine(
                 portfolioReadService,
@@ -110,10 +108,7 @@ public class CredentialVaultConfiguration {
                 orderIntentRepository,
                 transitionService,
                 jdbcTemplate,
-                maxKrwOrderAmount,
-                maxUsdOrderAmount,
-                maxQuantity,
-                maxConcentration);
+                riskPolicyService);
     }
 
     @Bean

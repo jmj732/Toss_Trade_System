@@ -3,6 +3,7 @@ package com.jmj.trade.order;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
+import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,10 +24,7 @@ public class PreTradeRiskEngine {
     private final OrderIntentRepository intentRepository;
     private final OrderIntentTransitionService transitionService;
     private final JdbcTemplate jdbc;
-    private final BigDecimal maxKrwOrderAmount;
-    private final BigDecimal maxUsdOrderAmount;
-    private final BigDecimal maxQuantity;
-    private final BigDecimal maxConcentration;
+    private final RiskPolicyService riskPolicyService;
 
     public PreTradeRiskEngine(
             PortfolioReadService portfolioReadService,
@@ -34,23 +32,14 @@ public class PreTradeRiskEngine {
             OrderIntentRepository intentRepository,
             OrderIntentTransitionService transitionService,
             JdbcTemplate jdbc,
-            BigDecimal maxKrwOrderAmount,
-            BigDecimal maxUsdOrderAmount,
-            BigDecimal maxQuantity,
-            BigDecimal maxConcentration
+            RiskPolicyService riskPolicyService
     ) {
         this.portfolioReadService = Objects.requireNonNull(portfolioReadService, "portfolioReadService");
         this.paperTradingBroker = Objects.requireNonNull(paperTradingBroker, "paperTradingBroker");
         this.intentRepository = Objects.requireNonNull(intentRepository, "intentRepository");
         this.transitionService = Objects.requireNonNull(transitionService, "transitionService");
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
-        this.maxKrwOrderAmount = positive(maxKrwOrderAmount, "maxKrwOrderAmount");
-        this.maxUsdOrderAmount = positive(maxUsdOrderAmount, "maxUsdOrderAmount");
-        this.maxQuantity = positive(maxQuantity, "maxQuantity");
-        this.maxConcentration = positive(maxConcentration, "maxConcentration");
-        if (maxConcentration.compareTo(BigDecimal.ONE) > 0) {
-            throw new IllegalArgumentException("maxConcentration must not exceed 1");
-        }
+        this.riskPolicyService = Objects.requireNonNull(riskPolicyService, "riskPolicyService");
     }
 
     @Transactional
@@ -134,6 +123,7 @@ public class PreTradeRiskEngine {
             Instant evaluatedAt,
             PortfolioReadService.PortfolioView portfolio
     ) {
+        var policy = riskPolicyService.current(userId);
         var reasons = new ArrayList<Reason>();
         if (portfolio.stale()) {
             reasons.add(Reason.STALE_SNAPSHOT);
@@ -147,10 +137,10 @@ public class PreTradeRiskEngine {
 
         var price = intent.getType() == OrderType.LIMIT ? intent.getLimitPrice() : referencePrice;
         var orderAmount = price.multiply(intent.getQuantity());
-        if (intent.getQuantity().compareTo(maxQuantity) > 0) {
+        if (intent.getQuantity().compareTo(policy.maxQuantity()) > 0) {
             reasons.add(Reason.MAX_QUANTITY_EXCEEDED);
         }
-        if (orderAmount.compareTo(maxOrderAmount(intent.getTradingCurrency())) > 0) {
+        if (orderAmount.compareTo(maxOrderAmount(policy, intent.getTradingCurrency())) > 0) {
             reasons.add(Reason.MAX_ORDER_AMOUNT_EXCEEDED);
         }
         if (intent.getSide() == OrderSide.BUY) {
@@ -160,6 +150,7 @@ public class PreTradeRiskEngine {
                     intent,
                     portfolio,
                     orderAmount,
+                    policy.maxConcentration(),
                     reasons);
         }
 
@@ -171,6 +162,7 @@ public class PreTradeRiskEngine {
                 portfolio.syncRunId(),
                 orderAmount,
                 intent.getTradingCurrency(),
+                policy.version(),
                 evaluatedAt);
     }
 
@@ -180,6 +172,7 @@ public class PreTradeRiskEngine {
             OrderIntent intent,
             PortfolioReadService.PortfolioView portfolio,
             BigDecimal orderAmount,
+            BigDecimal maxConcentration,
             List<Reason> reasons
     ) {
         var reserved = reserved(
@@ -253,8 +246,9 @@ public class PreTradeRiskEngine {
         jdbc.update("""
                 INSERT INTO pre_trade_risk_decisions (
                     id, order_intent_id, user_id, broker_connection_id, snapshot_id,
-                    phase, outcome, reason_codes, order_amount, currency, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    phase, outcome, reason_codes, order_amount, currency,
+                    risk_policy_version, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 decision.id(),
                 intentId,
@@ -266,6 +260,7 @@ public class PreTradeRiskEngine {
                 decision.reasons().stream().map(Enum::name).reduce((left, right) -> left + "," + right).orElse(""),
                 decision.orderAmount(),
                 decision.currency().name(),
+                decision.riskPolicyVersion(),
                 OffsetDateTime.ofInstant(decision.evaluatedAt(), ZoneOffset.UTC));
     }
 
@@ -303,8 +298,8 @@ public class PreTradeRiskEngine {
                 .orElseThrow(BrokerConnectionException::notFound);
     }
 
-    private BigDecimal maxOrderAmount(Currency currency) {
-        return currency == Currency.KRW ? maxKrwOrderAmount : maxUsdOrderAmount;
+    private static BigDecimal maxOrderAmount(RiskPolicyService.RiskPolicySnapshot policy, Currency currency) {
+        return currency == Currency.KRW ? policy.maxOrderAmountKrw() : policy.maxOrderAmountUsd();
     }
 
     private static void requireApprovalCommand(ApprovalCommand command) {
@@ -377,6 +372,7 @@ public class PreTradeRiskEngine {
             UUID snapshotId,
             BigDecimal orderAmount,
             Currency currency,
+            long riskPolicyVersion,
             Instant evaluatedAt
     ) {
     }

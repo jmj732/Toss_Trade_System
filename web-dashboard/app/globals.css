@@ -242,12 +242,38 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
 .trend-legend span::before { border-radius: 999px; content: ""; height: .5rem; width: .5rem; }
 .trend-krw-dot::before { background: var(--accent); }
 .trend-usd-dot::before { background: var(--warning); }
+.risk-policy { position: relative; }
+.risk-policy-panel {
+  margin-top: .5rem;
+  max-height: 70vh;
+  overflow-y: auto;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  width: 22rem;
+  z-index: 10;
+}
+.risk-policy-panel > header { align-items: center; display: flex; justify-content: space-between; }
+.risk-policy-panel .customized, .risk-policy-panel .default {
+  border: 1px solid #355064;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: .65rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+  padding: .15rem .45rem;
+}
+.risk-policy-panel .customized { border-color: #2d7458; color: var(--accent); }
+.risk-policy-form { display: grid; gap: .5rem; }
+.risk-policy-form label { color: var(--muted); }
+.risk-policy-history li { align-items: flex-start; }
+.risk-policy-history li > div { display: flex; flex-direction: column; gap: .15rem; }
 
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }
   .credential-grid, .event-layout { grid-template-columns: 1fr; }
   .event-detail > header { display: block; }
   .connection-form > div, .list li { align-items: stretch; flex-direction: column; }
-  .notification-panel { left: 0; right: 0; width: auto; }
+  .notification-panel, .risk-policy-panel { left: 0; right: 0; width: auto; }
   .history-filter { align-items: stretch; flex-direction: column; }
 }
