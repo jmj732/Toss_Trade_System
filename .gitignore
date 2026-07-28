@@ -7,3 +7,5 @@
 .env.*
 !.env.example
 !.env.mock.example
+backups/
+*.dump
