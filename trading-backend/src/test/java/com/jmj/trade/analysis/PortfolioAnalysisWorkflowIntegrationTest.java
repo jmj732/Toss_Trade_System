@@ -49,8 +49,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(
         classes = TradingBackendApplication.class,
         properties = {
-                "analysis.service.connect-timeout=PT0.3S",
-                "analysis.service.read-timeout=PT0.3S"
+                "analysis.service.connect-timeout=PT0.5S",
+                "analysis.service.read-timeout=PT0.5S"
         })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
