@@ -38,13 +38,20 @@ already` error seen in CI; restoring it makes it pass.
 
 ## Fix
 
-- **`pom.xml`**: `maven-surefire-plugin` sets
-  `spring.datasource.hikari.maximum-pool-size=2` / `minimum-idle=0` as system properties —
-  a suite-wide default every `@SpringBootTest` picks up unless it already overrides the
-  property itself (a `@SpringBootTest(properties = ...)` override always wins over a system
-  property, so the five existing per-class overrides are unaffected). This generalizes the
-  pattern those five classes already used, rather than leaving everyone else on Hikari's
-  unconstrained default. Baseline peak drops from ~150 to roughly 18 × 2 ≈ 36.
+- **`pom.xml`**: `maven-surefire-plugin` sets `spring.datasource.hikari.maximum-pool-size=2`
+  as a system property — a suite-wide default every `@SpringBootTest` picks up unless it
+  already overrides the property itself (a `@SpringBootTest(properties = ...)` override
+  always wins over a system property, so the five existing per-class overrides are
+  unaffected). This generalizes the pattern those five classes already used, rather than
+  leaving everyone else on Hikari's unconstrained default. Baseline peak drops from ~150 to
+  roughly 18 × 2 ≈ 36. `minimum-idle` is deliberately left unset (defaults to
+  maximum-pool-size): the first CI run of this fix broke
+  `PortfolioAnalysisWorkflowIntegrationTest` (`Status expected:<200> but was:<504>`) because
+  an earlier version also forced `minimum-idle=0`, and re-establishing a physical connection
+  on every checkout cost enough latency on GitHub Actions' runner to blow the test's own
+  500ms outbound HTTP timeout budget. `minimum-idle` doesn't affect the exhaustion ceiling —
+  that's bounded by `maximum-pool-size` alone — so dropping it only restores pre-warmed
+  connections without reopening the original bug.
 - One test (`NotificationOutboxProcessorIntegrationTest`) runs 4 concurrent threads against
   its own context and had no prior pool-size override; gave it an explicit
   `maximum-pool-size=4` so its own concurrency isn't constrained by the new suite-wide

@@ -10,9 +10,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * subclass in the same Surefire fork reuses that same running container.
  *
  * <p>The primary fix for CI's "FATAL: sorry, too many clients already" failure is the
- * {@code spring.datasource.hikari.maximum-pool-size}/{@code minimum-idle} surefire system
- * properties in pom.xml, which cap every {@code @SpringBootTest} context's connection pool
- * instead of leaving most of them on Hikari's unconstrained default (10 max, minIdle = max).
+ * {@code spring.datasource.hikari.maximum-pool-size} surefire system property in pom.xml,
+ * which caps every {@code @SpringBootTest} context's connection pool ceiling instead of
+ * leaving most of them on Hikari's unconstrained default (10 max, minIdle = max).
  * Measured peak before that fix: ~150 simultaneous connections from ~18 distinct cached
  * contexts, comfortably past Postgres's own default {@code max_connections=100}; with the
  * pool cap, baseline peak drops to roughly 18 × 2 ≈ 36. The higher {@code max_connections}

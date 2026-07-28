@@ -133,10 +133,19 @@
                         Hikari's unconstrained default. @SpringBootTest(properties = ...) on
                         an individual class still wins over a system property, so those
                         existing per-class overrides are unaffected.
+
+                        Deliberately NOT setting minimum-idle here: it doesn't change the
+                        exhaustion ceiling (still bounded by maximum-pool-size alone), only
+                        how many connections stay pre-warmed. Setting it to 0 forced every
+                        checkout to re-establish a physical connection, which cost enough
+                        latency under GitHub Actions' runner to blow a test's own 500ms
+                        outbound HTTP timeout budget (PortfolioAnalysisWorkflowIntegrationTest)
+                        — a real regression caught on the first CI run of this fix. Leaving
+                        minimum-idle unset lets Hikari default it to maximum-pool-size, so
+                        connections stay pre-warmed while the peak count is still capped.
                     -->
                     <systemPropertyVariables>
                         <spring.datasource.hikari.maximum-pool-size>2</spring.datasource.hikari.maximum-pool-size>
-                        <spring.datasource.hikari.minimum-idle>0</spring.datasource.hikari.minimum-idle>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
