@@ -4,6 +4,7 @@ import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.analysis.PortfolioAnalysisWorkflowService;
+import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -173,7 +174,8 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                         "http://localhost:8000",
                         Duration.ofSeconds(1),
                         Duration.ofSeconds(1),
-                        Duration.ofMinutes(15)));
+                        Duration.ofMinutes(15),
+                        new NotificationOutboxWriter(countingJdbc, objectMapper)));
 
         service.read(USER_ID, connectionId);
         var oneRowQueries = countingJdbc.count();

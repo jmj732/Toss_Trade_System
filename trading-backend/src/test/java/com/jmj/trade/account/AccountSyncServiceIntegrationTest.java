@@ -16,6 +16,7 @@ import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.MoneyByCurrency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
+import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -66,7 +68,8 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
         transactions = new AccountSyncTransactions(
                 jdbc,
                 new TransactionTemplate(new DataSourceTransactionManager(dataSource)),
-                Duration.ofMinutes(15));
+                Duration.ofMinutes(15),
+                new NotificationOutboxWriter(jdbc, new ObjectMapper()));
         service = new AccountSyncService(transactions, broker);
     }
 

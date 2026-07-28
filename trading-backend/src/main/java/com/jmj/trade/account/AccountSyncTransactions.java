@@ -5,6 +5,8 @@ import com.jmj.trade.broker.AccountSnapshot;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.MoneyByCurrency;
 import com.jmj.trade.broker.Position;
+import com.jmj.trade.notification.NotificationEventType;
+import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -14,6 +16,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,15 +27,18 @@ public final class AccountSyncTransactions {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
     private final Duration staleAfter;
+    private final NotificationOutboxWriter notifications;
 
     public AccountSyncTransactions(
             JdbcTemplate jdbc,
             TransactionTemplate transaction,
-            Duration staleAfter
+            Duration staleAfter,
+            NotificationOutboxWriter notifications
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transaction = Objects.requireNonNull(transaction, "transaction");
         this.staleAfter = Objects.requireNonNull(staleAfter, "staleAfter");
+        this.notifications = Objects.requireNonNull(notifications, "notifications");
         if (staleAfter.isZero() || staleAfter.isNegative()) {
             throw new IllegalArgumentException("staleAfter must be positive");
         }
@@ -115,21 +121,35 @@ public final class AccountSyncTransactions {
             insertAccount(target, account, snapshot, completedAt);
             positions.forEach(position -> insertPosition(target, position, completedAt));
             capacities.forEach(capacity -> insertCapacity(target, capacity, completedAt));
+            notifications.emit(target.userId(), NotificationEventType.SYNC_SUCCEEDED, target.runId(),
+                    Map.of("connectionId", target.connectionId(), "syncRunId", target.runId()),
+                    completedAt.toInstant());
             return new AccountSyncResult(target.runId(), completedAt.toInstant());
         });
     }
 
     void fail(SyncTarget target, String errorCode) {
-        transaction.executeWithoutResult(status -> jdbc.update("""
-                UPDATE account_sync_runs
-                   SET status = 'FAILED',
-                       error_code = ?,
-                       completed_at = ?
-                 WHERE id = ?
-                   AND user_id = ?
-                   AND broker_connection_id = ?
-                   AND status = 'RUNNING'
-                """, errorCode, now(), target.runId(), target.userId(), target.connectionId()));
+        transaction.executeWithoutResult(status -> {
+            var failedAt = now();
+            var updated = jdbc.update("""
+                    UPDATE account_sync_runs
+                       SET status = 'FAILED',
+                           error_code = ?,
+                           completed_at = ?
+                     WHERE id = ?
+                       AND user_id = ?
+                       AND broker_connection_id = ?
+                       AND status = 'RUNNING'
+                    """, errorCode, failedAt, target.runId(), target.userId(), target.connectionId());
+            if (updated == 1) {
+                notifications.emit(target.userId(), NotificationEventType.SYNC_FAILED, target.runId(),
+                        Map.of(
+                                "connectionId", target.connectionId(),
+                                "syncRunId", target.runId(),
+                                "errorCode", errorCode),
+                        failedAt.toInstant());
+            }
+        });
     }
 
     Optional<AccountSyncResult> latestSuccessful(UUID userId, UUID connectionId) {

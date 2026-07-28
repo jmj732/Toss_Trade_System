@@ -205,10 +205,35 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
   justify-content: space-between;
 }
 .event-review-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.topbar-actions { align-items: center; display: flex; gap: .6rem; }
+.notification-center { position: relative; }
+.notification-toggle { align-items: center; display: flex; gap: .4rem; }
+.badge {
+  background: var(--danger);
+  border-radius: 999px;
+  color: #1a0507;
+  font-size: .7rem;
+  font-weight: 800;
+  padding: .1rem .45rem;
+}
+.notification-panel {
+  margin-top: .5rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  width: 22rem;
+  z-index: 10;
+}
+.notification-list li { align-items: flex-start; }
+.notification-list li > div { display: flex; flex-direction: column; gap: .15rem; }
+.notification-list li.read { opacity: .6; }
 
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }
   .credential-grid, .event-layout { grid-template-columns: 1fr; }
   .event-detail > header { display: block; }
   .connection-form > div, .list li { align-items: stretch; flex-direction: column; }
+  .notification-panel { left: 0; right: 0; width: auto; }
 }

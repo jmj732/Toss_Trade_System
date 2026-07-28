@@ -5,6 +5,7 @@ import { createElement as h, useEffect, useRef, useState } from "react";
 import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
+import { NotificationCenter } from "./notification-center.js";
 import {
   actOnProposal,
   analyzePortfolio,
@@ -13,10 +14,13 @@ import {
   createSingleFlight,
   deleteBrokerConnection,
   listEvents,
+  listNotifications,
   loadDashboard,
   loadEvent,
   loadSession,
+  loadUnreadCount,
   logout,
+  markNotificationRead,
   reanalyzeEvent,
   replaceBrokerCredentials,
   reviewEvent,
@@ -34,12 +38,22 @@ export default function Home() {
   const [busyAction, setBusyAction] = useState(null);
   const [busyOrderId, setBusyOrderId] = useState(null);
   const [error, setError] = useState("");
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const singleFlight = useRef();
   singleFlight.current ??= createSingleFlight();
 
   useEffect(() => {
     loadSession().then(setSession).catch(value => setError(value.message));
   }, []);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+    loadUnreadCount().then(result => setUnreadCount(result.count)).catch(() => {});
+  }, [session]);
 
   async function openDashboard(event) {
     event.preventDefault();
@@ -170,6 +184,27 @@ export default function Home() {
     });
   }
 
+  function notificationsToggle() {
+    const next = !notificationsOpen;
+    setNotificationsOpen(next);
+    if (next) {
+      listNotifications(false, 50).then(setNotifications)
+        .catch(value => setError(value.message));
+    }
+  }
+
+  function notificationMarkRead(notificationId) {
+    return runMutation("notification-read", async () => {
+      await markNotificationRead(notificationId, session);
+      const [nextNotifications, nextUnreadCount] = await Promise.all([
+        listNotifications(false, 50),
+        loadUnreadCount()
+      ]);
+      setNotifications(nextNotifications);
+      setUnreadCount(nextUnreadCount.count);
+    });
+  }
+
   async function signOut() {
     setError("");
     try {
@@ -198,7 +233,16 @@ export default function Home() {
       h("div", null,
         h("p", { className: "eyebrow" }, "TRADE CONTROL"),
         h("h1", null, "Portfolio cockpit")),
-      h("button", { type: "button", className: "secondary", onClick: signOut }, "Sign out")),
+      h("div", { className: "topbar-actions" },
+        h(NotificationCenter, {
+          unreadCount,
+          notifications,
+          open: notificationsOpen,
+          busy: Boolean(busyAction),
+          onToggle: notificationsToggle,
+          onMarkRead: notificationMarkRead
+        }),
+        h("button", { type: "button", className: "secondary", onClick: signOut }, "Sign out"))),
     h("form", { className: "connection-form", onSubmit: openDashboard },
       h("label", { htmlFor: "connection-id" }, "Broker connection UUID"),
       h("div", null,

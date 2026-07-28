@@ -1,5 +1,7 @@
 package com.jmj.trade.analysis;
 
+import com.jmj.trade.notification.NotificationEventType;
+import com.jmj.trade.notification.NotificationOutboxWriter;
 import com.jmj.trade.observability.CorrelationIdFilter;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,6 +28,7 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -40,6 +43,7 @@ public final class PortfolioAnalysisWorkflowService {
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
     private final Duration staleAfter;
+    private final NotificationOutboxWriter notifications;
 
     public PortfolioAnalysisWorkflowService(
             JdbcTemplate jdbc,
@@ -48,13 +52,15 @@ public final class PortfolioAnalysisWorkflowService {
             @Value("${analysis.service.base-url:http://localhost:8000}") String baseUrl,
             @Value("${analysis.service.connect-timeout:PT2S}") Duration connectTimeout,
             @Value("${analysis.service.read-timeout:PT5S}") Duration readTimeout,
-            @Value("${portfolio.analysis.stale-after:PT15M}") Duration staleAfter
+            @Value("${portfolio.analysis.stale-after:PT15M}") Duration staleAfter,
+            NotificationOutboxWriter notifications
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transaction = new TransactionTemplate(
                 Objects.requireNonNull(transactionManager, "transactionManager"));
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.staleAfter = positive(staleAfter, "staleAfter");
+        this.notifications = Objects.requireNonNull(notifications, "notifications");
         var httpClient = HttpClient.newBuilder()
                 .connectTimeout(positive(connectTimeout, "connectTimeout"))
                 .version(HttpClient.Version.HTTP_1_1)
@@ -370,6 +376,9 @@ public final class PortfolioAnalysisWorkflowService {
                 """, UUID.randomUUID(), started.runId(), started.userId(), started.connectionId(),
                 started.snapshotId(), response.schemaVersion(), response.status().name(),
                 responseJson, completedAt);
+        notifications.emit(started.userId(), NotificationEventType.ANALYSIS_SUCCEEDED, started.runId(),
+                Map.of("connectionId", started.connectionId(), "analysisRunId", started.runId()),
+                completedAt.toInstant());
         return new AnalysisView(
                 started.runId(),
                 started.snapshotId(),
@@ -378,16 +387,27 @@ public final class PortfolioAnalysisWorkflowService {
     }
 
     private void fail(Start started, String errorCode) {
-        transaction.executeWithoutResult(status -> jdbc.update("""
-                UPDATE analysis_runs
-                   SET status = 'FAILED',
-                       error_code = ?,
-                       completed_at = ?
-                 WHERE id = ?
-                   AND user_id = ?
-                   AND broker_connection_id = ?
-                   AND status = 'RUNNING'
-                """, errorCode, now(), started.runId(), started.userId(), started.connectionId()));
+        transaction.executeWithoutResult(status -> {
+            var failedAt = now();
+            var updated = jdbc.update("""
+                    UPDATE analysis_runs
+                       SET status = 'FAILED',
+                           error_code = ?,
+                           completed_at = ?
+                     WHERE id = ?
+                       AND user_id = ?
+                       AND broker_connection_id = ?
+                       AND status = 'RUNNING'
+                    """, errorCode, failedAt, started.runId(), started.userId(), started.connectionId());
+            if (updated == 1) {
+                notifications.emit(started.userId(), NotificationEventType.ANALYSIS_FAILED, started.runId(),
+                        Map.of(
+                                "connectionId", started.connectionId(),
+                                "analysisRunId", started.runId(),
+                                "errorCode", errorCode),
+                        failedAt.toInstant());
+            }
+        });
     }
 
     private boolean ownedConnection(UUID userId, UUID connectionId) {

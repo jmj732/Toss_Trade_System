@@ -17,6 +17,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -69,6 +70,9 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private EventIntelligenceService eventIntelligenceService;
 
     private MockMvc mockMvc;
 
@@ -124,6 +128,47 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM intelligence_events", Integer.class))
                 .isEqualTo(1);
+    }
+
+    @Test
+    void notificationOutboxFailureRollsBackTheEventInsertToo() {
+        var connectionId = insertConnection(USER_ID);
+        jdbc.execute("""
+                CREATE FUNCTION fail_notification_outbox_insert()
+                RETURNS TRIGGER
+                LANGUAGE plpgsql
+                AS $$
+                BEGIN
+                    RAISE EXCEPTION 'forced notification outbox failure';
+                END;
+                $$;
+                """);
+        jdbc.execute("""
+                CREATE TRIGGER trg_fail_notification_outbox_insert
+                BEFORE INSERT ON notification_outbox_events
+                FOR EACH ROW
+                EXECUTE FUNCTION fail_notification_outbox_insert()
+                """);
+        try {
+            assertThatThrownBy(() -> eventIntelligenceService.create(
+                    USER_ID,
+                    connectionId,
+                    new EventIntelligenceService.CreateEvent(
+                            "manual", "wire-rollback", "EARNINGS", "NVIDIA earnings",
+                            List.of("NVDA"), Instant.parse("2026-07-28T00:00:00Z"))))
+                    .isInstanceOf(RuntimeException.class);
+
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM intelligence_events", Integer.class))
+                    .isZero();
+            assertThat(jdbc.queryForObject(
+                    "SELECT count(*) FROM notification_outbox_events", Integer.class))
+                    .isZero();
+        } finally {
+            // notification_outbox_events is shared by every other test in the notification
+            // feature, so this table-wide trigger must not outlive this test.
+            jdbc.execute("DROP TRIGGER trg_fail_notification_outbox_insert ON notification_outbox_events");
+            jdbc.execute("DROP FUNCTION fail_notification_outbox_insert()");
+        }
     }
 
     @Test

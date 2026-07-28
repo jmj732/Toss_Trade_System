@@ -1,6 +1,8 @@
 package com.jmj.trade.order;
 
 import com.jmj.trade.broker.Currency;
+import com.jmj.trade.notification.NotificationEventType;
+import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +26,7 @@ public class OrderSubmissionService {
     private final OrderSubmissionAuditLogRepository submissionAuditLogRepository;
     private final OrderSubmissionOutboxEventRepository submissionOutboxEventRepository;
     private final JdbcTemplate jdbcTemplate;
+    private final NotificationOutboxWriter notifications;
 
     public OrderSubmissionService(
             OrderIntentRepository orderIntentRepository,
@@ -35,7 +38,8 @@ public class OrderSubmissionService {
             OrderIntentOutboxEventRepository intentOutboxEventRepository,
             OrderSubmissionAuditLogRepository submissionAuditLogRepository,
             OrderSubmissionOutboxEventRepository submissionOutboxEventRepository,
-            JdbcTemplate jdbcTemplate
+            JdbcTemplate jdbcTemplate,
+            NotificationOutboxWriter notifications
     ) {
         this.orderIntentRepository = orderIntentRepository;
         this.idempotencyKeyRepository = idempotencyKeyRepository;
@@ -47,6 +51,7 @@ public class OrderSubmissionService {
         this.submissionAuditLogRepository = submissionAuditLogRepository;
         this.submissionOutboxEventRepository = submissionOutboxEventRepository;
         this.jdbcTemplate = jdbcTemplate;
+        this.notifications = notifications;
     }
 
     @Transactional
@@ -486,6 +491,12 @@ public class OrderSubmissionService {
                 intent.getId(), fromStatus, intent.getStatus(), actor, terminalReason, occurredAt));
         intentOutboxEventRepository.saveAndFlush(OrderIntentOutboxEvent.statusChanged(
                 intent.getId(), fromStatus, intent.getStatus(), actor, terminalReason, occurredAt));
+        if (OrderIntent.isTerminal(intent.getStatus()) && intent.getUserId() != null) {
+            notifications.emit(intent.getUserId(), NotificationEventType.ORDER_RESULT, intent.getId(),
+                    OrderIntent.orderResultPayload(
+                            intent.getId(), intent.getSymbol(), intent.getStatus(), terminalReason),
+                    occurredAt);
+        }
     }
 
     private void submissionLedger(

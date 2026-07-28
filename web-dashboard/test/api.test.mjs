@@ -9,10 +9,13 @@ import {
   createSingleFlight,
   deleteBrokerConnection,
   listEvents,
+  listNotifications,
   loadDashboard,
   loadEvent,
   loadSession,
+  loadUnreadCount,
   logout,
+  markNotificationRead,
   reanalyzeEvent,
   replaceBrokerCredentials,
   reviewEvent,
@@ -209,6 +212,53 @@ test("manual event commands use owned paths, CSRF, version, and idempotency", as
     ["/api/v1/broker-connections/connection%2F1/events/event%2F1/review",
       "POST", "csrf", "idem-1", { status: "CONFIRMED", expectedVersion: 2 }]
   ]);
+});
+
+test("lists notifications with optional unread filter and limit as query params", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json([{ id: "notification-1" }]);
+  };
+
+  await listNotifications(false, undefined, fetcher);
+  await listNotifications(true, 10, fetcher);
+
+  assert.deepEqual(calls.map(([url]) => url), [
+    "/api/v1/notifications",
+    "/api/v1/notifications?unreadOnly=true&limit=10"
+  ]);
+  assert.deepEqual(calls.map(([, options]) => options.credentials),
+    ["same-origin", "same-origin"]);
+});
+
+test("loads the unread notification count", async () => {
+  let call;
+  await loadUnreadCount(async (...args) => {
+    call = args;
+    return json({ count: 3 });
+  }).then(result => assert.equal(result.count, 3));
+
+  assert.deepEqual(call, [
+    "/api/v1/notifications/unread-count", { credentials: "same-origin" }
+  ]);
+});
+
+test("marks a notification read with the session CSRF token", async () => {
+  let call;
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+
+  await markNotificationRead("notification/1", session, async (...args) => {
+    call = args;
+    return json({ id: "notification/1", readAt: "2026-07-28T00:00:00Z" });
+  });
+
+  const [url, options] = call;
+  assert.equal(url, "/api/v1/notifications/notification%2F1/read");
+  assert.equal(options.method, "POST");
+  assert.equal(options.credentials, "same-origin");
+  assert.equal(options.headers["X-CSRF-TOKEN"], "csrf");
+  assert.equal(options.body, undefined);
 });
 
 test("manual event duplicate exposes only public code", async () => {

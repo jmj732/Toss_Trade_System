@@ -198,3 +198,32 @@ export function reviewEvent(
     fetcher,
     { "Idempotency-Key": idempotencyKey });
 }
+
+function notificationPath(suffix = "") {
+  return `/api/v1/notifications${suffix}`;
+}
+
+export async function listNotifications(unreadOnly, limit, fetcher = fetch) {
+  const params = new URLSearchParams();
+  if (unreadOnly) {
+    params.set("unreadOnly", "true");
+  }
+  if (limit) {
+    params.set("limit", String(limit));
+  }
+  const query = params.toString();
+  return readEvent(notificationPath(query ? `?${query}` : ""), fetcher);
+}
+
+export function loadUnreadCount(fetcher = fetch) {
+  return readEvent(notificationPath("/unread-count"), fetcher);
+}
+
+export function markNotificationRead(notificationId, session, fetcher = fetch) {
+  return brokerCommand(
+    notificationPath(`/${encodeURIComponent(notificationId)}/read`),
+    "POST",
+    session,
+    null,
+    fetcher);
+}

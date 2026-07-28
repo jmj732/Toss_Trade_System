@@ -12,6 +12,8 @@ import org.hibernate.annotations.DynamicUpdate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 @Entity
@@ -237,13 +239,27 @@ public class OrderIntent {
         };
     }
 
-    private static boolean isTerminal(OrderIntentStatus status) {
+    static boolean isTerminal(OrderIntentStatus status) {
         return status == OrderIntentStatus.COMPLETED
                 || status == OrderIntentStatus.PARTIALLY_COMPLETED
                 || status == OrderIntentStatus.CANCELED
                 || status == OrderIntentStatus.REJECTED
                 || status == OrderIntentStatus.EXPIRED
                 || status == OrderIntentStatus.BLOCKED;
+    }
+
+    static Map<String, Object> orderResultPayload(
+            UUID orderIntentId,
+            String symbol,
+            OrderIntentStatus status,
+            String terminalReason
+    ) {
+        var payload = new LinkedHashMap<String, Object>();
+        payload.put("orderIntentId", orderIntentId);
+        payload.put("symbol", symbol);
+        payload.put("status", status.name());
+        payload.put("terminalReason", terminalReason);
+        return payload;
     }
 
     private void requireTerminalData(

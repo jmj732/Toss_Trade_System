@@ -5,6 +5,7 @@ import com.jmj.trade.account.AccountSyncTransactions;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.toss.TossCredentialProvider;
+import com.jmj.trade.notification.NotificationOutboxWriter;
 import com.jmj.trade.order.OrderIntentRepository;
 import com.jmj.trade.order.OrderIntentTransitionService;
 import com.jmj.trade.order.PaperOrderWorkflowService;
@@ -73,12 +74,14 @@ public class CredentialVaultConfiguration {
     AccountSyncTransactions accountSyncTransactions(
             JdbcTemplate jdbcTemplate,
             PlatformTransactionManager transactionManager,
-            @Value("${portfolio.sync.stale-after:PT15M}") Duration staleAfter
+            @Value("${portfolio.sync.stale-after:PT15M}") Duration staleAfter,
+            NotificationOutboxWriter notificationOutboxWriter
     ) {
         return new AccountSyncTransactions(
                 jdbcTemplate,
                 new TransactionTemplate(transactionManager),
-                staleAfter);
+                staleAfter,
+                notificationOutboxWriter);
     }
 
     @Bean

@@ -2,8 +2,11 @@ package com.jmj.trade.intelligence;
 
 import com.jmj.trade.analysis.PortfolioAnalysisContract;
 import com.jmj.trade.analysis.PortfolioAnalysisWorkflowService;
+import com.jmj.trade.notification.NotificationEventType;
+import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -16,6 +19,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -23,23 +27,27 @@ import java.util.function.Function;
 import java.util.stream.Stream;
 
 @Service
-public final class EventIntelligenceService {
+public class EventIntelligenceService {
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
     private final PortfolioAnalysisWorkflowService analysis;
+    private final NotificationOutboxWriter notifications;
 
     EventIntelligenceService(
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
-            PortfolioAnalysisWorkflowService analysis
+            PortfolioAnalysisWorkflowService analysis,
+            NotificationOutboxWriter notifications
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.analysis = Objects.requireNonNull(analysis, "analysis");
+        this.notifications = Objects.requireNonNull(notifications, "notifications");
     }
 
-    EventView create(UUID userId, UUID connectionId, CreateEvent command) {
+    @Transactional
+    public EventView create(UUID userId, UUID connectionId, CreateEvent command) {
         requireId(userId);
         requireId(connectionId);
         if (!ownedConnection(userId, connectionId)) {
@@ -70,6 +78,13 @@ public final class EventIntelligenceService {
             throw new EventIntelligenceException(
                     EventIntelligenceException.Code.EVENT_ALREADY_EXISTS);
         }
+        notifications.emit(userId, NotificationEventType.EVENT_CREATED, eventId,
+                Map.of(
+                        "connectionId", connectionId,
+                        "eventId", eventId,
+                        "type", type,
+                        "affectedSymbols", symbols),
+                collectedAt.toInstant());
         return new EventView(eventId, source, sourceEventId, type, summary, symbols,
                 command.occurredAt(), collectedAt.toInstant());
     }

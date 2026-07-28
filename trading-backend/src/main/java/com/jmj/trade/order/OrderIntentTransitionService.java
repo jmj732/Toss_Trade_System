@@ -1,5 +1,7 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.notification.NotificationEventType;
+import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,15 +15,18 @@ public class OrderIntentTransitionService {
     private final OrderIntentRepository orderIntentRepository;
     private final OrderIntentAuditLogRepository auditLogRepository;
     private final OrderIntentOutboxEventRepository outboxEventRepository;
+    private final NotificationOutboxWriter notifications;
 
     public OrderIntentTransitionService(
             OrderIntentRepository orderIntentRepository,
             OrderIntentAuditLogRepository auditLogRepository,
-            OrderIntentOutboxEventRepository outboxEventRepository
+            OrderIntentOutboxEventRepository outboxEventRepository,
+            NotificationOutboxWriter notifications
     ) {
         this.orderIntentRepository = orderIntentRepository;
         this.auditLogRepository = auditLogRepository;
         this.outboxEventRepository = outboxEventRepository;
+        this.notifications = notifications;
     }
 
     @Transactional
@@ -89,6 +94,12 @@ public class OrderIntentTransitionService {
                 actor,
                 terminalReason,
                 occurredAt));
+        if (OrderIntent.isTerminal(intent.getStatus()) && intent.getUserId() != null) {
+            notifications.emit(intent.getUserId(), NotificationEventType.ORDER_RESULT, intent.getId(),
+                    OrderIntent.orderResultPayload(
+                            intent.getId(), intent.getSymbol(), intent.getStatus(), terminalReason),
+                    occurredAt);
+        }
     }
 
     @FunctionalInterface
