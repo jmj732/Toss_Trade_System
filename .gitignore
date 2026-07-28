@@ -3,3 +3,7 @@
 **/__pycache__/
 **/.venv/
 *.py[cod]
+.env
+.env.*
+!.env.example
+!.env.mock.example

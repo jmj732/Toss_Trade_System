@@ -7,3 +7,14 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db,redis
+  health:
+    readinessstate:
+      enabled: true

@@ -78,6 +78,11 @@ def health() -> dict[str, str]:
     return {"status": "UP"}
 
 
+@app.get("/internal/v1/ready")
+def ready() -> dict[str, str]:
+    return {"status": "READY"}
+
+
 @app.post(
     "/internal/v1/portfolio-analyses",
     response_model=PortfolioAnalysisResponse,

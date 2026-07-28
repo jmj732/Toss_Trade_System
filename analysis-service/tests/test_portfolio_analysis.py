@@ -97,3 +97,10 @@ def test_health_is_process_only() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "UP"}
+
+
+def test_readiness_reports_analysis_service_ready() -> None:
+    response = asyncio.run(request("GET", "/internal/v1/ready"))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "READY"}

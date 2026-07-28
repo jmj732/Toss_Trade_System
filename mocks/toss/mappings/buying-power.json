@@ -1,0 +1,20 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/buying-power"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": {
+        "currency": "{{request.query.currency}}",
+        "cashBuyingPower": "0"
+      }
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock"
+    },
+    "transformers": ["response-template"]
+  }
+}

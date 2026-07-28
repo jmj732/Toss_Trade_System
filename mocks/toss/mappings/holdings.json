@@ -1,0 +1,33 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/holdings"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": {
+        "totalPurchaseAmount": {"krw": "0", "usd": "0"},
+        "marketValue": {
+          "amount": {"krw": "0", "usd": "0"},
+          "amountAfterCost": {"krw": "0", "usd": "0"}
+        },
+        "profitLoss": {
+          "amount": {"krw": "0", "usd": "0"},
+          "amountAfterCost": {"krw": "0", "usd": "0"},
+          "rate": "0",
+          "rateAfterCost": "0"
+        },
+        "dailyProfitLoss": {
+          "amount": {"krw": "0", "usd": "0"},
+          "rate": "0"
+        },
+        "items": []
+      }
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock"
+    }
+  }
+}

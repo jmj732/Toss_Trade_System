@@ -1,0 +1,22 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/accounts"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": [
+        {
+          "accountNo": "0000000000",
+          "accountSeq": 1,
+          "accountType": "GENERAL"
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock"
+    }
+  }
+}

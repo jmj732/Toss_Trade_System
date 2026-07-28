@@ -1,13 +1,16 @@
 package com.jmj.trade.broker.toss;
 
 import com.jmj.trade.broker.BrokerAdapter;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 @AutoConfiguration
+@AutoConfigureAfter(DataRedisAutoConfiguration.class)
 @ConditionalOnBean(TossCredentialProvider.class)
 @EnableConfigurationProperties(TossApiProperties.class)
 public class TossBrokerConfiguration {

@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/prices"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {"result": []},
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock"
+    }
+  }
+}
