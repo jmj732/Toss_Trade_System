@@ -39,6 +39,7 @@ public final class PortfolioAnalysisWorkflowService {
     private final TransactionTemplate transaction;
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
+    private final Duration staleAfter;
 
     public PortfolioAnalysisWorkflowService(
             JdbcTemplate jdbc,
@@ -46,12 +47,14 @@ public final class PortfolioAnalysisWorkflowService {
             ObjectMapper objectMapper,
             @Value("${analysis.service.base-url:http://localhost:8000}") String baseUrl,
             @Value("${analysis.service.connect-timeout:PT2S}") Duration connectTimeout,
-            @Value("${analysis.service.read-timeout:PT5S}") Duration readTimeout
+            @Value("${analysis.service.read-timeout:PT5S}") Duration readTimeout,
+            @Value("${portfolio.analysis.stale-after:PT15M}") Duration staleAfter
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transaction = new TransactionTemplate(
                 Objects.requireNonNull(transactionManager, "transactionManager"));
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.staleAfter = positive(staleAfter, "staleAfter");
         var httpClient = HttpClient.newBuilder()
                 .connectTimeout(positive(connectTimeout, "connectTimeout"))
                 .version(HttpClient.Version.HTTP_1_1)
@@ -209,6 +212,18 @@ public final class PortfolioAnalysisWorkflowService {
         if (selection.successId() == null) {
             throw new PortfolioAnalysisException(PortfolioAnalysisException.Code.SNAPSHOT_NOT_FOUND);
         }
+
+        jdbc.update("""
+                UPDATE analysis_runs
+                   SET status = 'FAILED',
+                       error_code = 'FAILED_STALE',
+                       completed_at = CURRENT_TIMESTAMP
+                 WHERE user_id = ?
+                   AND broker_connection_id = ?
+                   AND status = 'RUNNING'
+                   AND started_at < CURRENT_TIMESTAMP
+                       - CAST(? AS bigint) * INTERVAL '1 millisecond'
+                """, userId, connectionId, staleAfter.toMillis());
 
         var runId = UUID.randomUUID();
         var inserted = jdbc.update("""

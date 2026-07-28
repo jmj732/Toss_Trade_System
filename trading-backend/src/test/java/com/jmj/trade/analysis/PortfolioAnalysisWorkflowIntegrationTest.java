@@ -20,8 +20,13 @@ import org.springframework.web.context.WebApplicationContext;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
@@ -74,6 +79,9 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
     private CorrelationIdFilter correlationIdFilter;
+
+    @Autowired
+    private PortfolioAnalysisWorkflowService service;
 
     private MockMvc mockMvc;
 
@@ -254,6 +262,171 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                 runId)).hasMessageContaining("already finished");
     }
 
+    @Test
+    void staleRunningAnalysisIsFailedBeforeNewRunWithoutDeletingSuccessfulResults() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var syncRunId = insertSuccessfulPortfolio(connectionId, USER_ID);
+        stubSuccess(0);
+        var firstRunId = UUID.fromString(jsonString(postAnalysis(connectionId), "runId"));
+
+        var abandonedRunId = UUID.randomUUID();
+        insertRunningAnalysis(connectionId, USER_ID, abandonedRunId, syncRunId, minutesAgo(16));
+
+        var secondRunId = UUID.fromString(jsonString(postAnalysis(connectionId), "runId"));
+
+        assertThat(jdbc.queryForMap(
+                "SELECT status, error_code FROM analysis_runs WHERE id = ?", abandonedRunId))
+                .containsEntry("status", "FAILED")
+                .containsEntry("error_code", "FAILED_STALE");
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM analysis_runs WHERE id = ?", String.class, firstRunId))
+                .isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM analysis_results WHERE analysis_run_id = ?",
+                Integer.class, firstRunId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM analysis_runs WHERE id = ?", String.class, secondRunId))
+                .isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void runningAnalysisJustUnderStaleThresholdStillBlocksNewExecution() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var syncRunId = insertSuccessfulPortfolio(connectionId, USER_ID);
+        var runningId = UUID.randomUUID();
+        insertRunningAnalysis(connectionId, USER_ID, runningId, syncRunId, secondsAgo(899));
+
+        mockMvc.perform(post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ANALYSIS_ALREADY_RUNNING"));
+
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM analysis_runs WHERE id = ?", String.class, runningId))
+                .isEqualTo("RUNNING");
+    }
+
+    @Test
+    void runningAnalysisJustOverStaleThresholdIsReaped() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var syncRunId = insertSuccessfulPortfolio(connectionId, USER_ID);
+        stubSuccess(0);
+        var runningId = UUID.randomUUID();
+        insertRunningAnalysis(connectionId, USER_ID, runningId, syncRunId, secondsAgo(901));
+
+        mockMvc.perform(post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForMap(
+                "SELECT status, error_code FROM analysis_runs WHERE id = ?", runningId))
+                .containsEntry("status", "FAILED")
+                .containsEntry("error_code", "FAILED_STALE");
+    }
+
+    @Test
+    void concurrentExecutionAgainstOneStaleRunningRowStartsExactlyOneNewRun() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var syncRunId = insertSuccessfulPortfolio(connectionId, USER_ID);
+        stubSuccess(0);
+        var abandonedRunId = UUID.randomUUID();
+        insertRunningAnalysis(connectionId, USER_ID, abandonedRunId, syncRunId, minutesAgo(16));
+
+        var ready = new CountDownLatch(2);
+        var start = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<String> first = executor.submit(() -> attemptExecute(connectionId, ready, start));
+            Future<String> second = executor.submit(() -> attemptExecute(connectionId, ready, start));
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(List.of(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder("SUCCEEDED", "ALREADY_RUNNING");
+        }
+
+        assertThat(jdbc.queryForMap(
+                "SELECT status, error_code FROM analysis_runs WHERE id = ?", abandonedRunId))
+                .containsEntry("status", "FAILED")
+                .containsEntry("error_code", "FAILED_STALE");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM analysis_runs
+                 WHERE broker_connection_id = ? AND status = 'RUNNING'
+                """, Integer.class, connectionId)).isZero();
+    }
+
+    @Test
+    void reapPersistsEvenWhenTheNewAttemptsHttpCallThenFails() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var syncRunId = insertSuccessfulPortfolio(connectionId, USER_ID);
+        stubSuccess(0);
+        var firstRunId = UUID.fromString(jsonString(postAnalysis(connectionId), "runId"));
+
+        var abandonedRunId = UUID.randomUUID();
+        insertRunningAnalysis(connectionId, USER_ID, abandonedRunId, syncRunId, minutesAgo(16));
+        ANALYSIS.resetAll();
+        ANALYSIS.stubFor(post("/internal/v1/portfolio-analyses")
+                .willReturn(aResponse().withStatus(503)));
+
+        mockMvc.perform(post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("ANALYSIS_SERVICE_UNAVAILABLE"));
+
+        assertThat(jdbc.queryForMap(
+                "SELECT status, error_code FROM analysis_runs WHERE id = ?", abandonedRunId))
+                .containsEntry("status", "FAILED")
+                .containsEntry("error_code", "FAILED_STALE");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM analysis_runs
+                 WHERE broker_connection_id = ? AND status = 'RUNNING'
+                """, Integer.class, connectionId)).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM analysis_runs WHERE id = ?", String.class, firstRunId))
+                .isEqualTo("SUCCEEDED");
+
+        mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio-analyses/latest", connectionId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.runId").value(firstRunId.toString()));
+    }
+
+    @Test
+    void readingLatestResultNeverReapsAStaleRunningRow() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertSuccessfulPortfolio(connectionId, USER_ID);
+        stubSuccess(0);
+        postAnalysis(connectionId);
+
+        var syncRunId = jdbc.queryForObject("""
+                SELECT id FROM account_sync_runs
+                 WHERE broker_connection_id = ? AND status = 'SUCCEEDED'
+                """, UUID.class, connectionId);
+        var runningId = UUID.randomUUID();
+        insertRunningAnalysis(connectionId, USER_ID, runningId, syncRunId, minutesAgo(16));
+
+        mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio-analyses/latest", connectionId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM analysis_runs WHERE id = ?", String.class, runningId))
+                .isEqualTo("RUNNING");
+    }
+
+    private String attemptExecute(UUID connectionId, CountDownLatch ready, CountDownLatch start)
+            throws InterruptedException {
+        ready.countDown();
+        start.await();
+        try {
+            service.execute(USER_ID, connectionId);
+            return "SUCCEEDED";
+        } catch (PortfolioAnalysisException exception) {
+            return exception.code().name();
+        }
+    }
+
     private String postAnalysis(UUID connectionId) {
         try {
             return mockMvc.perform(post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId)
@@ -393,6 +566,28 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                 ) VALUES (?, ?, ?, ?, ?, CAST(? AS numeric), ?, ?)
                 """, UUID.randomUUID(), runId, userId, connectionId, currency,
                 amount, SNAPSHOT_TIME, SNAPSHOT_TIME);
+    }
+
+    private void insertRunningAnalysis(
+            UUID connectionId,
+            UUID userId,
+            UUID runId,
+            UUID inputSyncRunId,
+            OffsetDateTime startedAt
+    ) {
+        jdbc.update("""
+                INSERT INTO analysis_runs (
+                    id, user_id, broker_connection_id, input_sync_run_id, status, started_at
+                ) VALUES (?, ?, ?, ?, 'RUNNING', ?)
+                """, runId, userId, connectionId, inputSyncRunId, startedAt);
+    }
+
+    private static OffsetDateTime minutesAgo(int minutes) {
+        return OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(minutes);
+    }
+
+    private static OffsetDateTime secondsAgo(int seconds) {
+        return OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(seconds);
     }
 
     private static String jsonString(String json, String field) {

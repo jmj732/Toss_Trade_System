@@ -269,7 +269,7 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void crashedAnalysisRowIsRejectedNotSilentlyStuckOrDuplicated() throws Exception {
+    void crashedAnalysisRowIsRecoveredAutomaticallyByARealRestartedAnalysis() throws Exception {
         var csrf = bootstrapSession();
         var connectionId = createAndVerifyConnection(csrf);
         mockMvc.perform(csrf.post("/api/v1/broker-connections/{id}/portfolio-syncs", connectionId))
@@ -285,16 +285,12 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
                 """, abandonedRunId, USER_ID, connectionId, syncRunId, minutesAgo(30));
 
         mockMvc.perform(csrf.post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("ANALYSIS_ALREADY_RUNNING"));
-        assertThat(countWhere("analysis_runs", "status = 'RUNNING'")).isEqualTo(1);
-
-        jdbc.update("""
-                UPDATE analysis_runs SET status = 'FAILED', error_code = 'OPS_RECOVERED', completed_at = ?
-                 WHERE id = ?
-                """, OffsetDateTime.now(ZoneOffset.UTC), abandonedRunId);
-        mockMvc.perform(csrf.post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId))
                 .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForMap(
+                "SELECT status, error_code FROM analysis_runs WHERE id = ?", abandonedRunId))
+                .containsEntry("status", "FAILED")
+                .containsEntry("error_code", "FAILED_STALE");
         assertThat(countWhere("analysis_runs", "status = 'SUCCEEDED'")).isEqualTo(1);
     }
 

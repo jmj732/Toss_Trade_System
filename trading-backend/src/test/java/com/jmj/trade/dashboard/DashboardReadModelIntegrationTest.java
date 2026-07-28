@@ -172,7 +172,8 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                         objectMapper,
                         "http://localhost:8000",
                         Duration.ofSeconds(1),
-                        Duration.ofSeconds(1)));
+                        Duration.ofSeconds(1),
+                        Duration.ofMinutes(15)));
 
         service.read(USER_ID, connectionId);
         var oneRowQueries = countingJdbc.count();
