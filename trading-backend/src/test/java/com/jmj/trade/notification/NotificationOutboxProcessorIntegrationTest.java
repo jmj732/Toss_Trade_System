@@ -22,7 +22,12 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(classes = TradingBackendApplication.class)
+// concurrentSweepsPartitionTheBacklogWithoutDoubleProcessing runs 4 threads concurrently;
+// the suite-wide default pool size (2, set in pom.xml) would serialize rather than deadlock
+// them, but this keeps the test's own concurrency genuinely unconstrained by pool size.
+@SpringBootTest(
+        classes = TradingBackendApplication.class,
+        properties = "spring.datasource.hikari.maximum-pool-size=4")
 class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresIntegrationTest {
 
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");

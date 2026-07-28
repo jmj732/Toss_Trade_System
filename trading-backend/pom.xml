@@ -112,6 +112,34 @@
                     <mainClass>com.jmj.trade.TradingBackendApplication</mainClass>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!--
+                        ~18 distinct @SpringBootTest configurations in this suite each get
+                        their own cached ApplicationContext, and most set no Hikari pool
+                        size — Hikari's own default (10 max, minIdle = max) means most of
+                        those contexts hold 10 idle connections apiece against the one
+                        shared Testcontainers Postgres instance from PostgresIntegrationTest,
+                        for as long as they stay in Spring's test context cache. Measured
+                        peak before this change: ~150 simultaneous connections, well past
+                        Postgres's own default max_connections=100 — the direct cause of the
+                        "too many clients already" CI failure this fixes.
+
+                        A handful of classes already cap this per-class (grep
+                        "hikari.maximum-pool-size" under src/test); this generalizes that
+                        same pattern as the default instead of leaving every other class on
+                        Hikari's unconstrained default. @SpringBootTest(properties = ...) on
+                        an individual class still wins over a system property, so those
+                        existing per-class overrides are unaffected.
+                    -->
+                    <systemPropertyVariables>
+                        <spring.datasource.hikari.maximum-pool-size>2</spring.datasource.hikari.maximum-pool-size>
+                        <spring.datasource.hikari.minimum-idle>0</spring.datasource.hikari.minimum-idle>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>
