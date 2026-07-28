@@ -199,6 +199,28 @@ export function reviewEvent(
     { "Idempotency-Key": idempotencyKey });
 }
 
+export function loadPortfolioHistory(
+  connectionId,
+  { from, to, maxPoints } = {},
+  fetcher = fetch
+) {
+  const params = new URLSearchParams();
+  if (from) {
+    params.set("from", from);
+  }
+  if (to) {
+    params.set("to", to);
+  }
+  if (maxPoints) {
+    params.set("maxPoints", String(maxPoints));
+  }
+  const query = params.toString();
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/portfolio-history`
+      + (query ? `?${query}` : ""),
+    fetcher);
+}
+
 function notificationPath(suffix = "") {
   return `/api/v1/notifications${suffix}`;
 }

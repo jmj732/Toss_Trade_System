@@ -6,6 +6,7 @@ import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
 import { NotificationCenter } from "./notification-center.js";
+import { PortfolioHistoryView } from "./portfolio-history-view.js";
 import {
   actOnProposal,
   analyzePortfolio,
@@ -17,6 +18,7 @@ import {
   listNotifications,
   loadDashboard,
   loadEvent,
+  loadPortfolioHistory,
   loadSession,
   loadUnreadCount,
   logout,
@@ -27,6 +29,8 @@ import {
   syncPortfolio,
   verifyBrokerConnection
 } from "../lib/api.js";
+
+const DEFAULT_HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
 
 export default function Home() {
   const [session, setSession] = useState(undefined);
@@ -41,6 +45,9 @@ export default function Home() {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [portfolioHistory, setPortfolioHistory] = useState(null);
+  const [historyQuery, setHistoryQuery] = useState(DEFAULT_HISTORY_QUERY);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const singleFlight = useRef();
   singleFlight.current ??= createSingleFlight();
 
@@ -58,8 +65,9 @@ export default function Home() {
   async function openDashboard(event) {
     event.preventDefault();
     setError("");
+    const id = connectionId.trim();
+    setHistoryQuery(DEFAULT_HISTORY_QUERY);
     try {
-      const id = connectionId.trim();
       const [nextDashboard, nextEvents] = await Promise.all([
         loadDashboard(id),
         listEvents(id)
@@ -68,7 +76,26 @@ export default function Home() {
       setEvents(nextEvents);
     } catch (value) {
       setError(value.message);
+      return;
     }
+    // A history load failure is its own section's problem, not a reason to hide the
+    // portfolio/analysis/events/proposals the user actually opened the connection to see.
+    try {
+      setPortfolioHistory(await loadPortfolioHistory(id, DEFAULT_HISTORY_QUERY));
+    } catch (value) {
+      setError(value.message);
+    }
+  }
+
+  function historyQueryChange(query) {
+    const id = connectionId.trim();
+    setHistoryQuery(query);
+    setHistoryBusy(true);
+    setError("");
+    loadPortfolioHistory(id, query)
+      .then(setPortfolioHistory)
+      .catch(value => setError(value.message))
+      .finally(() => setHistoryBusy(false));
   }
 
   async function orderAction(orderId, action) {
@@ -255,6 +282,8 @@ export default function Home() {
             setDashboard(null);
             setEvents([]);
             setSelectedEvent(null);
+            setPortfolioHistory(null);
+            setHistoryQuery(DEFAULT_HISTORY_QUERY);
           },
           placeholder: "00000000-0000-0000-0000-000000000000",
           required: true
@@ -281,10 +310,18 @@ export default function Home() {
         onReanalyze: eventReanalyze,
         onReview: eventReview
       })),
-    dashboard ? h(DashboardView, {
-      dashboard,
-      busyOrderId,
-      onOrderAction: orderAction
-    }) : h("main", { className: "center compact" },
+    dashboard ? h("div", null,
+      h(DashboardView, {
+        dashboard,
+        busyOrderId,
+        onOrderAction: orderAction
+      }),
+      h(PortfolioHistoryView, {
+        key: connectionId.trim(),
+        history: portfolioHistory,
+        query: historyQuery,
+        busy: historyBusy,
+        onQuery: historyQueryChange
+      })) : h("main", { className: "center compact" },
       h("p", null, "Enter an owned broker connection UUID.")));
 }

@@ -12,6 +12,7 @@ import {
   listNotifications,
   loadDashboard,
   loadEvent,
+  loadPortfolioHistory,
   loadSession,
   loadUnreadCount,
   logout,
@@ -259,6 +260,25 @@ test("marks a notification read with the session CSRF token", async () => {
   assert.equal(options.credentials, "same-origin");
   assert.equal(options.headers["X-CSRF-TOKEN"], "csrf");
   assert.equal(options.body, undefined);
+});
+
+test("loads portfolio history with an optional from/to/maxPoints query", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ stale: false, unavailable: false, data: { points: [] } });
+  };
+
+  await loadPortfolioHistory("connection/1", {}, fetcher);
+  await loadPortfolioHistory(
+    "connection/1", { from: "2026-01-01T00:00:00Z", to: "2026-02-01T00:00:00Z", maxPoints: 30 },
+    fetcher);
+
+  assert.deepEqual(calls.map(([url, options]) => [url, options.credentials]), [
+    ["/api/v1/broker-connections/connection%2F1/portfolio-history", "same-origin"],
+    ["/api/v1/broker-connections/connection%2F1/portfolio-history"
+      + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&maxPoints=30", "same-origin"]
+  ]);
 });
 
 test("manual event duplicate exposes only public code", async () => {
