@@ -13,6 +13,8 @@ import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.BrokerResponse;
+import com.jmj.trade.broker.CashBalanceStatus;
+import com.jmj.trade.broker.MoneyByCurrency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,11 +31,13 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.nio.charset.StandardCharsets;
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -361,6 +365,50 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 .andExpect(jsonPath("$.code").value("PORTFOLIO_SNAPSHOT_NOT_FOUND"));
     }
 
+    @Test
+    void manualPortfolioSyncIsCsrfProtectedAndOwned() throws Exception {
+        var connectionId = insertActiveConnection(UUID.fromString(USER_ID));
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{id}/portfolio-syncs",
+                        connectionId)
+                        .with(user(USER_ID)))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{id}/portfolio-syncs",
+                        connectionId)
+                        .with(user(OTHER_USER_ID))
+                        .with(csrf()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{id}/portfolio-syncs",
+                        connectionId)
+                        .with(user(USER_ID))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.runId").isNotEmpty())
+                .andExpect(jsonPath("$.completedAt").isNotEmpty());
+
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM account_snapshots",
+                Integer.class)).isOne();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM account_capacity_snapshots",
+                Integer.class)).isEqualTo(2);
+
+        brokerAdapter.respondWithNoAccounts();
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{id}/portfolio-syncs",
+                        connectionId)
+                        .with(user(USER_ID))
+                        .with(csrf()))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("BROKER_ACCOUNT_COUNT_UNSUPPORTED"));
+    }
+
     private void assertSecretFree(String body) {
         assertThat(body).doesNotContain(CANARY_ID, CANARY_SECRET, "broker message");
     }
@@ -493,6 +541,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     static final class RecordingBrokerAdapter implements BrokerAdapter {
         private final java.util.ArrayList<BrokerConnectionRef> connectionRefs = new java.util.ArrayList<>();
         private BrokerException brokerException;
+        private boolean noAccounts;
 
         List<BrokerConnectionRef> connectionRefs() {
             return List.copyOf(connectionRefs);
@@ -502,9 +551,14 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
             this.brokerException = brokerException;
         }
 
+        void respondWithNoAccounts() {
+            noAccounts = true;
+        }
+
         void reset() {
             connectionRefs.clear();
             brokerException = null;
+            noAccounts = false;
         }
 
         @Override
@@ -513,17 +567,35 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
             if (brokerException != null) {
                 throw brokerException;
             }
-            return new BrokerResponse<>(List.of(), new BrokerCallMetadata("controller-request", Instant.now(), Optional.empty()));
+            if (noAccounts) {
+                return new BrokerResponse<>(List.of(), metadata());
+            }
+            var account = account(connection);
+            return new BrokerResponse<>(
+                    List.of(new BrokerAccountView(account, "Primary")),
+                    metadata());
         }
 
         @Override
         public BrokerResponse<AccountSnapshot> getAccount(BrokerAccountRef account) {
-            throw new UnsupportedOperationException();
+            return new BrokerResponse<>(new AccountSnapshot(
+                    account,
+                    money("100"),
+                    money("120"),
+                    money("119"),
+                    money("20"),
+                    money("19"),
+                    new BigDecimal("0.20"),
+                    new BigDecimal("0.19"),
+                    money("1"),
+                    new BigDecimal("0.01"),
+                    CashBalanceStatus.UNKNOWN,
+                    Instant.now()), metadata());
         }
 
         @Override
         public BrokerResponse<List<Position>> getPositions(BrokerAccountRef account) {
-            throw new UnsupportedOperationException();
+            return new BrokerResponse<>(List.of(), metadata());
         }
 
         @Override
@@ -533,7 +605,28 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
 
         @Override
         public BrokerResponse<AccountCapacitySnapshot> getAccountCapacity(BrokerAccountRef account, Currency currency) {
-            throw new UnsupportedOperationException();
+            return new BrokerResponse<>(
+                    new AccountCapacitySnapshot(account, currency, new BigDecimal("1000"), Instant.now()),
+                    metadata());
+        }
+
+        private static BrokerAccountRef account(BrokerConnectionRef connection) {
+            return new BrokerAccountRef(
+                    connection.brokerConnectionId(),
+                    "account-1",
+                    "GENERAL",
+                    "****5678");
+        }
+
+        private static MoneyByCurrency money(String amount) {
+            return new MoneyByCurrency(Map.of(Currency.USD, new BigDecimal(amount)));
+        }
+
+        private static BrokerCallMetadata metadata() {
+            return new BrokerCallMetadata(
+                    "controller-request",
+                    Instant.now(),
+                    Optional.empty());
         }
     }
 

@@ -57,3 +57,85 @@ export async function logout(session, fetcher = fetch) {
   });
   return body(response);
 }
+
+async function brokerCommand(path, method, session, payload, fetcher) {
+  const headers = { [session.csrfHeaderName]: session.csrfToken };
+  if (payload) {
+    headers["content-type"] = "application/json";
+  }
+  const response = await fetcher(path, {
+    method,
+    credentials: "same-origin",
+    headers,
+    ...(payload ? { body: JSON.stringify(payload) } : {})
+  });
+  return body(response);
+}
+
+export function createBrokerConnection(credentials, session, fetcher = fetch) {
+  return brokerCommand(
+    "/api/v1/broker-connections/toss", "POST", session, credentials, fetcher);
+}
+
+export function replaceBrokerCredentials(
+  connectionId,
+  credentials,
+  session,
+  fetcher = fetch
+) {
+  return brokerCommand(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/credentials`,
+    "PUT",
+    session,
+    credentials,
+    fetcher);
+}
+
+export function verifyBrokerConnection(connectionId, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/verify`,
+    "POST",
+    session,
+    null,
+    fetcher);
+}
+
+export function syncPortfolio(connectionId, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/portfolio-syncs`,
+    "POST",
+    session,
+    null,
+    fetcher);
+}
+
+export function analyzePortfolio(connectionId, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/portfolio-analyses`,
+    "POST",
+    session,
+    null,
+    fetcher);
+}
+
+export function deleteBrokerConnection(connectionId, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}`,
+    "DELETE",
+    session,
+    null,
+    fetcher);
+}
+
+export function createSingleFlight() {
+  let active;
+  return task => {
+    if (active) {
+      return active;
+    }
+    active = Promise.resolve(task()).finally(() => {
+      active = undefined;
+    });
+    return active;
+  };
+}

@@ -3,9 +3,16 @@ import test from "node:test";
 
 import {
   actOnProposal,
+  analyzePortfolio,
+  createBrokerConnection,
+  createSingleFlight,
+  deleteBrokerConnection,
   loadDashboard,
   loadSession,
-  logout
+  logout,
+  replaceBrokerCredentials,
+  syncPortfolio,
+  verifyBrokerConnection
 } from "../lib/api.js";
 import nextConfig from "../next.config.js";
 
@@ -96,4 +103,60 @@ test("proxies only the session API and OIDC lifecycle to Spring", async () => {
       destination: "http://localhost:8080/logout"
     }
   ]);
+});
+
+test("broker onboarding commands use CSRF and existing APIs", async () => {
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push([url, options]);
+    return options.method === "DELETE"
+      ? new Response(null, { status: 204 })
+      : json({ id: "connection-1", status: "ACTIVE" });
+  };
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+  const credentials = { clientId: "client", clientSecret: "secret" };
+
+  await createBrokerConnection(credentials, session, fetcher);
+  await replaceBrokerCredentials("connection-1", credentials, session, fetcher);
+  await verifyBrokerConnection("connection-1", session, fetcher);
+  await syncPortfolio("connection-1", session, fetcher);
+  await analyzePortfolio("connection-1", session, fetcher);
+  await deleteBrokerConnection("connection-1", session, fetcher);
+
+  assert.deepEqual(calls.map(([url, options]) => [
+    url,
+    options.method,
+    options.headers["X-CSRF-TOKEN"],
+    options.body && JSON.parse(options.body)
+  ]), [
+    ["/api/v1/broker-connections/toss", "POST", "csrf", credentials],
+    ["/api/v1/broker-connections/connection-1/credentials",
+      "PUT", "csrf", credentials],
+    ["/api/v1/broker-connections/connection-1/verify", "POST", "csrf", undefined],
+    ["/api/v1/broker-connections/connection-1/portfolio-syncs",
+      "POST", "csrf", undefined],
+    ["/api/v1/broker-connections/connection-1/portfolio-analyses",
+      "POST", "csrf", undefined],
+    ["/api/v1/broker-connections/connection-1", "DELETE", "csrf", undefined]
+  ]);
+});
+
+test("single-flight returns one promise and runs one mutation", async () => {
+  const run = createSingleFlight();
+  let calls = 0;
+  let finish;
+  const task = () => {
+    calls += 1;
+    return new Promise(resolve => {
+      finish = resolve;
+    });
+  };
+
+  const first = run(task);
+  const duplicate = run(task);
+
+  assert.strictEqual(duplicate, first);
+  assert.equal(calls, 1);
+  finish("done");
+  assert.equal(await first, "done");
 });

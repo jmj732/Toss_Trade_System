@@ -30,6 +30,7 @@ button, .button-link {
 }
 button:disabled { cursor: wait; opacity: .55; }
 button.secondary { background: #263747; color: var(--text); }
+button.danger { background: #5b2930; color: var(--text); }
 .topbar, .connection-form, .grid {
   margin-inline: auto;
   max-width: 1180px;
@@ -137,8 +138,34 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
   max-width: 30rem;
   padding: 2rem;
 }
+.onboarding-wrap {
+  margin: 0 auto 1rem;
+  max-width: 1180px;
+  padding: 0 1rem;
+}
+.onboarding { display: grid; gap: 1rem; }
+.busy { color: var(--warning); }
+.credential-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.credential-form { display: grid; gap: .5rem; }
+.credential-form h3 { margin: 0; }
+.credential-form label { color: var(--muted); }
+.connection-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0;
+}
+.connection-meta div { display: flex; gap: .35rem; }
+.connection-meta dt { color: var(--muted); }
+.connection-meta dd { margin: 0; }
+.onboarding-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }
+  .credential-grid { grid-template-columns: 1fr; }
   .connection-form > div, .list li { align-items: stretch; flex-direction: column; }
 }

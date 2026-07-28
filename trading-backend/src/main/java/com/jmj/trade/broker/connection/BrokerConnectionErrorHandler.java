@@ -1,6 +1,7 @@
 package com.jmj.trade.broker.connection;
 
 import com.jmj.trade.account.PortfolioReadException;
+import com.jmj.trade.account.AccountSyncException;
 import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import org.springframework.http.HttpStatus;
@@ -35,6 +36,20 @@ public class BrokerConnectionErrorHandler {
     @ExceptionHandler(PortfolioReadException.class)
     ResponseEntity<PublicError> portfolioSnapshotNotFound() {
         return error(HttpStatus.NOT_FOUND, "PORTFOLIO_SNAPSHOT_NOT_FOUND");
+    }
+
+    @ExceptionHandler(AccountSyncException.class)
+    ResponseEntity<PublicError> accountSync(AccountSyncException exception) {
+        return switch (exception.code()) {
+            case NOT_FOUND -> error(HttpStatus.NOT_FOUND, "BROKER_CONNECTION_NOT_FOUND");
+            case SYNC_ALREADY_RUNNING -> error(HttpStatus.CONFLICT, "PORTFOLIO_SYNC_ALREADY_RUNNING");
+            case CREDENTIAL_REVISION_CHANGED ->
+                    error(HttpStatus.CONFLICT, "BROKER_CREDENTIAL_REVISION_CHANGED");
+            case ACCOUNT_COUNT_UNSUPPORTED ->
+                    error(HttpStatus.UNPROCESSABLE_ENTITY, "BROKER_ACCOUNT_COUNT_UNSUPPORTED");
+            case BROKER_CONTRACT_MISMATCH ->
+                    error(HttpStatus.BAD_GATEWAY, "BROKER_CONTRACT_MISMATCH");
+        };
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)

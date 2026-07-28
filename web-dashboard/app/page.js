@@ -1,16 +1,33 @@
 "use client";
 
-import { createElement as h, useEffect, useState } from "react";
+import { createElement as h, useEffect, useRef, useState } from "react";
 
+import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
-import { actOnProposal, loadDashboard, loadSession, logout } from "../lib/api.js";
+import {
+  actOnProposal,
+  analyzePortfolio,
+  createBrokerConnection,
+  createSingleFlight,
+  deleteBrokerConnection,
+  loadDashboard,
+  loadSession,
+  logout,
+  replaceBrokerCredentials,
+  syncPortfolio,
+  verifyBrokerConnection
+} from "../lib/api.js";
 
 export default function Home() {
   const [session, setSession] = useState(undefined);
   const [connectionId, setConnectionId] = useState("");
+  const [connection, setConnection] = useState(null);
   const [dashboard, setDashboard] = useState(null);
+  const [busyAction, setBusyAction] = useState(null);
   const [busyOrderId, setBusyOrderId] = useState(null);
   const [error, setError] = useState("");
+  const singleFlight = useRef();
+  singleFlight.current ??= createSingleFlight();
 
   useEffect(() => {
     loadSession().then(setSession).catch(value => setError(value.message));
@@ -37,6 +54,60 @@ export default function Home() {
     } finally {
       setBusyOrderId(null);
     }
+  }
+
+  function runMutation(action, task) {
+    return singleFlight.current(async () => {
+      setBusyAction(action);
+      setError("");
+      try {
+        await task();
+      } catch (value) {
+        setError(value.message);
+      } finally {
+        setBusyAction(null);
+      }
+    });
+  }
+
+  function credentialsAction(action, credentials) {
+    return runMutation(action, async () => {
+      if (action === "create") {
+        const created = await createBrokerConnection(credentials, session);
+        setConnectionId(created.id);
+        setConnection(created);
+        setDashboard(null);
+        return;
+      }
+      const replaced = await replaceBrokerCredentials(
+        connectionId.trim(), credentials, session);
+      setConnection(replaced);
+      setDashboard(null);
+    });
+  }
+
+  function brokerAction(action) {
+    const id = connectionId.trim();
+    if (action === "delete"
+        && !window.confirm("Delete this broker connection and its credentials?")) {
+      return;
+    }
+    return runMutation(action, async () => {
+      if (action === "verify") {
+        setConnection(await verifyBrokerConnection(id, session));
+      } else if (action === "sync") {
+        await syncPortfolio(id, session);
+        setDashboard(await loadDashboard(id));
+      } else if (action === "analysis") {
+        await analyzePortfolio(id, session);
+        setDashboard(await loadDashboard(id));
+      } else if (action === "delete") {
+        await deleteBrokerConnection(id, session);
+        setConnectionId("");
+        setConnection(null);
+        setDashboard(null);
+      }
+    });
   }
 
   async function signOut() {
@@ -74,12 +145,24 @@ export default function Home() {
         h("input", {
           id: "connection-id",
           value: connectionId,
-          onChange: event => setConnectionId(event.target.value),
+          onChange: event => {
+            setConnectionId(event.target.value);
+            setConnection(null);
+            setDashboard(null);
+          },
           placeholder: "00000000-0000-0000-0000-000000000000",
           required: true
         }),
         h("button", { type: "submit" }, "Open dashboard"))),
     error ? h("p", { className: "error", role: "alert" }, error) : null,
+    h("main", { className: "onboarding-wrap" },
+      h(BrokerOnboarding, {
+        connection,
+        connectionId: connectionId.trim(),
+        busyAction,
+        onCredentials: credentialsAction,
+        onCommand: brokerAction
+      })),
     dashboard ? h(DashboardView, {
       dashboard,
       busyOrderId,
