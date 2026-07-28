@@ -1,15 +1,25 @@
+import json
+import logging
+import re
+import time
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_EVEN
 from enum import Enum
 from typing import Annotated, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
 RATIO_SCALE = Decimal("0.0000000001")
+CORRELATION_HEADER = "X-Correlation-Id"
+CORRELATION_ID = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+LOG = logging.getLogger("trade.analysis")
 Money = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 SignedMoney = Annotated[Decimal, Field(allow_inf_nan=False)]
 
@@ -71,6 +81,32 @@ class PortfolioAnalysisResponse(ContractModel):
 
 
 app = FastAPI(title="Portfolio Analysis Service", version="1")
+
+
+@app.middleware("http")
+async def correlate(request: Request, call_next):
+    candidate = request.headers.get(CORRELATION_HEADER)
+    correlation_id = candidate if candidate and CORRELATION_ID.fullmatch(candidate) else str(uuid4())
+    started = time.perf_counter()
+    outcome = "failure"
+    try:
+        response = await call_next(request)
+        outcome = "success" if response.status_code < 400 else "failure"
+        response.headers[CORRELATION_HEADER] = correlation_id
+        return response
+    finally:
+        operation = "analysis" if request.url.path.endswith("/portfolio-analyses") else "request"
+        LOG.info(
+            json.dumps(
+                {
+                    "correlationId": correlation_id,
+                    "operation": operation,
+                    "outcome": outcome,
+                    "durationMs": round((time.perf_counter() - started) * 1000),
+                },
+                separators=(",", ":"),
+            )
+        )
 
 
 @app.get("/internal/v1/health")

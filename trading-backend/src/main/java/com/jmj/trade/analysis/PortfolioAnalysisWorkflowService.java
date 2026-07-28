@@ -1,5 +1,7 @@
 package com.jmj.trade.analysis;
 
+import com.jmj.trade.observability.CorrelationIdFilter;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -289,6 +291,12 @@ public final class PortfolioAnalysisWorkflowService {
         try {
             var body = restClient.post()
                     .uri("/internal/v1/portfolio-analyses")
+                    .headers(headers -> {
+                        var correlationId = MDC.get(CorrelationIdFilter.MDC_KEY);
+                        if (correlationId != null) {
+                            headers.set(CorrelationIdFilter.HEADER, correlationId);
+                        }
+                    })
                     .body(request)
                     .retrieve()
                     .body(String.class);

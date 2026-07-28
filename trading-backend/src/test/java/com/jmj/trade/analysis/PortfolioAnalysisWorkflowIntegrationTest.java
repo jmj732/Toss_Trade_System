@@ -3,6 +3,7 @@ package com.jmj.trade.analysis;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
+import com.jmj.trade.observability.CorrelationIdFilter;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalToJson;
+import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
@@ -70,11 +72,15 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private CorrelationIdFilter correlationIdFilter;
+
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext)
+                .addFilters(correlationIdFilter)
                 .apply(springSecurity())
                 .build();
         jdbc.execute("TRUNCATE broker_connections, users CASCADE");
@@ -96,6 +102,7 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
 
         var body = mockMvc.perform(post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId)
                         .with(user(USER_ID.toString()))
+                        .header("X-Correlation-Id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.inputSnapshotId").value(snapshotId.toString()))
@@ -114,6 +121,7 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.result.requestId").value(jsonString(body, "runId")));
 
         ANALYSIS.verify(1, postRequestedFor(urlEqualTo("/internal/v1/portfolio-analyses"))
+                .withHeader("X-Correlation-Id", equalTo("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))
                 .withRequestBody(equalToJson("""
                         {
                           "schemaVersion":"1",

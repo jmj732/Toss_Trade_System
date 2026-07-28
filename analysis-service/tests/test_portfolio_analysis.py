@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
@@ -104,3 +105,42 @@ def test_readiness_reports_analysis_service_ready() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "READY"}
+
+
+def test_correlation_id_is_echoed_and_completion_log_excludes_request_data(caplog) -> None:
+    payload = json.loads((CONTRACTS / "portfolio-analysis-request.json").read_text())
+    caplog.set_level(logging.INFO, logger="trade.analysis")
+
+    response = asyncio.run(
+        request(
+            "POST",
+            "/internal/v1/portfolio-analyses",
+            json=payload,
+            headers={
+                "X-Correlation-Id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "Authorization": "Bearer top-secret",
+                "X-Account-Number": "123-456-7890",
+            },
+        )
+    )
+
+    assert response.headers["X-Correlation-Id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    event = json.loads(caplog.records[-1].message)
+    assert event["correlationId"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert event["operation"] == "analysis"
+    assert event["outcome"] == "success"
+    assert "top-secret" not in caplog.text
+    assert "123-456-7890" not in caplog.text
+
+
+def test_invalid_correlation_id_is_replaced() -> None:
+    response = asyncio.run(
+        request(
+            "GET",
+            "/internal/v1/ready",
+            headers={"X-Correlation-Id": "123-456-7890"},
+        )
+    )
+
+    assert response.headers["X-Correlation-Id"]
+    assert response.headers["X-Correlation-Id"] != "123-456-7890"
