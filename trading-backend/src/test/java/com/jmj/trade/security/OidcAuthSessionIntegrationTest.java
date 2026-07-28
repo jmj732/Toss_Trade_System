@@ -39,6 +39,7 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(classes = TradingBackendApplication.class)
@@ -128,6 +129,21 @@ class OidcAuthSessionIntegrationTest extends PostgresIntegrationTest {
                                 connectionId)
                         .with(oidcLogin().oidcUser(other)))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void sessionEndpointReturnsInternalUuidAndCsrfOnly() throws Exception {
+        var owner = mappedUser("browser-subject");
+
+        mockMvc.perform(get("/api/v1/session")
+                        .with(oidcLogin().oidcUser(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(owner.getName()))
+                .andExpect(jsonPath("$.csrfHeaderName").value("X-CSRF-TOKEN"))
+                .andExpect(jsonPath("$.csrfToken").isNotEmpty())
+                .andExpect(jsonPath("$.accessToken").doesNotExist())
+                .andExpect(jsonPath("$.idToken").doesNotExist())
+                .andExpect(jsonPath("$.credentials").doesNotExist());
     }
 
     @Test
