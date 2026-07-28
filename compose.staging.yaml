@@ -1,0 +1,115 @@
+name: trade-staging
+
+# Production-like overlay. Layer on top of compose.yaml + compose.mock.yaml (never
+# compose.dev.yaml — this profile never touches real OIDC/Toss credentials, and
+# BrokerAdapter has no order-placement method at all, so no real order submission is
+# possible here regardless of compose file):
+#
+#   docker compose -f compose.yaml -f compose.mock.yaml -f compose.staging.yaml up -d --wait
+#
+# `image:` pins a tag; `build:` stays as a local fallback so `docker compose build` can
+# produce that tag without a real registry (used by the deploy/rollback drill). A real
+# staging deploy would push BACKEND_IMAGE/ANALYSIS_IMAGE/DASHBOARD_IMAGE to a registry
+# ahead of time and never invoke `--build` at all.
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/spring.datasource.password
+    secrets:
+      - spring.datasource.password
+    deploy:
+      resources:
+        limits:
+          memory: ${STAGING_POSTGRES_MEMORY_LIMIT:-512m}
+          cpus: "${STAGING_POSTGRES_CPU_LIMIT:-0.5}"
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          memory: ${STAGING_REDIS_MEMORY_LIMIT:-128m}
+          cpus: "${STAGING_REDIS_CPU_LIMIT:-0.25}"
+
+  analysis:
+    image: ${ANALYSIS_IMAGE:-trade-analysis:staging}
+    deploy:
+      resources:
+        limits:
+          memory: ${STAGING_ANALYSIS_MEMORY_LIMIT:-256m}
+          cpus: "${STAGING_ANALYSIS_CPU_LIMIT:-0.5}"
+
+  # One-shot Flyway migration. Runs before any backend replica starts and exits; backend
+  # itself has SPRING_FLYWAY_ENABLED=false below, so migration happens exactly once
+  # regardless of how many backend replicas are started. See
+  # com.jmj.trade.migrate.MigrateOnlyApplication for why this needs its own entrypoint
+  # (Spring Security's HttpSecurity bean requires a servlet web context, which a plain
+  # web-application-type=none run of the real app does not have).
+  migrate:
+    image: ${BACKEND_IMAGE:-trade-backend:staging}
+    build: ./trading-backend
+    entrypoint: sh
+    command:
+      - -c
+      - >-
+        java
+        -Dloader.main=com.jmj.trade.migrate.MigrateOnlyApplication
+        -Dmanagement.endpoint.health.validate-group-membership=false
+        -cp app.jar org.springframework.boot.loader.launch.PropertiesLauncher
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/trade
+      DATABASE_USERNAME: trade
+      SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
+    secrets:
+      - spring.datasource.password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: ${STAGING_MIGRATE_MEMORY_LIMIT:-384m}
+          cpus: "${STAGING_MIGRATE_CPU_LIMIT:-0.5}"
+
+  backend:
+    image: ${BACKEND_IMAGE:-trade-backend:staging}
+    build: ./trading-backend
+    environment:
+      SPRING_FLYWAY_ENABLED: "false"
+      SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
+      # Perceive scheme/host through the reverse proxy's X-Forwarded-* headers, which is
+      # what makes SERVER_SERVLET_SESSION_COOKIE_SECURE below actually take effect for a
+      # client connecting over HTTPS to the proxy while this container only sees plain HTTP.
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+      SERVER_SERVLET_SESSION_COOKIE_SECURE: "true"
+    secrets:
+      - spring.datasource.password
+    depends_on:
+      redis:
+        condition: service_healthy
+      analysis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: ${STAGING_BACKEND_MEMORY_LIMIT:-768m}
+          cpus: "${STAGING_BACKEND_CPU_LIMIT:-1.0}"
+
+  dashboard:
+    image: ${DASHBOARD_IMAGE:-trade-dashboard:staging}
+    build:
+      context: ./web-dashboard
+      args:
+        BACKEND_URL: http://backend:8080
+    deploy:
+      resources:
+        limits:
+          memory: ${STAGING_DASHBOARD_MEMORY_LIMIT:-256m}
+          cpus: "${STAGING_DASHBOARD_CPU_LIMIT:-0.5}"
+
+secrets:
+  spring.datasource.password:
+    file: ${STAGING_DB_PASSWORD_FILE:?set STAGING_DB_PASSWORD_FILE to a file containing the Postgres password}

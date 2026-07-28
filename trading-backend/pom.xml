@@ -94,4 +94,24 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!--
+                        Two @SpringBootApplication classes exist: the real app, and
+                        com.jmj.trade.migrate.MigrateOnlyApplication (a one-shot Flyway-only
+                        entrypoint for staging/production deploys). Pin the packaged JAR's
+                        default Start-Class so repackage doesn't fail on ambiguity; the
+                        migrate entrypoint is still on the classpath and is launched via
+                        -Dloader.main=com.jmj.trade.migrate.MigrateOnlyApplication.
+                    -->
+                    <mainClass>com.jmj.trade.TradingBackendApplication</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

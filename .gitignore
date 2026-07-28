@@ -7,5 +7,7 @@
 .env.*
 !.env.example
 !.env.mock.example
+!.env.staging.example
 backups/
 *.dump
+.staging-drill-secrets*

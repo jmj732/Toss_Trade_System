@@ -6,7 +6,12 @@ services:
     environment:
       POSTGRES_DB: trade
       POSTGRES_USER: trade
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Optional here (not :?required) so compose.staging.yaml can supply
+      # POSTGRES_PASSWORD_FILE instead — the official postgres image entrypoint rejects
+      # having both a value and a _FILE set. Every other caller (local dev, mock, CI,
+      # the drill scripts) always sets POSTGRES_PASSWORD explicitly, so this is a no-op
+      # for them; postgres's own entrypoint still fails fast if neither is provided.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -54,7 +59,11 @@ services:
     environment:
       DATABASE_URL: jdbc:postgresql://postgres:5432/trade
       DATABASE_USERNAME: trade
-      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Optional here (not :?required) so compose.staging.yaml can supply the real
+      # password only via spring.datasource.password through Spring's Config Tree
+      # feature instead. Every other caller sets POSTGRES_PASSWORD explicitly, so this
+      # is a no-op for them.
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       ANALYSIS_SERVICE_BASE_URL: http://analysis:8000
