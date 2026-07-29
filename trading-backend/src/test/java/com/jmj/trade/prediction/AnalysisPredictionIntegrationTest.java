@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -78,6 +79,9 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
     private PredictionEvaluationScheduler scheduler;
+
+    @Autowired
+    private PredictionEvaluationLease evaluationLease;
 
     private MockMvc mockMvc;
 
@@ -213,6 +217,82 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void gradesOnlyDuePredictionsInTargetDueAtOrderWithinTheTickLimit() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("LARGE_ID", Currency.USD, new BigDecimal("100"));
+        var largeId = createPrediction(connectionId, "LARGE_ID", "USD", "UP", "v1", "1");
+        broker.setPrice("SMALL_ID", Currency.USD, new BigDecimal("100"));
+        var smallId = createPrediction(connectionId, "SMALL_ID", "USD", "UP", "v1", "1");
+        var duePredictedAt = T0.minus(Duration.ofDays(2));
+        jdbc.update("UPDATE analysis_predictions SET id = ?, predicted_at = ? WHERE id = ?",
+                UUID.fromString("ffffffff-ffff-ffff-ffff-ffffffffffff"), offset(duePredictedAt), largeId);
+        jdbc.update("UPDATE analysis_predictions SET id = ?, predicted_at = ? WHERE id = ?",
+                UUID.fromString("00000000-0000-0000-0000-000000000001"), offset(duePredictedAt), smallId);
+        broker.setPrice("NOTDUE", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "NOTDUE", "USD", "UP", "v1", "1");
+        backdatePrediction("NOTDUE", T0);
+        broker.reset();
+        broker.setPrice("LARGE_ID", Currency.USD, new BigDecimal("110"), T0);
+        broker.setPrice("SMALL_ID", Currency.USD, new BigDecimal("120"), T0);
+        broker.setPrice("NOTDUE", Currency.USD, new BigDecimal("130"), T0);
+
+        predictions.evaluateDue(T0, 10, 1, () -> true);
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT prediction.symbol
+                  FROM analysis_prediction_outcomes outcome
+                  JOIN analysis_predictions prediction ON prediction.id = outcome.prediction_id
+                """, String.class)).isEqualTo("SMALL_ID");
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(1);
+    }
+
+    @Test
+    void repeatedBatchesStillAttemptOnlyOneHorizonPerPredictionPerTick() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        backdatePrediction("AAPL", T0.minus(Duration.ofDays(25)));
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "MSFT", "USD", "UP", "v1", "1");
+        backdatePrediction("MSFT", T0.minus(Duration.ofDays(2)));
+        broker.reset();
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"), T0);
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("110"), T0);
+
+        predictions.evaluateDue(T0, 1, 10, () -> true);
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForList("""
+                SELECT prediction.symbol, outcome.horizon
+                  FROM analysis_prediction_outcomes outcome
+                  JOIN analysis_predictions prediction ON prediction.id = outcome.prediction_id
+                 ORDER BY prediction.symbol
+                """)).containsExactly(
+                java.util.Map.of("symbol", "AAPL", "horizon", "D1"),
+                java.util.Map.of("symbol", "MSFT", "horizon", "D1"));
+    }
+
+    @Test
+    void stopsBeforeTheNextBatchWhenLeaseContinuationFails() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        backdatePrediction("AAPL", T0.minus(Duration.ofDays(2)));
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "MSFT", "USD", "UP", "v1", "1");
+        backdatePrediction("MSFT", T0.minus(Duration.ofDays(2)));
+        broker.reset();
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"), T0);
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("110"), T0);
+        var batches = new AtomicInteger();
+
+        predictions.evaluateDue(T0, 1, 10, () -> batches.incrementAndGet() == 1);
+
+        assertCount("analysis_prediction_outcomes", 1);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(batches).hasValue(2);
+    }
+
+    @Test
     void quoteFailureLeavesThatHorizonPendingWithoutBlockingOtherPredictions() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
@@ -338,6 +418,50 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         assertCount("analysis_prediction_outcomes", 0);
         assertCount("prediction_evaluation_leases", 1);
         org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+    }
+
+    @Test
+    void renewsOnlyTheCurrentUnexpiredLeaseOwner() {
+        var owner = UUID.randomUUID();
+        org.assertj.core.api.Assertions.assertThat(evaluationLease.acquire(owner)).isTrue();
+        jdbc.update("""
+                UPDATE prediction_evaluation_leases
+                   SET expires_at = CURRENT_TIMESTAMP + INTERVAL '1 minute'
+                 WHERE name = ?
+                """, PredictionEvaluationLease.NAME);
+        var before = jdbc.queryForObject("""
+                SELECT expires_at
+                  FROM prediction_evaluation_leases
+                 WHERE name = ?
+                """, OffsetDateTime.class, PredictionEvaluationLease.NAME);
+
+        org.assertj.core.api.Assertions.assertThat(evaluationLease.renew(owner)).isTrue();
+        var after = jdbc.queryForObject("""
+                SELECT expires_at
+                  FROM prediction_evaluation_leases
+                 WHERE name = ?
+                """, OffsetDateTime.class, PredictionEvaluationLease.NAME);
+        org.assertj.core.api.Assertions.assertThat(after).isAfter(before);
+        org.assertj.core.api.Assertions.assertThat(evaluationLease.renew(UUID.randomUUID())).isFalse();
+
+        jdbc.update("""
+                UPDATE prediction_evaluation_leases
+                   SET acquired_at = CURRENT_TIMESTAMP - INTERVAL '2 minutes',
+                       expires_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'
+                 WHERE name = ?
+                """, PredictionEvaluationLease.NAME);
+        org.assertj.core.api.Assertions.assertThat(evaluationLease.renew(owner)).isFalse();
+    }
+
+    @Test
+    void predictionDueLookupIndexExists() {
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT count(*)
+                  FROM pg_indexes
+                 WHERE schemaname = 'public'
+                   AND tablename = 'analysis_predictions'
+                   AND indexname = 'ix_analysis_predictions_due'
+                """, Long.class)).isEqualTo(1L);
     }
 
     @Test

@@ -37,6 +37,18 @@ public final class PredictionEvaluationLease {
                 """, NAME, owner, ttl.toMillis()) == 1;
     }
 
+    boolean renew(UUID owner) {
+        Objects.requireNonNull(owner, "owner");
+        return jdbc.update("""
+                UPDATE prediction_evaluation_leases
+                   SET expires_at = CURRENT_TIMESTAMP
+                           + CAST(? AS bigint) * INTERVAL '1 millisecond'
+                 WHERE name = ?
+                   AND owner = ?
+                   AND expires_at > CURRENT_TIMESTAMP
+                """, ttl.toMillis(), NAME, owner) == 1;
+    }
+
     void release(UUID owner) {
         Objects.requireNonNull(owner, "owner");
         jdbc.update(

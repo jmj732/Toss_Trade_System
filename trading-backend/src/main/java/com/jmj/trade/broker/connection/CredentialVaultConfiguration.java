@@ -136,9 +136,13 @@ public class CredentialVaultConfiguration {
         @Bean
         PredictionEvaluationScheduler predictionEvaluationScheduler(
                 PredictionEvaluationLease lease,
-                AnalysisPredictionService predictions
+                AnalysisPredictionService predictions,
+                @Value("${prediction.evaluation.batch-size:100}") int batchSize,
+                @Value("${prediction.evaluation.max-per-tick:1000}") int maxPerTick,
+                @Value("${prediction.evaluation.max-runtime:PT5M}") Duration maxRuntime
         ) {
-            return new PredictionEvaluationScheduler(lease, predictions);
+            return new PredictionEvaluationScheduler(
+                    lease, predictions, batchSize, maxPerTick, maxRuntime);
         }
     }
 

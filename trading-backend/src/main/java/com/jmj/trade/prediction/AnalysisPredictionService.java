@@ -15,7 +15,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -26,6 +25,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 
 /**
  * Stores caller-submitted directional predictions (a person or, later, a real model — this
@@ -140,7 +140,7 @@ public final class AnalysisPredictionService {
      * not being due implies a longer one isn't either. Without this cap, several horizons
      * overdue at once would all be graded against the *same* live quote in one pass,
      * silently collapsing D1/D5/D20 into numerically identical returns — that would be
-     * worse than leaving them ungraded until a later read happens to catch each one nearer
+     * worse than leaving them ungraded until a later tick catches each one nearer
      * its own due time.
      *
      * <p>A quote failure for the one pair being graded (e.g. the broker is briefly
@@ -148,54 +148,149 @@ public final class AnalysisPredictionService {
      * tick, since nothing here is allowed to fabricate a price.
      */
     int evaluateDue(Instant now) {
+        return evaluateDue(now, 100, Integer.MAX_VALUE, () -> true);
+    }
+
+    int evaluateDue(
+            Instant now,
+            int batchSize,
+            int maxPerTick,
+            BooleanSupplier continueBeforeBatch
+    ) {
         Objects.requireNonNull(now, "now");
-        var predictions = jdbc.query("""
-                SELECT prediction.id, prediction.broker_connection_id, prediction.symbol,
-                       prediction.predicted_direction, prediction.baseline_price, prediction.predicted_at
-                  FROM analysis_predictions prediction
-                  JOIN broker_connections connection
-                    ON connection.user_id = prediction.user_id
-                   AND connection.id = prediction.broker_connection_id
-                 WHERE connection.status = 'ACTIVE'
-                   AND connection.deleted_at IS NULL
-                """, (resultSet, rowNum) -> new DuePrediction(
-                resultSet.getObject("id", UUID.class),
+        Objects.requireNonNull(continueBeforeBatch, "continueBeforeBatch");
+        if (batchSize <= 0 || maxPerTick <= 0) {
+            throw new IllegalArgumentException("batchSize and maxPerTick must be positive");
+        }
+
+        var attempted = new HashSet<UUID>();
+        var quotes = new HashMap<QuoteKey, Optional<ObservedQuote>>();
+        var graded = 0;
+        DueCursor cursor = null;
+        while (attempted.size() < maxPerTick && continueBeforeBatch.getAsBoolean()) {
+            var limit = Math.min(batchSize, maxPerTick - attempted.size());
+            var batch = fetchDuePredictions(now, cursor, attempted, limit);
+            if (batch.isEmpty()) {
+                break;
+            }
+            for (var prediction : batch) {
+                attempted.add(prediction.id());
+                if (evaluateOne(prediction, prediction.horizon(), prediction.dueAt(), quotes)) {
+                    graded++;
+                }
+            }
+            var last = batch.getLast();
+            cursor = new DueCursor(last.dueAt(), last.id());
+        }
+        return graded;
+    }
+
+    private List<DuePrediction> fetchDuePredictions(
+            Instant now,
+            DueCursor cursor,
+            HashSet<UUID> attempted,
+            int limit
+    ) {
+        var sql = new StringBuilder("""
+                WITH due_predictions AS (
+                    SELECT prediction.id AS prediction_id,
+                           prediction.broker_connection_id,
+                           prediction.symbol,
+                           prediction.predicted_direction,
+                           prediction.baseline_price,
+                           'D1' AS horizon,
+                           prediction.predicted_at + INTERVAL '1 day' AS target_due_at
+                      FROM analysis_predictions prediction
+                      JOIN broker_connections connection
+                        ON connection.user_id = prediction.user_id
+                       AND connection.id = prediction.broker_connection_id
+                      LEFT JOIN analysis_prediction_outcomes current_outcome
+                        ON current_outcome.prediction_id = prediction.id
+                       AND current_outcome.horizon = 'D1'
+                     WHERE connection.status = 'ACTIVE'
+                       AND connection.deleted_at IS NULL
+                       AND current_outcome.id IS NULL
+                       AND prediction.predicted_at <= ?
+                    UNION ALL
+                    SELECT prediction.id,
+                           prediction.broker_connection_id,
+                           prediction.symbol,
+                           prediction.predicted_direction,
+                           prediction.baseline_price,
+                           'D5',
+                           prediction.predicted_at + INTERVAL '5 days'
+                      FROM analysis_predictions prediction
+                      JOIN broker_connections connection
+                        ON connection.user_id = prediction.user_id
+                       AND connection.id = prediction.broker_connection_id
+                      JOIN analysis_prediction_outcomes d1
+                        ON d1.prediction_id = prediction.id
+                       AND d1.horizon = 'D1'
+                      LEFT JOIN analysis_prediction_outcomes current_outcome
+                        ON current_outcome.prediction_id = prediction.id
+                       AND current_outcome.horizon = 'D5'
+                     WHERE connection.status = 'ACTIVE'
+                       AND connection.deleted_at IS NULL
+                       AND current_outcome.id IS NULL
+                       AND prediction.predicted_at <= ?
+                    UNION ALL
+                    SELECT prediction.id,
+                           prediction.broker_connection_id,
+                           prediction.symbol,
+                           prediction.predicted_direction,
+                           prediction.baseline_price,
+                           'D20',
+                           prediction.predicted_at + INTERVAL '20 days'
+                      FROM analysis_predictions prediction
+                      JOIN broker_connections connection
+                        ON connection.user_id = prediction.user_id
+                       AND connection.id = prediction.broker_connection_id
+                      JOIN analysis_prediction_outcomes d1
+                        ON d1.prediction_id = prediction.id
+                       AND d1.horizon = 'D1'
+                      JOIN analysis_prediction_outcomes d5
+                        ON d5.prediction_id = prediction.id
+                       AND d5.horizon = 'D5'
+                      LEFT JOIN analysis_prediction_outcomes current_outcome
+                        ON current_outcome.prediction_id = prediction.id
+                       AND current_outcome.horizon = 'D20'
+                     WHERE connection.status = 'ACTIVE'
+                       AND connection.deleted_at IS NULL
+                       AND current_outcome.id IS NULL
+                       AND prediction.predicted_at <= ?
+                )
+                SELECT prediction_id, broker_connection_id, symbol, predicted_direction,
+                       baseline_price, horizon, target_due_at
+                  FROM due_predictions
+                 WHERE 1 = 1
+                """);
+        var arguments = new ArrayList<>();
+        arguments.add(offset(now.minus(Duration.ofDays(1))));
+        arguments.add(offset(now.minus(Duration.ofDays(5))));
+        arguments.add(offset(now.minus(Duration.ofDays(20))));
+        if (cursor != null) {
+            sql.append(" AND (target_due_at, prediction_id) > (?, ?)");
+            arguments.add(offset(cursor.dueAt()));
+            arguments.add(cursor.predictionId());
+        }
+        if (!attempted.isEmpty()) {
+            sql.append(" AND prediction_id NOT IN (")
+                    .append(String.join(",", attempted.stream().map(id -> "?").toList()))
+                    .append(")");
+            arguments.addAll(attempted);
+        }
+        sql.append(" ORDER BY target_due_at, prediction_id LIMIT ?");
+        arguments.add(limit);
+
+        return jdbc.query(sql.toString(), (resultSet, rowNum) -> new DuePrediction(
+                resultSet.getObject("prediction_id", UUID.class),
                 resultSet.getObject("broker_connection_id", UUID.class),
                 resultSet.getString("symbol"),
                 PredictedDirection.valueOf(resultSet.getString("predicted_direction")),
                 resultSet.getBigDecimal("baseline_price"),
-                resultSet.getObject("predicted_at", OffsetDateTime.class).toInstant()
-        ));
-        if (predictions.isEmpty()) {
-            return 0;
-        }
-
-        var existing = new HashSet<PredictionHorizon>(jdbc.query("""
-                SELECT prediction_id, horizon
-                  FROM analysis_prediction_outcomes
-                """, (resultSet, rowNum) -> new PredictionHorizon(
-                resultSet.getObject("prediction_id", UUID.class),
-                Horizon.valueOf(resultSet.getString("horizon"))
-        )));
-
-        var quotes = new HashMap<QuoteKey, Optional<ObservedQuote>>();
-        var graded = 0;
-        for (var prediction : predictions) {
-            for (var horizon : Horizon.values()) {
-                if (existing.contains(new PredictionHorizon(prediction.id(), horizon))) {
-                    continue;
-                }
-                var dueAt = prediction.predictedAt().plus(horizon.days(), ChronoUnit.DAYS);
-                if (now.isBefore(dueAt)) {
-                    break;
-                }
-                if (evaluateOne(prediction, horizon, dueAt, quotes)) {
-                    graded++;
-                }
-                break;
-            }
-        }
-        return graded;
+                Horizon.valueOf(resultSet.getString("horizon")),
+                resultSet.getObject("target_due_at", OffsetDateTime.class).toInstant()
+        ), arguments.toArray());
     }
 
     private boolean evaluateOne(
@@ -401,17 +496,18 @@ public final class AnalysisPredictionService {
             String symbol,
             PredictedDirection predictedDirection,
             BigDecimal baselinePrice,
-            Instant predictedAt
+            Horizon horizon,
+            Instant dueAt
     ) {
+    }
+
+    private record DueCursor(Instant dueAt, UUID predictionId) {
     }
 
     private record QuoteKey(UUID connectionId, String symbol) {
     }
 
     private record ObservedQuote(BigDecimal price, Instant observationTime) {
-    }
-
-    private record PredictionHorizon(UUID predictionId, Horizon horizon) {
     }
 
     private record PredictionRow(
