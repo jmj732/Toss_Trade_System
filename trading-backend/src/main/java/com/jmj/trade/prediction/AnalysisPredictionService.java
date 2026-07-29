@@ -157,6 +157,15 @@ public final class AnalysisPredictionService {
             int maxPerTick,
             BooleanSupplier continueBeforeBatch
     ) {
+        return evaluateDueWithResult(now, batchSize, maxPerTick, continueBeforeBatch).succeeded();
+    }
+
+    EvaluationTickResult evaluateDueWithResult(
+            Instant now,
+            int batchSize,
+            int maxPerTick,
+            BooleanSupplier continueBeforeBatch
+    ) {
         Objects.requireNonNull(now, "now");
         Objects.requireNonNull(continueBeforeBatch, "continueBeforeBatch");
         if (batchSize <= 0 || maxPerTick <= 0) {
@@ -165,7 +174,8 @@ public final class AnalysisPredictionService {
 
         var attempted = new HashSet<UUID>();
         var quotes = new HashMap<QuoteKey, Optional<ObservedQuote>>();
-        var graded = 0;
+        var succeeded = 0;
+        var quoteFailed = 0;
         DueCursor cursor = null;
         while (attempted.size() < maxPerTick && continueBeforeBatch.getAsBoolean()) {
             var limit = Math.min(batchSize, maxPerTick - attempted.size());
@@ -175,14 +185,19 @@ public final class AnalysisPredictionService {
             }
             for (var prediction : batch) {
                 attempted.add(prediction.id());
-                if (evaluateOne(prediction, prediction.horizon(), prediction.dueAt(), quotes)) {
-                    graded++;
+                switch (evaluateOne(prediction, prediction.horizon(), prediction.dueAt(), quotes)) {
+                    case GRADED -> succeeded++;
+                    case QUOTE_FAILED -> quoteFailed++;
+                    case DUPLICATE -> {
+                        // The database uniqueness constraint already preserved the outcome.
+                    }
                 }
             }
             var last = batch.getLast();
             cursor = new DueCursor(last.dueAt(), last.id());
         }
-        return graded;
+        return new EvaluationTickResult(
+                attempted.size(), succeeded, quoteFailed, attempted.size() >= maxPerTick);
     }
 
     private List<DuePrediction> fetchDuePredictions(
@@ -293,7 +308,7 @@ public final class AnalysisPredictionService {
         ), arguments.toArray());
     }
 
-    private boolean evaluateOne(
+    private EvaluationResult evaluateOne(
             DuePrediction prediction,
             Horizon horizon,
             Instant dueAt,
@@ -303,7 +318,7 @@ public final class AnalysisPredictionService {
         var quote = quotes.computeIfAbsent(key, ignored -> fetchQuote(key.connectionId(), key.symbol()))
                 .orElse(null);
         if (quote == null || quote.observationTime().isBefore(dueAt)) {
-            return false;
+            return EvaluationResult.QUOTE_FAILED;
         }
         var price = quote.price();
         var actualReturn = price.subtract(prediction.baselinePrice())
@@ -320,10 +335,12 @@ public final class AnalysisPredictionService {
                     ON CONFLICT (prediction_id, horizon) DO NOTHING
                     """, UUID.randomUUID(), prediction.id(), horizon.name(), price, actualReturn,
                     directionCorrect, offset(dueAt), offset(quote.observationTime()),
-                    Duration.between(dueAt, quote.observationTime()).toMillis()) == 1;
+                    Duration.between(dueAt, quote.observationTime()).toMillis()) == 1
+                    ? EvaluationResult.GRADED
+                    : EvaluationResult.DUPLICATE;
         } catch (DuplicateKeyException ignored) {
             // Another evaluator already graded this pair — the unique constraint wins either way.
-            return false;
+            return EvaluationResult.DUPLICATE;
         }
     }
 
@@ -510,6 +527,12 @@ public final class AnalysisPredictionService {
     private record ObservedQuote(BigDecimal price, Instant observationTime) {
     }
 
+    private enum EvaluationResult {
+        GRADED,
+        QUOTE_FAILED,
+        DUPLICATE
+    }
+
     private record PredictionRow(
             UUID id,
             String symbol,
@@ -580,6 +603,14 @@ public final class AnalysisPredictionService {
     public record PredictionPerformanceView(
             List<PredictionView> predictions,
             List<PerformanceRow> byVersion
+    ) {
+    }
+
+    record EvaluationTickResult(
+            int attempted,
+            int succeeded,
+            int quoteFailed,
+            boolean countLimitReached
     ) {
     }
 }

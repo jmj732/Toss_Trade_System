@@ -15,6 +15,7 @@ import com.jmj.trade.broker.BrokerResponse;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,6 +31,7 @@ import org.springframework.web.context.WebApplicationContext;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -319,6 +321,28 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void detailedTickResultSeparatesSucceededAndQuoteFailedAttempts() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        backdatePrediction("AAPL", T0.minus(Duration.ofDays(2)));
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "MSFT", "USD", "UP", "v1", "1");
+        backdatePrediction("MSFT", T0.minus(Duration.ofDays(2)));
+        broker.reset();
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("110"), T0);
+        broker.failFor("AAPL");
+
+        var result = predictions.evaluateDueWithResult(T0, 10, 10, () -> true);
+
+        org.assertj.core.api.Assertions.assertThat(result.attempted()).isEqualTo(2);
+        org.assertj.core.api.Assertions.assertThat(result.succeeded()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(result.quoteFailed()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(result.countLimitReached()).isFalse();
+        assertCount("analysis_prediction_outcomes", 1);
+    }
+
+    @Test
     void memoizesQuotesPerConnectionAndSymbolWithinOneTick() throws Exception {
         var connectionId = insertConnection(USER_ID);
         var otherConnectionId = insertConnection(OTHER_USER_ID);
@@ -465,6 +489,43 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void metricsCountOnlyTheEarliestDueUngradedHorizon() throws Exception {
+        var now = Instant.now();
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        var d1 = createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        setPredictedAt(d1, now.minus(Duration.ofDays(3)));
+
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("100"));
+        var d5 = createPrediction(connectionId, "MSFT", "USD", "UP", "v1", "1");
+        var d5PredictedAt = now.minus(Duration.ofDays(10));
+        setPredictedAt(d5, d5PredictedAt);
+        insertOutcome(d5, Horizon.D1, d5PredictedAt.plus(Duration.ofDays(1)));
+
+        broker.setPrice("GOOG", Currency.USD, new BigDecimal("100"));
+        var d20 = createPrediction(connectionId, "GOOG", "USD", "UP", "v1", "1");
+        var d20PredictedAt = now.minus(Duration.ofDays(30));
+        setPredictedAt(d20, d20PredictedAt);
+        insertOutcome(d20, Horizon.D1, d20PredictedAt.plus(Duration.ofDays(1)));
+        insertOutcome(d20, Horizon.D5, d20PredictedAt.plus(Duration.ofDays(5)));
+
+        broker.setPrice("NVDA", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "NVDA", "USD", "UP", "v1", "1");
+
+        var registry = new SimpleMeterRegistry();
+        new PredictionEvaluationMetrics(
+                jdbc, registry, Duration.ofMinutes(1), Clock.systemUTC());
+
+        org.assertj.core.api.Assertions.assertThat(registry
+                .get("trade.prediction.evaluation.backlog").gauge().value()).isEqualTo(3);
+        org.assertj.core.api.Assertions.assertThat(registry
+                        .get("trade.prediction.evaluation.max.lag.ms").gauge().value())
+                .isBetween(
+                        (double) Duration.ofDays(9).plus(Duration.ofHours(23)).toMillis(),
+                        (double) Duration.ofDays(10).plus(Duration.ofHours(1)).toMillis());
+    }
+
+    @Test
     void duplicateOutcomeIsRejectedAndExistingOutcomeRemainsAppendOnly() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
@@ -569,6 +630,20 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     private void backdatePrediction(String symbol, Instant predictedAt) {
         jdbc.update("UPDATE analysis_predictions SET predicted_at = ? WHERE symbol = ?",
                 offset(predictedAt), symbol);
+    }
+
+    private void setPredictedAt(UUID predictionId, Instant predictedAt) {
+        jdbc.update("UPDATE analysis_predictions SET predicted_at = ? WHERE id = ?",
+                offset(predictedAt), predictionId);
+    }
+
+    private void insertOutcome(UUID predictionId, Horizon horizon, Instant dueAt) {
+        jdbc.update("""
+                INSERT INTO analysis_prediction_outcomes (
+                    id, prediction_id, horizon, price, actual_return, direction_correct,
+                    target_due_at, observation_time, lag_ms
+                ) VALUES (?, ?, ?, 100, 0, false, ?, ?, 0)
+                """, UUID.randomUUID(), predictionId, horizon.name(), offset(dueAt), offset(dueAt));
     }
 
     private String createRequest(

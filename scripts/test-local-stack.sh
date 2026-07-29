@@ -11,6 +11,7 @@ for file in \
   compose.dev.yaml \
   compose.mock.yaml \
   .env.example \
+  .env.staging.example \
   trading-backend/Dockerfile \
   analysis-service/Dockerfile \
   web-dashboard/Dockerfile \
@@ -38,6 +39,32 @@ grep -q 'BROKER_TOSS_BASE_URL' compose.dev.yaml || fail "missing dev Toss config
 grep -q 'PROVIDER_OIDC_ISSUER_URI' compose.dev.yaml || fail "missing dev OIDC config"
 grep -q 'BROKER_TOSS_BASE_URL' compose.mock.yaml || fail "missing mock Toss config"
 grep -q 'PROVIDER_OIDC_ISSUER_URI' compose.mock.yaml || fail "missing mock OIDC config"
+
+grep -q 'PREDICTION_EVALUATION_ENABLED:.*false' compose.yaml ||
+  fail "prediction evaluation must default to disabled"
+for property in \
+  INTERVAL \
+  INITIAL_DELAY \
+  LOCK_TTL \
+  BATCH_SIZE \
+  MAX_PER_TICK \
+  MAX_RUNTIME \
+  METRICS_CACHE_TTL
+do
+  grep -q "PREDICTION_EVALUATION_$property" compose.yaml ||
+    fail "missing prediction evaluation $property mapping"
+done
+grep -q 'MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,prometheus' compose.yaml ||
+  fail "backend must expose Prometheus through the existing Actuator server"
+grep -q '"127.0.0.1:${BACKEND_PORT:-8080}:8080"' compose.yaml ||
+  fail "backend port must remain loopback-bound"
+if grep -q 'MANAGEMENT_SERVER_PORT' compose.yaml; then
+  fail "prediction metrics must not open a separate management port"
+fi
+grep -q '^PREDICTION_EVALUATION_ENABLED=false' .env.example ||
+  fail ".env.example must keep prediction evaluation disabled"
+grep -q '^PREDICTION_EVALUATION_ENABLED=false' .env.staging.example ||
+  fail ".env.staging.example must keep prediction evaluation disabled"
 
 test -f mocks/toss/mappings/read-only.json || fail "missing Toss read-only mappings"
 if grep -RiqE '/(orders?|trades?)(/|")' mocks/toss; then

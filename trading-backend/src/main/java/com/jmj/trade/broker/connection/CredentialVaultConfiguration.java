@@ -13,6 +13,7 @@ import com.jmj.trade.order.PaperTradingBroker;
 import com.jmj.trade.order.PreTradeRiskEngine;
 import com.jmj.trade.prediction.AnalysisPredictionService;
 import com.jmj.trade.prediction.PredictionEvaluationLease;
+import com.jmj.trade.prediction.PredictionEvaluationMetrics;
 import com.jmj.trade.prediction.PredictionEvaluationScheduler;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.beans.factory.annotation.Value;
@@ -137,12 +138,13 @@ public class CredentialVaultConfiguration {
         PredictionEvaluationScheduler predictionEvaluationScheduler(
                 PredictionEvaluationLease lease,
                 AnalysisPredictionService predictions,
+                PredictionEvaluationMetrics metrics,
                 @Value("${prediction.evaluation.batch-size:100}") int batchSize,
                 @Value("${prediction.evaluation.max-per-tick:1000}") int maxPerTick,
                 @Value("${prediction.evaluation.max-runtime:PT5M}") Duration maxRuntime
         ) {
             return new PredictionEvaluationScheduler(
-                    lease, predictions, batchSize, maxPerTick, maxRuntime);
+                    lease, predictions, metrics, batchSize, maxPerTick, maxRuntime);
         }
     }
 
