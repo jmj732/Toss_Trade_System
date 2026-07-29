@@ -15,6 +15,7 @@ import com.jmj.trade.prediction.AnalysisPredictionService;
 import com.jmj.trade.prediction.PredictionEvaluationLease;
 import com.jmj.trade.prediction.PredictionEvaluationMetrics;
 import com.jmj.trade.prediction.PredictionEvaluationScheduler;
+import com.jmj.trade.prediction.PredictionModelRegistryService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -117,8 +118,19 @@ public class CredentialVaultConfiguration {
     }
 
     @Bean
-    AnalysisPredictionService analysisPredictionService(JdbcTemplate jdbcTemplate, BrokerAdapter brokerAdapter) {
-        return new AnalysisPredictionService(jdbcTemplate, brokerAdapter);
+    PredictionModelRegistryService predictionModelRegistryService(JdbcTemplate jdbcTemplate) {
+        return new PredictionModelRegistryService(jdbcTemplate);
+    }
+
+    @Bean
+    AnalysisPredictionService analysisPredictionService(
+            JdbcTemplate jdbcTemplate,
+            BrokerAdapter brokerAdapter,
+            PredictionModelRegistryService registry,
+            PlatformTransactionManager transactionManager
+    ) {
+        return new AnalysisPredictionService(
+                jdbcTemplate, brokerAdapter, registry, new TransactionTemplate(transactionManager));
     }
 
     @Configuration(proxyBeanMethods = false)

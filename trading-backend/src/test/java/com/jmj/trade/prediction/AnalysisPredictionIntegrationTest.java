@@ -44,6 +44,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -93,8 +94,154 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 .apply(springSecurity())
                 .build();
         jdbc.execute("TRUNCATE prediction_evaluation_leases, analysis_prediction_outcomes, analysis_predictions, "
-                + "broker_connections, users CASCADE");
+                + "prediction_model_versions, broker_connections, users CASCADE");
         broker.reset();
+    }
+
+    @Test
+    void registersListsDeprecatesAndDeletesUnusedVersion() throws Exception {
+        insertUser(USER_ID);
+
+        var response = mockMvc.perform(post("/api/v1/prediction-model-versions")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versionRequest("model-v1", "contract-v1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.modelVersion").value("model-v1"))
+                .andExpect(jsonPath("$.contractVersion").value("contract-v1"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andReturn().getResponse().getContentAsString();
+        var versionId = idFrom(response);
+
+        mockMvc.perform(get("/api/v1/prediction-model-versions")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(versionId.toString()));
+
+        mockMvc.perform(post("/api/v1/prediction-model-versions/{id}/deprecate", versionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DEPRECATED"))
+                .andExpect(jsonPath("$.deprecatedAt").isNotEmpty());
+        mockMvc.perform(post("/api/v1/prediction-model-versions/{id}/deprecate", versionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DEPRECATED"));
+
+        mockMvc.perform(delete("/api/v1/prediction-model-versions/{id}", versionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(get("/api/v1/prediction-model-versions")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
+    }
+
+    @Test
+    void registryRejectsDuplicatesAndIsolatesUsers() throws Exception {
+        insertUser(USER_ID);
+        insertUser(OTHER_USER_ID);
+        var response = mockMvc.perform(post("/api/v1/prediction-model-versions")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versionRequest("model-v1", "contract-v1")))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        var versionId = idFrom(response);
+
+        mockMvc.perform(post("/api/v1/prediction-model-versions")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versionRequest("model-v1", "contract-v1")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code")
+                        .value("PREDICTION_MODEL_VERSION_ALREADY_EXISTS"));
+        mockMvc.perform(get("/api/v1/prediction-model-versions")
+                        .with(user(OTHER_USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
+        mockMvc.perform(post("/api/v1/prediction-model-versions/{id}/deprecate", versionId)
+                        .with(user(OTHER_USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code")
+                        .value("PREDICTION_MODEL_VERSION_NOT_FOUND"));
+    }
+
+    @Test
+    void usedVersionCannotBeDeleted() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        var versionId = insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        createPrediction(connectionId, "AAPL", "USD", "UP", "model-v1", "contract-v1");
+
+        mockMvc.perform(delete("/api/v1/prediction-model-versions/{id}", versionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("PREDICTION_MODEL_VERSION_IN_USE"));
+    }
+
+    @Test
+    void unregisteredOrDeprecatedVersionIsRejectedBeforeQuote() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+
+        mockMvc.perform(post("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest("AAPL", "USD", "UP", "missing", "v1")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code")
+                        .value("ANALYSIS_PREDICTION_MODEL_VERSION_NOT_ACTIVE"));
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+
+        var versionId = insertActiveVersion(USER_ID, "deprecated", "v1");
+        jdbc.update("""
+                UPDATE prediction_model_versions
+                   SET status = 'DEPRECATED', deprecated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?
+                """, versionId);
+        mockMvc.perform(post("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest("AAPL", "USD", "UP", "deprecated", "v1")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code")
+                        .value("ANALYSIS_PREDICTION_MODEL_VERSION_NOT_ACTIVE"));
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+    }
+
+    @Test
+    void rechecksActiveVersionAfterQuoteBeforeSaving() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var versionId = insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        broker.afterQuote(() -> jdbc.update("""
+                UPDATE prediction_model_versions
+                   SET status = 'DEPRECATED', deprecated_at = CURRENT_TIMESTAMP
+                 WHERE id = ?
+                """, versionId));
+
+        mockMvc.perform(post("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest("AAPL", "USD", "UP", "model-v1", "contract-v1")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code")
+                        .value("ANALYSIS_PREDICTION_MODEL_VERSION_NOT_ACTIVE"));
+
+        assertCount("analysis_predictions", 0);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
     }
 
     @Test
@@ -615,6 +762,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
             String modelVersion,
             String contractVersion
     ) throws Exception {
+        insertActiveVersion(userId, modelVersion, contractVersion);
         var response = mockMvc.perform(
                         post("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                                 .with(user(userId.toString()))
@@ -623,8 +771,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                                 .content(createRequest(symbol, currency, direction, modelVersion, contractVersion)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        var id = response.substring(response.indexOf("\"id\":\"") + 6);
-        return UUID.fromString(id.substring(0, id.indexOf("\"")));
+        return idFrom(response);
     }
 
     private void backdatePrediction(String symbol, Instant predictedAt) {
@@ -660,15 +807,51 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 """.formatted(symbol, currency, direction, modelVersion, contractVersion);
     }
 
+    private String versionRequest(String modelVersion, String contractVersion) {
+        return """
+                {
+                  "modelVersion":"%s",
+                  "contractVersion":"%s"
+                }
+                """.formatted(modelVersion, contractVersion);
+    }
+
+    private UUID idFrom(String response) {
+        var id = response.substring(response.indexOf("\"id\":\"") + 6);
+        return UUID.fromString(id.substring(0, id.indexOf("\"")));
+    }
+
+    private void insertUser(UUID userId) {
+        jdbc.update("INSERT INTO users (id) VALUES (?) ON CONFLICT DO NOTHING", userId);
+    }
+
+    private UUID insertActiveVersion(UUID userId, String modelVersion, String contractVersion) {
+        insertUser(userId);
+        jdbc.update("""
+                INSERT INTO prediction_model_versions (
+                    id, user_id, model_version, contract_version, status, created_at
+                ) VALUES (?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id, model_version, contract_version) DO NOTHING
+                """, UUID.randomUUID(), userId, modelVersion, contractVersion);
+        return jdbc.queryForObject("""
+                SELECT id
+                  FROM prediction_model_versions
+                 WHERE user_id = ?
+                   AND model_version = ?
+                   AND contract_version = ?
+                """, UUID.class, userId, modelVersion, contractVersion);
+    }
+
     private UUID insertConnection(UUID userId) {
         var connectionId = UUID.randomUUID();
-        jdbc.update("INSERT INTO users (id) VALUES (?) ON CONFLICT DO NOTHING", userId);
+        insertUser(userId);
         jdbc.update("""
                 INSERT INTO broker_connections (
                     id, user_id, broker_type, status, credential_ciphertext, credential_nonce,
                     credential_key_version, credential_revision, created_at, updated_at, version
                 ) VALUES (?, ?, 'TOSS_INVEST', 'ACTIVE', ?, ?, 1, 1, ?, ?, 0)
                 """, connectionId, userId, new byte[17], new byte[12], offset(T0), offset(T0));
+        insertActiveVersion(userId, "v1", "1");
         return connectionId;
     }
 
@@ -697,6 +880,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         private final java.util.Set<String> failingSymbols = java.util.concurrent.ConcurrentHashMap.newKeySet();
         private final java.util.concurrent.atomic.AtomicInteger quoteCalls =
                 new java.util.concurrent.atomic.AtomicInteger();
+        private volatile Runnable afterQuote;
 
         void setPrice(String symbol, Currency currency, BigDecimal price) {
             setPrice(symbol, currency, price, Instant.now());
@@ -716,12 +900,17 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
             return quoteCalls.get();
         }
 
+        void afterQuote(Runnable action) {
+            afterQuote = action;
+        }
+
         void reset() {
             prices.clear();
             currencies.clear();
             observationTimes.clear();
             failingSymbols.clear();
             quoteCalls.set(0);
+            afterQuote = null;
         }
 
         @Override
@@ -739,6 +928,11 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
             var observedAt = observationTimes.get(symbol);
             var quote = new Quote(
                     connection, symbol, currencies.get(symbol), price, null, null, observedAt, observedAt);
+            var action = afterQuote;
+            if (action != null) {
+                afterQuote = null;
+                action.run();
+            }
             return new BrokerResponse<>(quote, new BrokerCallMetadata("test-quote", observedAt, Optional.empty()));
         }
 

@@ -63,6 +63,8 @@ public class AnalysisPredictionController {
     ResponseEntity<PublicError> analysisPrediction(AnalysisPredictionException exception) {
         return switch (exception.code()) {
             case INVALID_INPUT -> error(HttpStatus.BAD_REQUEST, "ANALYSIS_PREDICTION_INPUT_INVALID");
+            case MODEL_VERSION_NOT_ACTIVE ->
+                    error(HttpStatus.CONFLICT, "ANALYSIS_PREDICTION_MODEL_VERSION_NOT_ACTIVE");
             case QUOTE_CURRENCY_MISMATCH -> error(HttpStatus.CONFLICT, "ANALYSIS_PREDICTION_QUOTE_CURRENCY_MISMATCH");
             case QUOTE_UNAVAILABLE -> error(HttpStatus.CONFLICT, "ANALYSIS_PREDICTION_QUOTE_UNAVAILABLE");
         };

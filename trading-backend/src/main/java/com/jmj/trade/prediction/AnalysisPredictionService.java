@@ -8,6 +8,7 @@ import com.jmj.trade.broker.Quote;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -45,10 +46,19 @@ public final class AnalysisPredictionService {
 
     private final JdbcTemplate jdbc;
     private final BrokerAdapter brokerAdapter;
+    private final PredictionModelRegistryService registry;
+    private final TransactionTemplate transactions;
 
-    public AnalysisPredictionService(JdbcTemplate jdbc, BrokerAdapter brokerAdapter) {
+    public AnalysisPredictionService(
+            JdbcTemplate jdbc,
+            BrokerAdapter brokerAdapter,
+            PredictionModelRegistryService registry,
+            TransactionTemplate transactions
+    ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.brokerAdapter = Objects.requireNonNull(brokerAdapter, "brokerAdapter");
+        this.registry = Objects.requireNonNull(registry, "registry");
+        this.transactions = Objects.requireNonNull(transactions, "transactions");
     }
 
     PredictionView create(UUID userId, UUID connectionId, CreateCommand command, Instant now) {
@@ -56,6 +66,7 @@ public final class AnalysisPredictionService {
         Objects.requireNonNull(connectionId, "connectionId");
         validate(command);
         requireOwnedConnection(userId, connectionId);
+        requireActiveVersion(userId, command);
 
         var quote = brokerAdapter.getQuote(new BrokerConnectionRef(connectionId), command.symbol()).value();
         if (quote.currency() != command.currency()) {
@@ -67,14 +78,20 @@ public final class AnalysisPredictionService {
         }
 
         var id = UUID.randomUUID();
-        jdbc.update("""
-                INSERT INTO analysis_predictions (
-                    id, user_id, broker_connection_id, symbol, currency, predicted_direction,
-                    model_version, contract_version, baseline_price, predicted_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, id, userId, connectionId, command.symbol(), command.currency().name(),
-                command.predictedDirection().name(), command.modelVersion(), command.contractVersion(),
-                price, offset(now), offset(now));
+        transactions.executeWithoutResult(status -> {
+            if (!registry.lockActive(userId, command.modelVersion(), command.contractVersion())) {
+                throw new AnalysisPredictionException(
+                        AnalysisPredictionException.Code.MODEL_VERSION_NOT_ACTIVE);
+            }
+            jdbc.update("""
+                    INSERT INTO analysis_predictions (
+                        id, user_id, broker_connection_id, symbol, currency, predicted_direction,
+                        model_version, contract_version, baseline_price, predicted_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, id, userId, connectionId, command.symbol(), command.currency().name(),
+                    command.predictedDirection().name(), command.modelVersion(), command.contractVersion(),
+                    price, offset(now), offset(now));
+        });
 
         return new PredictionView(
                 id, connectionId, command.symbol(), command.currency(), command.predictedDirection(),
@@ -117,6 +134,13 @@ public final class AnalysisPredictionService {
 
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private void requireActiveVersion(UUID userId, CreateCommand command) {
+        if (!registry.isActive(userId, command.modelVersion(), command.contractVersion())) {
+            throw new AnalysisPredictionException(
+                    AnalysisPredictionException.Code.MODEL_VERSION_NOT_ACTIVE);
+        }
     }
 
     private void requireOwnedConnection(UUID userId, UUID connectionId) {

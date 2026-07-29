@@ -8,7 +8,9 @@ import {
   createBrokerConnection,
   createEvent,
   createSingleFlight,
+  deletePredictionModelVersion,
   deleteBrokerConnection,
+  deprecatePredictionModelVersion,
   listEvents,
   listNotifications,
   loadAnalysisPredictions,
@@ -16,6 +18,7 @@ import {
   loadEvent,
   loadPaperPerformance,
   loadPortfolioHistory,
+  loadPredictionModelVersions,
   loadRiskPolicy,
   loadRiskPolicyHistory,
   loadSession,
@@ -23,6 +26,7 @@ import {
   logout,
   markNotificationRead,
   reanalyzeEvent,
+  registerPredictionModelVersion,
   replaceBrokerCredentials,
   reviewEvent,
   syncPortfolio,
@@ -352,6 +356,43 @@ test("loads analysis predictions with optional period/version filters", async ()
     ["/api/v1/broker-connections/connection%2F1/analysis-predictions"
       + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&modelVersion=v1&contractVersion=1",
       "same-origin"]
+  ]);
+});
+
+test("manages prediction model versions with same-origin credentials and CSRF", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return options.method === "DELETE"
+      ? new Response(null, { status: 204 })
+      : json([]);
+  };
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+  const command = { modelVersion: "v1", contractVersion: "1" };
+
+  await loadPredictionModelVersions(fetcher);
+  await registerPredictionModelVersion(command, session, fetcher);
+  await deprecatePredictionModelVersion("version/1", session, fetcher);
+  await deletePredictionModelVersion("version/1", session, fetcher);
+
+  assert.deepEqual(calls, [
+    ["/api/v1/prediction-model-versions", { credentials: "same-origin" }],
+    ["/api/v1/prediction-model-versions", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-CSRF-TOKEN": "csrf", "content-type": "application/json" },
+      body: JSON.stringify(command)
+    }],
+    ["/api/v1/prediction-model-versions/version%2F1/deprecate", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-CSRF-TOKEN": "csrf" }
+    }],
+    ["/api/v1/prediction-model-versions/version%2F1", {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "X-CSRF-TOKEN": "csrf" }
+    }]
   ]);
 });
 

@@ -54,17 +54,64 @@ function PredictionsTable({ predictions }) {
       outcomeCell(prediction.outcomes?.D20))))));
 }
 
-function CreateForm({ busy, onCreate }) {
+function RegistryPanel({ versions, busy, error, onRegister, onDeprecate, onDelete }) {
   function submit(event) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
+    Promise.resolve(onRegister({
+      modelVersion: data.get("modelVersion"),
+      contractVersion: data.get("contractVersion")
+    })).then(() => form.reset()).catch(() => {});
+  }
+
+  return h("section", { className: "prediction-model-registry", "aria-busy": busy },
+    h("h3", null, "Prediction model registry"),
+    h("form", { className: "prediction-registry-form", onSubmit: submit },
+      h("label", null, "Model version",
+        h("input", { name: "modelVersion", maxLength: 50, required: true })),
+      h("label", null, "Contract version",
+        h("input", { name: "contractVersion", maxLength: 50, required: true })),
+      h("button", { type: "submit", disabled: busy }, "Register version")),
+    error ? h("p", { className: "error" }, error) : null,
+    versions.length === 0
+      ? h("p", { className: "empty" }, "No model versions registered")
+      : h("div", { className: "table-wrap" }, h("table", null,
+        h("thead", null, h("tr", null, ...["Model", "Contract", "Status", "Actions"].map(th))),
+        h("tbody", null, ...versions.map(version => h("tr", { key: version.id },
+          h("td", null, version.modelVersion),
+          h("td", null, version.contractVersion),
+          h("td", null, version.status),
+          h("td", null,
+            h("button", {
+              type: "button",
+              disabled: busy || version.status !== "ACTIVE",
+              onClick: () => Promise.resolve(onDeprecate(version.id)).catch(() => {})
+            }, "Deprecate"),
+            h("button", {
+              type: "button",
+              disabled: busy,
+              onClick: () => Promise.resolve(onDelete(version.id)).catch(() => {})
+            }, "Delete"))))))));
+}
+
+function CreateForm({ versions, busy, onCreate }) {
+  const active = versions.filter(version => version.status === "ACTIVE");
+
+  function submit(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const version = active.find(candidate => candidate.id === data.get("versionId"));
+    if (!version) {
+      return;
+    }
     Promise.resolve(onCreate({
       symbol: data.get("symbol"),
       currency: data.get("currency"),
       predictedDirection: data.get("predictedDirection"),
-      modelVersion: data.get("modelVersion"),
-      contractVersion: data.get("contractVersion")
+      modelVersion: version.modelVersion,
+      contractVersion: version.contractVersion
     })).then(() => form.reset())
       // Failure is already surfaced via createError — this just avoids an unhandled
       // rejection warning for the promise chain local to the form itself.
@@ -78,13 +125,30 @@ function CreateForm({ busy, onCreate }) {
     h("label", null, "Direction",
       h("select", { name: "predictedDirection" },
         h("option", { value: "UP" }, "UP"), h("option", { value: "DOWN" }, "DOWN"))),
-    h("label", null, "Model version", h("input", { name: "modelVersion", required: true })),
-    h("label", null, "Contract version", h("input", { name: "contractVersion", required: true })),
-    h("button", { type: "submit", disabled: busy }, "Record prediction"));
+    h("label", null, "Model / contract version",
+      h("select", { name: "versionId", required: true },
+        ...active.map(version => h("option", { key: version.id, value: version.id },
+          `${version.modelVersion} / ${version.contractVersion}`)))),
+    active.length === 0
+      ? h("p", { className: "empty" }, "Register an ACTIVE model version first")
+      : null,
+    h("button", { type: "submit", disabled: busy || active.length === 0 }, "Record prediction"));
 }
 
 export function AnalysisOutcomeView({
-  performance, query = {}, busy, onQuery, createBusy, createError, onCreate
+  performance,
+  versions = [],
+  query = {},
+  busy,
+  onQuery,
+  createBusy,
+  createError,
+  onCreate,
+  registryBusy,
+  registryError,
+  onRegister,
+  onDeprecate,
+  onDelete
 }) {
   function submitFilter(event) {
     event.preventDefault();
@@ -112,7 +176,15 @@ export function AnalysisOutcomeView({
         h("h2", null, "Prediction performance"))),
     h("p", { className: "disclaimer" },
       "예측 기록 및 채점 전용 기능입니다 — 주문이나 자동매매와 연동되지 않습니다."),
-    h(CreateForm, { busy: createBusy, onCreate }),
+    h(RegistryPanel, {
+      versions,
+      busy: registryBusy,
+      error: registryError,
+      onRegister,
+      onDeprecate,
+      onDelete
+    }),
+    h(CreateForm, { versions, busy: createBusy, onCreate }),
     createError ? h("p", { className: "error" }, createError) : null,
     h("form", { className: "history-filter", onSubmit: submitFilter },
       h("label", null, "From",

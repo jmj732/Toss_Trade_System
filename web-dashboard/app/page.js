@@ -18,6 +18,8 @@ import {
   createEvent,
   createSingleFlight,
   deleteBrokerConnection,
+  deletePredictionModelVersion,
+  deprecatePredictionModelVersion,
   listEvents,
   listNotifications,
   loadAnalysisPredictions,
@@ -25,6 +27,7 @@ import {
   loadEvent,
   loadPaperPerformance,
   loadPortfolioHistory,
+  loadPredictionModelVersions,
   loadRiskPolicy,
   loadRiskPolicyHistory,
   loadSession,
@@ -32,6 +35,7 @@ import {
   logout,
   markNotificationRead,
   reanalyzeEvent,
+  registerPredictionModelVersion,
   replaceBrokerCredentials,
   reviewEvent,
   syncPortfolio,
@@ -67,6 +71,9 @@ export default function Home() {
   const [outcomeBusy, setOutcomeBusy] = useState(false);
   const [outcomeCreateBusy, setOutcomeCreateBusy] = useState(false);
   const [outcomeCreateError, setOutcomeCreateError] = useState("");
+  const [predictionModelVersions, setPredictionModelVersions] = useState([]);
+  const [registryBusy, setRegistryBusy] = useState(false);
+  const [registryError, setRegistryError] = useState("");
   const [riskPolicyOpen, setRiskPolicyOpen] = useState(false);
   const [riskPolicy, setRiskPolicy] = useState(null);
   const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
@@ -92,6 +99,8 @@ export default function Home() {
     setHistoryQuery(DEFAULT_HISTORY_QUERY);
     setPerformanceQuery(DEFAULT_PERFORMANCE_QUERY);
     setOutcomeQuery(DEFAULT_OUTCOME_QUERY);
+    setPredictionModelVersions([]);
+    setRegistryError("");
     try {
       const [nextDashboard, nextEvents] = await Promise.all([
         loadDashboard(id),
@@ -120,6 +129,11 @@ export default function Home() {
       setAnalysisOutcome(await loadAnalysisPredictions(id, DEFAULT_OUTCOME_QUERY));
     } catch (value) {
       setError(value.message);
+    }
+    try {
+      setPredictionModelVersions(await loadPredictionModelVersions());
+    } catch (value) {
+      setRegistryError(value.message);
     }
   }
 
@@ -170,6 +184,31 @@ export default function Home() {
         throw value;
       })
       .finally(() => setOutcomeCreateBusy(false));
+  }
+
+  function registryMutation(action) {
+    setRegistryBusy(true);
+    setRegistryError("");
+    return action()
+      .then(() => loadPredictionModelVersions())
+      .then(setPredictionModelVersions)
+      .catch(value => {
+        setRegistryError(value.message);
+        throw value;
+      })
+      .finally(() => setRegistryBusy(false));
+  }
+
+  function registerVersion(command) {
+    return registryMutation(() => registerPredictionModelVersion(command, session));
+  }
+
+  function deprecateVersion(id) {
+    return registryMutation(() => deprecatePredictionModelVersion(id, session));
+  }
+
+  function deleteVersion(id) {
+    return registryMutation(() => deletePredictionModelVersion(id, session));
   }
 
   async function orderAction(orderId, action) {
@@ -450,12 +489,18 @@ export default function Home() {
       h(AnalysisOutcomeView, {
         key: connectionId.trim(),
         performance: analysisOutcome,
+        versions: predictionModelVersions,
         query: outcomeQuery,
         busy: outcomeBusy,
         onQuery: outcomeQueryChange,
         createBusy: outcomeCreateBusy,
         createError: outcomeCreateError,
-        onCreate: outcomeCreate
+        onCreate: outcomeCreate,
+        registryBusy,
+        registryError,
+        onRegister: registerVersion,
+        onDeprecate: deprecateVersion,
+        onDelete: deleteVersion
       })) : h("main", { className: "center compact" },
       h("p", null, "Enter an owned broker connection UUID.")));
 }

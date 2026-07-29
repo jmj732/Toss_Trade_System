@@ -15,6 +15,7 @@ public final class AnalysisPredictionException extends RuntimeException {
 
     public enum Code {
         INVALID_INPUT,
+        MODEL_VERSION_NOT_ACTIVE,
         QUOTE_CURRENCY_MISMATCH,
         QUOTE_UNAVAILABLE
     }

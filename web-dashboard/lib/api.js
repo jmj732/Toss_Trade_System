@@ -277,6 +277,33 @@ export function loadAnalysisPredictions(
     fetcher);
 }
 
+export function loadPredictionModelVersions(fetcher = fetch) {
+  return readEvent("/api/v1/prediction-model-versions", fetcher);
+}
+
+export function registerPredictionModelVersion(command, session, fetcher = fetch) {
+  return brokerCommand(
+    "/api/v1/prediction-model-versions", "POST", session, command, fetcher);
+}
+
+export function deprecatePredictionModelVersion(id, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/prediction-model-versions/${encodeURIComponent(id)}/deprecate`,
+    "POST",
+    session,
+    null,
+    fetcher);
+}
+
+export function deletePredictionModelVersion(id, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/prediction-model-versions/${encodeURIComponent(id)}`,
+    "DELETE",
+    session,
+    null,
+    fetcher);
+}
+
 function notificationPath(suffix = "") {
   return `/api/v1/notifications${suffix}`;
 }

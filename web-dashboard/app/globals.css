@@ -279,11 +279,19 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
 .metric-value { font-size: 1rem; font-weight: 700; }
 .trend-pnl { fill: none; stroke: var(--accent); stroke-width: 2; }
 .analysis-outcome { margin-top: 1rem; }
-.prediction-create-form {
+.prediction-model-registry {
+  border-top: 1px solid #223140; margin-top: 1rem; padding-top: 1rem;
+}
+.prediction-registry-form, .prediction-create-form {
   align-items: flex-end; display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1rem;
 }
-.prediction-create-form label { color: var(--muted); display: flex; flex-direction: column; gap: .2rem; }
-.prediction-create-form input, .prediction-create-form select { width: auto; }
+.prediction-registry-form label, .prediction-create-form label {
+  color: var(--muted); display: flex; flex-direction: column; gap: .2rem;
+}
+.prediction-registry-form input, .prediction-create-form input, .prediction-create-form select {
+  width: auto;
+}
+.prediction-model-registry td button + button { margin-left: .4rem; }
 
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }
@@ -291,5 +299,7 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
   .event-detail > header { display: block; }
   .connection-form > div, .list li { align-items: stretch; flex-direction: column; }
   .notification-panel, .risk-policy-panel { left: 0; right: 0; width: auto; }
-  .history-filter, .prediction-create-form { align-items: stretch; flex-direction: column; }
+  .history-filter, .prediction-registry-form, .prediction-create-form {
+    align-items: stretch; flex-direction: column;
+  }
 }
