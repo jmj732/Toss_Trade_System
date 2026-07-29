@@ -12,6 +12,8 @@ import com.jmj.trade.order.PaperOrderWorkflowService;
 import com.jmj.trade.order.PaperTradingBroker;
 import com.jmj.trade.order.PreTradeRiskEngine;
 import com.jmj.trade.prediction.AnalysisPredictionService;
+import com.jmj.trade.prediction.PredictionEvaluationLease;
+import com.jmj.trade.prediction.PredictionEvaluationScheduler;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -19,6 +21,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -115,6 +118,28 @@ public class CredentialVaultConfiguration {
     @Bean
     AnalysisPredictionService analysisPredictionService(JdbcTemplate jdbcTemplate, BrokerAdapter brokerAdapter) {
         return new AnalysisPredictionService(jdbcTemplate, brokerAdapter);
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnProperty(prefix = "prediction.evaluation", name = "enabled", havingValue = "true")
+    @EnableScheduling
+    static class PredictionEvaluationSchedulingConfiguration {
+
+        @Bean
+        PredictionEvaluationLease predictionEvaluationLease(
+                JdbcTemplate jdbcTemplate,
+                @Value("${prediction.evaluation.lock-ttl:PT10M}") Duration lockTtl
+        ) {
+            return new PredictionEvaluationLease(jdbcTemplate, lockTtl);
+        }
+
+        @Bean
+        PredictionEvaluationScheduler predictionEvaluationScheduler(
+                PredictionEvaluationLease lease,
+                AnalysisPredictionService predictions
+        ) {
+            return new PredictionEvaluationScheduler(lease, predictions);
+        }
     }
 
     @Bean

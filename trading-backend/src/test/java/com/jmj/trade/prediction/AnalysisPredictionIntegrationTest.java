@@ -29,6 +29,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -50,7 +51,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         properties = {
                 "broker.credentials.enabled=true",
                 "broker.credentials.active-key-version=1",
-                "broker.credentials.keys.1=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+                "broker.credentials.keys.1=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+                "prediction.evaluation.enabled=true",
+                "prediction.evaluation.interval=PT24H",
+                "prediction.evaluation.initial-delay=PT24H",
+                "prediction.evaluation.lock-ttl=PT10M"
         })
 @Import(AnalysisPredictionIntegrationTest.PredictionBrokerConfiguration.class)
 class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
@@ -68,6 +73,12 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     @Autowired
     private TestBrokerAdapter broker;
 
+    @Autowired
+    private AnalysisPredictionService predictions;
+
+    @Autowired
+    private PredictionEvaluationScheduler scheduler;
+
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -75,7 +86,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         mockMvc = MockMvcBuilders.webAppContextSetup(context)
                 .apply(springSecurity())
                 .build();
-        jdbc.execute("TRUNCATE analysis_prediction_outcomes, analysis_predictions, "
+        jdbc.execute("TRUNCATE prediction_evaluation_leases, analysis_prediction_outcomes, analysis_predictions, "
                 + "broker_connections, users CASCADE");
         broker.reset();
     }
@@ -117,7 +128,27 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
         createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        broker.reset();
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("120"));
+
+        predictions.evaluateDue(Instant.now());
+        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.predictions[0].outcomes").isEmpty());
+
+        assertCount("analysis_prediction_outcomes", 0);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+    }
+
+    @Test
+    void getDoesNotCallBrokerOrWriteOutcomes() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        backdatePrediction("AAPL", Instant.now().minusSeconds(2 * 86400));
+        broker.reset();
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"));
 
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                         .with(user(USER_ID.toString())))
@@ -125,41 +156,25 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.predictions[0].outcomes").isEmpty());
 
         assertCount("analysis_prediction_outcomes", 0);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
     }
 
     @Test
-    void evaluatesDueHorizonOnReadAndGradesDirectionCorrectly() throws Exception {
+    void outcomeGradeIsPermanentEvenIfPriceMovesAgainOnALaterTick() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
         createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
         backdatePrediction("AAPL", Instant.now().minusSeconds(2 * 86400));
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"));
 
-        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
-                        .with(user(USER_ID.toString())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.predictions[0].outcomes.D1.price").value(110))
-                .andExpect(jsonPath("$.predictions[0].outcomes.D1.actualReturn").value(0.1))
-                .andExpect(jsonPath("$.predictions[0].outcomes.D1.directionCorrect").value(true))
-                .andExpect(jsonPath("$.predictions[0].outcomes.D5").doesNotExist());
-
-        assertCount("analysis_prediction_outcomes", 1);
-    }
-
-    @Test
-    void outcomeGradeIsPermanentEvenIfPriceMovesAgainOnANextRead() throws Exception {
-        var connectionId = insertConnection(USER_ID);
-        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
-        createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
-        backdatePrediction("AAPL", Instant.now().minusSeconds(2 * 86400));
-        broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"));
-
+        predictions.evaluateDue(Instant.now());
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                         .with(user(USER_ID.toString())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.predictions[0].outcomes.D1.price").value(110));
 
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("50"));
+        predictions.evaluateDue(Instant.now());
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                         .with(user(USER_ID.toString())))
                 .andExpect(status().isOk())
@@ -169,7 +184,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void gradesOnlyTheEarliestDueHorizonPerReadWhenSeveralMaturedWhileUnread() throws Exception {
+    void gradesOnlyTheEarliestDueHorizonPerPredictionPerTick() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
         createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
@@ -177,6 +192,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         backdatePrediction("AAPL", Instant.now().minusSeconds(25 * 86400));
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"));
 
+        predictions.evaluateDue(Instant.now());
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                         .with(user(USER_ID.toString())))
                 .andExpect(status().isOk())
@@ -186,6 +202,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         assertCount("analysis_prediction_outcomes", 1);
 
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("120"));
+        predictions.evaluateDue(Instant.now());
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                         .with(user(USER_ID.toString())))
                 .andExpect(status().isOk())
@@ -196,7 +213,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void aBrokerFailureForOneSymbolDoesNotBreakTheReadOrOtherPredictions() throws Exception {
+    void quoteFailureLeavesThatHorizonPendingWithoutBlockingOtherPredictions() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
         createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
@@ -206,32 +223,42 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         backdatePrediction("MSFT", Instant.now().minusSeconds(2 * 86400));
         broker.failFor("AAPL");
 
+        predictions.evaluateDue(Instant.now());
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                         .with(user(USER_ID.toString())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.predictions.length()").value(2));
 
         assertCount("analysis_prediction_outcomes", 1);
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT count(*)
+                  FROM analysis_prediction_outcomes outcome
+                  JOIN analysis_predictions prediction ON prediction.id = outcome.prediction_id
+                 WHERE prediction.symbol = 'AAPL'
+                """, Long.class)).isZero();
     }
 
     @Test
-    void memoizesOneQuotePerSymbolAcrossMultiplePredictionsInTheSamePass() throws Exception {
+    void memoizesQuotesPerConnectionAndSymbolWithinOneTick() throws Exception {
         var connectionId = insertConnection(USER_ID);
+        var otherConnectionId = insertConnection(OTHER_USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
         createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
         createPrediction(connectionId, "AAPL", "USD", "DOWN", "v2", "1");
+        createPrediction(OTHER_USER_ID, otherConnectionId, "AAPL", "USD", "UP", "v3", "1");
         jdbc.update("UPDATE analysis_predictions SET predicted_at = ? WHERE symbol = 'AAPL'",
                 offset(Instant.now().minusSeconds(2 * 86400)));
         broker.reset();
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"));
 
+        predictions.evaluateDue(Instant.now());
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                         .with(user(USER_ID.toString())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.predictions.length()").value(2));
 
-        assertCount("analysis_prediction_outcomes", 2);
-        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(1);
+        assertCount("analysis_prediction_outcomes", 3);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(2);
     }
 
     @Test
@@ -243,6 +270,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         backdatePrediction("AAPL", Instant.now().minusSeconds(2 * 86400));
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("90"));
 
+        predictions.evaluateDue(Instant.now());
         var results = mockMvc.perform(
                         get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
                                 .with(user(USER_ID.toString())))
@@ -256,6 +284,92 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.byVersion[0].avgMaxAdverseExcursion").value(0.1));
 
         results.andReturn();
+    }
+
+    @Test
+    void persistsTargetDueQuoteObservationTimeAndLag() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var predictedAt = Instant.parse("2026-01-01T00:00:00Z");
+        var observationTime = Instant.parse("2026-01-03T00:00:00Z");
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        backdatePrediction("AAPL", predictedAt);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"), observationTime);
+
+        predictions.evaluateDue(Instant.parse("2026-01-04T00:00:00Z"));
+
+        var outcome = predictions.read(
+                        USER_ID, connectionId, null, null, null, null,
+                        Instant.parse("2026-01-04T00:00:00Z"))
+                .predictions().getFirst().outcomes().get(Horizon.D1);
+        org.assertj.core.api.Assertions.assertThat(outcome.targetDueAt())
+                .isEqualTo(Instant.parse("2026-01-02T00:00:00Z"));
+        org.assertj.core.api.Assertions.assertThat(outcome.observationTime()).isEqualTo(observationTime);
+        org.assertj.core.api.Assertions.assertThat(outcome.lag()).isEqualTo(Duration.ofDays(1));
+        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.predictions[0].outcomes.D1.targetDueAt")
+                        .value("2026-01-02T00:00:00Z"))
+                .andExpect(jsonPath("$.predictions[0].outcomes.D1.observationTime")
+                        .value("2026-01-03T00:00:00Z"))
+                .andExpect(jsonPath("$.predictions[0].outcomes.D1.lag").value("PT24H"));
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForMap("""
+                SELECT target_due_at, observation_time, lag_ms
+                  FROM analysis_prediction_outcomes
+                """)).containsEntry("lag_ms", 86_400_000L);
+    }
+
+    @Test
+    void leaseHeldByAnotherOwnerExcludesTheTick() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        backdatePrediction("AAPL", Instant.now().minusSeconds(2 * 86400));
+        broker.reset();
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"));
+        jdbc.update("""
+                INSERT INTO prediction_evaluation_leases (name, owner, acquired_at, expires_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + INTERVAL '10 minutes')
+                """, PredictionEvaluationLease.NAME, UUID.randomUUID());
+
+        scheduler.evaluate();
+
+        assertCount("analysis_prediction_outcomes", 0);
+        assertCount("prediction_evaluation_leases", 1);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+    }
+
+    @Test
+    void duplicateOutcomeIsRejectedAndExistingOutcomeRemainsAppendOnly() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        var predictionId = createPrediction(connectionId, "AAPL", "USD", "UP", "v1", "1");
+        backdatePrediction("AAPL", Instant.now().minusSeconds(2 * 86400));
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("110"));
+        predictions.evaluateDue(Instant.now());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO analysis_prediction_outcomes (
+                    id, prediction_id, horizon, price, actual_return, direction_correct,
+                    target_due_at, observation_time, lag_ms
+                )
+                SELECT ?, prediction_id, horizon, price, actual_return, direction_correct,
+                       target_due_at, observation_time, lag_ms
+                  FROM analysis_prediction_outcomes
+                 WHERE prediction_id = ?
+                   AND horizon = 'D1'
+                """, UUID.randomUUID(), predictionId))
+                .isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+                        "UPDATE analysis_prediction_outcomes SET price = 120 WHERE prediction_id = ?",
+                        predictionId))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbc.update(
+                        "DELETE FROM analysis_prediction_outcomes WHERE prediction_id = ?",
+                        predictionId))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertCount("analysis_prediction_outcomes", 1);
     }
 
     @Test
@@ -303,9 +417,22 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
             UUID connectionId, String symbol, String currency, String direction,
             String modelVersion, String contractVersion
     ) throws Exception {
+        return createPrediction(
+                USER_ID, connectionId, symbol, currency, direction, modelVersion, contractVersion);
+    }
+
+    private UUID createPrediction(
+            UUID userId,
+            UUID connectionId,
+            String symbol,
+            String currency,
+            String direction,
+            String modelVersion,
+            String contractVersion
+    ) throws Exception {
         var response = mockMvc.perform(
                         post("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
-                                .with(user(USER_ID.toString()))
+                                .with(user(userId.toString()))
                                 .with(csrf())
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content(createRequest(symbol, currency, direction, modelVersion, contractVersion)))
@@ -367,13 +494,19 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     static final class TestBrokerAdapter implements BrokerAdapter {
         private final ConcurrentHashMap<String, BigDecimal> prices = new ConcurrentHashMap<>();
         private final ConcurrentHashMap<String, Currency> currencies = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, Instant> observationTimes = new ConcurrentHashMap<>();
         private final java.util.Set<String> failingSymbols = java.util.concurrent.ConcurrentHashMap.newKeySet();
         private final java.util.concurrent.atomic.AtomicInteger quoteCalls =
                 new java.util.concurrent.atomic.AtomicInteger();
 
         void setPrice(String symbol, Currency currency, BigDecimal price) {
+            setPrice(symbol, currency, price, Instant.now());
+        }
+
+        void setPrice(String symbol, Currency currency, BigDecimal price, Instant observationTime) {
             prices.put(symbol, price);
             currencies.put(symbol, currency);
+            observationTimes.put(symbol, observationTime);
         }
 
         void failFor(String symbol) {
@@ -387,6 +520,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         void reset() {
             prices.clear();
             currencies.clear();
+            observationTimes.clear();
             failingSymbols.clear();
             quoteCalls.set(0);
         }
@@ -403,9 +537,10 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
             if (price == null) {
                 throw new AssertionError("no test price set for " + symbol);
             }
+            var observedAt = observationTimes.get(symbol);
             var quote = new Quote(
-                    connection, symbol, currencies.get(symbol), price, null, null, Instant.now(), Instant.now());
-            return new BrokerResponse<>(quote, new BrokerCallMetadata("test-quote", Instant.now(), Optional.empty()));
+                    connection, symbol, currencies.get(symbol), price, null, null, observedAt, observedAt);
+            return new BrokerResponse<>(quote, new BrokerCallMetadata("test-quote", observedAt, Optional.empty()));
         }
 
         @Override

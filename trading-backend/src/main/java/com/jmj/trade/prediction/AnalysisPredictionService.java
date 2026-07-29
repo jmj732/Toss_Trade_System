@@ -11,6 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -98,8 +99,6 @@ public final class AnalysisPredictionService {
         }
         requireOwnedConnection(userId, connectionId);
 
-        evaluateDue(userId, connectionId, now);
-
         var predictions = fetchPredictions(userId, connectionId, effectiveFrom, effectiveTo, modelVersion, contractVersion);
         var byVersion = aggregate(predictions);
         return new PredictionPerformanceView(predictions, byVersion);
@@ -134,7 +133,7 @@ public final class AnalysisPredictionService {
     }
 
     /**
-     * Grades at most one due-and-ungraded horizon per prediction per call — never more, even
+     * Grades at most one due-and-ungraded horizon per prediction per tick — never more, even
      * if several horizons (e.g. D1 and D5) happen to be simultaneously overdue because a
      * connection went unread for a while. Horizons are graded in ascending order (D1, D5,
      * D20), and grading stops at the first one that isn't due yet, since a shorter horizon
@@ -146,39 +145,41 @@ public final class AnalysisPredictionService {
      *
      * <p>A quote failure for the one pair being graded (e.g. the broker is briefly
      * unavailable) is skipped, not fatal — it stays ungraded and is retried on the next
-     * read, since nothing here is allowed to fabricate a price.
+     * tick, since nothing here is allowed to fabricate a price.
      */
-    private void evaluateDue(UUID userId, UUID connectionId, Instant now) {
+    int evaluateDue(Instant now) {
+        Objects.requireNonNull(now, "now");
         var predictions = jdbc.query("""
-                SELECT id, symbol, predicted_direction, baseline_price, predicted_at
-                  FROM analysis_predictions
-                 WHERE user_id = ?
-                   AND broker_connection_id = ?
+                SELECT prediction.id, prediction.broker_connection_id, prediction.symbol,
+                       prediction.predicted_direction, prediction.baseline_price, prediction.predicted_at
+                  FROM analysis_predictions prediction
+                  JOIN broker_connections connection
+                    ON connection.user_id = prediction.user_id
+                   AND connection.id = prediction.broker_connection_id
+                 WHERE connection.status = 'ACTIVE'
+                   AND connection.deleted_at IS NULL
                 """, (resultSet, rowNum) -> new DuePrediction(
                 resultSet.getObject("id", UUID.class),
+                resultSet.getObject("broker_connection_id", UUID.class),
                 resultSet.getString("symbol"),
                 PredictedDirection.valueOf(resultSet.getString("predicted_direction")),
                 resultSet.getBigDecimal("baseline_price"),
                 resultSet.getObject("predicted_at", OffsetDateTime.class).toInstant()
-        ), userId, connectionId);
+        ));
         if (predictions.isEmpty()) {
-            return;
+            return 0;
         }
 
         var existing = new HashSet<PredictionHorizon>(jdbc.query("""
-                SELECT o.prediction_id, o.horizon
-                  FROM analysis_prediction_outcomes o
-                  JOIN analysis_predictions p ON p.id = o.prediction_id
-                 WHERE p.user_id = ?
-                   AND p.broker_connection_id = ?
+                SELECT prediction_id, horizon
+                  FROM analysis_prediction_outcomes
                 """, (resultSet, rowNum) -> new PredictionHorizon(
                 resultSet.getObject("prediction_id", UUID.class),
                 Horizon.valueOf(resultSet.getString("horizon"))
-        ), userId, connectionId));
+        )));
 
-        // Memoized per symbol within this one pass, so N predictions on the same symbol
-        // due in the same read cost one live quote call, not N.
-        var quotesBySymbol = new HashMap<String, Optional<BigDecimal>>();
+        var quotes = new HashMap<QuoteKey, Optional<ObservedQuote>>();
+        var graded = 0;
         for (var prediction : predictions) {
             for (var horizon : Horizon.values()) {
                 if (existing.contains(new PredictionHorizon(prediction.id(), horizon))) {
@@ -188,43 +189,50 @@ public final class AnalysisPredictionService {
                 if (now.isBefore(dueAt)) {
                     break;
                 }
-                evaluateOne(connectionId, prediction, horizon, now, quotesBySymbol);
+                if (evaluateOne(prediction, horizon, dueAt, quotes)) {
+                    graded++;
+                }
                 break;
             }
         }
+        return graded;
     }
 
-    private void evaluateOne(
-            UUID connectionId,
+    private boolean evaluateOne(
             DuePrediction prediction,
             Horizon horizon,
-            Instant now,
-            Map<String, Optional<BigDecimal>> quotesBySymbol
+            Instant dueAt,
+            Map<QuoteKey, Optional<ObservedQuote>> quotes
     ) {
-        var price = quotesBySymbol.computeIfAbsent(prediction.symbol(), symbol -> fetchPrice(connectionId, symbol))
+        var key = new QuoteKey(prediction.connectionId(), prediction.symbol());
+        var quote = quotes.computeIfAbsent(key, ignored -> fetchQuote(key.connectionId(), key.symbol()))
                 .orElse(null);
-        if (price == null) {
-            return;
+        if (quote == null || quote.observationTime().isBefore(dueAt)) {
+            return false;
         }
+        var price = quote.price();
         var actualReturn = price.subtract(prediction.baselinePrice())
                 .divide(prediction.baselinePrice(), 10, RoundingMode.HALF_UP);
         var directionCorrect = prediction.predictedDirection() == PredictedDirection.UP
                 ? actualReturn.signum() > 0
                 : actualReturn.signum() < 0;
         try {
-            jdbc.update("""
+            return jdbc.update("""
                     INSERT INTO analysis_prediction_outcomes (
-                        id, prediction_id, horizon, price, actual_return, direction_correct, observed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        id, prediction_id, horizon, price, actual_return, direction_correct,
+                        target_due_at, observation_time, lag_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (prediction_id, horizon) DO NOTHING
                     """, UUID.randomUUID(), prediction.id(), horizon.name(), price, actualReturn,
-                    directionCorrect, offset(now));
+                    directionCorrect, offset(dueAt), offset(quote.observationTime()),
+                    Duration.between(dueAt, quote.observationTime()).toMillis()) == 1;
         } catch (DuplicateKeyException ignored) {
-            // Another concurrent read already graded this pair — the unique constraint wins either way.
+            // Another evaluator already graded this pair — the unique constraint wins either way.
+            return false;
         }
     }
 
-    private Optional<BigDecimal> fetchPrice(UUID connectionId, String symbol) {
+    private Optional<ObservedQuote> fetchQuote(UUID connectionId, String symbol) {
         Quote quote;
         try {
             quote = brokerAdapter.getQuote(new BrokerConnectionRef(connectionId), symbol).value();
@@ -232,7 +240,9 @@ public final class AnalysisPredictionService {
             return Optional.empty();
         }
         var price = quote.lastPrice();
-        return price != null && price.signum() > 0 ? Optional.of(price) : Optional.empty();
+        return price != null && price.signum() > 0
+                ? Optional.of(new ObservedQuote(price, quote.observedAt()))
+                : Optional.empty();
     }
 
     private List<PredictionView> fetchPredictions(
@@ -284,7 +294,8 @@ public final class AnalysisPredictionService {
         }
         var placeholders = String.join(",", predictionIds.stream().map(id -> "?").toList());
         var rows = jdbc.query("""
-                SELECT prediction_id, horizon, price, actual_return, direction_correct, observed_at
+                SELECT prediction_id, horizon, price, actual_return, direction_correct,
+                       target_due_at, observation_time, lag_ms
                   FROM analysis_prediction_outcomes
                  WHERE prediction_id IN (%s)
                 """.formatted(placeholders), (resultSet, rowNum) -> Map.entry(
@@ -294,7 +305,9 @@ public final class AnalysisPredictionService {
                         resultSet.getBigDecimal("price"),
                         resultSet.getBigDecimal("actual_return"),
                         resultSet.getBoolean("direction_correct"),
-                        resultSet.getObject("observed_at", OffsetDateTime.class).toInstant())
+                        resultSet.getObject("target_due_at", OffsetDateTime.class).toInstant(),
+                        resultSet.getObject("observation_time", OffsetDateTime.class).toInstant(),
+                        Duration.ofMillis(resultSet.getLong("lag_ms")))
         ), predictionIds.toArray());
 
         var byPrediction = new HashMap<UUID, Map<Horizon, OutcomeView>>();
@@ -302,7 +315,8 @@ public final class AnalysisPredictionService {
             var outcome = entry.getValue();
             byPrediction.computeIfAbsent(entry.getKey(), key -> new EnumMap<>(Horizon.class))
                     .put(outcome.horizon(), new OutcomeView(
-                            outcome.price(), outcome.actualReturn(), outcome.directionCorrect(), outcome.observedAt()));
+                            outcome.price(), outcome.actualReturn(), outcome.directionCorrect(),
+                            outcome.targetDueAt(), outcome.observationTime(), outcome.lag()));
         }
         return byPrediction;
     }
@@ -382,8 +396,19 @@ public final class AnalysisPredictionService {
     }
 
     private record DuePrediction(
-            UUID id, String symbol, PredictedDirection predictedDirection, BigDecimal baselinePrice, Instant predictedAt
+            UUID id,
+            UUID connectionId,
+            String symbol,
+            PredictedDirection predictedDirection,
+            BigDecimal baselinePrice,
+            Instant predictedAt
     ) {
+    }
+
+    private record QuoteKey(UUID connectionId, String symbol) {
+    }
+
+    private record ObservedQuote(BigDecimal price, Instant observationTime) {
     }
 
     private record PredictionHorizon(UUID predictionId, Horizon horizon) {
@@ -402,7 +427,13 @@ public final class AnalysisPredictionService {
     }
 
     private record OutcomeRow(
-            Horizon horizon, BigDecimal price, BigDecimal actualReturn, boolean directionCorrect, Instant observedAt
+            Horizon horizon,
+            BigDecimal price,
+            BigDecimal actualReturn,
+            boolean directionCorrect,
+            Instant targetDueAt,
+            Instant observationTime,
+            Duration lag
     ) {
     }
 
@@ -429,7 +460,14 @@ public final class AnalysisPredictionService {
     ) {
     }
 
-    public record OutcomeView(BigDecimal price, BigDecimal actualReturn, boolean directionCorrect, Instant observedAt) {
+    public record OutcomeView(
+            BigDecimal price,
+            BigDecimal actualReturn,
+            boolean directionCorrect,
+            Instant targetDueAt,
+            Instant observationTime,
+            Duration lag
+    ) {
     }
 
     public record PerformanceRow(
