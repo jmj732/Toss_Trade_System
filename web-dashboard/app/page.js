@@ -6,6 +6,7 @@ import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
 import { NotificationCenter } from "./notification-center.js";
+import { PaperPerformanceView } from "./paper-performance-view.js";
 import { PortfolioHistoryView } from "./portfolio-history-view.js";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
 import {
@@ -19,6 +20,7 @@ import {
   listNotifications,
   loadDashboard,
   loadEvent,
+  loadPaperPerformance,
   loadPortfolioHistory,
   loadRiskPolicy,
   loadRiskPolicyHistory,
@@ -35,6 +37,7 @@ import {
 } from "../lib/api.js";
 
 const DEFAULT_HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
+const DEFAULT_PERFORMANCE_QUERY = { from: "", to: "", maxPoints: 90 };
 
 export default function Home() {
   const [session, setSession] = useState(undefined);
@@ -52,6 +55,9 @@ export default function Home() {
   const [portfolioHistory, setPortfolioHistory] = useState(null);
   const [historyQuery, setHistoryQuery] = useState(DEFAULT_HISTORY_QUERY);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [paperPerformance, setPaperPerformance] = useState(null);
+  const [performanceQuery, setPerformanceQuery] = useState(DEFAULT_PERFORMANCE_QUERY);
+  const [performanceBusy, setPerformanceBusy] = useState(false);
   const [riskPolicyOpen, setRiskPolicyOpen] = useState(false);
   const [riskPolicy, setRiskPolicy] = useState(null);
   const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
@@ -75,6 +81,7 @@ export default function Home() {
     setError("");
     const id = connectionId.trim();
     setHistoryQuery(DEFAULT_HISTORY_QUERY);
+    setPerformanceQuery(DEFAULT_PERFORMANCE_QUERY);
     try {
       const [nextDashboard, nextEvents] = await Promise.all([
         loadDashboard(id),
@@ -86,10 +93,15 @@ export default function Home() {
       setError(value.message);
       return;
     }
-    // A history load failure is its own section's problem, not a reason to hide the
-    // portfolio/analysis/events/proposals the user actually opened the connection to see.
+    // A history/performance load failure is its own section's problem, not a reason to hide
+    // the portfolio/analysis/events/proposals the user actually opened the connection to see.
     try {
       setPortfolioHistory(await loadPortfolioHistory(id, DEFAULT_HISTORY_QUERY));
+    } catch (value) {
+      setError(value.message);
+    }
+    try {
+      setPaperPerformance(await loadPaperPerformance(id, DEFAULT_PERFORMANCE_QUERY));
     } catch (value) {
       setError(value.message);
     }
@@ -104,6 +116,17 @@ export default function Home() {
       .then(setPortfolioHistory)
       .catch(value => setError(value.message))
       .finally(() => setHistoryBusy(false));
+  }
+
+  function performanceQueryChange(query) {
+    const id = connectionId.trim();
+    setPerformanceQuery(query);
+    setPerformanceBusy(true);
+    setError("");
+    loadPaperPerformance(id, query)
+      .then(setPaperPerformance)
+      .catch(value => setError(value.message))
+      .finally(() => setPerformanceBusy(false));
   }
 
   async function orderAction(orderId, action) {
@@ -330,6 +353,8 @@ export default function Home() {
             setSelectedEvent(null);
             setPortfolioHistory(null);
             setHistoryQuery(DEFAULT_HISTORY_QUERY);
+            setPaperPerformance(null);
+            setPerformanceQuery(DEFAULT_PERFORMANCE_QUERY);
           },
           placeholder: "00000000-0000-0000-0000-000000000000",
           required: true
@@ -368,6 +393,13 @@ export default function Home() {
         query: historyQuery,
         busy: historyBusy,
         onQuery: historyQueryChange
+      }),
+      h(PaperPerformanceView, {
+        key: connectionId.trim(),
+        performance: paperPerformance,
+        query: performanceQuery,
+        busy: performanceBusy,
+        onQuery: performanceQueryChange
       })) : h("main", { className: "center compact" },
       h("p", null, "Enter an owned broker connection UUID.")));
 }

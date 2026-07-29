@@ -221,6 +221,28 @@ export function loadPortfolioHistory(
     fetcher);
 }
 
+export function loadPaperPerformance(
+  connectionId,
+  { from, to, maxPoints } = {},
+  fetcher = fetch
+) {
+  const params = new URLSearchParams();
+  if (from) {
+    params.set("from", from);
+  }
+  if (to) {
+    params.set("to", to);
+  }
+  if (maxPoints) {
+    params.set("maxPoints", String(maxPoints));
+  }
+  const query = params.toString();
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/paper-performance`
+      + (query ? `?${query}` : ""),
+    fetcher);
+}
+
 function notificationPath(suffix = "") {
   return `/api/v1/notifications${suffix}`;
 }

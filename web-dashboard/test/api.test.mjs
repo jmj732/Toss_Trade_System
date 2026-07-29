@@ -12,6 +12,7 @@ import {
   listNotifications,
   loadDashboard,
   loadEvent,
+  loadPaperPerformance,
   loadPortfolioHistory,
   loadRiskPolicy,
   loadRiskPolicyHistory,
@@ -280,6 +281,25 @@ test("loads portfolio history with an optional from/to/maxPoints query", async (
   assert.deepEqual(calls.map(([url, options]) => [url, options.credentials]), [
     ["/api/v1/broker-connections/connection%2F1/portfolio-history", "same-origin"],
     ["/api/v1/broker-connections/connection%2F1/portfolio-history"
+      + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&maxPoints=30", "same-origin"]
+  ]);
+});
+
+test("loads paper performance with an optional from/to/maxPoints query", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ unavailable: false, data: { byCurrency: {} } });
+  };
+
+  await loadPaperPerformance("connection/1", {}, fetcher);
+  await loadPaperPerformance(
+    "connection/1", { from: "2026-01-01T00:00:00Z", to: "2026-02-01T00:00:00Z", maxPoints: 30 },
+    fetcher);
+
+  assert.deepEqual(calls.map(([url, options]) => [url, options.credentials]), [
+    ["/api/v1/broker-connections/connection%2F1/paper-performance", "same-origin"],
+    ["/api/v1/broker-connections/connection%2F1/paper-performance"
       + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&maxPoints=30", "same-origin"]
   ]);
 });
