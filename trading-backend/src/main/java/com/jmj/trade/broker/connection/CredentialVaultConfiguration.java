@@ -11,6 +11,7 @@ import com.jmj.trade.order.OrderIntentTransitionService;
 import com.jmj.trade.order.PaperOrderWorkflowService;
 import com.jmj.trade.order.PaperTradingBroker;
 import com.jmj.trade.order.PreTradeRiskEngine;
+import com.jmj.trade.prediction.AnalysisPredictionService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -109,6 +110,11 @@ public class CredentialVaultConfiguration {
                 transitionService,
                 jdbcTemplate,
                 riskPolicyService);
+    }
+
+    @Bean
+    AnalysisPredictionService analysisPredictionService(JdbcTemplate jdbcTemplate, BrokerAdapter brokerAdapter) {
+        return new AnalysisPredictionService(jdbcTemplate, brokerAdapter);
     }
 
     @Bean

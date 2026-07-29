@@ -2,6 +2,7 @@
 
 import { createElement as h, useEffect, useRef, useState } from "react";
 
+import { AnalysisOutcomeView } from "./analysis-outcome-view.js";
 import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
@@ -12,12 +13,14 @@ import { RiskPolicyPanel } from "./risk-policy-view.js";
 import {
   actOnProposal,
   analyzePortfolio,
+  createAnalysisPrediction,
   createBrokerConnection,
   createEvent,
   createSingleFlight,
   deleteBrokerConnection,
   listEvents,
   listNotifications,
+  loadAnalysisPredictions,
   loadDashboard,
   loadEvent,
   loadPaperPerformance,
@@ -38,6 +41,7 @@ import {
 
 const DEFAULT_HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
 const DEFAULT_PERFORMANCE_QUERY = { from: "", to: "", maxPoints: 90 };
+const DEFAULT_OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "" };
 
 export default function Home() {
   const [session, setSession] = useState(undefined);
@@ -58,6 +62,11 @@ export default function Home() {
   const [paperPerformance, setPaperPerformance] = useState(null);
   const [performanceQuery, setPerformanceQuery] = useState(DEFAULT_PERFORMANCE_QUERY);
   const [performanceBusy, setPerformanceBusy] = useState(false);
+  const [analysisOutcome, setAnalysisOutcome] = useState(null);
+  const [outcomeQuery, setOutcomeQuery] = useState(DEFAULT_OUTCOME_QUERY);
+  const [outcomeBusy, setOutcomeBusy] = useState(false);
+  const [outcomeCreateBusy, setOutcomeCreateBusy] = useState(false);
+  const [outcomeCreateError, setOutcomeCreateError] = useState("");
   const [riskPolicyOpen, setRiskPolicyOpen] = useState(false);
   const [riskPolicy, setRiskPolicy] = useState(null);
   const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
@@ -82,6 +91,7 @@ export default function Home() {
     const id = connectionId.trim();
     setHistoryQuery(DEFAULT_HISTORY_QUERY);
     setPerformanceQuery(DEFAULT_PERFORMANCE_QUERY);
+    setOutcomeQuery(DEFAULT_OUTCOME_QUERY);
     try {
       const [nextDashboard, nextEvents] = await Promise.all([
         loadDashboard(id),
@@ -93,8 +103,9 @@ export default function Home() {
       setError(value.message);
       return;
     }
-    // A history/performance load failure is its own section's problem, not a reason to hide
-    // the portfolio/analysis/events/proposals the user actually opened the connection to see.
+    // A history/performance/outcome load failure is its own section's problem, not a reason
+    // to hide the portfolio/analysis/events/proposals the user actually opened the
+    // connection to see.
     try {
       setPortfolioHistory(await loadPortfolioHistory(id, DEFAULT_HISTORY_QUERY));
     } catch (value) {
@@ -102,6 +113,11 @@ export default function Home() {
     }
     try {
       setPaperPerformance(await loadPaperPerformance(id, DEFAULT_PERFORMANCE_QUERY));
+    } catch (value) {
+      setError(value.message);
+    }
+    try {
+      setAnalysisOutcome(await loadAnalysisPredictions(id, DEFAULT_OUTCOME_QUERY));
     } catch (value) {
       setError(value.message);
     }
@@ -127,6 +143,33 @@ export default function Home() {
       .then(setPaperPerformance)
       .catch(value => setError(value.message))
       .finally(() => setPerformanceBusy(false));
+  }
+
+  function outcomeQueryChange(query) {
+    const id = connectionId.trim();
+    setOutcomeQuery(query);
+    setOutcomeBusy(true);
+    setError("");
+    loadAnalysisPredictions(id, query)
+      .then(setAnalysisOutcome)
+      .catch(value => setError(value.message))
+      .finally(() => setOutcomeBusy(false));
+  }
+
+  function outcomeCreate(command) {
+    const id = connectionId.trim();
+    setOutcomeCreateBusy(true);
+    setOutcomeCreateError("");
+    return createAnalysisPrediction(id, command, session)
+      .then(() => loadAnalysisPredictions(id, outcomeQuery))
+      .then(setAnalysisOutcome)
+      .catch(value => {
+        setOutcomeCreateError(value.message);
+        // Rethrown so the create form only clears its inputs on success — an error means
+        // the user likely wants to fix and resubmit the same values, not retype them.
+        throw value;
+      })
+      .finally(() => setOutcomeCreateBusy(false));
   }
 
   async function orderAction(orderId, action) {
@@ -355,6 +398,9 @@ export default function Home() {
             setHistoryQuery(DEFAULT_HISTORY_QUERY);
             setPaperPerformance(null);
             setPerformanceQuery(DEFAULT_PERFORMANCE_QUERY);
+            setAnalysisOutcome(null);
+            setOutcomeQuery(DEFAULT_OUTCOME_QUERY);
+            setOutcomeCreateError("");
           },
           placeholder: "00000000-0000-0000-0000-000000000000",
           required: true
@@ -400,6 +446,16 @@ export default function Home() {
         query: performanceQuery,
         busy: performanceBusy,
         onQuery: performanceQueryChange
+      }),
+      h(AnalysisOutcomeView, {
+        key: connectionId.trim(),
+        performance: analysisOutcome,
+        query: outcomeQuery,
+        busy: outcomeBusy,
+        onQuery: outcomeQueryChange,
+        createBusy: outcomeCreateBusy,
+        createError: outcomeCreateError,
+        onCreate: outcomeCreate
       })) : h("main", { className: "center compact" },
       h("p", null, "Enter an owned broker connection UUID.")));
 }

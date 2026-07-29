@@ -269,13 +269,21 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
 .risk-policy-history li { align-items: flex-start; }
 .risk-policy-history li > div { display: flex; flex-direction: column; gap: .15rem; }
 .paper-performance { margin-top: 1rem; }
-.paper-performance .disclaimer { color: var(--muted); font-size: .78rem; margin-top: .3rem; }
+.paper-performance .disclaimer, .analysis-outcome .disclaimer {
+  color: var(--muted); font-size: .78rem; margin-top: .3rem;
+}
 .paper-performance-currency { border-top: 1px solid #223140; margin-top: 1rem; padding-top: 1rem; }
 .metrics-grid { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr)); margin-top: .6rem; }
 .metric { display: flex; flex-direction: column; gap: .15rem; }
 .metric-label { color: var(--muted); font-size: .72rem; }
 .metric-value { font-size: 1rem; font-weight: 700; }
 .trend-pnl { fill: none; stroke: var(--accent); stroke-width: 2; }
+.analysis-outcome { margin-top: 1rem; }
+.prediction-create-form {
+  align-items: flex-end; display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1rem;
+}
+.prediction-create-form label { color: var(--muted); display: flex; flex-direction: column; gap: .2rem; }
+.prediction-create-form input, .prediction-create-form select { width: auto; }
 
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }
@@ -283,5 +291,5 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
   .event-detail > header { display: block; }
   .connection-form > div, .list li { align-items: stretch; flex-direction: column; }
   .notification-panel, .risk-policy-panel { left: 0; right: 0; width: auto; }
-  .history-filter { align-items: stretch; flex-direction: column; }
+  .history-filter, .prediction-create-form { align-items: stretch; flex-direction: column; }
 }

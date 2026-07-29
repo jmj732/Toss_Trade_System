@@ -243,6 +243,40 @@ export function loadPaperPerformance(
     fetcher);
 }
 
+export function createAnalysisPrediction(connectionId, command, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/analysis-predictions`,
+    "POST",
+    session,
+    command,
+    fetcher);
+}
+
+export function loadAnalysisPredictions(
+  connectionId,
+  { from, to, modelVersion, contractVersion } = {},
+  fetcher = fetch
+) {
+  const params = new URLSearchParams();
+  if (from) {
+    params.set("from", from);
+  }
+  if (to) {
+    params.set("to", to);
+  }
+  if (modelVersion) {
+    params.set("modelVersion", modelVersion);
+  }
+  if (contractVersion) {
+    params.set("contractVersion", contractVersion);
+  }
+  const query = params.toString();
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/analysis-predictions`
+      + (query ? `?${query}` : ""),
+    fetcher);
+}
+
 function notificationPath(suffix = "") {
   return `/api/v1/notifications${suffix}`;
 }

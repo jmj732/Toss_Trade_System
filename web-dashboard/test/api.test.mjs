@@ -4,12 +4,14 @@ import test from "node:test";
 import {
   actOnProposal,
   analyzePortfolio,
+  createAnalysisPrediction,
   createBrokerConnection,
   createEvent,
   createSingleFlight,
   deleteBrokerConnection,
   listEvents,
   listNotifications,
+  loadAnalysisPredictions,
   loadDashboard,
   loadEvent,
   loadPaperPerformance,
@@ -301,6 +303,55 @@ test("loads paper performance with an optional from/to/maxPoints query", async (
     ["/api/v1/broker-connections/connection%2F1/paper-performance", "same-origin"],
     ["/api/v1/broker-connections/connection%2F1/paper-performance"
       + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&maxPoints=30", "same-origin"]
+  ]);
+});
+
+test("records an analysis prediction with the session CSRF token", async () => {
+  let call;
+  const fetcher = async (...args) => {
+    call = args;
+    return json({ id: "prediction-1" });
+  };
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+  const command = {
+    symbol: "AAPL", currency: "USD", predictedDirection: "UP",
+    modelVersion: "v1", contractVersion: "1"
+  };
+
+  await createAnalysisPrediction("connection/1", command, session, fetcher);
+
+  assert.deepEqual(call, [
+    "/api/v1/broker-connections/connection%2F1/analysis-predictions",
+    {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-CSRF-TOKEN": "csrf", "content-type": "application/json" },
+      body: JSON.stringify(command)
+    }
+  ]);
+});
+
+test("loads analysis predictions with optional period/version filters", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ predictions: [], byVersion: [] });
+  };
+
+  await loadAnalysisPredictions("connection/1", {}, fetcher);
+  await loadAnalysisPredictions(
+      "connection/1",
+      {
+        from: "2026-01-01T00:00:00Z", to: "2026-02-01T00:00:00Z",
+        modelVersion: "v1", contractVersion: "1"
+      },
+      fetcher);
+
+  assert.deepEqual(calls.map(([url, options]) => [url, options.credentials]), [
+    ["/api/v1/broker-connections/connection%2F1/analysis-predictions", "same-origin"],
+    ["/api/v1/broker-connections/connection%2F1/analysis-predictions"
+      + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&modelVersion=v1&contractVersion=1",
+      "same-origin"]
   ]);
 });
 
