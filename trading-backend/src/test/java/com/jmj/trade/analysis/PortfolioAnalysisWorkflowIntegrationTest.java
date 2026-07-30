@@ -50,7 +50,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         classes = TradingBackendApplication.class,
         properties = {
                 "analysis.service.connect-timeout=PT0.5S",
-                "analysis.service.read-timeout=PT0.5S"
+                "analysis.service.read-timeout=PT1S"
         })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
@@ -178,7 +178,7 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
 
         ANALYSIS.resetAll();
         ANALYSIS.stubFor(post("/internal/v1/portfolio-analyses")
-                .willReturn(aResponse().withFixedDelay(800).withStatus(200)));
+                .willReturn(aResponse().withFixedDelay(1500).withStatus(200)));
         mockMvc.perform(post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId)
                         .with(user(USER_ID.toString()))
                         .with(csrf()))
