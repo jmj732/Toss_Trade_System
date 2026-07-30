@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -64,7 +65,7 @@ public final class AnalysisPredictionService {
     PredictionView create(UUID userId, UUID connectionId, CreateCommand command, Instant now) {
         Objects.requireNonNull(userId, "userId");
         Objects.requireNonNull(connectionId, "connectionId");
-        validate(command);
+        command = normalize(command);
         requireOwnedConnection(userId, connectionId);
         return createNew(userId, connectionId, null, command, now);
     }
@@ -115,19 +116,25 @@ public final class AnalysisPredictionService {
                     batchCommand == null ? null : batchCommand.clientRequestId(),
                     BatchErrorCode.INVALID_INPUT);
         }
-        if (scope != null && !scope.matches(batchCommand.command())) {
+
+        CreateCommand command;
+        try {
+            command = normalize(batchCommand.command());
+        } catch (AnalysisPredictionException exception) {
+            return BatchItemResult.failed(batchCommand.clientRequestId(), BatchErrorCode.INVALID_INPUT);
+        }
+        var canonicalBatchCommand = new BatchCommand(batchCommand.clientRequestId(), command);
+        if (scope != null && !scope.matches(command)) {
             return BatchItemResult.failed(
                     batchCommand.clientRequestId(), BatchErrorCode.API_KEY_SCOPE_MISMATCH);
         }
 
         var existing = findByClientRequestId(userId, batchCommand.clientRequestId());
         if (existing.isPresent()) {
-            return replay(connectionId, batchCommand, existing.get());
+            return replay(connectionId, canonicalBatchCommand, existing.get());
         }
 
         try {
-            var command = batchCommand.command();
-            validate(command);
             requireActiveVersion(userId, command);
             var batchQuote = quotes.computeIfAbsent(
                     command.symbol(), symbol -> fetchBatchQuote(connectionId, symbol));
@@ -139,7 +146,7 @@ public final class AnalysisPredictionService {
             return BatchItemResult.created(batchCommand.clientRequestId(), created);
         } catch (DuplicateKeyException exception) {
             return findByClientRequestId(userId, batchCommand.clientRequestId())
-                    .map(prediction -> replay(connectionId, batchCommand, prediction))
+                    .map(prediction -> replay(connectionId, canonicalBatchCommand, prediction))
                     .orElseThrow(() -> exception);
         } catch (AnalysisPredictionException exception) {
             return BatchItemResult.failed(
@@ -162,7 +169,6 @@ public final class AnalysisPredictionService {
             CreateCommand command,
             Instant now
     ) {
-        validate(command);
         requireActiveVersion(userId, command);
 
         var quote = brokerAdapter.getQuote(new BrokerConnectionRef(connectionId), command.symbol()).value();
@@ -282,7 +288,7 @@ public final class AnalysisPredictionService {
         return new PredictionPerformanceView(predictions, byVersion);
     }
 
-    private void validate(CreateCommand command) {
+    private CreateCommand normalize(CreateCommand command) {
         if (command == null
                 || isBlank(command.symbol())
                 || command.currency() == null
@@ -291,6 +297,16 @@ public final class AnalysisPredictionService {
                 || isBlank(command.contractVersion())) {
             throw new AnalysisPredictionException(AnalysisPredictionException.Code.INVALID_INPUT);
         }
+        var symbol = command.symbol().trim().toUpperCase(Locale.ROOT);
+        if (symbol.length() > 30 || !symbol.matches("[A-Z0-9]+(?:[.-][A-Z0-9]+)*")) {
+            throw new AnalysisPredictionException(AnalysisPredictionException.Code.INVALID_INPUT);
+        }
+        return new CreateCommand(
+                symbol,
+                command.currency(),
+                command.predictedDirection(),
+                command.modelVersion(),
+                command.contractVersion());
     }
 
     private static boolean isBlank(String value) {

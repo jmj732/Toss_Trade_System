@@ -296,6 +296,25 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void normalizesSinglePredictionSymbolBeforeQuoteAndStorage() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
+        broker.setPrice("  aapl  ", Currency.USD, new BigDecimal("999"));
+
+        mockMvc.perform(post("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest("  aapl  ", "USD", "UP", "v1", "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.symbol").value("AAPL"));
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+                "SELECT symbol FROM analysis_predictions", String.class)).isEqualTo("AAPL");
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
+    }
+
+    @Test
     void rejectsQuoteCurrencyMismatch() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
@@ -376,6 +395,30 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void batchCoalescesEquivalentCanonicalSymbols() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"), T0);
+        broker.setPrice(" aapl ", Currency.USD, new BigDecimal("999"), T0);
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("canonical-1", " aapl ", "USD", "UP", "v1", "1"),
+                                batchItem("canonical-2", "AAPL", "USD", "DOWN", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"))
+                .andExpect(jsonPath("$.results[0].prediction.symbol").value("AAPL"))
+                .andExpect(jsonPath("$.results[1].status").value("CREATED"))
+                .andExpect(jsonPath("$.results[1].prediction.symbol").value("AAPL"));
+
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
+    }
+
+    @Test
     void batchQuoteCacheDoesNotCrossRequests() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"), T0);
@@ -438,6 +481,29 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.results[0].status").value("DUPLICATE"))
                 .andExpect(jsonPath("$.results[0].prediction.id").value(predictionId.toString()));
+
+        assertCount("analysis_predictions", 1);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
+    }
+
+    @Test
+    void batchIdempotencyComparesCanonicalSymbols() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        broker.setPrice(" aapl ", Currency.USD, new BigDecimal("999"));
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("canonical-id", " aapl ", "USD", "UP", "v1", "1"),
+                                batchItem("canonical-id", "AAPL", "USD", "UP", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"))
+                .andExpect(jsonPath("$.results[1].status").value("DUPLICATE"));
 
         assertCount("analysis_predictions", 1);
         org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
@@ -938,10 +1004,10 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     @Test
     void gradesOnlyDuePredictionsInTargetDueAtOrderWithinTheTickLimit() throws Exception {
         var connectionId = insertConnection(USER_ID);
-        broker.setPrice("LARGE_ID", Currency.USD, new BigDecimal("100"));
-        var largeId = createPrediction(connectionId, "LARGE_ID", "USD", "UP", "v1", "1");
-        broker.setPrice("SMALL_ID", Currency.USD, new BigDecimal("100"));
-        var smallId = createPrediction(connectionId, "SMALL_ID", "USD", "UP", "v1", "1");
+        broker.setPrice("LARGE-ID", Currency.USD, new BigDecimal("100"));
+        var largeId = createPrediction(connectionId, "LARGE-ID", "USD", "UP", "v1", "1");
+        broker.setPrice("SMALL-ID", Currency.USD, new BigDecimal("100"));
+        var smallId = createPrediction(connectionId, "SMALL-ID", "USD", "UP", "v1", "1");
         var duePredictedAt = T0.minus(Duration.ofDays(2));
         jdbc.update("UPDATE analysis_predictions SET id = ?, predicted_at = ? WHERE id = ?",
                 UUID.fromString("ffffffff-ffff-ffff-ffff-ffffffffffff"), offset(duePredictedAt), largeId);
@@ -951,8 +1017,8 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         createPrediction(connectionId, "NOTDUE", "USD", "UP", "v1", "1");
         backdatePrediction("NOTDUE", T0);
         broker.reset();
-        broker.setPrice("LARGE_ID", Currency.USD, new BigDecimal("110"), T0);
-        broker.setPrice("SMALL_ID", Currency.USD, new BigDecimal("120"), T0);
+        broker.setPrice("LARGE-ID", Currency.USD, new BigDecimal("110"), T0);
+        broker.setPrice("SMALL-ID", Currency.USD, new BigDecimal("120"), T0);
         broker.setPrice("NOTDUE", Currency.USD, new BigDecimal("130"), T0);
 
         predictions.evaluateDue(T0, 10, 1, () -> true);
@@ -961,7 +1027,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 SELECT prediction.symbol
                   FROM analysis_prediction_outcomes outcome
                   JOIN analysis_predictions prediction ON prediction.id = outcome.prediction_id
-                """, String.class)).isEqualTo("SMALL_ID");
+                """, String.class)).isEqualTo("SMALL-ID");
         org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(1);
     }
 
@@ -1303,6 +1369,24 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void preservesExistingNonCanonicalSymbolWhenReading() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        jdbc.update("""
+                INSERT INTO analysis_predictions (
+                    id, user_id, broker_connection_id, symbol, currency, predicted_direction,
+                    model_version, contract_version, baseline_price, predicted_at, created_at
+                ) VALUES (?, ?, ?, 'aapl', 'USD', 'UP', 'v1', '1', 100, ?, ?)
+                """, UUID.randomUUID(), USER_ID, connectionId, offset(T0), offset(T0));
+
+        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", connectionId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.predictions[0].symbol").value("aapl"));
+
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+    }
+
+    @Test
     void rejectsBlankInput() throws Exception {
         var connectionId = insertConnection(USER_ID);
 
@@ -1313,6 +1397,26 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                         .content(createRequest("", "USD", "UP", "v1", "1")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("ANALYSIS_PREDICTION_INPUT_INVALID"));
+    }
+
+    @Test
+    void rejectsInvalidSymbolFormatsWithoutQuote() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+
+        for (var symbol : List.of(".AAPL", "AAPL-", "AAPL..B", "AAPL/USD", "한글", "A".repeat(31))) {
+            mockMvc.perform(post(
+                            "/api/v1/broker-connections/{connectionId}/analysis-predictions",
+                            connectionId)
+                            .with(user(USER_ID.toString()))
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(createRequest(symbol, "USD", "UP", "missing", "1")))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("ANALYSIS_PREDICTION_INPUT_INVALID"));
+        }
+
+        assertCount("analysis_predictions", 0);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
     }
 
     private UUID createPrediction(
