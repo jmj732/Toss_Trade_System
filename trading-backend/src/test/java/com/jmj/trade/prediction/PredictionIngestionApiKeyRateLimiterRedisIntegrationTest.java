@@ -49,17 +49,17 @@ class PredictionIngestionApiKeyRateLimiterRedisIntegrationTest {
     }
 
     @Test
-    void multipleInstancesAtomicallyShareOneKeyLimit() throws Exception {
+    void multipleInstancesAtomicallyShareOneWeightedKeyLimit() throws Exception {
         var first = new PredictionIngestionApiKeyRateLimiter(
-                redis, 5, Duration.ofMinutes(1));
+                redis, 10, Duration.ofMinutes(1));
         var second = new PredictionIngestionApiKeyRateLimiter(
-                redis, 5, Duration.ofMinutes(1));
+                redis, 10, Duration.ofMinutes(1));
         var keyId = UUID.randomUUID();
         var executor = Executors.newFixedThreadPool(10);
         var tasks = new ArrayList<Callable<Boolean>>();
         for (var i = 0; i < 20; i++) {
             var limiter = i % 2 == 0 ? first : second;
-            tasks.add(() -> limiter.acquire(keyId).allowed());
+            tasks.add(() -> limiter.acquire(keyId, 2).allowed());
         }
 
         var results = executor.invokeAll(tasks).stream()
@@ -74,7 +74,7 @@ class PredictionIngestionApiKeyRateLimiterRedisIntegrationTest {
         executor.shutdownNow();
 
         assertThat(results.stream().filter(Boolean::booleanValue).count()).isEqualTo(5);
-        assertThat(first.acquire(keyId).retryAfter()).isPositive();
+        assertThat(first.acquire(keyId, 1).retryAfter()).isPositive();
     }
 
     @Test
@@ -85,11 +85,22 @@ class PredictionIngestionApiKeyRateLimiterRedisIntegrationTest {
             var limiter = new PredictionIngestionApiKeyRateLimiter(
                     new StringRedisTemplate(brokenFactory), 1, Duration.ofMinutes(1));
 
-            assertThatThrownBy(() -> limiter.acquire(UUID.randomUUID()))
+            assertThatThrownBy(() -> limiter.acquire(UUID.randomUUID(), 1))
                     .isInstanceOf(PredictionIngestionApiKeyRateLimiter
                             .RateLimitUnavailableException.class);
         } finally {
             brokenFactory.destroy();
         }
+    }
+
+    @Test
+    void rejectedOverweightRequestDoesNotConsumeTheRemainingLimit() {
+        var limiter = new PredictionIngestionApiKeyRateLimiter(
+                redis, 3, Duration.ofMinutes(1));
+        var keyId = UUID.randomUUID();
+
+        assertThat(limiter.acquire(keyId, 2).allowed()).isTrue();
+        assertThat(limiter.acquire(keyId, 2).allowed()).isFalse();
+        assertThat(limiter.acquire(keyId, 1).allowed()).isTrue();
     }
 }

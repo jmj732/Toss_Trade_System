@@ -1,15 +1,25 @@
 package com.jmj.trade.prediction;
 
 import jakarta.servlet.FilterChain;
+import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 
@@ -20,15 +30,18 @@ public final class PredictionIngestionApiKeyAuthenticationFilter extends OncePer
     private final PredictionIngestionApiKeyService apiKeys;
     private final PredictionIngestionApiKeyRateLimiter rateLimiter;
     private final PredictionIngestionApiKeyMetrics metrics;
+    private final ObjectMapper objectMapper;
 
     public PredictionIngestionApiKeyAuthenticationFilter(
             PredictionIngestionApiKeyService apiKeys,
             PredictionIngestionApiKeyRateLimiter rateLimiter,
-            PredictionIngestionApiKeyMetrics metrics
+            PredictionIngestionApiKeyMetrics metrics,
+            ObjectMapper objectMapper
     ) {
         this.apiKeys = apiKeys;
         this.rateLimiter = rateLimiter;
         this.metrics = metrics;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -56,9 +69,10 @@ public final class PredictionIngestionApiKeyAuthenticationFilter extends OncePer
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
             return;
         }
+        var cachedRequest = new CachedBodyRequest(request);
         final PredictionIngestionApiKeyRateLimiter.Decision decision;
         try {
-            decision = rateLimiter.acquire(key.id());
+            decision = rateLimiter.acquire(key.id(), batchWeight(cachedRequest.body()));
         } catch (PredictionIngestionApiKeyRateLimiter.RateLimitUnavailableException exception) {
             metrics.recordRejected(PredictionIngestionApiKeyMetrics.Reason.REDIS_UNAVAILABLE);
             error(
@@ -90,7 +104,20 @@ public final class PredictionIngestionApiKeyAuthenticationFilter extends OncePer
                 key.userId().toString(), null, List.of());
         authentication.setDetails(key.scope());
         SecurityContextHolder.getContext().setAuthentication(authentication);
-        filterChain.doFilter(request, response);
+        filterChain.doFilter(cachedRequest, response);
+    }
+
+    private int batchWeight(byte[] body) {
+        try {
+            var root = objectMapper.readTree(body);
+            if (root == null) {
+                return 0;
+            }
+            var items = root.path("items");
+            return items.isArray() ? items.size() : 0;
+        } catch (JacksonException exception) {
+            return 0;
+        }
     }
 
     private static void error(
@@ -114,5 +141,52 @@ public final class PredictionIngestionApiKeyAuthenticationFilter extends OncePer
                 && path.endsWith("/analysis-predictions/batch")
                 && authorization != null
                 && authorization.startsWith(BEARER);
+    }
+
+    private static final class CachedBodyRequest extends HttpServletRequestWrapper {
+
+        private final byte[] body;
+
+        private CachedBodyRequest(HttpServletRequest request) throws IOException {
+            super(request);
+            body = request.getInputStream().readAllBytes();
+        }
+
+        private byte[] body() {
+            return body;
+        }
+
+        @Override
+        public ServletInputStream getInputStream() {
+            var input = new ByteArrayInputStream(body);
+            return new ServletInputStream() {
+                @Override
+                public boolean isFinished() {
+                    return input.available() == 0;
+                }
+
+                @Override
+                public boolean isReady() {
+                    return true;
+                }
+
+                @Override
+                public void setReadListener(ReadListener readListener) {
+                }
+
+                @Override
+                public int read() {
+                    return input.read();
+                }
+            };
+        }
+
+        @Override
+        public BufferedReader getReader() {
+            var encoding = getCharacterEncoding();
+            return new BufferedReader(new InputStreamReader(
+                    getInputStream(),
+                    encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding)));
+        }
     }
 }

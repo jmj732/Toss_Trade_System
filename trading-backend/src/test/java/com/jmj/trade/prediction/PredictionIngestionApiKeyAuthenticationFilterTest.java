@@ -5,7 +5,9 @@ import jakarta.servlet.FilterChain;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import tools.jackson.databind.ObjectMapper;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -24,7 +26,7 @@ class PredictionIngestionApiKeyAuthenticationFilterTest {
         var registry = new SimpleMeterRegistry();
         var metrics = new PredictionIngestionApiKeyMetrics(registry);
         var filter = new PredictionIngestionApiKeyAuthenticationFilter(
-                apiKeys, limiter, metrics);
+                apiKeys, limiter, metrics, new ObjectMapper());
         var keyId = UUID.randomUUID();
         var authenticated = new PredictionIngestionApiKeyService.AuthenticatedKey(
                 keyId,
@@ -33,11 +35,14 @@ class PredictionIngestionApiKeyAuthenticationFilterTest {
                 new AnalysisPredictionService.ModelContractScope("model-v1", "contract-v1"),
                 null);
         when(apiKeys.findActive("tpik_1234567890")).thenReturn(Optional.of(authenticated));
-        when(limiter.acquire(keyId)).thenThrow(
+        when(limiter.acquire(keyId, 2)).thenThrow(
                 new PredictionIngestionApiKeyRateLimiter.RateLimitUnavailableException());
         var request = new MockHttpServletRequest(
                 "POST", "/api/v1/broker-connections/1/analysis-predictions/batch");
         request.addHeader("Authorization", "Bearer tpik_1234567890");
+        request.setContent("""
+                {"items":[{"clientRequestId":"one"},{"clientRequestId":"two"}]}
+                """.getBytes(StandardCharsets.UTF_8));
         var response = new MockHttpServletResponse();
         var chain = mock(FilterChain.class);
 

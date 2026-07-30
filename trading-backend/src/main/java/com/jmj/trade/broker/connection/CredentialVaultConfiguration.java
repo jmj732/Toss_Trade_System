@@ -31,6 +31,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.ObjectMapper;
 
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -153,9 +154,11 @@ public class CredentialVaultConfiguration {
     PredictionIngestionApiKeyAuthenticationFilter predictionIngestionApiKeyAuthenticationFilter(
             PredictionIngestionApiKeyService apiKeys,
             PredictionIngestionApiKeyRateLimiter rateLimiter,
-            PredictionIngestionApiKeyMetrics metrics
+            PredictionIngestionApiKeyMetrics metrics,
+            ObjectMapper objectMapper
     ) {
-        return new PredictionIngestionApiKeyAuthenticationFilter(apiKeys, rateLimiter, metrics);
+        return new PredictionIngestionApiKeyAuthenticationFilter(
+                apiKeys, rateLimiter, metrics, objectMapper);
     }
 
     @Bean

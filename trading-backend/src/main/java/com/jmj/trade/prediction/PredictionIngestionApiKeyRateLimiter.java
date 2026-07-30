@@ -14,9 +14,21 @@ public final class PredictionIngestionApiKeyRateLimiter {
 
     private static final String KEY_PREFIX = "prediction:ingestion:rate:v1:";
     private static final DefaultRedisScript<String> ACQUIRE = new DefaultRedisScript<>("""
-            local count = redis.call('INCR', KEYS[1])
-            if count == 1 then
-              redis.call('PEXPIRE', KEYS[1], ARGV[1])
+            local existed = redis.call('EXISTS', KEYS[1])
+            local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+            local weight = tonumber(ARGV[2])
+            local limit = tonumber(ARGV[3])
+            local count
+            if current + weight <= limit then
+              count = redis.call('INCRBY', KEYS[1], weight)
+              if existed == 0 then
+                redis.call('PEXPIRE', KEYS[1], ARGV[1])
+              end
+            else
+              count = limit + 1
+              if existed == 0 then
+                redis.call('SET', KEYS[1], '0', 'PX', ARGV[1])
+              end
             end
             local ttl = redis.call('PTTL', KEYS[1])
             return tostring(count) .. ':' .. tostring(ttl)
@@ -42,14 +54,19 @@ public final class PredictionIngestionApiKeyRateLimiter {
         this.window = window;
     }
 
-    Decision acquire(UUID keyId) {
+    Decision acquire(UUID keyId, int weight) {
         Objects.requireNonNull(keyId, "keyId");
+        if (weight < 0) {
+            throw new IllegalArgumentException("weight must not be negative");
+        }
         try {
             var result = Objects.requireNonNull(
                     redis.execute(
                             ACQUIRE,
                             List.of(KEY_PREFIX + keyId),
-                            Long.toString(window.toMillis())),
+                            Long.toString(window.toMillis()),
+                            Integer.toString(weight),
+                            Integer.toString(limit)),
                     "Redis rate limit script returned null");
             var separator = result.indexOf(':');
             var count = Long.parseLong(result.substring(0, separator));

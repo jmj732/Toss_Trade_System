@@ -70,7 +70,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "prediction.evaluation.interval=PT24H",
                 "prediction.evaluation.initial-delay=PT24H",
                 "prediction.evaluation.lock-ttl=PT10M",
-                "prediction.ingestion-api-key.rate-limit.limit=1",
+                "prediction.ingestion-api-key.rate-limit.limit=3",
                 "prediction.ingestion-api-key.rate-limit.window=PT1M"
         })
 @Import(AnalysisPredictionIntegrationTest.PredictionBrokerConfiguration.class)
@@ -711,11 +711,13 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void rateLimitReturnsRetryTimeWithoutSideEffectsAndDoesNotAffectSessionBatch() throws Exception {
+    void rateLimitCountsSubmittedItemsAndRejectsAnOverweightRequestWithoutSideEffects() throws Exception {
         var connectionId = insertConnection(USER_ID);
         insertActiveVersion(USER_ID, "model-v1", "contract-v1");
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
         broker.setPrice("MSFT", Currency.USD, new BigDecimal("202"));
+        broker.setPrice("NVDA", Currency.USD, new BigDecimal("303"));
+        broker.setPrice("AMZN", Currency.USD, new BigDecimal("404"));
         var issued = issueApiKeyResponse(USER_ID, "model-v1", "contract-v1");
         var keyId = idFrom(issued);
         var rawKey = stringField(issued, "apiKey");
@@ -725,9 +727,11 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                         connectionId)
                         .header("Authorization", "Bearer " + rawKey)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(batchRequest(batchItem(
-                                "allowed", "AAPL", "USD", "UP",
-                                "model-v1", "contract-v1"))))
+                        .content(batchRequest(
+                                batchItem("allowed-1", "AAPL", "USD", "UP",
+                                        "model-v1", "contract-v1"),
+                                batchItem("allowed-2", "MSFT", "USD", "UP",
+                                        "model-v1", "contract-v1"))))
                 .andExpect(status().isOk());
         var lastUsedAt = jdbc.queryForObject("""
                 SELECT last_used_at
@@ -741,9 +745,11 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                         connectionId)
                         .header("Authorization", "Bearer " + rawKey)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(batchRequest(batchItem(
-                                "limited", "MSFT", "USD", "UP",
-                                "model-v1", "contract-v1"))))
+                        .content(batchRequest(
+                                batchItem("limited-1", "NVDA", "USD", "UP",
+                                        "model-v1", "contract-v1"),
+                                batchItem("limited-2", "AMZN", "USD", "UP",
+                                        "model-v1", "contract-v1"))))
                 .andExpect(status().isTooManyRequests())
                 .andExpect(header().exists("Retry-After"))
                 .andExpect(jsonPath("$.code")
@@ -755,8 +761,8 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                   FROM prediction_ingestion_api_keys
                  WHERE id = ?
                 """, OffsetDateTime.class, keyId)).isEqualTo(lastUsedAt);
-        assertCount("analysis_predictions", 1);
-        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
+        assertCount("analysis_predictions", 2);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(2);
         org.assertj.core.api.Assertions.assertThat(rejectedCount("rate_limited")).isEqualTo(before + 1);
         org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
                 SELECT count(*)
@@ -772,12 +778,12 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(batchRequest(batchItem(
-                                "session", "MSFT", "USD", "UP",
+                                "session", "NVDA", "USD", "UP",
                                 "model-v1", "contract-v1"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.results[0].status").value("CREATED"));
-        assertCount("analysis_predictions", 2);
-        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(2);
+        assertCount("analysis_predictions", 3);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(3);
     }
 
     @Test
