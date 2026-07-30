@@ -93,8 +93,9 @@ public final class AnalysisPredictionService {
         requireOwnedConnection(userId, connectionId);
 
         var results = new ArrayList<BatchItemResult>(commands.size());
+        var quotes = new HashMap<String, BatchQuote>();
         for (var command : commands) {
-            results.add(createBatchItem(userId, connectionId, command, now, scope));
+            results.add(createBatchItem(userId, connectionId, command, now, scope, quotes));
         }
         return new BatchView(results);
     }
@@ -104,7 +105,8 @@ public final class AnalysisPredictionService {
             UUID connectionId,
             BatchCommand batchCommand,
             Instant now,
-            ModelContractScope scope
+            ModelContractScope scope,
+            Map<String, BatchQuote> quotes
     ) {
         if (batchCommand == null
                 || isBlank(batchCommand.clientRequestId())
@@ -124,8 +126,16 @@ public final class AnalysisPredictionService {
         }
 
         try {
-            var created = createNew(
-                    userId, connectionId, batchCommand.clientRequestId(), batchCommand.command(), now);
+            var command = batchCommand.command();
+            validate(command);
+            requireActiveVersion(userId, command);
+            var batchQuote = quotes.computeIfAbsent(
+                    command.symbol(), symbol -> fetchBatchQuote(connectionId, symbol));
+            if (batchQuote.errorCode() != null) {
+                return BatchItemResult.failed(batchCommand.clientRequestId(), batchQuote.errorCode());
+            }
+            var created = persistNew(
+                    userId, connectionId, batchCommand.clientRequestId(), command, now, batchQuote.quote());
             return BatchItemResult.created(batchCommand.clientRequestId(), created);
         } catch (DuplicateKeyException exception) {
             return findByClientRequestId(userId, batchCommand.clientRequestId())
@@ -156,6 +166,17 @@ public final class AnalysisPredictionService {
         requireActiveVersion(userId, command);
 
         var quote = brokerAdapter.getQuote(new BrokerConnectionRef(connectionId), command.symbol()).value();
+        return persistNew(userId, connectionId, clientRequestId, command, now, quote);
+    }
+
+    private PredictionView persistNew(
+            UUID userId,
+            UUID connectionId,
+            String clientRequestId,
+            CreateCommand command,
+            Instant now,
+            Quote quote
+    ) {
         if (quote.currency() != command.currency()) {
             throw new AnalysisPredictionException(AnalysisPredictionException.Code.QUOTE_CURRENCY_MISMATCH);
         }
@@ -184,6 +205,15 @@ public final class AnalysisPredictionService {
         return new PredictionView(
                 id, connectionId, command.symbol(), command.currency(), command.predictedDirection(),
                 command.modelVersion(), command.contractVersion(), price, now, Map.of());
+    }
+
+    private BatchQuote fetchBatchQuote(UUID connectionId, String symbol) {
+        try {
+            return new BatchQuote(
+                    brokerAdapter.getQuote(new BrokerConnectionRef(connectionId), symbol).value(), null);
+        } catch (BrokerException exception) {
+            return new BatchQuote(null, BatchErrorCode.QUOTE_FAILED);
+        }
     }
 
     private Optional<PredictionView> findByClientRequestId(
@@ -677,6 +707,9 @@ public final class AnalysisPredictionService {
     }
 
     private record QuoteKey(UUID connectionId, String symbol) {
+    }
+
+    private record BatchQuote(Quote quote, BatchErrorCode errorCode) {
     }
 
     private record ObservedQuote(BigDecimal price, Instant observationTime) {
