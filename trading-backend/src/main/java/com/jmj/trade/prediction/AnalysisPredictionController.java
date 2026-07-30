@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -43,6 +44,28 @@ public class AnalysisPredictionController {
                 new AnalysisPredictionService.CreateCommand(
                         request.symbol(), request.currency(), request.predictedDirection(),
                         request.modelVersion(), request.contractVersion()),
+                Instant.now());
+    }
+
+    @PostMapping("/batch")
+    AnalysisPredictionService.BatchView createBatch(
+            Principal principal,
+            @PathVariable UUID connectionId,
+            @RequestBody BatchRequest request
+    ) {
+        if (request == null) {
+            throw new AnalysisPredictionException(AnalysisPredictionException.Code.INVALID_INPUT);
+        }
+        return predictions.createBatch(
+                userId(principal),
+                connectionId,
+                request.items() == null ? null : request.items().stream()
+                        .map(item -> item == null ? null : new AnalysisPredictionService.BatchCommand(
+                                item.clientRequestId(),
+                                new AnalysisPredictionService.CreateCommand(
+                                        item.symbol(), item.currency(), item.predictedDirection(),
+                                        item.modelVersion(), item.contractVersion())))
+                        .toList(),
                 Instant.now());
     }
 
@@ -91,6 +114,19 @@ public class AnalysisPredictionController {
     }
 
     record CreateRequest(
+            String symbol,
+            Currency currency,
+            PredictedDirection predictedDirection,
+            String modelVersion,
+            String contractVersion
+    ) {
+    }
+
+    record BatchRequest(List<BatchItemRequest> items) {
+    }
+
+    record BatchItemRequest(
+            String clientRequestId,
             String symbol,
             Currency currency,
             PredictedDirection predictedDirection,

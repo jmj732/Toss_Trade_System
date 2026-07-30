@@ -92,6 +92,32 @@ class PredictionModelRegistrySchemaTest extends PostgresIntegrationTest {
                 .doesNotThrowAnyException();
     }
 
+    @Test
+    void v21ScopesClientRequestIdUniquenessByUser() throws SQLException {
+        flyway.migrate();
+        var firstOwner = insertOwnerAndConnection();
+        insertVersion(firstOwner.userId(), "model-v1", "contract-v1");
+        insertPrediction(firstOwner, "AAPL", "model-v1", "contract-v1");
+        insertPrediction(firstOwner, "MSFT", "model-v1", "contract-v1");
+        var firstOwnerPredictions = predictionIds(firstOwner.userId());
+
+        execute("UPDATE analysis_predictions SET client_request_id = 'request-1' WHERE id = ?",
+                firstOwnerPredictions.get(0));
+        assertThatThrownBy(() -> execute(
+                "UPDATE analysis_predictions SET client_request_id = 'request-1' WHERE id = ?",
+                firstOwnerPredictions.get(1)))
+                .isInstanceOf(SQLException.class);
+
+        var secondOwner = insertOwnerAndConnection();
+        insertVersion(secondOwner.userId(), "model-v1", "contract-v1");
+        insertPrediction(secondOwner, "GOOG", "model-v1", "contract-v1");
+        assertThatCode(() -> execute("""
+                UPDATE analysis_predictions
+                   SET client_request_id = 'request-1'
+                 WHERE user_id = ?
+                """, secondOwner.userId())).doesNotThrowAnyException();
+    }
+
     private Flyway flyway(String target) {
         var configuration = Flyway.configure()
                 .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
@@ -153,6 +179,25 @@ class PredictionModelRegistrySchemaTest extends PostgresIntegrationTest {
             try (var result = statement.executeQuery()) {
                 result.next();
                 return result.getLong(1);
+            }
+        }
+    }
+
+    private java.util.List<UUID> predictionIds(UUID userId) throws SQLException {
+        try (Connection connection = POSTGRES.createConnection("");
+             var statement = connection.prepareStatement("""
+                     SELECT id
+                       FROM analysis_predictions
+                      WHERE user_id = ?
+                      ORDER BY symbol
+                     """)) {
+            statement.setObject(1, userId);
+            try (var result = statement.executeQuery()) {
+                var ids = new java.util.ArrayList<UUID>();
+                while (result.next()) {
+                    ids.add(result.getObject(1, UUID.class));
+                }
+                return ids;
             }
         }
     }

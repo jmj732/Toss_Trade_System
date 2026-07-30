@@ -66,6 +66,78 @@ public final class AnalysisPredictionService {
         Objects.requireNonNull(connectionId, "connectionId");
         validate(command);
         requireOwnedConnection(userId, connectionId);
+        return createNew(userId, connectionId, null, command, now);
+    }
+
+    BatchView createBatch(
+            UUID userId,
+            UUID connectionId,
+            List<BatchCommand> commands,
+            Instant now
+    ) {
+        Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(connectionId, "connectionId");
+        if (commands == null || commands.isEmpty() || commands.size() > 100) {
+            throw new AnalysisPredictionException(AnalysisPredictionException.Code.INVALID_INPUT);
+        }
+        requireOwnedConnection(userId, connectionId);
+
+        var results = new ArrayList<BatchItemResult>(commands.size());
+        for (var command : commands) {
+            results.add(createBatchItem(userId, connectionId, command, now));
+        }
+        return new BatchView(results);
+    }
+
+    private BatchItemResult createBatchItem(
+            UUID userId,
+            UUID connectionId,
+            BatchCommand batchCommand,
+            Instant now
+    ) {
+        if (batchCommand == null
+                || isBlank(batchCommand.clientRequestId())
+                || batchCommand.clientRequestId().length() > 100) {
+            return BatchItemResult.failed(
+                    batchCommand == null ? null : batchCommand.clientRequestId(),
+                    BatchErrorCode.INVALID_INPUT);
+        }
+
+        var existing = findByClientRequestId(userId, batchCommand.clientRequestId());
+        if (existing.isPresent()) {
+            return replay(connectionId, batchCommand, existing.get());
+        }
+
+        try {
+            var created = createNew(
+                    userId, connectionId, batchCommand.clientRequestId(), batchCommand.command(), now);
+            return BatchItemResult.created(batchCommand.clientRequestId(), created);
+        } catch (DuplicateKeyException exception) {
+            return findByClientRequestId(userId, batchCommand.clientRequestId())
+                    .map(prediction -> replay(connectionId, batchCommand, prediction))
+                    .orElseThrow(() -> exception);
+        } catch (AnalysisPredictionException exception) {
+            return BatchItemResult.failed(
+                    batchCommand.clientRequestId(),
+                    switch (exception.code()) {
+                        case INVALID_INPUT -> BatchErrorCode.INVALID_INPUT;
+                        case MODEL_VERSION_NOT_ACTIVE -> BatchErrorCode.MODEL_VERSION_NOT_ACTIVE;
+                        case QUOTE_CURRENCY_MISMATCH -> BatchErrorCode.QUOTE_CURRENCY_MISMATCH;
+                        case QUOTE_UNAVAILABLE -> BatchErrorCode.QUOTE_UNAVAILABLE;
+                    });
+        } catch (BrokerException exception) {
+            return BatchItemResult.failed(batchCommand.clientRequestId(), BatchErrorCode.QUOTE_FAILED);
+        }
+    }
+
+    private PredictionView createNew(
+            UUID userId,
+            UUID connectionId,
+            String clientRequestId,
+            CreateCommand command,
+            Instant now
+    ) {
+        validate(command);
         requireActiveVersion(userId, command);
 
         var quote = brokerAdapter.getQuote(new BrokerConnectionRef(connectionId), command.symbol()).value();
@@ -86,16 +158,60 @@ public final class AnalysisPredictionService {
             jdbc.update("""
                     INSERT INTO analysis_predictions (
                         id, user_id, broker_connection_id, symbol, currency, predicted_direction,
-                        model_version, contract_version, baseline_price, predicted_at, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        model_version, contract_version, baseline_price, predicted_at, created_at,
+                        client_request_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, id, userId, connectionId, command.symbol(), command.currency().name(),
                     command.predictedDirection().name(), command.modelVersion(), command.contractVersion(),
-                    price, offset(now), offset(now));
+                    price, offset(now), offset(now), clientRequestId);
         });
 
         return new PredictionView(
                 id, connectionId, command.symbol(), command.currency(), command.predictedDirection(),
                 command.modelVersion(), command.contractVersion(), price, now, Map.of());
+    }
+
+    private Optional<PredictionView> findByClientRequestId(
+            UUID userId,
+            String clientRequestId
+    ) {
+        return jdbc.query("""
+                SELECT id, broker_connection_id, symbol, currency, predicted_direction,
+                       model_version, contract_version, baseline_price, predicted_at
+                  FROM analysis_predictions
+                 WHERE user_id = ?
+                   AND client_request_id = ?
+                """, (result, row) -> new PredictionView(
+                        result.getObject("id", UUID.class),
+                        result.getObject("broker_connection_id", UUID.class),
+                        result.getString("symbol"),
+                        Currency.valueOf(result.getString("currency")),
+                        PredictedDirection.valueOf(result.getString("predicted_direction")),
+                        result.getString("model_version"),
+                        result.getString("contract_version"),
+                        result.getBigDecimal("baseline_price"),
+                        result.getObject("predicted_at", OffsetDateTime.class).toInstant(),
+                        Map.of()),
+                userId, clientRequestId).stream().findFirst();
+    }
+
+    private BatchItemResult replay(
+            UUID connectionId,
+            BatchCommand batchCommand,
+            PredictionView prediction
+    ) {
+        var command = batchCommand.command();
+        if (command != null
+                && prediction.connectionId().equals(connectionId)
+                && Objects.equals(prediction.symbol(), command.symbol())
+                && prediction.currency() == command.currency()
+                && prediction.predictedDirection() == command.predictedDirection()
+                && Objects.equals(prediction.modelVersion(), command.modelVersion())
+                && Objects.equals(prediction.contractVersion(), command.contractVersion())) {
+            return BatchItemResult.duplicate(batchCommand.clientRequestId(), prediction);
+        }
+        return BatchItemResult.failed(
+                batchCommand.clientRequestId(), BatchErrorCode.CLIENT_REQUEST_CONFLICT);
     }
 
     PredictionPerformanceView read(
@@ -587,6 +703,46 @@ public final class AnalysisPredictionService {
             String modelVersion,
             String contractVersion
     ) {
+    }
+
+    public record BatchCommand(String clientRequestId, CreateCommand command) {
+    }
+
+    public enum BatchItemStatus {
+        CREATED,
+        DUPLICATE,
+        FAILED
+    }
+
+    public enum BatchErrorCode {
+        INVALID_INPUT,
+        MODEL_VERSION_NOT_ACTIVE,
+        QUOTE_CURRENCY_MISMATCH,
+        QUOTE_UNAVAILABLE,
+        QUOTE_FAILED,
+        CLIENT_REQUEST_CONFLICT
+    }
+
+    public record BatchItemResult(
+            String clientRequestId,
+            BatchItemStatus status,
+            PredictionView prediction,
+            BatchErrorCode errorCode
+    ) {
+        private static BatchItemResult created(String clientRequestId, PredictionView prediction) {
+            return new BatchItemResult(clientRequestId, BatchItemStatus.CREATED, prediction, null);
+        }
+
+        private static BatchItemResult duplicate(String clientRequestId, PredictionView prediction) {
+            return new BatchItemResult(clientRequestId, BatchItemStatus.DUPLICATE, prediction, null);
+        }
+
+        private static BatchItemResult failed(String clientRequestId, BatchErrorCode errorCode) {
+            return new BatchItemResult(clientRequestId, BatchItemStatus.FAILED, null, errorCode);
+        }
+    }
+
+    public record BatchView(List<BatchItemResult> results) {
     }
 
     public record PredictionView(

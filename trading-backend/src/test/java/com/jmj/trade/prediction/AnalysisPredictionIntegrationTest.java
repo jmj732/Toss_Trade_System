@@ -277,6 +277,140 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void batchCreatesPredictionsWithServerQuoteBaselines() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("202"));
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("request-1", "AAPL", "USD", "UP", "v1", "1"),
+                                batchItem("request-2", "MSFT", "USD", "DOWN", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].clientRequestId").value("request-1"))
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"))
+                .andExpect(jsonPath("$.results[0].prediction.baselinePrice").value(101))
+                .andExpect(jsonPath("$.results[1].status").value("CREATED"))
+                .andExpect(jsonPath("$.results[1].prediction.baselinePrice").value(202));
+
+        assertCount("analysis_predictions", 2);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(2);
+    }
+
+    @Test
+    void batchDuplicateReturnsCanonicalPredictionWithoutAnotherQuote() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        var request = batchRequest(
+                batchItem("request-1", "AAPL", "USD", "UP", "v1", "1"),
+                batchItem("request-1", "AAPL", "USD", "UP", "v1", "1"));
+
+        var first = mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"))
+                .andExpect(jsonPath("$.results[1].status").value("DUPLICATE"))
+                .andReturn().getResponse().getContentAsString();
+        var predictionId = idFrom(first);
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("request-1", "AAPL", "USD", "UP", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("DUPLICATE"))
+                .andExpect(jsonPath("$.results[0].prediction.id").value(predictionId.toString()));
+
+        assertCount("analysis_predictions", 1);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
+    }
+
+    @Test
+    void batchReportsItemFailuresAndContinues() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        broker.failFor("MSFT");
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("bad-input", "", "USD", "UP", "v1", "1"),
+                                batchItem("inactive", "GOOG", "USD", "UP", "missing", "1"),
+                                batchItem("quote-failed", "MSFT", "USD", "UP", "v1", "1"),
+                                batchItem("created", "AAPL", "USD", "UP", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("FAILED"))
+                .andExpect(jsonPath("$.results[0].errorCode").value("INVALID_INPUT"))
+                .andExpect(jsonPath("$.results[1].errorCode").value("MODEL_VERSION_NOT_ACTIVE"))
+                .andExpect(jsonPath("$.results[2].errorCode").value("QUOTE_FAILED"))
+                .andExpect(jsonPath("$.results[3].status").value("CREATED"));
+
+        assertCount("analysis_predictions", 1);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(2);
+    }
+
+    @Test
+    void batchRejectsClientRequestIdReuseWithDifferentInputButScopesItByUser() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        var otherConnectionId = insertConnection(OTHER_USER_ID);
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("202"));
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("shared-id", "AAPL", "USD", "UP", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"));
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("shared-id", "MSFT", "USD", "UP", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("FAILED"))
+                .andExpect(jsonPath("$.results[0].errorCode").value("CLIENT_REQUEST_CONFLICT"));
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        otherConnectionId)
+                        .with(user(OTHER_USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("shared-id", "MSFT", "USD", "UP", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"));
+
+        assertCount("analysis_predictions", 2);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(2);
+    }
+
+    @Test
     void doesNotEvaluateAHorizonBeforeItsWallClockTimeHasPassed() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("100"));
@@ -805,6 +939,32 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                   "contractVersion":"%s"
                 }
                 """.formatted(symbol, currency, direction, modelVersion, contractVersion);
+    }
+
+    private String batchItem(
+            String clientRequestId,
+            String symbol,
+            String currency,
+            String direction,
+            String modelVersion,
+            String contractVersion
+    ) {
+        return """
+                {
+                  "clientRequestId":"%s",
+                  "symbol":"%s",
+                  "currency":"%s",
+                  "predictedDirection":"%s",
+                  "modelVersion":"%s",
+                  "contractVersion":"%s"
+                }
+                """.formatted(clientRequestId, symbol, currency, direction, modelVersion, contractVersion);
+    }
+
+    private String batchRequest(String... items) {
+        return """
+                {"items":[%s]}
+                """.formatted(String.join(",", items));
     }
 
     private String versionRequest(String modelVersion, String contractVersion) {
