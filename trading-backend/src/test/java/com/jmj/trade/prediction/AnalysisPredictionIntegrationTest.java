@@ -30,12 +30,15 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.HexFormat;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -408,6 +411,193 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
 
         assertCount("analysis_predictions", 2);
         org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(2);
+    }
+
+    @Test
+    void issuesListsAndStoresOnlyHashedApiKeysForTheOwningUser() throws Exception {
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+
+        var issued = mockMvc.perform(post("/api/v1/prediction-ingestion-api-keys")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(apiKeyRequest("model-v1", "contract-v1")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.apiKey").isNotEmpty())
+                .andExpect(jsonPath("$.prefix").isNotEmpty())
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andReturn().getResponse().getContentAsString();
+        var keyId = idFrom(issued);
+        var rawKey = stringField(issued, "apiKey");
+        var stored = jdbc.queryForMap("""
+                SELECT key_hash, key_prefix, status, last_used_at, revoked_at
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, keyId);
+
+        org.assertj.core.api.Assertions.assertThat(rawKey).startsWith("tpik_");
+        org.assertj.core.api.Assertions.assertThat(stored.get("key_hash").toString())
+                .isEqualTo(sha256(rawKey));
+        org.assertj.core.api.Assertions.assertThat(stored.get("key_prefix"))
+                .isEqualTo(rawKey.substring(0, 13));
+        org.assertj.core.api.Assertions.assertThat(stored.get("last_used_at")).isNull();
+        org.assertj.core.api.Assertions.assertThat(stored.get("revoked_at")).isNull();
+
+        var ownList = mockMvc.perform(get("/api/v1/prediction-ingestion-api-keys")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value(keyId.toString()))
+                .andReturn().getResponse().getContentAsString();
+        org.assertj.core.api.Assertions.assertThat(ownList)
+                .contains(rawKey.substring(0, 13))
+                .doesNotContain(rawKey)
+                .doesNotContain(stored.get("key_hash").toString());
+
+        mockMvc.perform(get("/api/v1/prediction-ingestion-api-keys")
+                        .with(user(OTHER_USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
+        mockMvc.perform(delete("/api/v1/prediction-ingestion-api-keys/{id}", keyId)
+                        .with(user(OTHER_USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isNoContent());
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT status = 'ACTIVE'
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, Boolean.class, keyId)).isTrue();
+    }
+
+    @Test
+    void apiKeyAuthenticatesOnlyBatchAndEnforcesItsModelContractScopePerItem() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        insertActiveVersion(USER_ID, "model-v2", "contract-v2");
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("202"));
+        var rawKey = issueApiKey(USER_ID, "model-v1", "contract-v1");
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "session-no-csrf", "AAPL", "USD", "UP",
+                                "model-v1", "contract-v1"))))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .header("Authorization", "Bearer " + rawKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(
+                                batchItem("scoped", "AAPL", "USD", "UP", "model-v1", "contract-v1"),
+                                batchItem("outside", "MSFT", "USD", "UP", "model-v2", "contract-v2"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"))
+                .andExpect(jsonPath("$.results[1].status").value("FAILED"))
+                .andExpect(jsonPath("$.results[1].errorCode").value("API_KEY_SCOPE_MISMATCH"));
+
+        assertCount("analysis_predictions", 1);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT last_used_at IS NOT NULL
+                  FROM prediction_ingestion_api_keys
+                 WHERE key_prefix = ?
+                """, Boolean.class, rawKey.substring(0, 13))).isTrue();
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions",
+                        connectionId)
+                        .header("Authorization", "Bearer " + rawKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest("AAPL", "USD", "UP", "model-v1", "contract-v1")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/prediction-ingestion-api-keys")
+                        .header("Authorization", "Bearer " + rawKey))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void rotationRevokesTheOldKeyImmediatelyAndReturnsAWorkingReplacement() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        var issued = issueApiKeyResponse(USER_ID, "model-v1", "contract-v1");
+        var keyId = idFrom(issued);
+        var oldKey = stringField(issued, "apiKey");
+
+        var rotated = mockMvc.perform(post(
+                        "/api/v1/prediction-ingestion-api-keys/{id}/rotate", keyId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andReturn().getResponse().getContentAsString();
+        var newKey = stringField(rotated, "apiKey");
+
+        org.assertj.core.api.Assertions.assertThat(newKey).isNotEqualTo(oldKey);
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT status = 'REVOKED' AND revoked_at IS NOT NULL
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, Boolean.class, keyId)).isTrue();
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .header("Authorization", "Bearer " + oldKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "old", "AAPL", "USD", "UP", "model-v1", "contract-v1"))))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .header("Authorization", "Bearer " + newKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "new", "AAPL", "USD", "UP", "model-v1", "contract-v1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"));
+    }
+
+    @Test
+    void revokedOrInvalidApiKeyIsRejectedWithoutUpdatingLastUsedAt() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        var issued = issueApiKeyResponse(USER_ID, "model-v1", "contract-v1");
+        var keyId = idFrom(issued);
+        var rawKey = stringField(issued, "apiKey");
+
+        mockMvc.perform(delete("/api/v1/prediction-ingestion-api-keys/{id}", keyId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .header("Authorization", "Bearer " + rawKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "revoked", "AAPL", "USD", "UP", "model-v1", "contract-v1"))))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .header("Authorization", "Bearer tpik_invalid")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "invalid", "AAPL", "USD", "UP", "model-v1", "contract-v1"))))
+                .andExpect(status().isUnauthorized());
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT last_used_at IS NULL
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, Boolean.class, keyId)).isTrue();
+        assertCount("analysis_predictions", 0);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
     }
 
     @Test
@@ -974,6 +1164,45 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                   "contractVersion":"%s"
                 }
                 """.formatted(modelVersion, contractVersion);
+    }
+
+    private String apiKeyRequest(String modelVersion, String contractVersion) {
+        return """
+                {
+                  "modelVersion":"%s",
+                  "contractVersion":"%s"
+                }
+                """.formatted(modelVersion, contractVersion);
+    }
+
+    private String issueApiKey(UUID userId, String modelVersion, String contractVersion)
+            throws Exception {
+        return stringField(issueApiKeyResponse(userId, modelVersion, contractVersion), "apiKey");
+    }
+
+    private String issueApiKeyResponse(
+            UUID userId,
+            String modelVersion,
+            String contractVersion
+    ) throws Exception {
+        return mockMvc.perform(post("/api/v1/prediction-ingestion-api-keys")
+                        .with(user(userId.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(apiKeyRequest(modelVersion, contractVersion)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+    }
+
+    private String stringField(String response, String field) {
+        var value = response.substring(response.indexOf("\"" + field + "\":\"")
+                + field.length() + 4);
+        return value.substring(0, value.indexOf("\""));
+    }
+
+    private String sha256(String value) throws Exception {
+        return HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
     }
 
     private UUID idFrom(String response) {

@@ -75,6 +75,16 @@ public final class AnalysisPredictionService {
             List<BatchCommand> commands,
             Instant now
     ) {
+        return createBatch(userId, connectionId, commands, now, null);
+    }
+
+    BatchView createBatch(
+            UUID userId,
+            UUID connectionId,
+            List<BatchCommand> commands,
+            Instant now,
+            ModelContractScope scope
+    ) {
         Objects.requireNonNull(userId, "userId");
         Objects.requireNonNull(connectionId, "connectionId");
         if (commands == null || commands.isEmpty() || commands.size() > 100) {
@@ -84,7 +94,7 @@ public final class AnalysisPredictionService {
 
         var results = new ArrayList<BatchItemResult>(commands.size());
         for (var command : commands) {
-            results.add(createBatchItem(userId, connectionId, command, now));
+            results.add(createBatchItem(userId, connectionId, command, now, scope));
         }
         return new BatchView(results);
     }
@@ -93,7 +103,8 @@ public final class AnalysisPredictionService {
             UUID userId,
             UUID connectionId,
             BatchCommand batchCommand,
-            Instant now
+            Instant now,
+            ModelContractScope scope
     ) {
         if (batchCommand == null
                 || isBlank(batchCommand.clientRequestId())
@@ -101,6 +112,10 @@ public final class AnalysisPredictionService {
             return BatchItemResult.failed(
                     batchCommand == null ? null : batchCommand.clientRequestId(),
                     BatchErrorCode.INVALID_INPUT);
+        }
+        if (scope != null && !scope.matches(batchCommand.command())) {
+            return BatchItemResult.failed(
+                    batchCommand.clientRequestId(), BatchErrorCode.API_KEY_SCOPE_MISMATCH);
         }
 
         var existing = findByClientRequestId(userId, batchCommand.clientRequestId());
@@ -708,6 +723,14 @@ public final class AnalysisPredictionService {
     public record BatchCommand(String clientRequestId, CreateCommand command) {
     }
 
+    public record ModelContractScope(String modelVersion, String contractVersion) {
+        boolean matches(CreateCommand command) {
+            return command != null
+                    && Objects.equals(modelVersion, command.modelVersion())
+                    && Objects.equals(contractVersion, command.contractVersion());
+        }
+    }
+
     public enum BatchItemStatus {
         CREATED,
         DUPLICATE,
@@ -720,7 +743,8 @@ public final class AnalysisPredictionService {
         QUOTE_CURRENCY_MISMATCH,
         QUOTE_UNAVAILABLE,
         QUOTE_FAILED,
-        CLIENT_REQUEST_CONFLICT
+        CLIENT_REQUEST_CONFLICT,
+        API_KEY_SCOPE_MISMATCH
     }
 
     public record BatchItemResult(

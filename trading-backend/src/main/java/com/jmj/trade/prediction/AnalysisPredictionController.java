@@ -4,6 +4,7 @@ import com.jmj.trade.broker.Currency;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -56,6 +57,11 @@ public class AnalysisPredictionController {
         if (request == null) {
             throw new AnalysisPredictionException(AnalysisPredictionException.Code.INVALID_INPUT);
         }
+        var scope = principal instanceof Authentication authentication
+                && authentication.getDetails()
+                instanceof AnalysisPredictionService.ModelContractScope apiKeyScope
+                ? apiKeyScope
+                : null;
         return predictions.createBatch(
                 userId(principal),
                 connectionId,
@@ -66,7 +72,8 @@ public class AnalysisPredictionController {
                                         item.symbol(), item.currency(), item.predictedDirection(),
                                         item.modelVersion(), item.contractVersion())))
                         .toList(),
-                Instant.now());
+                Instant.now(),
+                scope);
     }
 
     @GetMapping

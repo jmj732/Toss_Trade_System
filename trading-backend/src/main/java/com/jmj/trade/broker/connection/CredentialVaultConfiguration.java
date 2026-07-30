@@ -15,6 +15,8 @@ import com.jmj.trade.prediction.AnalysisPredictionService;
 import com.jmj.trade.prediction.PredictionEvaluationLease;
 import com.jmj.trade.prediction.PredictionEvaluationMetrics;
 import com.jmj.trade.prediction.PredictionEvaluationScheduler;
+import com.jmj.trade.prediction.PredictionIngestionApiKeyAuthenticationFilter;
+import com.jmj.trade.prediction.PredictionIngestionApiKeyService;
 import com.jmj.trade.prediction.PredictionModelRegistryService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.beans.factory.annotation.Value;
@@ -120,6 +122,25 @@ public class CredentialVaultConfiguration {
     @Bean
     PredictionModelRegistryService predictionModelRegistryService(JdbcTemplate jdbcTemplate) {
         return new PredictionModelRegistryService(jdbcTemplate);
+    }
+
+    @Bean
+    PredictionIngestionApiKeyService predictionIngestionApiKeyService(
+            JdbcTemplate jdbcTemplate,
+            PredictionModelRegistryService registry,
+            PlatformTransactionManager transactionManager,
+            SecureRandom credentialSecureRandom
+    ) {
+        return new PredictionIngestionApiKeyService(
+                jdbcTemplate, registry, new TransactionTemplate(transactionManager),
+                credentialSecureRandom);
+    }
+
+    @Bean
+    PredictionIngestionApiKeyAuthenticationFilter predictionIngestionApiKeyAuthenticationFilter(
+            PredictionIngestionApiKeyService apiKeys
+    ) {
+        return new PredictionIngestionApiKeyAuthenticationFilter(apiKeys);
     }
 
     @Bean
