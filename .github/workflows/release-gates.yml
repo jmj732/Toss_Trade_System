@@ -21,8 +21,8 @@ jobs:
       run:
         working-directory: trading-backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
@@ -31,7 +31,7 @@ jobs:
         run: ./mvnw --no-transfer-progress clean verify
       - name: Upload surefire reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: spring-backend-surefire-reports
           path: trading-backend/target/surefire-reports/
@@ -46,8 +46,8 @@ jobs:
       run:
         working-directory: analysis-service
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -58,7 +58,7 @@ jobs:
         run: pytest -q --junitxml=pytest-results.xml
       - name: Upload pytest results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: fastapi-analysis-pytest-results
           path: analysis-service/pytest-results.xml
@@ -73,8 +73,8 @@ jobs:
       run:
         working-directory: web-dashboard
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
@@ -91,7 +91,7 @@ jobs:
           npm run build 2>&1 | tee build-output.log
       - name: Upload test and build logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nextjs-dashboard-logs
           path: |
@@ -108,8 +108,8 @@ jobs:
       run:
         working-directory: web-dashboard
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
@@ -124,7 +124,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: local-stack contract
         run: |
           set -o pipefail
@@ -135,7 +135,7 @@ jobs:
           ./scripts/smoke-local-stack.sh 2>&1 | tee smoke-output.log
       - name: Upload compose smoke logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: compose-smoke-logs
           path: |
