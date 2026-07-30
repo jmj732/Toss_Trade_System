@@ -32,7 +32,7 @@ class PredictionIngestionApiKeySchemaTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void v22StoresScopedHashOnlyKeysWithLifecycleConstraints() throws SQLException {
+    void v23StoresImmutableExpiryAndAppendOnlySafeRejectionAudit() throws SQLException {
         flyway.migrate();
         var userId = UUID.randomUUID();
         execute("INSERT INTO users (id) VALUES (?)", userId);
@@ -45,11 +45,41 @@ class PredictionIngestionApiKeySchemaTest extends PostgresIntegrationTest {
         execute("""
                 INSERT INTO prediction_ingestion_api_keys (
                     id, user_id, model_version, contract_version, key_hash, key_prefix,
-                    status, created_at
-                ) VALUES (?, ?, 'model-v1', 'contract-v1', ?, 'tpik_12345678', 'ACTIVE', ?)
-                """, firstId, userId, "a".repeat(64), NOW);
+                    status, created_at, expires_at
+                ) VALUES (?, ?, 'model-v1', 'contract-v1', ?, 'tpik_12345678', 'ACTIVE', ?, ?)
+                """, firstId, userId, "a".repeat(64), NOW, NOW.plusDays(30));
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("22");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("23");
+        assertThatThrownBy(() -> execute("""
+                UPDATE prediction_ingestion_api_keys
+                   SET expires_at = ?
+                 WHERE id = ?
+                """, NOW.plusDays(31), firstId)).isInstanceOf(SQLException.class);
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO prediction_ingestion_api_keys (
+                    id, user_id, model_version, contract_version, key_hash, key_prefix,
+                    status, created_at, expires_at
+                ) VALUES (?, ?, 'model-v1', 'contract-v1', ?, 'tpik_badtime1', 'ACTIVE', ?, ?)
+                """, UUID.randomUUID(), userId, "b".repeat(64), NOW, NOW))
+                .isInstanceOf(SQLException.class);
+        execute("""
+                INSERT INTO prediction_ingestion_api_key_rejections (
+                    id, key_id, user_id, key_prefix, reason, occurred_at
+                ) VALUES (?, ?, ?, 'tpik_12345678', 'EXPIRED', ?)
+                """, UUID.randomUUID(), firstId, userId, NOW.plusSeconds(1));
+        assertThatThrownBy(() -> execute("""
+                UPDATE prediction_ingestion_api_key_rejections
+                   SET reason = 'RATE_LIMITED'
+                 WHERE key_id = ?
+                """, firstId)).isInstanceOf(SQLException.class);
+        assertThatThrownBy(() -> execute("""
+                DELETE FROM prediction_ingestion_api_key_rejections
+                 WHERE key_id = ?
+                """, firstId)).isInstanceOf(SQLException.class);
+        assertThat(columnNames("prediction_ingestion_api_key_rejections"))
+                .containsExactlyInAnyOrder(
+                        "id", "key_id", "user_id", "key_prefix", "reason", "occurred_at")
+                .doesNotContain("key_hash", "api_key", "payload");
         assertThatCode(() -> execute("""
                 UPDATE prediction_ingestion_api_keys
                    SET status = 'REVOKED', revoked_at = ?
@@ -67,6 +97,26 @@ class PredictionIngestionApiKeySchemaTest extends PostgresIntegrationTest {
                    SET status = 'ACTIVE', revoked_at = NULL
                  WHERE id = ?
                 """, firstId)).isInstanceOf(SQLException.class);
+    }
+
+    private java.util.List<String> columnNames(String table) throws SQLException {
+        try (Connection connection = POSTGRES.createConnection("");
+             var statement = connection.prepareStatement("""
+                     SELECT column_name
+                       FROM information_schema.columns
+                      WHERE table_schema = 'public'
+                        AND table_name = ?
+                      ORDER BY ordinal_position
+                     """)) {
+            statement.setString(1, table);
+            try (var result = statement.executeQuery()) {
+                var columns = new java.util.ArrayList<String>();
+                while (result.next()) {
+                    columns.add(result.getString(1));
+                }
+                return columns;
+            }
+        }
     }
 
     private void execute(String sql, Object... args) throws SQLException {

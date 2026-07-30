@@ -1,5 +1,7 @@
 package com.jmj.trade.prediction;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -8,6 +10,8 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.HexFormat;
@@ -18,6 +22,8 @@ import java.util.UUID;
 
 public final class PredictionIngestionApiKeyService {
 
+    private static final Logger LOG =
+            LoggerFactory.getLogger(PredictionIngestionApiKeyService.class);
     private static final String RAW_PREFIX = "tpik_";
     private static final int DISPLAY_PREFIX_LENGTH = 13;
 
@@ -25,17 +31,20 @@ public final class PredictionIngestionApiKeyService {
     private final PredictionModelRegistryService registry;
     private final TransactionTemplate transactions;
     private final SecureRandom random;
+    private final Clock clock;
 
     public PredictionIngestionApiKeyService(
             JdbcTemplate jdbc,
             PredictionModelRegistryService registry,
             TransactionTemplate transactions,
-            SecureRandom random
+            SecureRandom random,
+            Clock clock
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
         this.random = Objects.requireNonNull(random, "random");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     IssuedKey issue(UUID userId, IssueCommand command) {
@@ -44,24 +53,28 @@ public final class PredictionIngestionApiKeyService {
             if (!registry.lockActive(userId, command.modelVersion(), command.contractVersion())) {
                 throw new ApiKeyException(ApiKeyException.Code.MODEL_SCOPE_NOT_ACTIVE);
             }
-            return insert(userId, command.modelVersion(), command.contractVersion());
+            return insert(
+                    userId,
+                    command.modelVersion(),
+                    command.contractVersion(),
+                    command.expiresAt());
         });
     }
 
     List<KeyView> list(UUID userId) {
         return jdbc.query("""
                 SELECT id, model_version, contract_version, key_prefix, status,
-                       created_at, last_used_at, revoked_at
+                       created_at, last_used_at, revoked_at, expires_at
                   FROM prediction_ingestion_api_keys
                  WHERE user_id = ?
                  ORDER BY created_at, id
                 """, PredictionIngestionApiKeyService::view, userId);
     }
 
-    IssuedKey rotate(UUID userId, UUID id) {
+    IssuedKey rotate(UUID userId, UUID id, Instant expiresAt) {
         return transactions.execute(status -> {
             var current = jdbc.query("""
-                    SELECT model_version, contract_version, status
+                    SELECT model_version, contract_version, status, expires_at
                       FROM prediction_ingestion_api_keys
                      WHERE user_id = ?
                        AND id = ?
@@ -69,7 +82,8 @@ public final class PredictionIngestionApiKeyService {
                     """, (result, row) -> new StoredKey(
                             result.getString("model_version"),
                             result.getString("contract_version"),
-                            Status.valueOf(result.getString("status"))),
+                            Status.valueOf(result.getString("status")),
+                            instant(result, "expires_at")),
                     userId, id).stream().findFirst()
                     .orElseThrow(() -> new ApiKeyException(ApiKeyException.Code.NOT_FOUND));
             if (current.status() != Status.ACTIVE) {
@@ -78,12 +92,18 @@ public final class PredictionIngestionApiKeyService {
             if (!registry.lockActive(userId, current.modelVersion(), current.contractVersion())) {
                 throw new ApiKeyException(ApiKeyException.Code.MODEL_SCOPE_NOT_ACTIVE);
             }
+            var replacementExpiry = expiresAt == null ? current.expiresAt() : expiresAt;
+            validateExpiry(replacementExpiry);
             jdbc.update("""
                     UPDATE prediction_ingestion_api_keys
                        SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP
                      WHERE id = ?
                     """, id);
-            return insert(userId, current.modelVersion(), current.contractVersion());
+            return insert(
+                    userId,
+                    current.modelVersion(),
+                    current.contractVersion(),
+                    replacementExpiry);
         });
     }
 
@@ -97,53 +117,84 @@ public final class PredictionIngestionApiKeyService {
                 """, userId, id);
     }
 
-    Optional<AuthenticatedKey> authenticate(String rawKey) {
+    Optional<AuthenticatedKey> findActive(String rawKey) {
         if (rawKey == null || !rawKey.startsWith(RAW_PREFIX)) {
             return Optional.empty();
         }
-        return transactions.execute(status -> {
-            var authenticated = jdbc.query("""
-                    SELECT id, user_id, model_version, contract_version
-                      FROM prediction_ingestion_api_keys
-                     WHERE key_hash = ?
-                       AND status = 'ACTIVE'
-                     FOR UPDATE
-                    """, (result, row) -> new AuthenticatedKey(
-                            result.getObject("id", UUID.class),
-                            result.getObject("user_id", UUID.class),
-                            new AnalysisPredictionService.ModelContractScope(
-                                    result.getString("model_version"),
-                                    result.getString("contract_version"))),
-                    hash(rawKey)).stream().findFirst();
-            authenticated.ifPresent(key -> jdbc.update("""
-                    UPDATE prediction_ingestion_api_keys
-                       SET last_used_at = CURRENT_TIMESTAMP
-                     WHERE id = ?
-                    """, key.id()));
-            return authenticated;
-        });
+        return jdbc.query("""
+                SELECT id, user_id, model_version, contract_version, key_prefix, expires_at
+                  FROM prediction_ingestion_api_keys
+                 WHERE key_hash = ?
+                   AND status = 'ACTIVE'
+                """, (result, row) -> new AuthenticatedKey(
+                        result.getObject("id", UUID.class),
+                        result.getObject("user_id", UUID.class),
+                        result.getString("key_prefix"),
+                        new AnalysisPredictionService.ModelContractScope(
+                                result.getString("model_version"),
+                                result.getString("contract_version")),
+                        instant(result, "expires_at")),
+                hash(rawKey)).stream().findFirst();
     }
 
-    private IssuedKey insert(UUID userId, String modelVersion, String contractVersion) {
+    boolean markUsed(UUID id) {
+        return Boolean.TRUE.equals(transactions.execute(status -> jdbc.query("""
+                UPDATE prediction_ingestion_api_keys
+                   SET last_used_at = CURRENT_TIMESTAMP
+                 WHERE id = ?
+                   AND status = 'ACTIVE'
+                   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+                RETURNING true
+                """, (result, row) -> result.getBoolean(1), id)
+                .stream()
+                .findFirst()
+                .orElse(false)));
+    }
+
+    void recordRejection(AuthenticatedKey key, RejectionReason reason) {
+        jdbc.update("""
+                INSERT INTO prediction_ingestion_api_key_rejections (
+                    id, key_id, user_id, key_prefix, reason, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, UUID.randomUUID(), key.id(), key.userId(), key.prefix(), reason.name());
+        LOG.atWarn()
+                .addKeyValue("operation", "prediction_ingestion_api_key_rejected")
+                .addKeyValue("key_id", key.id())
+                .addKeyValue("key_prefix", key.prefix())
+                .addKeyValue("reason", reason.name())
+                .log("prediction ingestion API key request rejected");
+    }
+
+    private IssuedKey insert(
+            UUID userId,
+            String modelVersion,
+            String contractVersion,
+            Instant expiresAt
+    ) {
         var rawKey = rawKey();
         var id = UUID.randomUUID();
+        var createdAt = clock.instant();
         jdbc.update("""
                 INSERT INTO prediction_ingestion_api_keys (
                     id, user_id, model_version, contract_version, key_hash, key_prefix,
-                    status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP)
+                    status, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
                 """, id, userId, modelVersion, contractVersion, hash(rawKey),
-                rawKey.substring(0, DISPLAY_PREFIX_LENGTH));
+                rawKey.substring(0, DISPLAY_PREFIX_LENGTH),
+                OffsetDateTime.ofInstant(createdAt, java.time.ZoneOffset.UTC),
+                expiresAt == null
+                        ? null
+                        : OffsetDateTime.ofInstant(expiresAt, java.time.ZoneOffset.UTC));
         var key = find(userId, id);
         return new IssuedKey(
                 key.id(), rawKey, key.modelVersion(), key.contractVersion(), key.prefix(),
-                key.status(), key.createdAt());
+                key.status(), key.createdAt(), key.expiresAt());
     }
 
     private KeyView find(UUID userId, UUID id) {
         return jdbc.query("""
                 SELECT id, model_version, contract_version, key_prefix, status,
-                       created_at, last_used_at, revoked_at
+                       created_at, last_used_at, revoked_at, expires_at
                   FROM prediction_ingestion_api_keys
                  WHERE user_id = ?
                    AND id = ?
@@ -169,10 +220,17 @@ public final class PredictionIngestionApiKeyService {
         }
     }
 
-    private static void validate(IssueCommand command) {
+    private void validate(IssueCommand command) {
         if (command == null
                 || invalidVersion(command.modelVersion())
                 || invalidVersion(command.contractVersion())) {
+            throw new ApiKeyException(ApiKeyException.Code.INVALID_INPUT);
+        }
+        validateExpiry(command.expiresAt());
+    }
+
+    private void validateExpiry(Instant expiresAt) {
+        if (expiresAt != null && !expiresAt.isAfter(clock.instant())) {
             throw new ApiKeyException(ApiKeyException.Code.INVALID_INPUT);
         }
     }
@@ -190,10 +248,11 @@ public final class PredictionIngestionApiKeyService {
                 Status.valueOf(result.getString("status")),
                 instant(result, "created_at"),
                 instant(result, "last_used_at"),
-                instant(result, "revoked_at"));
+                instant(result, "revoked_at"),
+                instant(result, "expires_at"));
     }
 
-    private static java.time.Instant instant(ResultSet result, String column) throws SQLException {
+    private static Instant instant(ResultSet result, String column) throws SQLException {
         var value = result.getObject(column, OffsetDateTime.class);
         return value == null ? null : value.toInstant();
     }
@@ -203,7 +262,7 @@ public final class PredictionIngestionApiKeyService {
         REVOKED
     }
 
-    record IssueCommand(String modelVersion, String contractVersion) {
+    record IssueCommand(String modelVersion, String contractVersion, Instant expiresAt) {
     }
 
     record KeyView(
@@ -212,9 +271,10 @@ public final class PredictionIngestionApiKeyService {
             String contractVersion,
             String prefix,
             Status status,
-            java.time.Instant createdAt,
-            java.time.Instant lastUsedAt,
-            java.time.Instant revokedAt
+            Instant createdAt,
+            Instant lastUsedAt,
+            Instant revokedAt,
+            Instant expiresAt
     ) {
     }
 
@@ -225,18 +285,31 @@ public final class PredictionIngestionApiKeyService {
             String contractVersion,
             String prefix,
             Status status,
-            java.time.Instant createdAt
+            Instant createdAt,
+            Instant expiresAt
     ) {
     }
 
     record AuthenticatedKey(
             UUID id,
             UUID userId,
-            AnalysisPredictionService.ModelContractScope scope
+            String prefix,
+            AnalysisPredictionService.ModelContractScope scope,
+            Instant expiresAt
     ) {
     }
 
-    private record StoredKey(String modelVersion, String contractVersion, Status status) {
+    enum RejectionReason {
+        EXPIRED,
+        RATE_LIMITED
+    }
+
+    private record StoredKey(
+            String modelVersion,
+            String contractVersion,
+            Status status,
+            Instant expiresAt
+    ) {
     }
 
     static final class ApiKeyException extends RuntimeException {

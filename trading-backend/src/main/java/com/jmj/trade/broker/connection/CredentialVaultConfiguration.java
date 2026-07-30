@@ -16,6 +16,8 @@ import com.jmj.trade.prediction.PredictionEvaluationLease;
 import com.jmj.trade.prediction.PredictionEvaluationMetrics;
 import com.jmj.trade.prediction.PredictionEvaluationScheduler;
 import com.jmj.trade.prediction.PredictionIngestionApiKeyAuthenticationFilter;
+import com.jmj.trade.prediction.PredictionIngestionApiKeyMetrics;
+import com.jmj.trade.prediction.PredictionIngestionApiKeyRateLimiter;
 import com.jmj.trade.prediction.PredictionIngestionApiKeyService;
 import com.jmj.trade.prediction.PredictionModelRegistryService;
 import com.jmj.trade.risk.RiskPolicyService;
@@ -26,10 +28,12 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.Duration;
 
 @Configuration(proxyBeanMethods = false)
@@ -133,14 +137,25 @@ public class CredentialVaultConfiguration {
     ) {
         return new PredictionIngestionApiKeyService(
                 jdbcTemplate, registry, new TransactionTemplate(transactionManager),
-                credentialSecureRandom);
+                credentialSecureRandom, Clock.systemUTC());
+    }
+
+    @Bean
+    PredictionIngestionApiKeyRateLimiter predictionIngestionApiKeyRateLimiter(
+            StringRedisTemplate redis,
+            @Value("${prediction.ingestion-api-key.rate-limit.limit:60}") int limit,
+            @Value("${prediction.ingestion-api-key.rate-limit.window:PT1M}") Duration window
+    ) {
+        return new PredictionIngestionApiKeyRateLimiter(redis, limit, window);
     }
 
     @Bean
     PredictionIngestionApiKeyAuthenticationFilter predictionIngestionApiKeyAuthenticationFilter(
-            PredictionIngestionApiKeyService apiKeys
+            PredictionIngestionApiKeyService apiKeys,
+            PredictionIngestionApiKeyRateLimiter rateLimiter,
+            PredictionIngestionApiKeyMetrics metrics
     ) {
-        return new PredictionIngestionApiKeyAuthenticationFilter(apiKeys);
+        return new PredictionIngestionApiKeyAuthenticationFilter(apiKeys, rateLimiter, metrics);
     }
 
     @Bean

@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -39,7 +40,7 @@ final class PredictionIngestionApiKeyController {
                     PredictionIngestionApiKeyService.ApiKeyException.Code.INVALID_INPUT);
         }
         return apiKeys.issue(userId(principal), new PredictionIngestionApiKeyService.IssueCommand(
-                request.modelVersion(), request.contractVersion()));
+                request.modelVersion(), request.contractVersion(), request.expiresAt()));
     }
 
     @GetMapping
@@ -51,9 +52,13 @@ final class PredictionIngestionApiKeyController {
     @ResponseStatus(HttpStatus.CREATED)
     PredictionIngestionApiKeyService.IssuedKey rotate(
             Principal principal,
-            @PathVariable UUID id
+            @PathVariable UUID id,
+            @RequestBody(required = false) RotateRequest request
     ) {
-        return apiKeys.rotate(userId(principal), id);
+        return apiKeys.rotate(
+                userId(principal),
+                id,
+                request == null ? null : request.expiresAt());
     }
 
     @DeleteMapping("/{id}")
@@ -91,7 +96,10 @@ final class PredictionIngestionApiKeyController {
         return ResponseEntity.status(status).body(new PublicError(code));
     }
 
-    record IssueRequest(String modelVersion, String contractVersion) {
+    record IssueRequest(String modelVersion, String contractVersion, Instant expiresAt) {
+    }
+
+    record RotateRequest(Instant expiresAt) {
     }
 
     record PublicError(String code) {

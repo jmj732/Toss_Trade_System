@@ -15,6 +15,7 @@ import com.jmj.trade.broker.BrokerResponse;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,11 +24,16 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.utility.DockerImageName;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -50,6 +56,7 @@ import static org.springframework.security.test.web.servlet.setup.SecurityMockMv
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -62,7 +69,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "prediction.evaluation.enabled=true",
                 "prediction.evaluation.interval=PT24H",
                 "prediction.evaluation.initial-delay=PT24H",
-                "prediction.evaluation.lock-ttl=PT10M"
+                "prediction.evaluation.lock-ttl=PT10M",
+                "prediction.ingestion-api-key.rate-limit.limit=1",
+                "prediction.ingestion-api-key.rate-limit.window=PT1M"
         })
 @Import(AnalysisPredictionIntegrationTest.PredictionBrokerConfiguration.class)
 class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
@@ -70,6 +79,19 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID OTHER_USER_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final Instant T0 = Instant.parse("2026-01-01T00:00:00Z");
+    private static final GenericContainer<?> REDIS =
+            new GenericContainer<>(DockerImageName.parse("redis:7-alpine"))
+                    .withExposedPorts(6379);
+
+    static {
+        REDIS.start();
+    }
+
+    @DynamicPropertySource
+    static void redisProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", REDIS::getHost);
+        registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+    }
 
     @Autowired
     private WebApplicationContext context;
@@ -89,6 +111,12 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     @Autowired
     private PredictionEvaluationLease evaluationLease;
 
+    @Autowired
+    private StringRedisTemplate redis;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -96,8 +124,10 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         mockMvc = MockMvcBuilders.webAppContextSetup(context)
                 .apply(springSecurity())
                 .build();
-        jdbc.execute("TRUNCATE prediction_evaluation_leases, analysis_prediction_outcomes, analysis_predictions, "
-                + "prediction_model_versions, broker_connections, users CASCADE");
+        jdbc.execute("TRUNCATE prediction_ingestion_api_key_rejections, prediction_evaluation_leases, "
+                + "analysis_prediction_outcomes, analysis_predictions, prediction_model_versions, "
+                + "broker_connections, users CASCADE");
+        redis.getConnectionFactory().getConnection().serverCommands().flushAll();
         broker.reset();
     }
 
@@ -466,6 +496,149 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                   FROM prediction_ingestion_api_keys
                  WHERE id = ?
                 """, Boolean.class, keyId)).isTrue();
+    }
+
+    @Test
+    void issueAndRotationPersistOptionalExpiryAndRotationWithoutBodyInheritsIt() throws Exception {
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        var expiresAt = Instant.parse("2099-01-01T00:00:00Z");
+        var issued = issueApiKeyResponse(
+                USER_ID, "model-v1", "contract-v1", expiresAt);
+        var keyId = idFrom(issued);
+
+        org.assertj.core.api.Assertions.assertThat(stringField(issued, "expiresAt"))
+                .isEqualTo(expiresAt.toString());
+        mockMvc.perform(get("/api/v1/prediction-ingestion-api-keys")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].expiresAt").value(expiresAt.toString()));
+
+        var inherited = mockMvc.perform(post(
+                        "/api/v1/prediction-ingestion-api-keys/{id}/rotate", keyId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.expiresAt").value(expiresAt.toString()))
+                .andReturn().getResponse().getContentAsString();
+        var inheritedId = idFrom(inherited);
+        var replacementExpiry = Instant.parse("2099-02-01T00:00:00Z");
+
+        mockMvc.perform(post(
+                        "/api/v1/prediction-ingestion-api-keys/{id}/rotate", inheritedId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expiresAt\":\"" + replacementExpiry + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.expiresAt").value(replacementExpiry.toString()));
+    }
+
+    @Test
+    void expiredApiKeyIsRejectedWithoutQuoteWriteOrLastUsedUpdateAndIsAudited() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        var rawKey = "tpik_expiredKeyMaterial12345678901234567890";
+        var keyId = insertApiKey(
+                rawKey, T0.minus(Duration.ofDays(2)), T0.minus(Duration.ofDays(1)));
+        var before = rejectedCount("expired");
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .header("Authorization", "Bearer " + rawKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "expired", "AAPL", "USD", "UP",
+                                "model-v1", "contract-v1"))))
+                .andExpect(status().isUnauthorized());
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT last_used_at IS NULL
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, Boolean.class, keyId)).isTrue();
+        assertCount("analysis_predictions", 0);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForMap("""
+                SELECT key_id, user_id, key_prefix, reason
+                  FROM prediction_ingestion_api_key_rejections
+                """))
+                .containsEntry("key_id", keyId)
+                .containsEntry("user_id", USER_ID)
+                .containsEntry("key_prefix", rawKey.substring(0, 13))
+                .containsEntry("reason", "EXPIRED");
+        org.assertj.core.api.Assertions.assertThat(rejectedCount("expired")).isEqualTo(before + 1);
+    }
+
+    @Test
+    void rateLimitReturnsRetryTimeWithoutSideEffectsAndDoesNotAffectSessionBatch() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
+        broker.setPrice("MSFT", Currency.USD, new BigDecimal("202"));
+        var issued = issueApiKeyResponse(USER_ID, "model-v1", "contract-v1");
+        var keyId = idFrom(issued);
+        var rawKey = stringField(issued, "apiKey");
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .header("Authorization", "Bearer " + rawKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "allowed", "AAPL", "USD", "UP",
+                                "model-v1", "contract-v1"))))
+                .andExpect(status().isOk());
+        var lastUsedAt = jdbc.queryForObject("""
+                SELECT last_used_at
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, OffsetDateTime.class, keyId);
+        var before = rejectedCount("rate_limited");
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .header("Authorization", "Bearer " + rawKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "limited", "MSFT", "USD", "UP",
+                                "model-v1", "contract-v1"))))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().exists("Retry-After"))
+                .andExpect(jsonPath("$.code")
+                        .value("PREDICTION_INGESTION_API_KEY_RATE_LIMITED"))
+                .andExpect(jsonPath("$.retryAt").isNotEmpty());
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT last_used_at
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, OffsetDateTime.class, keyId)).isEqualTo(lastUsedAt);
+        assertCount("analysis_predictions", 1);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isOne();
+        org.assertj.core.api.Assertions.assertThat(rejectedCount("rate_limited")).isEqualTo(before + 1);
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT count(*)
+                  FROM prediction_ingestion_api_key_rejections
+                 WHERE key_id = ?
+                   AND reason = 'RATE_LIMITED'
+                """, Long.class, keyId)).isOne();
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "session", "MSFT", "USD", "UP",
+                                "model-v1", "contract-v1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("CREATED"));
+        assertCount("analysis_predictions", 2);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isEqualTo(2);
     }
 
     @Test
@@ -1167,12 +1340,23 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     private String apiKeyRequest(String modelVersion, String contractVersion) {
+        return apiKeyRequest(modelVersion, contractVersion, null);
+    }
+
+    private String apiKeyRequest(
+            String modelVersion,
+            String contractVersion,
+            Instant expiresAt
+    ) {
         return """
                 {
                   "modelVersion":"%s",
-                  "contractVersion":"%s"
+                  "contractVersion":"%s"%s
                 }
-                """.formatted(modelVersion, contractVersion);
+                """.formatted(
+                modelVersion,
+                contractVersion,
+                expiresAt == null ? "" : ",\"expiresAt\":\"" + expiresAt + "\"");
     }
 
     private String issueApiKey(UUID userId, String modelVersion, String contractVersion)
@@ -1185,13 +1369,42 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
             String modelVersion,
             String contractVersion
     ) throws Exception {
+        return issueApiKeyResponse(userId, modelVersion, contractVersion, null);
+    }
+
+    private String issueApiKeyResponse(
+            UUID userId,
+            String modelVersion,
+            String contractVersion,
+            Instant expiresAt
+    ) throws Exception {
         return mockMvc.perform(post("/api/v1/prediction-ingestion-api-keys")
                         .with(user(userId.toString()))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(apiKeyRequest(modelVersion, contractVersion)))
+                        .content(apiKeyRequest(modelVersion, contractVersion, expiresAt)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
+    }
+
+    private UUID insertApiKey(String rawKey, Instant createdAt, Instant expiresAt)
+            throws Exception {
+        var id = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO prediction_ingestion_api_keys (
+                    id, user_id, model_version, contract_version, key_hash, key_prefix,
+                    status, created_at, expires_at
+                ) VALUES (?, ?, 'model-v1', 'contract-v1', ?, ?, 'ACTIVE', ?, ?)
+                """, id, USER_ID, sha256(rawKey), rawKey.substring(0, 13),
+                offset(createdAt), offset(expiresAt));
+        return id;
+    }
+
+    private long rejectedCount(String reason) {
+        var counter = meterRegistry.find("trade.prediction.ingestion.api.key.rejected")
+                .tag("reason", reason)
+                .counter();
+        return counter == null ? 0 : Math.round(counter.count());
     }
 
     private String stringField(String response, String field) {
