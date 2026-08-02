@@ -93,7 +93,9 @@ public final class LiveOrderActivationService {
     public OrderApprovalStepUpService.IssuedStepUp issueStepUp(UUID userId, UUID orderIntentId, Instant authTime) {
         var intent = ownedIntent(userId, orderIntentId);
         if (intent.getExecutionMode() != OrderExecutionMode.LIVE
-                || (intent.getStatus() != OrderIntentStatus.PROPOSED && intent.getStatus() != OrderIntentStatus.APPROVED)) {
+                || (intent.getStatus() != OrderIntentStatus.PROPOSED
+                && intent.getStatus() != OrderIntentStatus.APPROVED
+                && intent.getStatus() != OrderIntentStatus.ACTIVE)) {
             throw conflict();
         }
         return stepUp.issue(userId, orderIntentId, authTime);
@@ -101,11 +103,18 @@ public final class LiveOrderActivationService {
 
     public void approve(UUID userId, UUID orderIntentId, String stepUpToken, String actor,
                         BigDecimal displayedQuantity, BigDecimal displayedMaxLoss, Currency displayedCurrency) {
+        approve(userId, orderIntentId, stepUpToken, actor, displayedQuantity, displayedMaxLoss,
+                displayedCurrency, null);
+    }
+
+    public void approve(UUID userId, UUID orderIntentId, String stepUpToken, String actor,
+                        BigDecimal displayedQuantity, BigDecimal displayedMaxLoss, Currency displayedCurrency,
+                        java.time.Duration quoteMaxAge) {
         var target = ownedIntent(userId, orderIntentId);
         if (target.getExecutionMode() != OrderExecutionMode.LIVE || target.getStatus() != OrderIntentStatus.PROPOSED) {
             throw conflict();
         }
-        var price = currentPrice(target);
+        var price = currentPrice(target, quoteMaxAge);
         if (displayedQuantity == null || displayedMaxLoss == null || displayedCurrency != target.getTradingCurrency()
                 || displayedQuantity.compareTo(target.getQuantity()) != 0
                 || scaled(displayedMaxLoss, target.getTradingCurrency())
@@ -133,6 +142,11 @@ public final class LiveOrderActivationService {
 
     public DispatchResult dispatch(UUID userId, UUID orderIntentId, String clientOrderId,
                                    String stepUpToken, String actor) {
+        return dispatch(userId, orderIntentId, clientOrderId, stepUpToken, actor, null);
+    }
+
+    public DispatchResult dispatch(UUID userId, UUID orderIntentId, String clientOrderId,
+                                   String stepUpToken, String actor, java.time.Duration quoteMaxAge) {
         requireId(userId, "userId");
         requireId(orderIntentId, "orderIntentId");
         requireClientOrderId(clientOrderId);
@@ -140,7 +154,7 @@ public final class LiveOrderActivationService {
         if (intent.getExecutionMode() != OrderExecutionMode.LIVE || intent.getStatus() != OrderIntentStatus.APPROVED) {
             throw conflict();
         }
-        var price = currentPrice(intent);
+        var price = currentPrice(intent, quoteMaxAge);
         var prepared = Objects.requireNonNull(transactions.execute(status -> prepare(
                 userId, orderIntentId, clientOrderId, stepUpToken, actor, price)));
         if (!prepared.callBroker()) {
@@ -165,8 +179,7 @@ public final class LiveOrderActivationService {
                 if (ack.brokerOrderId() == null || !clientOrderId.equals(ack.idempotencyKey())) {
                     submissions.markManualReview(attemptId, Instant.now(),
                             new DispatchEvidence(clientOrderId,
-                                    "client-order-id-mismatch brokerOrderId=" +
-                                            Objects.toString(ack.brokerOrderId(), "missing")), actor);
+                                    "client-order-id-mismatch"), actor);
                 } else {
                     submissions.confirmBrokerOrder(attemptId, new OrderSubmissionService.BrokerConfirmation(
                             ack.brokerOrderId(), ack.idempotencyKey(), BrokerOrderStatus.PENDING,
@@ -324,16 +337,40 @@ public final class LiveOrderActivationService {
     }
 
     private BigDecimal currentPrice(OrderIntent intent) {
-        var quote = quotes.getQuote(new BrokerConnectionRef(intent.getBrokerConnectionId()), intent.getSymbol()).value();
+        return currentPrice(intent, null);
+    }
+
+    private BigDecimal currentPrice(OrderIntent intent, java.time.Duration quoteMaxAge) {
+        var response = quotes.getQuote(new BrokerConnectionRef(intent.getBrokerConnectionId()), intent.getSymbol());
+        var quote = response == null ? null : response.value();
+        if (quote == null) {
+            throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
+                    "live quote is unavailable or mismatched");
+        }
         var price = intent.getSide() == OrderSide.BUY ? quote.askPrice() : quote.bidPrice();
         if (price == null) {
             price = quote.lastPrice();
         }
-        if (price == null || price.signum() <= 0 || quote.currency() != intent.getTradingCurrency()) {
+        if (!intent.getSymbol().equals(quote.symbol())
+                || !intent.getBrokerConnectionId().equals(quote.connection().brokerConnectionId())
+                || price == null || price.signum() <= 0 || quote.currency() != intent.getTradingCurrency()
+                || stale(quote.observedAt(), quoteMaxAge)) {
             throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
                     "live quote is unavailable or mismatched");
         }
         return price;
+    }
+
+    private static boolean stale(Instant observedAt, java.time.Duration maxAge) {
+        if (maxAge == null) {
+            return false;
+        }
+        if (observedAt == null) {
+            return true;
+        }
+        var now = Instant.now();
+        return observedAt.isAfter(now.plusSeconds(60))
+                || java.time.Duration.between(observedAt, now).compareTo(maxAge) > 0;
     }
 
     private OrderIntent ownedIntent(UUID userId, UUID orderIntentId) {

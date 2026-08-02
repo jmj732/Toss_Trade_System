@@ -75,6 +75,15 @@ public final class OrderApprovalStepUpService {
         return new IssuedStepUp(rawToken, expiresAt);
     }
 
+    boolean accepts(Instant authTime) {
+        try {
+            requireFreshReauthentication(authTime, clock.instant());
+            return true;
+        } catch (PaperOrderWorkflowException exception) {
+            return false;
+        }
+    }
+
     /**
      * 주문이 아닌 일반 subject(예: kill switch 해제 대상, 플랜 원장 E4)에 바인딩된 단일 사용 토큰을
      * 발급한다. E2 의 주문 승인 토큰과 같은 신선도·수명·해시 저장 규칙을 그대로 쓰되, 바인딩만

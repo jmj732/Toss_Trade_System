@@ -103,7 +103,8 @@ class ModuleBoundaryTest {
             "com.jmj.trade.order.LiveOrderActivationService",
             "com.jmj.trade.order.OrderIntentTransitionService",
             "com.jmj.trade.order.PaperTradingBroker",
-            "com.jmj.trade.order.OrderSubmissionService");
+            "com.jmj.trade.order.OrderSubmissionService",
+            "com.jmj.trade.order.RealOrderCanaryService");
 
     private static final String SPRING_DATA_REPOSITORY = "org.springframework.data.repository.Repository";
     private static final String CONFIGURATION = "org.springframework.context.annotation.Configuration";
@@ -274,7 +275,7 @@ class ModuleBoundaryTest {
                 .isTrue();
         assertThat(FROZEN_FIND_BY_ID_CALLERS)
                 .as("얼린 findById 호출 클래스 상한")
-                .hasSize(4);
+                .hasSize(5);
         assertThat(actualCallers)
                 .as("단일 인자 findById(ID) 호출자는 얼린 목록과 정확히 일치해야 한다. "
                         + "사용자 소유 aggregate 조회는 userId 를 필수 인자로 받는 repository API 로 옮길 것")

@@ -58,6 +58,18 @@ class TossBrokerConfigurationTest {
     }
 
     @Test
+    void createsTossOrderPortOnlyWhenRealOrderIsExplicitlyEnabled() {
+        contextRunner
+                .withUserConfiguration(TestCredentialProviderConfig.class, TestRedisConfig.class)
+                .withPropertyValues("real-order.enabled=true")
+                .run(context -> {
+                    assertThat(context).hasBean("tossOrderPort");
+                    assertThat(context).getBean("tossOrderPort")
+                            .isInstanceOf(TossInvestBrokerAdapter.class);
+                });
+    }
+
+    @Test
     void bindsCustomHttpProperties() {
         contextRunner
                 .withUserConfiguration(TestCredentialProviderConfig.class)
