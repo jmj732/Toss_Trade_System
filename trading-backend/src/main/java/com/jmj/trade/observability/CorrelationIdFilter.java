@@ -87,6 +87,9 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
         if (path.contains("/portfolio-analyses")) {
             return "analysis";
         }
+        if (path.contains("/stock-analyses")) {
+            return "stock-analysis";
+        }
         if (path.contains("/portfolio-syncs")) {
             return "sync";
         }

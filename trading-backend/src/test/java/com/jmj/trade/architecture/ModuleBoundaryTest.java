@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 규칙은 delta 스펙(2026-07-31-module-boundary-archunit-delta.md)의 계약을 따른다.
  *
  * <p>SPEC 모듈명 ↔ 실제 패키지 매핑: identity→security, event→intelligence,
- * performance→prediction. portfolio/marketdata/proposal 은 아직 없어 규칙을 쓰지 않는다.
+ * performance→prediction. portfolio/proposal 은 아직 없어 규칙을 쓰지 않는다.
  * audit/outbox 는 독립 패키지가 없고 order/notification 안에 있다.
  *
  * <p>vacuous pass 방지: 각 규칙은 대상 클래스가 실제로 존재함을 단언하거나
@@ -48,7 +48,8 @@ class ModuleBoundaryTest {
             Map.entry("security", Set.of()),                                  // identity → audit(없음)
             Map.entry("broker", Set.of("security")),                          // → identity, audit(없음)
             Map.entry("account", Set.of("broker", "security")),              // → broker, identity, audit/outbox(없음)
-            Map.entry("analysis", Set.of()),                                  // → marketdata/outbox(없음)
+            Map.entry("analysis", Set.of("marketdata")),                   // → marketdata, outbox(없음)
+            Map.entry("marketdata", Set.of()),                               // → broker는 generic provider 경계 밖
             Map.entry("intelligence", Set.of()),                             // event → marketdata/outbox(없음)
             Map.entry("risk", Set.of("account")),                            // → account, portfolio/marketdata(없음)
             Map.entry("order", Set.of("risk", "broker", "account", "inbox")),// → risk, broker, account, inbox, audit/outbox/marketdata(없음)

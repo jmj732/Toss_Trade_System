@@ -1,0 +1,32 @@
+{
+  "requestId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "schemaVersion": "1",
+  "inputSnapshotId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "symbol": "AAPL",
+  "status": "DEGRADED",
+  "missingData": ["FRED:macro.cpi:PROVIDER_UNAVAILABLE"],
+  "observations": [
+    {
+      "field": "quote.price",
+      "value": "189.40",
+      "unit": "USD",
+      "period": null,
+      "identifier": "AAPL",
+      "provider": "FMP",
+      "asOf": "2026-08-01T20:00:00Z",
+      "collectedAt": "2026-08-02T00:00:00Z",
+      "missingData": []
+    },
+    {
+      "field": "macro.cpi",
+      "value": null,
+      "unit": "percent",
+      "period": "2026-07",
+      "identifier": "CPIAUCSL",
+      "provider": "FRED",
+      "asOf": null,
+      "collectedAt": "2026-08-02T00:00:00Z",
+      "missingData": ["PROVIDER_UNAVAILABLE"]
+    }
+  ]
+}

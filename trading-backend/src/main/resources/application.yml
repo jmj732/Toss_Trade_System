@@ -9,6 +9,31 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+stock-analysis:
+  running-timeout: ${STOCK_ANALYSIS_RUNNING_TIMEOUT:PT5M}
+  # Enabling a provider requires its base-url, path, fields, and provider policy
+  # under stock-analysis.providers.<id>; disabled entries construct no HTTP client.
+  providers:
+    toss:
+      enabled: ${STOCK_ANALYSIS_TOSS_ENABLED:false}
+    sec:
+      enabled: ${STOCK_ANALYSIS_SEC_ENABLED:false}
+    fred:
+      enabled: ${STOCK_ANALYSIS_FRED_ENABLED:false}
+    bls:
+      enabled: ${STOCK_ANALYSIS_BLS_ENABLED:false}
+    bea:
+      enabled: ${STOCK_ANALYSIS_BEA_ENABLED:false}
+    fed:
+      enabled: ${STOCK_ANALYSIS_FED_ENABLED:false}
+    fmp:
+      enabled: ${STOCK_ANALYSIS_FMP_ENABLED:false}
+    finnhub:
+      enabled: ${STOCK_ANALYSIS_FINNHUB_ENABLED:false}
+    polygon:
+      enabled: ${STOCK_ANALYSIS_POLYGON_ENABLED:false}
+    twelve-data:
+      enabled: ${STOCK_ANALYSIS_TWELVE_DATA_ENABLED:false}
 management:
   endpoints:
     web:

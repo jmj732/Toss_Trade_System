@@ -1,0 +1,33 @@
+{
+  "requestId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "input": {
+    "snapshotId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "symbol": "AAPL",
+    "schemaVersion": "1",
+    "collectedAt": "2026-08-02T00:00:00Z",
+    "observations": [
+      {
+        "field": "quote.price",
+        "value": "189.40",
+        "unit": "USD",
+        "period": null,
+        "identifier": "AAPL",
+        "provider": "FMP",
+        "asOf": "2026-08-01T20:00:00Z",
+        "collectedAt": "2026-08-02T00:00:00Z",
+        "missingData": []
+      },
+      {
+        "field": "macro.cpi",
+        "value": null,
+        "unit": "percent",
+        "period": "2026-07",
+        "identifier": "CPIAUCSL",
+        "provider": "FRED",
+        "asOf": null,
+        "collectedAt": "2026-08-02T00:00:00Z",
+        "missingData": ["PROVIDER_UNAVAILABLE"]
+      }
+    ]
+  }
+}

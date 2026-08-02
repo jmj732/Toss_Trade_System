@@ -5,11 +5,11 @@ import time
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_EVEN
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -80,6 +80,61 @@ class PortfolioAnalysisResponse(ContractModel):
     currency_totals: list[CurrencyTotal]
 
 
+ProviderId = Literal[
+    "TOSS",
+    "SEC",
+    "FRED",
+    "BLS",
+    "BEA",
+    "FED",
+    "FMP",
+    "FINNHUB",
+    "POLYGON",
+    "TWELVE_DATA",
+]
+
+
+class StockAnalysisObservation(ContractModel):
+    field: Annotated[str, Field(min_length=1, max_length=120)]
+    value: Any | None
+    unit: str | None
+    period: str | None
+    identifier: str | None
+    provider: ProviderId
+    as_of: datetime | None
+    collected_at: datetime
+    missing_data: list[str]
+
+    @model_validator(mode="after")
+    def require_missing_data_for_null(self) -> "StockAnalysisObservation":
+        if not self.missing_data and (self.value is None or self.as_of is None):
+            raise ValueError("null value or asOf requires missingData")
+        return self
+
+
+class StockAnalysisInput(ContractModel):
+    snapshot_id: UUID
+    symbol: Annotated[str, Field(min_length=1, max_length=32)]
+    schema_version: Literal["1"]
+    collected_at: datetime
+    observations: list[StockAnalysisObservation]
+
+
+class StockAnalysisRequest(ContractModel):
+    request_id: UUID
+    input: StockAnalysisInput
+
+
+class StockAnalysisResponse(ContractModel):
+    request_id: UUID
+    schema_version: Literal["1"]
+    input_snapshot_id: UUID
+    symbol: str
+    status: Status
+    missing_data: list[str]
+    observations: list[StockAnalysisObservation]
+
+
 app = FastAPI(title="Portfolio Analysis Service", version="1")
 
 
@@ -95,7 +150,13 @@ async def correlate(request: Request, call_next):
         response.headers[CORRELATION_HEADER] = correlation_id
         return response
     finally:
-        operation = "analysis" if request.url.path.endswith("/portfolio-analyses") else "request"
+        operation = (
+            "analysis"
+            if request.url.path.endswith("/portfolio-analyses")
+            else "stock-analysis-input"
+            if request.url.path.endswith("/stock-analysis-inputs")
+            else "request"
+        )
         LOG.info(
             json.dumps(
                 {
@@ -163,6 +224,28 @@ def analyze_portfolio(request: PortfolioAnalysisRequest) -> PortfolioAnalysisRes
         quality=request.quality,
         positions=positions,
         currency_totals=currency_totals,
+    )
+
+
+@app.post(
+    "/internal/v2/stock-analysis-inputs",
+    response_model=StockAnalysisResponse,
+)
+def analyze_stock_input(request: StockAnalysisRequest) -> StockAnalysisResponse:
+    missing_data = [
+        f"{observation.provider}:{observation.field}:{reason}"
+        for observation in request.input.observations
+        for reason in observation.missing_data
+    ]
+    degraded = not request.input.observations or bool(missing_data)
+    return StockAnalysisResponse(
+        request_id=request.request_id,
+        schema_version=request.input.schema_version,
+        input_snapshot_id=request.input.snapshot_id,
+        symbol=request.input.symbol,
+        status=Status.DEGRADED if degraded else Status.COMPLETED,
+        missing_data=missing_data,
+        observations=request.input.observations,
     )
 
 
