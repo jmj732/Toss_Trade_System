@@ -277,6 +277,10 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
 .metric { display: flex; flex-direction: column; gap: .15rem; }
 .metric-label { color: var(--muted); font-size: .72rem; }
 .metric-value { font-size: 1rem; font-weight: 700; }
+.issued-api-key { align-items: flex-start; background: #0d1720; border: 1px solid var(--warning); border-radius: .6rem; display: flex; flex-direction: column; gap: .5rem; margin: 1rem 0; padding: .8rem; }
+.issued-api-key code { overflow-wrap: anywhere; }
+.key-rotation-form { align-items: center; display: inline-flex; gap: .4rem; margin-right: .4rem; }
+.key-rotation-form input { min-width: 12rem; }
 .trend-pnl { fill: none; stroke: var(--accent); stroke-width: 2; }
 .analysis-outcome { margin-top: 1rem; }
 .prediction-model-registry {

@@ -4,6 +4,7 @@ import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
 import com.jmj.trade.broker.AccountCapacitySnapshot;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 import com.jmj.trade.broker.AccountSnapshot;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAccountView;
@@ -126,7 +127,7 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
                          order_intent_audit_logs,
                          execution_snapshots,
                          broker_orders,
-                         order_intents,
+                         real_order_daily_reservations, real_order_account_allowlist, order_intents,
                          broker_accounts,
                          event_review_commands,
                          event_reviews,
@@ -237,9 +238,7 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString());
 
-        mockMvc.perform(csrf.post("/api/v1/paper-orders/{id}/approve", orderId)
-                        .header("Idempotency-Key", "approve-oversized")
-                        .content("{\"channel\":\"WEB\"}"))
+        approveOrder(csrf, UUID.fromString(orderId), "approve-oversized", "1000", "100000")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("PROPOSED"))
                 .andExpect(jsonPath("$.riskDecisions[0].outcome").value("BLOCKED"));
@@ -370,9 +369,45 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
             UUID orderId,
             String idempotencyKey
     ) throws Exception {
+        return approveOrder(csrf, orderId, idempotencyKey, "1", "100");
+    }
+
+    private ResultActions approveOrder(
+            Csrf csrf,
+            UUID orderId,
+            String idempotencyKey,
+            String displayedQuantity,
+            String displayedMaxLoss
+    ) throws Exception {
+        var stepUpToken = "stepup-" + idempotencyKey;
+        insertStepUpToken(orderId, stepUpToken);
         return mockMvc.perform(csrf.post("/api/v1/paper-orders/{id}/approve", orderId)
                 .header("Idempotency-Key", idempotencyKey)
-                .content("{\"channel\":\"WEB\"}"));
+                .header("X-Step-Up-Token", stepUpToken)
+                .content("""
+                        {
+                          "channel":"WEB",
+                          "displayedQuantity":%s,
+                          "displayedMaxLoss":%s,
+                          "displayedCurrency":"USD",
+                          "proposalVersion":null
+                        }
+                        """.formatted(displayedQuantity, displayedMaxLoss)));
+    }
+
+    private void insertStepUpToken(UUID orderId, String rawToken) {
+        var now = Instant.now();
+        jdbc.update("""
+                INSERT INTO order_approval_step_up_tokens (
+                    token_hash, user_id, order_intent_id, issued_at, expires_at, consumed_at
+                ) VALUES (?, ?, ?, ?, ?, NULL)
+                ON CONFLICT (token_hash) DO NOTHING
+                """,
+                com.jmj.trade.order.OrderApprovalStepUpService.sha256Hex(rawToken),
+                USER_ID,
+                orderId,
+                OffsetDateTime.ofInstant(now.minusSeconds(1), ZoneOffset.UTC),
+                OffsetDateTime.ofInstant(now.plusSeconds(300), ZoneOffset.UTC));
     }
 
     private void stubAnalysisSuccess() {
@@ -539,6 +574,13 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
             calls.add("capacity:" + currency);
             return new BrokerResponse<>(
                     new AccountCapacitySnapshot(account, currency, new BigDecimal("100000"), OBSERVED_AT),
+                    metadata());
+        }
+
+        @Override
+        public BrokerResponse<SellableQuantitySnapshot> getSellableQuantity(BrokerAccountRef account, String symbol) {
+            return new BrokerResponse<>(
+                    SellableQuantitySnapshot.unknown(account, symbol, OBSERVED_AT),
                     metadata());
         }
 

@@ -1,0 +1,63 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { PredictionOperationsView } from "../app/prediction-operations-view.js";
+
+test("renders owned evaluation operations and safe API key management", () => {
+  const html = renderToStaticMarkup(createElement(PredictionOperationsView, {
+    operations: {
+      evaluationEnabled: true,
+      backlog: 2,
+      maxLagMs: 3723000,
+      measuredAt: "2026-07-31T00:00:00Z"
+    },
+    keys: [
+      {
+        id: "active-key",
+        modelVersion: "model-v1",
+        contractVersion: "contract-v1",
+        prefix: "tpik_12345678",
+        status: "ACTIVE",
+        createdAt: "2026-07-31T00:00:00Z",
+        lastUsedAt: null,
+        revokedAt: null,
+        expiresAt: "2099-01-01T00:00:00Z"
+      },
+      {
+        id: "expired-key",
+        modelVersion: "model-v0",
+        contractVersion: "contract-v0",
+        prefix: "tpik_87654321",
+        status: "EXPIRED",
+        createdAt: "2026-01-01T00:00:00Z",
+        lastUsedAt: null,
+        revokedAt: null,
+        expiresAt: "2026-02-01T00:00:00Z"
+      }
+    ],
+    issuedKey: {
+      apiKey: "tpik_once_only_secret",
+      prefix: "tpik_once_on"
+    },
+    busy: false,
+    error: "",
+    onIssue() {},
+    onRotate() {},
+    onRevoke() {},
+    onRefresh() {},
+    onDismissKey() {}
+  }));
+
+  assert.match(html, /Prediction operations/);
+  assert.match(html, /Evaluation enabled/);
+  assert.match(html, />2</);
+  assert.match(html, /1h 2m 3s/);
+  assert.match(html, /tpik_once_only_secret/);
+  assert.match(html, /This key is shown once/);
+  assert.match(html, /tpik_12345678/);
+  assert.match(html, /EXPIRED/);
+  assert.doesNotMatch(html, /key_hash|payload/i);
+  assert.equal((html.match(/disabled=""/g) ?? []).length, 3);
+});

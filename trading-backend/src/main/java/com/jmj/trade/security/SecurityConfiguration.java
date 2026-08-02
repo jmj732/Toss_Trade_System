@@ -2,11 +2,13 @@ package com.jmj.trade.security;
 
 import com.jmj.trade.prediction.PredictionIngestionApiKeyAuthenticationFilter;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
@@ -20,7 +22,8 @@ public class SecurityConfiguration {
             HttpSecurity http,
             ObjectProvider<ClientRegistrationRepository> registrations,
             ObjectProvider<InternalOidcUserService> oidcUsers,
-            ObjectProvider<PredictionIngestionApiKeyAuthenticationFilter> apiKeyFilter
+            ObjectProvider<PredictionIngestionApiKeyAuthenticationFilter> apiKeyFilter,
+            @Value("${security.oidc.max-age:300}") String oidcMaxAge
     ) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/api/**").authenticated()
@@ -44,7 +47,12 @@ public class SecurityConfiguration {
         http.exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)));
         if (registrations.getIfAvailable() != null) {
+            var resolver = new DefaultOAuth2AuthorizationRequestResolver(
+                    registrations.getIfAvailable(), "/oauth2/authorization");
+            resolver.setAuthorizationRequestCustomizer(builder ->
+                    builder.additionalParameters(parameters -> parameters.put("max_age", oidcMaxAge)));
             http.oauth2Login(oauth2 -> oauth2
+                    .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(resolver))
                     .userInfoEndpoint(userInfo ->
                             userInfo.oidcUserService(oidcUsers.getObject())));
         }

@@ -143,7 +143,7 @@ public final class PortfolioReadService {
                        market_value_after_cost, profit_loss_amount, profit_loss_after_cost,
                        profit_loss_rate, profit_loss_rate_after_cost,
                        daily_profit_loss_amount, daily_profit_loss_rate,
-                       commission, tax, observed_at
+                       commission, tax, sellable_quantity, observed_at
                   FROM position_snapshots
                  WHERE sync_run_id = ?
                    AND user_id = ?
@@ -168,6 +168,7 @@ public final class PortfolioReadService {
                 resultSet.getBigDecimal("daily_profit_loss_rate"),
                 resultSet.getBigDecimal("commission"),
                 resultSet.getBigDecimal("tax"),
+                resultSet.getBigDecimal("sellable_quantity"),
                 instant(resultSet.getObject("observed_at", OffsetDateTime.class))
         ), runId, userId, connectionId);
     }
@@ -279,6 +280,7 @@ public final class PortfolioReadService {
             BigDecimal dailyProfitLossRate,
             BigDecimal commission,
             BigDecimal tax,
+            BigDecimal sellableQuantity,
             Instant observedAt
     ) {
     }

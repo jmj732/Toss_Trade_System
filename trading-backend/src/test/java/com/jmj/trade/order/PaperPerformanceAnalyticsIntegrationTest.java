@@ -65,7 +65,7 @@ class PaperPerformanceAnalyticsIntegrationTest extends PostgresIntegrationTest {
                          order_submission_outbox_events, order_submission_audit_logs,
                          reconciliation_checks, submission_attempts, submission_idempotency_keys,
                          order_intent_outbox_events, order_intent_audit_logs, execution_snapshots,
-                         broker_orders, order_intents, broker_accounts, broker_connections, users
+                         broker_orders, real_order_daily_reservations, real_order_account_allowlist, order_intents, broker_accounts, broker_connections, users
                 CASCADE
                 """);
         brokerAccountId = UUID.randomUUID();

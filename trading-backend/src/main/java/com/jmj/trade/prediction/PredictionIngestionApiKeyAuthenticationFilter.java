@@ -17,10 +17,10 @@ import tools.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.time.Instant;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.List;
 
 public final class PredictionIngestionApiKeyAuthenticationFilter extends OncePerRequestFilter {
@@ -62,7 +62,7 @@ public final class PredictionIngestionApiKeyAuthenticationFilter extends OncePer
             return;
         }
         var key = authenticated.get();
-        if (key.expiresAt() != null && !key.expiresAt().isAfter(Instant.now())) {
+        if (key.expired()) {
             apiKeys.recordRejection(
                     key, PredictionIngestionApiKeyService.RejectionReason.EXPIRED);
             metrics.recordRejected(PredictionIngestionApiKeyMetrics.Reason.EXPIRED);

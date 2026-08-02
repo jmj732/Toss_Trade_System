@@ -1,5 +1,6 @@
 package com.jmj.trade.notification;
 
+import com.jmj.trade.inbox.InboxLedger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -16,9 +17,11 @@ public class NotificationOutboxConfiguration {
     NotificationOutboxProcessor notificationOutboxProcessor(
             JdbcTemplate jdbcTemplate,
             PlatformTransactionManager transactionManager,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            InboxLedger inboxLedger
     ) {
-        return new NotificationOutboxProcessor(jdbcTemplate, transactionManager, objectMapper);
+        return new NotificationOutboxProcessor(
+                jdbcTemplate, transactionManager, objectMapper, inboxLedger);
     }
 
     @Configuration(proxyBeanMethods = false)

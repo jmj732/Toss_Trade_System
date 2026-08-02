@@ -304,6 +304,37 @@ export function deletePredictionModelVersion(id, session, fetcher = fetch) {
     fetcher);
 }
 
+export function loadPredictionIngestionApiKeys(fetcher = fetch) {
+  return readEvent("/api/v1/prediction-ingestion-api-keys", fetcher);
+}
+
+export function issuePredictionIngestionApiKey(command, session, fetcher = fetch) {
+  return brokerCommand(
+    "/api/v1/prediction-ingestion-api-keys", "POST", session, command, fetcher);
+}
+
+export function rotatePredictionIngestionApiKey(id, command, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/prediction-ingestion-api-keys/${encodeURIComponent(id)}/rotate`,
+    "POST",
+    session,
+    command,
+    fetcher);
+}
+
+export function revokePredictionIngestionApiKey(id, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/prediction-ingestion-api-keys/${encodeURIComponent(id)}`,
+    "DELETE",
+    session,
+    null,
+    fetcher);
+}
+
+export function loadPredictionOperations(fetcher = fetch) {
+  return readEvent("/api/v1/prediction-operations", fetcher);
+}
+
 function notificationPath(suffix = "") {
   return `/api/v1/notifications${suffix}`;
 }

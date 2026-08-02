@@ -5,6 +5,7 @@ import com.jmj.trade.TradingBackendApplication;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAccountView;
 import com.jmj.trade.broker.AccountCapacitySnapshot;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 import com.jmj.trade.broker.AccountSnapshot;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerCallMetadata;
@@ -27,6 +28,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -38,6 +41,7 @@ import org.testcontainers.utility.DockerImageName;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Clock;
 import java.time.Instant;
@@ -71,7 +75,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "prediction.evaluation.initial-delay=PT24H",
                 "prediction.evaluation.lock-ttl=PT10M",
                 "prediction.ingestion-api-key.rate-limit.limit=3",
-                "prediction.ingestion-api-key.rate-limit.window=PT1M"
+                "prediction.ingestion-api-key.rate-limit.window=PT1M",
+                "prediction.ingestion-api-key.cleanup.enabled=false"
         })
 @Import(AnalysisPredictionIntegrationTest.PredictionBrokerConfiguration.class)
 class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
@@ -116,6 +121,9 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
     private MeterRegistry meterRegistry;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private MockMvc mockMvc;
 
@@ -510,6 +518,33 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void batchReplayAcceptsLegacyNonCanonicalStoredSymbolWithoutChangingIt() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        jdbc.update("""
+                INSERT INTO analysis_predictions (
+                    id, user_id, broker_connection_id, symbol, currency, predicted_direction,
+                    model_version, contract_version, baseline_price, predicted_at, created_at,
+                    client_request_id
+                ) VALUES (?, ?, ?, ' aapl ', 'USD', 'UP', 'v1', '1', 100, ?, ?, 'legacy-symbol')
+                """, UUID.randomUUID(), USER_ID, connectionId, offset(T0), offset(T0));
+
+        mockMvc.perform(post(
+                        "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
+                        connectionId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(batchRequest(batchItem(
+                                "legacy-symbol", "AAPL", "USD", "UP", "v1", "1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.results[0].status").value("DUPLICATE"))
+                .andExpect(jsonPath("$.results[0].prediction.symbol").value(" aapl "));
+
+        assertCount("analysis_predictions", 1);
+        org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+    }
+
+    @Test
     void batchReportsItemFailuresAndContinues() throws Exception {
         var connectionId = insertConnection(USER_ID);
         broker.setPrice("AAPL", Currency.USD, new BigDecimal("101"));
@@ -673,6 +708,51 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void databaseTimestampsKeepApiKeyLifecycleStableWhenApplicationClockIsAhead() {
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        var ahead = Clock.fixed(Instant.now().plus(Duration.ofMinutes(5)), ZoneOffset.UTC);
+        var apiKeys = new PredictionIngestionApiKeyService(
+                jdbc,
+                new PredictionModelRegistryService(jdbc),
+                new TransactionTemplate(transactionManager),
+                new SecureRandom(),
+                ahead);
+
+        var issued = apiKeys.issue(USER_ID, new PredictionIngestionApiKeyService.IssueCommand(
+                "model-v1", "contract-v1", null));
+
+        org.assertj.core.api.Assertions.assertThat(apiKeys.markUsed(issued.id())).isTrue();
+        org.assertj.core.api.Assertions.assertThatCode(
+                () -> apiKeys.rotate(USER_ID, issued.id(), null)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void expiresDueApiKeysUsingDatabaseTimeAndKeepsFutureKeysActive() throws Exception {
+        insertActiveVersion(USER_ID, "model-v1", "contract-v1");
+        var expiredId = insertApiKey(
+                "tpik_expiredCleanup12345678901234567890",
+                Instant.now().minus(Duration.ofDays(2)),
+                Instant.now().minus(Duration.ofDays(1)));
+        var futureId = insertApiKey(
+                "tpik_futureCleanup123456789012345678901",
+                Instant.now().minus(Duration.ofDays(1)),
+                Instant.now().plus(Duration.ofDays(1)));
+        var cleanup = new PredictionIngestionApiKeyCleanup(jdbc);
+
+        org.assertj.core.api.Assertions.assertThat(cleanup.expireDue()).isOne();
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT status
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, String.class, expiredId)).isEqualTo("EXPIRED");
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT status
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, String.class, futureId)).isEqualTo("ACTIVE");
+    }
+
+    @Test
     void expiredApiKeyIsRejectedWithoutQuoteWriteOrLastUsedUpdateAndIsAudited() throws Exception {
         var connectionId = insertConnection(USER_ID);
         insertActiveVersion(USER_ID, "model-v1", "contract-v1");
@@ -681,6 +761,13 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         var keyId = insertApiKey(
                 rawKey, T0.minus(Duration.ofDays(2)), T0.minus(Duration.ofDays(1)));
         var before = rejectedCount("expired");
+        org.assertj.core.api.Assertions.assertThat(
+                new PredictionIngestionApiKeyCleanup(jdbc).expireDue()).isOne();
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
+                SELECT status
+                  FROM prediction_ingestion_api_keys
+                 WHERE id = ?
+                """, String.class, keyId)).isEqualTo("EXPIRED");
 
         mockMvc.perform(post(
                         "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
@@ -916,6 +1003,31 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 """, Boolean.class, keyId)).isTrue();
         assertCount("analysis_predictions", 0);
         org.assertj.core.api.Assertions.assertThat(broker.quoteCallCount()).isZero();
+    }
+
+    @Test
+    void readsOnlyTheCurrentUsersPredictionOperationsBacklogAndLag() throws Exception {
+        var ownConnection = insertConnection(USER_ID);
+        var otherConnection = insertConnection(OTHER_USER_ID);
+        jdbc.update("""
+                INSERT INTO analysis_predictions (
+                    id, user_id, broker_connection_id, symbol, currency, predicted_direction,
+                    model_version, contract_version, baseline_price, predicted_at, created_at
+                ) VALUES
+                    (?, ?, ?, 'AAPL', 'USD', 'UP', 'v1', '1', 100,
+                     CURRENT_TIMESTAMP - INTERVAL '2 days', CURRENT_TIMESTAMP),
+                    (?, ?, ?, 'MSFT', 'USD', 'UP', 'v1', '1', 100,
+                     CURRENT_TIMESTAMP - INTERVAL '3 days', CURRENT_TIMESTAMP)
+                """, UUID.randomUUID(), USER_ID, ownConnection,
+                UUID.randomUUID(), OTHER_USER_ID, otherConnection);
+
+        mockMvc.perform(get("/api/v1/prediction-operations")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.evaluationEnabled").value(true))
+                .andExpect(jsonPath("$.backlog").value(1))
+                .andExpect(jsonPath("$.maxLagMs").isNumber())
+                .andExpect(jsonPath("$.measuredAt").isNotEmpty());
     }
 
     @Test
@@ -1741,6 +1853,11 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 BrokerAccountRef account, Currency currency
         ) {
             throw new AssertionError("prediction tracking must not read live buying power");
+        }
+
+        @Override
+        public BrokerResponse<SellableQuantitySnapshot> getSellableQuantity(BrokerAccountRef account, String symbol) {
+            throw new AssertionError("prediction tracking must not read live sellable quantity");
         }
     }
 }

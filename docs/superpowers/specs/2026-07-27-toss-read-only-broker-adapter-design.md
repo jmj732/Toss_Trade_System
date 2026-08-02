@@ -1,8 +1,8 @@
-# Toss OpenAPI 1.2.4 Read-Only Broker Adapter Design
+# Toss OpenAPI 1.2.5 Read-Only Broker Adapter Design
 
 ## 1. Goal
 
-Implement a multi-user, read-only `BrokerAdapter` for Toss Securities OpenAPI 1.2.4.
+Implement a multi-user, read-only `BrokerAdapter` for Toss Securities OpenAPI 1.2.5.
 
 The adapter supports:
 
@@ -25,7 +25,7 @@ Source of truth:
 - <https://developers.tossinvest.com/docs>
 - <https://openapi.tossinvest.com/openapi-docs/latest/openapi.json>
 
-Pinned API version: `1.2.4`.
+Pinned API version: `1.2.5`.
 
 Verified endpoints:
 
@@ -370,7 +370,7 @@ It may not contain credentials, access tokens, full account numbers, raw holding
 
 ### WireMock contract tests
 
-Pin fixtures to OpenAPI 1.2.4 examples and verify:
+Pin fixtures to OpenAPI 1.2.5 examples and verify:
 
 - token request content type and form fields
 - Bearer header
@@ -453,9 +453,9 @@ Tests explicitly provide their test credential provider Bean.
 
 ## 12. Acceptance Criteria
 
-- OpenAPI version `1.2.4` is pinned in code and contract tests.
+- OpenAPI version `1.2.5` is pinned in code and contract tests.
 - A checked-in version assertion fails if the official contract fixture's
-  `info.version` differs from `1.2.4`; tests do not silently follow `latest`.
+  `info.version` differs from `1.2.5`; tests do not silently follow `latest`.
 - The production adapter exposes no order mutation capability.
 - Tokens are isolated by `brokerConnectionId`.
 - Concurrent cache misses issue one token per connection.

@@ -254,7 +254,9 @@ public final class AnalysisPredictionService {
         var command = batchCommand.command();
         if (command != null
                 && prediction.connectionId().equals(connectionId)
-                && Objects.equals(prediction.symbol(), command.symbol())
+                && Objects.equals(
+                        prediction.symbol().trim().toUpperCase(Locale.ROOT),
+                        command.symbol())
                 && prediction.currency() == command.currency()
                 && prediction.predictedDirection() == command.predictedDirection()
                 && Objects.equals(prediction.modelVersion(), command.modelVersion())

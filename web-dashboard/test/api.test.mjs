@@ -9,6 +9,7 @@ import {
   createEvent,
   createSingleFlight,
   deletePredictionModelVersion,
+  issuePredictionIngestionApiKey,
   deleteBrokerConnection,
   deprecatePredictionModelVersion,
   listEvents,
@@ -19,6 +20,8 @@ import {
   loadPaperPerformance,
   loadPortfolioHistory,
   loadPredictionModelVersions,
+  loadPredictionIngestionApiKeys,
+  loadPredictionOperations,
   loadRiskPolicy,
   loadRiskPolicyHistory,
   loadSession,
@@ -27,6 +30,8 @@ import {
   markNotificationRead,
   reanalyzeEvent,
   registerPredictionModelVersion,
+  revokePredictionIngestionApiKey,
+  rotatePredictionIngestionApiKey,
   replaceBrokerCredentials,
   reviewEvent,
   syncPortfolio,
@@ -393,6 +398,53 @@ test("manages prediction model versions with same-origin credentials and CSRF", 
       credentials: "same-origin",
       headers: { "X-CSRF-TOKEN": "csrf" }
     }]
+  ]);
+});
+
+test("manages prediction ingestion API keys and reads operations with session CSRF", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    if (options.method === "DELETE") {
+      return new Response(null, { status: 204 });
+    }
+    return json(url.endsWith("prediction-operations")
+      ? { evaluationEnabled: true, backlog: 2, maxLagMs: 3000 }
+      : []);
+  };
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+  const command = {
+    modelVersion: "model-v1",
+    contractVersion: "contract-v1",
+    expiresAt: "2099-01-01T00:00:00.000Z"
+  };
+
+  await loadPredictionIngestionApiKeys(fetcher);
+  await issuePredictionIngestionApiKey(command, session, fetcher);
+  await rotatePredictionIngestionApiKey("key/1", { expiresAt: null }, session, fetcher);
+  await revokePredictionIngestionApiKey("key/1", session, fetcher);
+  await loadPredictionOperations(fetcher);
+
+  assert.deepEqual(calls, [
+    ["/api/v1/prediction-ingestion-api-keys", { credentials: "same-origin" }],
+    ["/api/v1/prediction-ingestion-api-keys", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-CSRF-TOKEN": "csrf", "content-type": "application/json" },
+      body: JSON.stringify(command)
+    }],
+    ["/api/v1/prediction-ingestion-api-keys/key%2F1/rotate", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "X-CSRF-TOKEN": "csrf", "content-type": "application/json" },
+      body: JSON.stringify({ expiresAt: null })
+    }],
+    ["/api/v1/prediction-ingestion-api-keys/key%2F1", {
+      method: "DELETE",
+      credentials: "same-origin",
+      headers: { "X-CSRF-TOKEN": "csrf" }
+    }],
+    ["/api/v1/prediction-operations", { credentials: "same-origin" }]
   ]);
 });
 

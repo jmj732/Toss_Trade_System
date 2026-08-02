@@ -32,7 +32,7 @@ class PredictionIngestionApiKeySchemaTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void v23StoresImmutableExpiryAndAppendOnlySafeRejectionAudit() throws SQLException {
+    void v24AddsImmutableExpiredLifecycleAndKeepsRejectionAuditAppendOnly() throws SQLException {
         flyway.migrate();
         var userId = UUID.randomUUID();
         execute("INSERT INTO users (id) VALUES (?)", userId);
@@ -47,9 +47,9 @@ class PredictionIngestionApiKeySchemaTest extends PostgresIntegrationTest {
                     id, user_id, model_version, contract_version, key_hash, key_prefix,
                     status, created_at, expires_at
                 ) VALUES (?, ?, 'model-v1', 'contract-v1', ?, 'tpik_12345678', 'ACTIVE', ?, ?)
-                """, firstId, userId, "a".repeat(64), NOW, NOW.plusDays(30));
+                """, firstId, userId, "a".repeat(64), NOW, NOW.plusHours(1));
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("23");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("31");
         assertThatThrownBy(() -> execute("""
                 UPDATE prediction_ingestion_api_keys
                    SET expires_at = ?
@@ -82,9 +82,27 @@ class PredictionIngestionApiKeySchemaTest extends PostgresIntegrationTest {
                 .doesNotContain("key_hash", "api_key", "payload");
         assertThatCode(() -> execute("""
                 UPDATE prediction_ingestion_api_keys
+                   SET status = 'EXPIRED'
+                 WHERE id = ?
+                """, firstId)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> execute("""
+                UPDATE prediction_ingestion_api_keys
+                   SET status = 'ACTIVE'
+                 WHERE id = ?
+                """, firstId)).isInstanceOf(SQLException.class);
+
+        var revokedId = UUID.randomUUID();
+        execute("""
+                INSERT INTO prediction_ingestion_api_keys (
+                    id, user_id, model_version, contract_version, key_hash, key_prefix,
+                    status, created_at, expires_at
+                ) VALUES (?, ?, 'model-v1', 'contract-v1', ?, 'tpik_87654321', 'ACTIVE', ?, ?)
+                """, revokedId, userId, "c".repeat(64), NOW, NOW.plusDays(30));
+        assertThatCode(() -> execute("""
+                UPDATE prediction_ingestion_api_keys
                    SET status = 'REVOKED', revoked_at = ?
                  WHERE id = ?
-                """, NOW.plusSeconds(1), firstId)).doesNotThrowAnyException();
+                """, NOW.plusSeconds(1), revokedId)).doesNotThrowAnyException();
         assertThatThrownBy(() -> execute("""
                 INSERT INTO prediction_ingestion_api_keys (
                     id, user_id, model_version, contract_version, key_hash, key_prefix,
@@ -96,7 +114,7 @@ class PredictionIngestionApiKeySchemaTest extends PostgresIntegrationTest {
                 UPDATE prediction_ingestion_api_keys
                    SET status = 'ACTIVE', revoked_at = NULL
                  WHERE id = ?
-                """, firstId)).isInstanceOf(SQLException.class);
+                """, revokedId)).isInstanceOf(SQLException.class);
     }
 
     private java.util.List<String> columnNames(String table) throws SQLException {

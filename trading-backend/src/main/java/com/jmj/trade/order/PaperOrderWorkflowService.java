@@ -8,6 +8,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -28,6 +29,7 @@ public final class PaperOrderWorkflowService {
     private final OrderIntentRepository intentRepository;
     private final OrderIntentTransitionService transitionService;
     private final PreTradeRiskEngine riskEngine;
+    private final OrderApprovalStepUpService stepUp;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
 
@@ -36,6 +38,7 @@ public final class PaperOrderWorkflowService {
             OrderIntentRepository intentRepository,
             OrderIntentTransitionService transitionService,
             PreTradeRiskEngine riskEngine,
+            OrderApprovalStepUpService stepUp,
             JdbcTemplate jdbc,
             PlatformTransactionManager transactionManager
     ) {
@@ -43,6 +46,7 @@ public final class PaperOrderWorkflowService {
         this.intentRepository = Objects.requireNonNull(intentRepository, "intentRepository");
         this.transitionService = Objects.requireNonNull(transitionService, "transitionService");
         this.riskEngine = Objects.requireNonNull(riskEngine, "riskEngine");
+        this.stepUp = Objects.requireNonNull(stepUp, "stepUp");
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transactions = new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
     }
@@ -86,7 +90,16 @@ public final class PaperOrderWorkflowService {
         }));
     }
 
-    public OrderView approve(UUID userId, UUID orderIntentId, String idempotencyKey, Channel channel) {
+    /**
+     * 주문 승인 (플랜 원장 E2). 화면 표시값 대조와 step-up 재인증을 요구한다.
+     *
+     * <p>표시값 불일치는 409(서버 계산값 동봉)로, step-up 실패는 401 로 거절하며 어느 쪽도 intent
+     * 상태를 바꾸지 않는다. 이중 승인은 기존 {@code Idempotency-Key} 경로와 PROPOSED compare-and-set
+     * 으로 단일 intent 만 만든다. 승인은 즉시 제출 의사이며 grace period 는 없다(SPEC:966).
+     */
+    public OrderView approve(UUID userId, UUID orderIntentId, String idempotencyKey, ApproveCommand command) {
+        requireApproveCommand(command);
+        var channel = command.channel();
         requireUserAndKey(userId, idempotencyKey, channel);
         requireId(orderIntentId);
         var fingerprint = actionFingerprint(Action.APPROVE, orderIntentId);
@@ -100,6 +113,8 @@ public final class PaperOrderWorkflowService {
             throw PaperOrderWorkflowException.conflict();
         }
         var price = serverPrice(target);
+        // 표시값 대조: 서버 재계산값과 다르면 부작용 없이 409(서버 계산값 동봉).
+        requireDisplayMatches(command, displaySnapshot(target, price));
 
         return Objects.requireNonNull(transactions.execute(status -> {
             lockConnection(userId, target.connectionId());
@@ -117,6 +132,9 @@ public final class PaperOrderWorkflowService {
             if (intent.getStatus() != OrderIntentStatus.PROPOSED) {
                 throw PaperOrderWorkflowException.conflict();
             }
+            // step-up 재인증 확인은 상태 전이 직전, 트랜잭션 안에서 단일 사용 소비. 승인이 롤백되면
+            // 토큰 소비도 함께 롤백돼 재시도에서 다시 쓸 수 있다.
+            stepUp.consume(userId, orderIntentId, command.stepUpToken());
             var now = Instant.now();
             var actor = actor(channel, userId);
             var approval = riskEngine.approve(new PreTradeRiskEngine.ApprovalCommand(
@@ -139,6 +157,66 @@ public final class PaperOrderWorkflowService {
                                 now.plusNanos(1),
                                 actor));
             }
+            return read(userId, orderIntentId);
+        }));
+    }
+
+    /**
+     * 승인 대상에 바인딩된 step-up 재인증 토큰을 발급한다. 최근 OIDC 재인증({@code authTime})만이
+     * 근거이며, 대상은 사용자 소유의 PROPOSED intent 여야 한다.
+     */
+    public OrderApprovalStepUpService.IssuedStepUp issueStepUp(
+            UUID userId,
+            UUID orderIntentId,
+            Instant authTime
+    ) {
+        requireId(userId);
+        requireId(orderIntentId);
+        var target = quoteTarget(userId, orderIntentId);
+        if (target.status() != OrderIntentStatus.PROPOSED) {
+            throw PaperOrderWorkflowException.conflict();
+        }
+        return stepUp.issue(userId, orderIntentId, authTime);
+    }
+
+    /**
+     * 승인 철회 (플랜 원장 E2, SPEC:966). 제출(SUBMITTING) 전이 전, 즉 PROPOSED 에서만
+     * compare-and-set(행 잠금 + 상태 대조 + 전이)으로 성공한다. 경합에서 지면 409 로 실패하며
+     * 성공을 보장하지 않는다. 이후 단계는 브로커 취소 절차를 쓴다.
+     */
+    public OrderView withdraw(UUID userId, UUID orderIntentId, String idempotencyKey, Channel channel) {
+        requireUserAndKey(userId, idempotencyKey, channel);
+        requireId(orderIntentId);
+        var fingerprint = actionFingerprint(Action.CANCEL, orderIntentId);
+        var replay = replay(userId, idempotencyKey, Action.CANCEL, orderIntentId, channel, fingerprint);
+        if (replay.isPresent()) {
+            return read(userId, replay.get());
+        }
+
+        return Objects.requireNonNull(transactions.execute(status -> {
+            var target = quoteTarget(userId, orderIntentId);
+            lockConnection(userId, target.connectionId());
+            var receipt = record(
+                    userId,
+                    idempotencyKey,
+                    orderIntentId,
+                    Action.CANCEL,
+                    channel,
+                    fingerprint);
+            if (!receipt.inserted()) {
+                return read(userId, receipt.orderIntentId());
+            }
+            var intent = lockedIntent(userId, target.connectionId(), orderIntentId);
+            if (intent.getStatus() != OrderIntentStatus.PROPOSED) {
+                throw PaperOrderWorkflowException.conflict();
+            }
+            transitionService.terminate(
+                    orderIntentId,
+                    OrderIntentStatus.CANCELED,
+                    "USER_WITHDRAWN",
+                    Instant.now(),
+                    BigDecimal.ZERO,
+                    actor(channel, userId));
             return read(userId, orderIntentId);
         }));
     }
@@ -300,7 +378,7 @@ public final class PaperOrderWorkflowService {
     private QuoteTarget quoteTarget(UUID userId, UUID orderIntentId) {
         return jdbc.query("""
                 SELECT intent.broker_connection_id, intent.side, intent.order_type, intent.symbol,
-                       intent.limit_price, intent.trading_currency, intent.status
+                       intent.quantity, intent.limit_price, intent.trading_currency, intent.status
                   FROM order_intents intent
                   JOIN broker_connections connection
                     ON connection.id = intent.broker_connection_id
@@ -313,6 +391,7 @@ public final class PaperOrderWorkflowService {
                 OrderSide.valueOf(resultSet.getString("side")),
                 OrderType.valueOf(resultSet.getString("order_type")),
                 resultSet.getString("symbol"),
+                resultSet.getBigDecimal("quantity"),
                 resultSet.getBigDecimal("limit_price"),
                 Currency.valueOf(resultSet.getString("trading_currency")),
                 OrderIntentStatus.valueOf(resultSet.getString("status"))), orderIntentId, userId)
@@ -435,6 +514,47 @@ public final class PaperOrderWorkflowService {
         }
     }
 
+    private static void requireApproveCommand(ApproveCommand command) {
+        // 표시값 누락 시 승인 거절. 기본값으로 채우지 않는다(SPEC:966). step-up 토큰 누락은
+        // consume 단계에서 401 로 처리한다.
+        if (command == null
+                || command.displayedQuantity() == null
+                || command.displayedMaxLoss() == null
+                || command.displayedCurrency() == null) {
+            throw PaperOrderWorkflowException.validationFailed();
+        }
+    }
+
+    private static PaperOrderWorkflowException.DisplaySnapshot displaySnapshot(
+            QuoteTarget target,
+            BigDecimal price
+    ) {
+        // 현재 최대손실 = 주문 명목가(체결가 × 수량). E1(TradeProposal) 도입 시 정교화한다.
+        return new PaperOrderWorkflowException.DisplaySnapshot(
+                target.quantity(),
+                price.multiply(target.quantity()),
+                target.currency());
+    }
+
+    private static void requireDisplayMatches(
+            ApproveCommand command,
+            PaperOrderWorkflowException.DisplaySnapshot server
+    ) {
+        // 비교 기준: 통화는 enum 정확 일치. 수량은 값 동등(BigDecimal.compareTo, 스케일 무시).
+        // 금액은 통화 최소단위(USD 소수 2자리, KRW 0자리)로 HALF_UP 반올림 후 정확 일치.
+        // 허용 오차(tolerance) 밴드는 두지 않는다.
+        if (command.displayedCurrency() != server.currency()
+                || command.displayedQuantity().compareTo(server.quantity()) != 0
+                || scaledAmount(command.displayedMaxLoss(), server.currency())
+                        .compareTo(scaledAmount(server.maxLoss(), server.currency())) != 0) {
+            throw PaperOrderWorkflowException.displayMismatch(server);
+        }
+    }
+
+    private static BigDecimal scaledAmount(BigDecimal value, Currency currency) {
+        return value.setScale(currency == Currency.KRW ? 0 : 2, RoundingMode.HALF_UP);
+    }
+
     private static void requireUserAndKey(UUID userId, String key, Channel channel) {
         requireId(userId);
         if (key == null || !IDEMPOTENCY_KEY.matcher(key).matches() || channel == null) {
@@ -486,6 +606,17 @@ public final class PaperOrderWorkflowService {
         PROPOSE,
         APPROVE,
         CANCEL
+    }
+
+    public record ApproveCommand(
+            Channel channel,
+            BigDecimal displayedQuantity,
+            BigDecimal displayedMaxLoss,
+            Currency displayedCurrency,
+            String stepUpToken,
+            // E1(TradeProposal) 도입 시 승인 대상 버전 대조에 쓰일 seam. 현재는 미사용.
+            Long proposalVersion
+    ) {
     }
 
     public record ProposeCommand(
@@ -567,6 +698,7 @@ public final class PaperOrderWorkflowService {
             OrderSide side,
             OrderType type,
             String symbol,
+            BigDecimal quantity,
             BigDecimal limitPrice,
             Currency currency,
             OrderIntentStatus status

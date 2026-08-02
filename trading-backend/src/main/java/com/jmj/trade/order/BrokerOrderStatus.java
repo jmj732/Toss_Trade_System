@@ -6,6 +6,8 @@ public enum BrokerOrderStatus {
     FILLED,
     CANCELED,
     REJECTED,
+    CANCEL_REJECTED,
+    REPLACE_REJECTED,
     REPLACED,
     CANCELING,
     REPLACING

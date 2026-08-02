@@ -1,10 +1,17 @@
 package com.jmj.trade.broker.toss;
 
 import com.jmj.trade.broker.BrokerCallMetadata;
+import com.jmj.trade.broker.BrokerAccountRef;
+import com.jmj.trade.broker.BrokerOrderGroup;
+import com.jmj.trade.broker.BrokerOrderModification;
+import com.jmj.trade.broker.BrokerOrderRequest;
+import com.jmj.trade.broker.BrokerOrderSide;
+import com.jmj.trade.broker.BrokerOrderType;
 import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.RateLimitSnapshot;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
@@ -77,6 +84,91 @@ final class TossApiClient {
                 .map(TossApiDtos.BuyingPowerEnvelope::result);
     }
 
+    TossApiResponse<TossApiDtos.OrderResponse> createOrder(
+            BrokerAccountRef account,
+            BrokerOrderRequest request,
+            String clientOrderId) {
+        Objects.requireNonNull(account, "account");
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(clientOrderId, "clientOrderId");
+        return writeOnce(account.brokerConnectionId(), token -> restClient.post()
+                .uri("/api/v1/orders")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .header("X-Tossinvest-Account", account.brokerAccountId())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(jsonBody(createRequest(request, clientOrderId)))
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.OrderResponseEnvelope.class)
+                .map(TossApiDtos.OrderResponseEnvelope::result);
+    }
+
+    TossApiResponse<TossApiDtos.PaginatedOrderResponse> getOrders(
+            BrokerAccountRef account,
+            BrokerOrderGroup group,
+            String cursor) {
+        Objects.requireNonNull(account, "account");
+        Objects.requireNonNull(group, "group");
+        return withTokenRefresh(account.brokerConnectionId(), token -> restClient.get()
+                .uri(builder -> {
+                    var uri = builder.path("/api/v1/orders")
+                            .queryParam("status", group.name());
+                    if (cursor != null) {
+                        uri.queryParam("cursor", cursor);
+                    }
+                    if (group == BrokerOrderGroup.CLOSED) {
+                        uri.queryParam("limit", 100);
+                    }
+                    return uri.build();
+                })
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .header("X-Tossinvest-Account", account.brokerAccountId())
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.PaginatedOrderResponseEnvelope.class)
+                .map(TossApiDtos.PaginatedOrderResponseEnvelope::result);
+    }
+
+    TossApiResponse<TossApiDtos.Order> getOrder(BrokerAccountRef account, String brokerOrderId) {
+        Objects.requireNonNull(account, "account");
+        return withTokenRefresh(account.brokerConnectionId(), token -> restClient.get()
+                .uri("/api/v1/orders/{orderId}", brokerOrderId)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .header("X-Tossinvest-Account", account.brokerAccountId())
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.OrderEnvelope.class)
+                .map(TossApiDtos.OrderEnvelope::result);
+    }
+
+    TossApiResponse<TossApiDtos.OrderOperationResponse> modifyOrder(
+            BrokerAccountRef account,
+            BrokerOrderModification modification) {
+        Objects.requireNonNull(account, "account");
+        Objects.requireNonNull(modification, "modification");
+        return writeOnce(account.brokerConnectionId(), token -> restClient.post()
+                .uri("/api/v1/orders/{orderId}/modify", modification.brokerOrderId())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .header("X-Tossinvest-Account", account.brokerAccountId())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(jsonBody(modifyRequest(modification)))
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.OrderOperationResponseEnvelope.class)
+                .map(TossApiDtos.OrderOperationResponseEnvelope::result);
+    }
+
+    TossApiResponse<TossApiDtos.OrderOperationResponse> cancelOrder(
+            BrokerAccountRef account,
+            String brokerOrderId) {
+        Objects.requireNonNull(account, "account");
+        return writeOnce(account.brokerConnectionId(), token -> restClient.post()
+                .uri("/api/v1/orders/{orderId}/cancel", brokerOrderId)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .header("X-Tossinvest-Account", account.brokerAccountId())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{}")
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.OrderOperationResponseEnvelope.class)
+                .map(TossApiDtos.OrderOperationResponseEnvelope::result);
+    }
+
     private RestClient.RequestHeadersSpec<?> get(String path, String accessToken) {
         return restClient.get()
                 .uri(path)
@@ -100,7 +192,52 @@ final class TossApiClient {
         }
     }
 
-    private <T> TossApiResponse<T> call(TossReadRequest request, TossAccessToken token, Class<T> responseType) {
+    private <T> TossApiResponse<T> writeOnce(
+            UUID brokerConnectionId,
+            TossWriteRequest request,
+            Class<T> responseType) {
+        Objects.requireNonNull(brokerConnectionId, "brokerConnectionId");
+        // 주문 write는 401 token refresh를 포함한 재전송조차 하지 않는다. 응답 유실 시
+        // 외부 주문 존재 여부가 불명확하므로 호출자는 UNKNOWN/reconciliation으로 간다.
+        var token = tokenManager.getAccessToken(brokerConnectionId);
+        return call(request, token, responseType);
+    }
+
+    private TossApiDtos.OrderCreateRequest createRequest(BrokerOrderRequest request, String clientOrderId) {
+        return new TossApiDtos.OrderCreateRequest(
+                clientOrderId,
+                request.symbol(),
+                request.side() == BrokerOrderSide.BUY ? "BUY" : "SELL",
+                request.type() == BrokerOrderType.LIMIT ? "LIMIT" : "MARKET",
+                "DAY",
+                request.quantity().stripTrailingZeros().toPlainString(),
+                request.limitPrice() == null ? null : request.limitPrice().stripTrailingZeros().toPlainString(),
+                false);
+    }
+
+    private TossApiDtos.OrderModifyRequest modifyRequest(BrokerOrderModification modification) {
+        if (modification.changesQuantity()) {
+            throw new IllegalArgumentException("Toss US order quantity modification is not supported");
+        }
+        if (modification.orderType() == null) {
+            throw new IllegalArgumentException("order type is required for Toss order modification");
+        }
+        return new TossApiDtos.OrderModifyRequest(
+                modification.orderType().name(),
+                null,
+                modification.newLimitPrice().stripTrailingZeros().toPlainString(),
+                false);
+    }
+
+    private String jsonBody(Object body) {
+        try {
+            return objectMapper.writeValueAsString(body);
+        } catch (JacksonException exception) {
+            throw errors.contractError(200);
+        }
+    }
+
+    private <T> TossApiResponse<T> call(TossRequest request, TossAccessToken token, Class<T> responseType) {
         try {
             var response = request.execute(token.value());
             var metadata = metadata(response.getHeaders());
@@ -140,6 +277,18 @@ final class TossApiClient {
             return typed.result();
         }
         if (envelope instanceof TossApiDtos.BuyingPowerEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.OrderResponseEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.OrderOperationResponseEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.PaginatedOrderResponseEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.OrderEnvelope typed) {
             return typed.result();
         }
         return null;
@@ -220,8 +369,16 @@ final class TossApiClient {
     }
 
     @FunctionalInterface
-    private interface TossReadRequest {
+    private interface TossRequest {
         ResponseEntity<String> execute(String accessToken);
+    }
+
+    @FunctionalInterface
+    private interface TossReadRequest extends TossRequest {
+    }
+
+    @FunctionalInterface
+    private interface TossWriteRequest extends TossRequest {
     }
 }
 

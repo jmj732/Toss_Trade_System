@@ -13,6 +13,10 @@ import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.MoneyByCurrency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
+import com.jmj.trade.broker.BrokerOrderLifecycle;
+import com.jmj.trade.broker.BrokerOrderSide;
+import com.jmj.trade.broker.BrokerOrderType;
+import com.jmj.trade.broker.BrokerOrderView;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -109,6 +113,56 @@ final class TossResponseMapper {
 
     BrokerConnectionRef requireToss(BrokerConnectionRef connection) {
         return Objects.requireNonNull(connection, "connection");
+    }
+
+    BrokerOrderView order(TossApiDtos.Order order) {
+        if (order == null || order.orderId() == null || order.orderId().isBlank()
+                || order.execution() == null) {
+            throw contract();
+        }
+        return new BrokerOrderView(
+                order.orderId(),
+                null,
+                orderSide(order.side()),
+                orderType(order.orderType()),
+                required(order.symbol()),
+                nonNegativeDecimal(order.quantity()),
+                nonNegativeDecimal(order.execution().filledQuantity()),
+                order.price() == null ? null : nonNegativeDecimal(order.price()),
+                currency(order.currency()),
+                lifecycle(order.status()));
+    }
+
+    private BrokerOrderSide orderSide(String raw) {
+        try {
+            return BrokerOrderSide.valueOf(required(raw));
+        } catch (RuntimeException exception) {
+            throw contract();
+        }
+    }
+
+    private BrokerOrderType orderType(String raw) {
+        try {
+            return BrokerOrderType.valueOf(required(raw));
+        } catch (RuntimeException exception) {
+            throw contract();
+        }
+    }
+
+    private BrokerOrderLifecycle lifecycle(String raw) {
+        return switch (required(raw)) {
+            case "PENDING" -> BrokerOrderLifecycle.PENDING;
+            case "PENDING_CANCEL" -> BrokerOrderLifecycle.CANCELING;
+            case "PENDING_REPLACE" -> BrokerOrderLifecycle.REPLACING;
+            case "PARTIAL_FILLED" -> BrokerOrderLifecycle.PARTIALLY_FILLED;
+            case "FILLED" -> BrokerOrderLifecycle.FILLED;
+            case "CANCELED" -> BrokerOrderLifecycle.CANCELED;
+            case "REJECTED" -> BrokerOrderLifecycle.REJECTED;
+            case "CANCEL_REJECTED" -> BrokerOrderLifecycle.CANCEL_REJECTED;
+            case "REPLACE_REJECTED" -> BrokerOrderLifecycle.REPLACE_REJECTED;
+            case "REPLACED" -> BrokerOrderLifecycle.REPLACED;
+            default -> throw contract();
+        };
     }
 
     BrokerAccountRef requireToss(BrokerAccountRef account) {

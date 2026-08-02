@@ -25,6 +25,7 @@ public class PreTradeRiskEngine {
     private final OrderIntentTransitionService transitionService;
     private final JdbcTemplate jdbc;
     private final RiskPolicyService riskPolicyService;
+    private final List<PreSubmitRevalidationCheck> preSubmitChecks;
 
     public PreTradeRiskEngine(
             PortfolioReadService portfolioReadService,
@@ -32,7 +33,8 @@ public class PreTradeRiskEngine {
             OrderIntentRepository intentRepository,
             OrderIntentTransitionService transitionService,
             JdbcTemplate jdbc,
-            RiskPolicyService riskPolicyService
+            RiskPolicyService riskPolicyService,
+            List<PreSubmitRevalidationCheck> preSubmitChecks
     ) {
         this.portfolioReadService = Objects.requireNonNull(portfolioReadService, "portfolioReadService");
         this.paperTradingBroker = Objects.requireNonNull(paperTradingBroker, "paperTradingBroker");
@@ -40,14 +42,24 @@ public class PreTradeRiskEngine {
         this.transitionService = Objects.requireNonNull(transitionService, "transitionService");
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.riskPolicyService = Objects.requireNonNull(riskPolicyService, "riskPolicyService");
+        this.preSubmitChecks = List.copyOf(Objects.requireNonNull(preSubmitChecks, "preSubmitChecks"));
     }
 
     @Transactional
     public Decision approve(ApprovalCommand command) {
+        return approve(command, OrderExecutionMode.PAPER);
+    }
+
+    @Transactional
+    public Decision approveLive(ApprovalCommand command) {
+        return approve(command, OrderExecutionMode.LIVE);
+    }
+
+    private Decision approve(ApprovalCommand command, OrderExecutionMode expectedMode) {
         requireApprovalCommand(command);
         lockConnection(command.userId(), command.connectionId());
         var intent = lockedIntent(command.orderIntentId(), command.userId(), command.connectionId());
-        requirePaperIntent(intent);
+        requireCompleteIntent(intent, expectedMode);
         if (intent.getStatus() != OrderIntentStatus.PROPOSED) {
             throw new IllegalStateException("risk approval requires PROPOSED intent");
         }
@@ -80,7 +92,7 @@ public class PreTradeRiskEngine {
         }
         lockConnection(userId, connectionId);
         var intent = lockedIntent(command.orderIntentId(), userId, connectionId);
-        requirePaperIntent(intent);
+        requireCompleteIntent(intent, OrderExecutionMode.PAPER);
         if (intent.getStatus() != OrderIntentStatus.APPROVED) {
             throw new IllegalStateException("final risk validation requires APPROVED intent");
         }
@@ -112,6 +124,48 @@ public class PreTradeRiskEngine {
 
         transitionService.markSubmissionPending(intent.getId(), command.actor());
         return new SubmissionResult(decision, paperTradingBroker.submit(command));
+    }
+
+    @Transactional
+    public LiveSubmission submitLive(UUID userId, UUID connectionId, UUID orderIntentId,
+                                     BigDecimal referencePrice, Instant occurredAt, String actor) {
+        requireId(userId, "userId");
+        requireId(connectionId, "connectionId");
+        requireId(orderIntentId, "orderIntentId");
+        positive(referencePrice, "referencePrice");
+        Objects.requireNonNull(occurredAt, "occurredAt");
+        if (actor == null || actor.isBlank()) {
+            throw new IllegalArgumentException("actor is required");
+        }
+        lockConnection(userId, connectionId);
+        var intent = lockedIntent(orderIntentId, userId, connectionId);
+        requireCompleteIntent(intent, OrderExecutionMode.LIVE);
+        if (intent.getStatus() != OrderIntentStatus.APPROVED) {
+            throw new IllegalStateException("live dispatch requires APPROVED intent");
+        }
+        if (!hasApprovedDecision(userId, connectionId, intent.getId())) {
+            throw new IllegalStateException("approved pre-trade risk decision is required");
+        }
+        transitionService.startRevalidation(intent.getId(), actor);
+        var portfolio = portfolioReadService.read(userId, connectionId);
+        var decision = evaluate(Phase.FINAL, userId, connectionId, intent, referencePrice, occurredAt, portfolio);
+        store(decision, userId, connectionId, intent.getId());
+        if (!decision.approved()) {
+            transitionService.terminate(intent.getId(), OrderIntentStatus.BLOCKED,
+                    decision.reasons().getFirst().name(), occurredAt, BigDecimal.ZERO, actor);
+        } else {
+            transitionService.markSubmissionPending(intent.getId(), actor);
+        }
+        return new LiveSubmission(
+                decision,
+                intent.getId(),
+                intent.getBrokerAccountId(),
+                intent.getSide(),
+                intent.getType(),
+                intent.getSymbol(),
+                intent.getQuantity(),
+                intent.getLimitPrice(),
+                intent.getTradingCurrency());
     }
 
     private Decision evaluate(
@@ -152,6 +206,10 @@ public class PreTradeRiskEngine {
                     orderAmount,
                     policy.maxConcentration(),
                     reasons);
+        }
+
+        if (phase == Phase.FINAL) {
+            runPreSubmitRevalidation(userId, connectionId, intent, orderAmount, portfolio, reasons);
         }
 
         return new Decision(
@@ -205,6 +263,46 @@ public class PreTradeRiskEngine {
                 .compareTo(maxConcentration) > 0) {
             reasons.add(Reason.CONCENTRATION_EXCEEDED);
         }
+    }
+
+    private void runPreSubmitRevalidation(
+            UUID userId,
+            UUID connectionId,
+            OrderIntent intent,
+            BigDecimal orderAmount,
+            PortfolioReadService.PortfolioView portfolio,
+            List<Reason> reasons
+    ) {
+        var context = new PreSubmitContext(
+                userId,
+                connectionId,
+                intent.getUserId(),
+                intent.getBrokerConnectionId(),
+                intent.getSide(),
+                intent.getSymbol(),
+                intent.getQuantity(),
+                intent.getTradingCurrency(),
+                orderAmount,
+                portfolio,
+                sameSymbolOpenOrderExists(connectionId, intent.getSymbol(), intent.getId()));
+        for (var check : preSubmitChecks) {
+            check.evaluate(context).ifPresent(reasons::add);
+        }
+    }
+
+    private boolean sameSymbolOpenOrderExists(UUID connectionId, String symbol, UUID excludeIntentId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1
+                      FROM order_intents
+                     WHERE broker_connection_id = ?
+                       AND symbol = ?
+                       AND id <> ?
+                       AND status IN (
+                           'SUBMISSION_PENDING', 'ACTIVE',
+                           'RECONCILIATION_REQUIRED', 'MANUAL_REVIEW_REQUIRED')
+                )
+                """, Boolean.class, connectionId, symbol, excludeIntentId));
     }
 
     private Reservation reserved(
@@ -316,7 +414,10 @@ public class PreTradeRiskEngine {
         }
     }
 
-    private static void requirePaperIntent(OrderIntent intent) {
+    private static void requireCompleteIntent(OrderIntent intent, OrderExecutionMode expectedMode) {
+        if (intent.getExecutionMode() != expectedMode) {
+            throw new IllegalStateException("order execution mode is not " + expectedMode);
+        }
         if (intent.getSide() == null
                 || intent.getType() == null
                 || intent.getSymbol() == null
@@ -351,7 +452,13 @@ public class PreTradeRiskEngine {
         BUYING_POWER_EXCEEDED,
         MAX_ORDER_AMOUNT_EXCEEDED,
         MAX_QUANTITY_EXCEEDED,
-        CONCENTRATION_EXCEEDED
+        CONCENTRATION_EXCEEDED,
+        ACCOUNT_OWNERSHIP_MISMATCH,
+        SELLABLE_QUANTITY_UNKNOWN,
+        SELLABLE_QUANTITY_INSUFFICIENT,
+        OPEN_ORDER_EXISTS,
+        KILL_SWITCH_ENGAGED,
+        KILL_SWITCH_STATE_UNAVAILABLE
     }
 
     public record ApprovalCommand(
@@ -380,6 +487,19 @@ public class PreTradeRiskEngine {
     public record SubmissionResult(
             Decision decision,
             PaperTradingBroker.Result paperResult
+    ) {
+    }
+
+    public record LiveSubmission(
+            Decision decision,
+            UUID orderIntentId,
+            UUID brokerAccountId,
+            OrderSide side,
+            OrderType type,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal limitPrice,
+            Currency currency
     ) {
     }
 

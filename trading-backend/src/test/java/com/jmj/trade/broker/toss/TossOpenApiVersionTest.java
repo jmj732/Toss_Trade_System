@@ -11,19 +11,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TossOpenApiVersionTest {
 
     @Test
-    void pinsReducedOpenApiContractToTossVersion124() throws IOException {
+    void pinsReducedOpenApiContractToTossVersion125() throws IOException {
         var manifest = new ObjectMapper().readValue(
-                getClass().getResourceAsStream("/contracts/toss-openapi-1.2.4-manifest.json"),
+                getClass().getResourceAsStream("/contracts/toss-openapi-1.2.5-manifest.json"),
                 OpenApiManifest.class);
 
-        assertThat(TossOpenApiContract.VERSION).isEqualTo("1.2.4");
+        assertThat(TossOpenApiContract.VERSION).isEqualTo("1.2.5");
         assertThat(manifest.info().version()).isEqualTo(TossOpenApiContract.VERSION);
         assertThat(manifest.paths().keySet()).containsExactlyInAnyOrder(
                 "/oauth2/token",
                 "/api/v1/accounts",
                 "/api/v1/holdings",
                 "/api/v1/prices",
-                "/api/v1/buying-power");
+                "/api/v1/buying-power",
+                "/api/v1/orders",
+                "/api/v1/orders/{orderId}",
+                "/api/v1/orders/{orderId}/modify",
+                "/api/v1/orders/{orderId}/cancel");
     }
 
     private record OpenApiManifest(String openapi, Info info, Map<String, Object> paths) {

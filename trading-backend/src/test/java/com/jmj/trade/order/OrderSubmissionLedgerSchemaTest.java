@@ -40,7 +40,7 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
 
     @Test
     void flywayCreatesOrderSubmissionLedgerSchema() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("23");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("31");
     }
 
     @Test

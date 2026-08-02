@@ -1,9 +1,11 @@
 package com.jmj.trade.broker.toss;
 
 import com.jmj.trade.broker.BrokerAdapter;
+import com.jmj.trade.broker.BrokerOrderPort;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration;
@@ -43,7 +45,13 @@ public class TossBrokerConfiguration {
 
     @Bean
     @ConditionalOnBean(TossApiClient.class)
-    BrokerAdapter tossBrokerAdapter(TossApiClient apiClient, TossResponseMapper mapper) {
+    TossInvestBrokerAdapter tossBrokerAdapter(TossApiClient apiClient, TossResponseMapper mapper) {
         return new TossInvestBrokerAdapter(apiClient, mapper);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "real-order", name = "enabled", havingValue = "true")
+    BrokerOrderPort tossOrderPort(TossInvestBrokerAdapter adapter) {
+        return adapter;
     }
 }

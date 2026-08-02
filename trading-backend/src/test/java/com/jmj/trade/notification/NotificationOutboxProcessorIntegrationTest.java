@@ -40,7 +40,7 @@ class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresI
 
     @BeforeEach
     void setUp() {
-        jdbc.execute("TRUNCATE notifications, notification_outbox_events, users CASCADE");
+        jdbc.execute("TRUNCATE inbox_messages, notifications, notification_outbox_events, users CASCADE");
         jdbc.update("INSERT INTO users (id) VALUES (?)", USER_ID);
     }
 
@@ -61,6 +61,22 @@ class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresI
         assertThat(jdbc.queryForObject(
                 "SELECT processed_at FROM notification_outbox_events WHERE id = ?",
                 OffsetDateTime.class, outboxId)).isNotNull();
+    }
+
+    @Test
+    void recordsAnInboxRowForTheNotificationConsumer() {
+        var outboxId = insertOutboxEvent(NotificationEventType.SYNC_SUCCEEDED, UUID.randomUUID(),
+                "{}");
+
+        assertThat(processor.process(10).processed()).isEqualTo(1);
+
+        var inbox = jdbc.queryForMap("""
+                SELECT consumer_name, event_type, processed_at
+                  FROM inbox_messages WHERE event_id = ?
+                """, outboxId);
+        assertThat(inbox.get("consumer_name")).isEqualTo("notification-center");
+        assertThat(inbox.get("event_type")).isEqualTo("SYNC_SUCCEEDED");
+        assertThat(inbox.get("processed_at")).isNotNull();
     }
 
     @Test

@@ -33,7 +33,8 @@ class PredictionIngestionApiKeyAuthenticationFilterTest {
                 UUID.randomUUID(),
                 "tpik_12345678",
                 new AnalysisPredictionService.ModelContractScope("model-v1", "contract-v1"),
-                null);
+                null,
+                false);
         when(apiKeys.findActive("tpik_1234567890")).thenReturn(Optional.of(authenticated));
         when(limiter.acquire(keyId, 2)).thenThrow(
                 new PredictionIngestionApiKeyRateLimiter.RateLimitUnavailableException());

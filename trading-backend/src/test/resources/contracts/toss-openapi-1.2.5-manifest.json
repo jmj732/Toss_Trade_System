@@ -1,0 +1,72 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "version": "1.2.5"
+  },
+  "source": "https://openapi.tossinvest.com/openapi-docs/latest/openapi.json",
+  "canonicalSha256": "0f2cb7ef938fe1c50b7d69348705632ad488ea68d63fc762847f6c9485a3a111",
+  "paths": {
+    "/oauth2/token": {},
+    "/api/v1/accounts": {},
+    "/api/v1/holdings": {},
+    "/api/v1/prices": {},
+    "/api/v1/buying-power": {},
+    "/api/v1/orders": {
+      "get": {
+        "requiredQuery": ["status"],
+        "status": ["OPEN", "CLOSED"],
+        "closedLimit": {"default": 20, "maximum": 100},
+        "response": "PaginatedOrderResponse"
+      },
+      "post": {
+        "request": "OrderCreateRequest",
+        "response": "OrderResponse"
+      }
+    },
+    "/api/v1/orders/{orderId}": {
+      "get": {
+        "response": "Order"
+      }
+    },
+    "/api/v1/orders/{orderId}/modify": {
+      "post": {
+        "request": "OrderModifyRequest",
+        "response": "OrderOperationResponse"
+      }
+    },
+    "/api/v1/orders/{orderId}/cancel": {
+      "post": {
+        "request": "{}",
+        "response": "OrderOperationResponse"
+      }
+    }
+  },
+  "components": {
+    "clientOrderId": {
+      "maxLength": 36,
+      "pattern": "^[a-zA-Z0-9\\-_]+$",
+      "validity": "10 minutes"
+    },
+    "orderStatuses": [
+      "PENDING",
+      "PENDING_CANCEL",
+      "PENDING_REPLACE",
+      "PARTIAL_FILLED",
+      "FILLED",
+      "CANCELED",
+      "REJECTED",
+      "CANCEL_REJECTED",
+      "REPLACE_REJECTED",
+      "REPLACED"
+    ],
+    "orderCreate": {
+      "quantityRequired": ["symbol", "side", "orderType", "quantity"],
+      "amountRequired": ["symbol", "side", "orderType", "orderAmount"],
+      "orderType": ["LIMIT", "MARKET"],
+      "timeInForce": ["DAY", "CLS"],
+      "limitPriceRequiredFor": "LIMIT",
+      "quantityOrAmountExclusive": true
+    },
+    "orderExecutionRequired": ["filledQuantity"]
+  }
+}

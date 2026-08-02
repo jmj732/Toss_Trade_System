@@ -1,5 +1,16 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.broker.BrokerAccountRef;
+import com.jmj.trade.broker.BrokerErrorCategory;
+import com.jmj.trade.broker.BrokerException;
+import com.jmj.trade.broker.BrokerOrderAck;
+import com.jmj.trade.broker.BrokerOrderGroup;
+import com.jmj.trade.broker.BrokerOrderLifecycle;
+import com.jmj.trade.broker.BrokerOrderPort;
+import com.jmj.trade.broker.BrokerOrderRequest;
+import com.jmj.trade.broker.BrokerOrderType;
+import com.jmj.trade.broker.BrokerOrderView;
+import com.jmj.trade.broker.BrokerResponse;
 import com.jmj.trade.broker.Currency;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -12,11 +23,15 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 @Service
-public class PaperTradingBroker {
+public class PaperTradingBroker implements BrokerOrderPort {
 
     private final OrderIntentRepository intentRepository;
     private final SubmissionIdempotencyKeyRepository idempotencyKeyRepository;
@@ -27,6 +42,13 @@ public class PaperTradingBroker {
     private final BigDecimal commissionRate;
     private final BigDecimal taxRate;
     private final int amountScale;
+
+    /**
+     * 포트({@link BrokerOrderPort}) 주문 장부. 기존 DB 기반 페이퍼 체결 워크플로
+     * ({@link #submit}/{@link #recover}/{@link #cancel})와 독립적인, 브로커 주문 접수/조회를
+     * 흉내내는 in-memory 시뮬레이션이다. 기존 동작은 그대로 보존하고 포트 계약만 추가한다.
+     */
+    private final ConcurrentMap<String, PaperPortOrder> orderPortBook = new ConcurrentHashMap<>();
 
     public PaperTradingBroker(
             OrderIntentRepository intentRepository,
@@ -54,6 +76,90 @@ public class PaperTradingBroker {
         this.commissionRate = commissionRate;
         this.taxRate = taxRate;
         this.amountScale = amountScale;
+    }
+
+    // ------------------------------------------------------------------
+    // BrokerOrderPort: in-memory 페이퍼 브로커 주문 장부(플랜 원장 B4).
+    // modifyOrder 는 포트 default(공유 정책: 수량 정정 거부 / 가격 정정 미지원)를 그대로 상속한다.
+    // ------------------------------------------------------------------
+
+    @Override
+    public BrokerResponse<BrokerOrderAck> placeOrder(
+            BrokerAccountRef account,
+            BrokerOrderRequest request,
+            String idempotencyKey
+    ) {
+        requireAccount(account);
+        if (request == null) {
+            throw new IllegalArgumentException("request is required");
+        }
+        requireText(idempotencyKey, "idempotencyKey");
+        var brokerOrderId = paperBrokerOrderId(account, idempotencyKey);
+        // computeIfAbsent 는 원자적이라 같은 멱등 키의 동시/재호출도 브로커 주문을 하나만 만든다.
+        var order = orderPortBook.computeIfAbsent(brokerOrderId, id -> new PaperPortOrder(
+                id,
+                account.brokerAccountId(),
+                idempotencyKey,
+                request,
+                request.type() == BrokerOrderType.MARKET ? request.quantity() : BigDecimal.ZERO,
+                request.type() == BrokerOrderType.MARKET
+                        ? BrokerOrderLifecycle.FILLED
+                        : BrokerOrderLifecycle.PENDING));
+        return BrokerOrderPort.ack(BrokerOrderAck.accepted(order.brokerOrderId(), order.idempotencyKey()));
+    }
+
+    @Override
+    public BrokerResponse<BrokerOrderAck> cancelOrder(BrokerAccountRef account, String brokerOrderId) {
+        requireAccount(account);
+        requireText(brokerOrderId, "brokerOrderId");
+        var existing = orderPortBook.get(brokerOrderId);
+        if (existing == null || !existing.brokerAccountId().equals(account.brokerAccountId())) {
+            return BrokerOrderPort.ack(BrokerOrderAck.rejected(BrokerErrorCategory.NOT_FOUND, brokerOrderId, null));
+        }
+        if (existing.lifecycle().group() == BrokerOrderGroup.CLOSED) {
+            return BrokerOrderPort.ack(
+                    BrokerOrderAck.rejected(BrokerErrorCategory.CONTRACT, brokerOrderId, existing.idempotencyKey()));
+        }
+        orderPortBook.computeIfPresent(brokerOrderId, (id, order) -> order.canceled());
+        return BrokerOrderPort.ack(BrokerOrderAck.accepted(brokerOrderId, existing.idempotencyKey()));
+    }
+
+    @Override
+    public BrokerResponse<BrokerOrderView> getOrder(BrokerAccountRef account, String brokerOrderId) {
+        requireAccount(account);
+        requireText(brokerOrderId, "brokerOrderId");
+        var order = orderPortBook.get(brokerOrderId);
+        if (order == null || !order.brokerAccountId().equals(account.brokerAccountId())) {
+            throw new BrokerException(BrokerErrorCategory.NOT_FOUND, null, null, null, null, false,
+                    "paper broker order not found");
+        }
+        return new BrokerResponse<>(order.view(), BrokerOrderPort.localMetadata());
+    }
+
+    @Override
+    public BrokerResponse<List<BrokerOrderView>> getOrders(BrokerAccountRef account, BrokerOrderGroup group) {
+        requireAccount(account);
+        if (group == null) {
+            throw new IllegalArgumentException("group is required");
+        }
+        var views = orderPortBook.values().stream()
+                .filter(order -> order.brokerAccountId().equals(account.brokerAccountId()))
+                .filter(order -> order.lifecycle().group() == group)
+                .sorted(Comparator.comparing(PaperPortOrder::brokerOrderId))
+                .map(PaperPortOrder::view)
+                .toList();
+        return new BrokerResponse<>(List.copyOf(views), BrokerOrderPort.localMetadata());
+    }
+
+    private static void requireAccount(BrokerAccountRef account) {
+        if (account == null) {
+            throw new IllegalArgumentException("account is required");
+        }
+    }
+
+    private static String paperBrokerOrderId(BrokerAccountRef account, String idempotencyKey) {
+        return "paper-" + UUID.nameUUIDFromBytes(
+                (account.brokerAccountId() + ":" + idempotencyKey).getBytes(StandardCharsets.UTF_8));
     }
 
     @Transactional
@@ -353,6 +459,9 @@ public class PaperTradingBroker {
     }
 
     private static void requirePaperIntent(OrderIntent intent) {
+        if (intent.getExecutionMode() != OrderExecutionMode.PAPER) {
+            throw new IllegalStateException("paper broker cannot submit a live order intent");
+        }
         if (intent.getSide() == null
                 || intent.getType() == null
                 || intent.getSymbol() == null
@@ -455,5 +564,35 @@ public class PaperTradingBroker {
             BigDecimal filledQuantity,
             OrderSubmissionService.Execution execution
     ) {
+    }
+
+    /** {@link BrokerOrderPort} in-memory 장부의 페이퍼 주문 레코드(불변; 취소 시 교체). */
+    private record PaperPortOrder(
+            String brokerOrderId,
+            String brokerAccountId,
+            String idempotencyKey,
+            BrokerOrderRequest request,
+            BigDecimal filledQuantity,
+            BrokerOrderLifecycle lifecycle
+    ) {
+        PaperPortOrder canceled() {
+            return new PaperPortOrder(
+                    brokerOrderId, brokerAccountId, idempotencyKey, request, filledQuantity,
+                    BrokerOrderLifecycle.CANCELED);
+        }
+
+        BrokerOrderView view() {
+            return new BrokerOrderView(
+                    brokerOrderId,
+                    idempotencyKey,
+                    request.side(),
+                    request.type(),
+                    request.symbol(),
+                    request.quantity(),
+                    filledQuantity,
+                    request.limitPrice(),
+                    request.currency(),
+                    lifecycle);
+        }
     }
 }

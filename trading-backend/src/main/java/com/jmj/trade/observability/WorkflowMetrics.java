@@ -54,8 +54,18 @@ final class WorkflowMetrics implements MeterBinder {
                                 SELECT count(*)
                                   FROM %s
                                  WHERE published_at IS NULL
+                                   AND failed_at IS NULL
                                 """.formatted(table)))
-                .description("Unpublished outbox events")
+                .description("Unpublished outbox events awaiting relay")
+                .tag("outbox", outbox)
+                .register(registry);
+        Gauge.builder("trade.outbox.dead_letter", this,
+                        ignored -> count("""
+                                SELECT count(*)
+                                  FROM %s
+                                 WHERE failed_at IS NOT NULL
+                                """.formatted(table)))
+                .description("Dead-letter outbox events past the retry cap")
                 .tag("outbox", outbox)
                 .register(registry);
     }

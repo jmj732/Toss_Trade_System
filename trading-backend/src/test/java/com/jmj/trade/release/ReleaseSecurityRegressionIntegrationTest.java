@@ -94,7 +94,7 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
                          pre_trade_risk_decisions,
                          order_intent_audit_logs,
                          broker_orders,
-                         order_intents,
+                         real_order_daily_reservations, real_order_account_allowlist, order_intents,
                          broker_accounts,
                          event_review_commands,
                          event_reviews,
@@ -229,7 +229,16 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isNotFound());
         mockMvc.perform(intruder.post("/api/v1/paper-orders/{id}/approve", orderId)
                         .header("Idempotency-Key", "intruder-approve")
-                        .content("{\"channel\":\"WEB\"}"))
+                        .header("X-Step-Up-Token", "intruder-token")
+                        .content("""
+                                {
+                                  "channel":"WEB",
+                                  "displayedQuantity":1,
+                                  "displayedMaxLoss":100,
+                                  "displayedCurrency":"USD",
+                                  "proposalVersion":null
+                                }
+                                """))
                 .andExpect(status().isNotFound());
 
         assertThat(jdbc.queryForObject(

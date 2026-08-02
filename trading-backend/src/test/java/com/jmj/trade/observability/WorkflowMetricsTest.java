@@ -23,6 +23,10 @@ class WorkflowMetricsTest {
                 .tag("outbox", "order-intent").gauge().value()).isEqualTo(4);
         assertThat(registry.get("trade.outbox.backlog")
                 .tag("outbox", "order-submission").gauge().value()).isEqualTo(5);
+        assertThat(registry.get("trade.outbox.dead_letter")
+                .tag("outbox", "order-intent").gauge().value()).isEqualTo(6);
+        assertThat(registry.get("trade.outbox.dead_letter")
+                .tag("outbox", "order-submission").gauge().value()).isEqualTo(7);
     }
 
     private static final class StubJdbcTemplate extends JdbcTemplate {
@@ -34,6 +38,9 @@ class WorkflowMetricsTest {
                 value = 2L;
             } else if (sql.contains("analysis_runs")) {
                 value = 3L;
+            } else if (sql.contains("failed_at IS NOT NULL")) {
+                // Dead-letter gauge: distinct from the backlog gauge over the same table.
+                value = sql.contains("order_intent_outbox_events") ? 6L : 7L;
             } else if (sql.contains("order_intent_outbox_events")) {
                 value = 4L;
             } else {

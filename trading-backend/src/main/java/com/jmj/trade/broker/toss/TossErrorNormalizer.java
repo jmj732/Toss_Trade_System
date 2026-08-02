@@ -65,6 +65,7 @@ final class TossErrorNormalizer {
             case 401 -> BrokerErrorCategory.AUTHENTICATION;
             case 403 -> BrokerErrorCategory.AUTHORIZATION;
             case 404 -> BrokerErrorCategory.NOT_FOUND;
+            case 422 -> BrokerErrorCategory.VALIDATION;
             case 429 -> BrokerErrorCategory.RATE_LIMITED;
             default -> status >= 500 ? BrokerErrorCategory.TEMPORARY : BrokerErrorCategory.UNKNOWN;
         };

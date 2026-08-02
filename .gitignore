@@ -11,3 +11,11 @@
 backups/
 *.dump
 .staging-drill-secrets*
+
+# Agent tooling state and generated artifacts. Never commit: these land inside the
+# source tree (including src/main/resources, which Maven copies into target/classes
+# and the container image) and would otherwise pollute builds and image layers.
+.omc/
+.omo/
+graphify-out/
+AGENTS.md

@@ -1,8 +1,8 @@
-# Toss OpenAPI 1.2.4 Read-Only Broker Adapter Implementation Plan
+# Toss OpenAPI 1.2.5 Read-Only Broker Adapter Implementation Plan
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement a multi-user Toss OpenAPI 1.2.4 read-only adapter with connection-isolated OAuth tokens, Redis single issuance, explicit rate-limit metadata, safe domain mapping, and no order capability.
+**Goal:** Implement a multi-user Toss OpenAPI 1.2.5 read-only adapter with connection-isolated OAuth tokens, Redis single issuance, explicit rate-limit metadata, safe domain mapping, and no order capability.
 
 **Architecture:** `com.jmj.trade.broker` owns the broker-neutral read contract. `com.jmj.trade.broker.toss` owns hand-written Toss DTOs, HTTP calls, token coordination, normalization, and mapping. A conditional Spring configuration creates the Toss stack only when the application supplies a `TossCredentialProvider`; production code supplies no credential implementation.
 
@@ -326,10 +326,10 @@ git commit -m "feat: coordinate Toss OAuth tokens with Redis"
 
 ## Chunk 3: Read HTTP client, error normalization, and rate-limit metadata
 
-### Task 6: Pin the selected OpenAPI 1.2.4 contract
+### Task 6: Pin the selected OpenAPI 1.2.5 contract
 
 **Files:**
-- Create: `trading-backend/src/test/resources/contracts/toss-openapi-1.2.4-manifest.json`
+- Create: `trading-backend/src/test/resources/contracts/toss-openapi-1.2.5-manifest.json`
 - Create: `trading-backend/src/test/java/com/jmj/trade/broker/toss/TossOpenApiVersionTest.java`
 - Create: `trading-backend/src/main/java/com/jmj/trade/broker/toss/TossOpenApiContract.java`
 
@@ -337,14 +337,14 @@ git commit -m "feat: coordinate Toss OAuth tokens with Redis"
 
 The checked-in reduced manifest contains only:
 
-- `info.version = 1.2.4`
+- `info.version = 1.2.5`
 - `/oauth2/token`
 - `/api/v1/accounts`
 - `/api/v1/holdings`
 - `/api/v1/prices`
 - `/api/v1/buying-power`
 
-Assert the production constant is `1.2.4` and every selected path is present.
+Assert the production constant is `1.2.5` and every selected path is present.
 
 - [ ] **Step 2: Run and verify RED**
 

@@ -294,7 +294,7 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
         var connectionId = insertConnection(USER_ID);
         var syncRunId = insertSuccessfulPortfolio(connectionId, USER_ID);
         var runningId = UUID.randomUUID();
-        insertRunningAnalysis(connectionId, USER_ID, runningId, syncRunId, secondsAgo(899));
+        insertRunningAnalysisSecondsAgo(connectionId, USER_ID, runningId, syncRunId, 840);
 
         mockMvc.perform(post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId)
                         .with(user(USER_ID.toString()))
@@ -313,7 +313,7 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
         var syncRunId = insertSuccessfulPortfolio(connectionId, USER_ID);
         stubSuccess(0);
         var runningId = UUID.randomUUID();
-        insertRunningAnalysis(connectionId, USER_ID, runningId, syncRunId, secondsAgo(901));
+        insertRunningAnalysisSecondsAgo(connectionId, USER_ID, runningId, syncRunId, 960);
 
         mockMvc.perform(post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId)
                         .with(user(USER_ID.toString()))
@@ -582,12 +582,28 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                 """, runId, userId, connectionId, inputSyncRunId, startedAt);
     }
 
-    private static OffsetDateTime minutesAgo(int minutes) {
-        return OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(minutes);
+    // Anchors started_at to the Postgres clock so the staleness reap (also evaluated in SQL
+    // against CURRENT_TIMESTAMP) never straddles the JVM<->Postgres clock skew. Combined with a
+    // 60s margin on either side of the 900s threshold, the boundary tests stay deterministic under
+    // full-suite load: only the real elapsed time between this INSERT and the reap UPDATE (both on
+    // the same clock, a few milliseconds apart) counts against the margin.
+    private void insertRunningAnalysisSecondsAgo(
+            UUID connectionId,
+            UUID userId,
+            UUID runId,
+            UUID inputSyncRunId,
+            long secondsAgo
+    ) {
+        jdbc.update("""
+                INSERT INTO analysis_runs (
+                    id, user_id, broker_connection_id, input_sync_run_id, status, started_at
+                ) VALUES (?, ?, ?, ?, 'RUNNING',
+                    CURRENT_TIMESTAMP - CAST(? AS bigint) * INTERVAL '1 second')
+                """, runId, userId, connectionId, inputSyncRunId, secondsAgo);
     }
 
-    private static OffsetDateTime secondsAgo(int seconds) {
-        return OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(seconds);
+    private static OffsetDateTime minutesAgo(int minutes) {
+        return OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(minutes);
     }
 
     private static String jsonString(String json, String field) {

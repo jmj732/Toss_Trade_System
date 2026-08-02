@@ -1,6 +1,7 @@
 package com.jmj.trade.broker.toss;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.util.List;
 
@@ -83,6 +84,82 @@ final class TossApiDtos {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record BuyingPower(String currency, String cashBuyingPower) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record OrderCreateRequest(
+            String clientOrderId,
+            String symbol,
+            String side,
+            String orderType,
+            String timeInForce,
+            String quantity,
+            String price,
+            Boolean confirmHighValueOrder) {
+    }
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    record OrderModifyRequest(
+            String orderType,
+            String quantity,
+            String price,
+            Boolean confirmHighValueOrder) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OrderResponse(String orderId, String clientOrderId) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OrderOperationResponse(String orderId) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OrderResponseEnvelope(OrderResponse result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OrderOperationResponseEnvelope(OrderOperationResponse result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record PaginatedOrderResponseEnvelope(PaginatedOrderResponse result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OrderEnvelope(Order result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record PaginatedOrderResponse(List<Order> orders, String nextCursor, Boolean hasNext) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Order(
+            String orderId,
+            String symbol,
+            String side,
+            String orderType,
+            String timeInForce,
+            String status,
+            String quantity,
+            String price,
+            String orderAmount,
+            String currency,
+            String orderedAt,
+            String canceledAt,
+            OrderExecution execution) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OrderExecution(
+            String filledQuantity,
+            String averageFilledPrice,
+            String filledAmount,
+            String commission,
+            String tax,
+            String filledAt,
+            String settlementDate) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

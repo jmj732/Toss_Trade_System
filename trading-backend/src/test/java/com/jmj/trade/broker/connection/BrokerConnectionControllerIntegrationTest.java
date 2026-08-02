@@ -3,6 +3,7 @@ package com.jmj.trade.broker.connection;
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
 import com.jmj.trade.broker.AccountCapacitySnapshot;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 import com.jmj.trade.broker.AccountSnapshot;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAccountView;
@@ -607,6 +608,13 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         public BrokerResponse<AccountCapacitySnapshot> getAccountCapacity(BrokerAccountRef account, Currency currency) {
             return new BrokerResponse<>(
                     new AccountCapacitySnapshot(account, currency, new BigDecimal("1000"), Instant.now()),
+                    metadata());
+        }
+
+        @Override
+        public BrokerResponse<SellableQuantitySnapshot> getSellableQuantity(BrokerAccountRef account, String symbol) {
+            return new BrokerResponse<>(
+                    SellableQuantitySnapshot.unknown(account, symbol, Instant.now()),
                     metadata());
         }
 

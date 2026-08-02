@@ -25,6 +25,9 @@ Set these variables in the deployment environment:
 | `PREDICTION_EVALUATION_MAX_PER_TICK` | `1000` | Count cap per tick |
 | `PREDICTION_EVALUATION_MAX_RUNTIME` | `PT5M` | Runtime cap per tick |
 | `PREDICTION_EVALUATION_METRICS_CACHE_TTL` | `PT30S` | Backlog snapshot TTL |
+| `PREDICTION_INGESTION_API_KEY_CLEANUP_ENABLED` | `true` | Marks due keys `EXPIRED` |
+| `PREDICTION_INGESTION_API_KEY_CLEANUP_INTERVAL` | `PT1H` | Expiry sweep interval |
+| `PREDICTION_INGESTION_API_KEY_CLEANUP_INITIAL_DELAY` | `PT1M` | First expiry sweep delay |
 
 Keep `PREDICTION_EVALUATION_ENABLED=false` until the remaining limits have been reviewed for
 the environment. Apply the variables through the normal deployment process, then verify
@@ -35,6 +38,17 @@ curl -fsS http://127.0.0.1:8080/actuator/health/readiness
 curl -fsS http://127.0.0.1:8080/actuator/prometheus |
   grep '^trade_prediction_evaluation_'
 ```
+
+The API key cleanup uses PostgreSQL time and only performs the immutable
+`ACTIVE → EXPIRED` transition. It does not delete key metadata or rejection audit rows.
+
+## Dashboard operations
+
+After opening an owned broker connection, the `Prediction operations` panel shows only the
+signed-in user's earliest due/ungraded backlog, maximum lag, and ingestion API keys. It can
+issue, rotate, and revoke keys through the existing session/CSRF boundary. Raw key material is
+shown only in the issue/rotation response and disappears when dismissed or the page reloads.
+The panel cannot trigger evaluation, create predictions, or execute orders.
 
 ## Metrics and alerts
 

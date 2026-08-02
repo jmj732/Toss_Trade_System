@@ -12,6 +12,7 @@ import com.jmj.trade.broker.BrokerResponse;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -84,7 +85,7 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
                          order_intent_audit_logs,
                          execution_snapshots,
                          broker_orders,
-                         order_intents,
+                         real_order_daily_reservations, real_order_account_allowlist, order_intents,
                          broker_accounts,
                          risk_policy_history,
                          risk_policies,
@@ -353,6 +354,129 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
                 Long.class, intentId)).isEqualTo(0L);
     }
 
+    @Test
+    void sellableInsufficientBlocksSellSubmissionWithoutCallingPaper() {
+        var owner = owner();
+        var runId = successfulSnapshot(owner, "KNOWN", true, "1000", "1000", null, null);
+        insertSellablePosition(runId, owner, "AAPL", "1");
+        var intentId = intent(owner, OrderSide.SELL, OrderType.MARKET, "AAPL", "2", null);
+        assertThat(riskEngine.approve(command(owner, intentId, "100", T0)).approved()).isTrue();
+
+        var result = riskEngine.submitPaper(
+                owner.userId(), owner.connectionId(),
+                paperCommand(intentId, "risk-sellable-low", "100"));
+
+        assertThat(result.decision().approved()).isFalse();
+        assertThat(result.decision().reasons())
+                .contains(PreTradeRiskEngine.Reason.SELLABLE_QUANTITY_INSUFFICIENT);
+        assertThat(result.paperResult()).isNull();
+        assertThat(attemptRepository.count()).isZero();
+        assertThat(status(intentId)).isEqualTo(OrderIntentStatus.BLOCKED);
+        assertThat(terminalReason(intentId)).isEqualTo("SELLABLE_QUANTITY_INSUFFICIENT");
+        assertThat(brokerAdapter.calls).hasValue(0);
+    }
+
+    @Test
+    void sellableUnknownBlocksSellSubmissionAndIsNotTreatedAsZero() {
+        var owner = owner();
+        var runId = successfulSnapshot(owner, "KNOWN", true, "1000", "1000", null, null);
+        // NULL sellable_quantity means the broker did not report it — UNKNOWN, not a confirmed zero.
+        insertSellablePosition(runId, owner, "AAPL", null);
+        var intentId = intent(owner, OrderSide.SELL, OrderType.MARKET, "AAPL", "2", null);
+        assertThat(riskEngine.approve(command(owner, intentId, "100", T0)).approved()).isTrue();
+
+        var result = riskEngine.submitPaper(
+                owner.userId(), owner.connectionId(),
+                paperCommand(intentId, "risk-sellable-unknown", "100"));
+
+        assertThat(result.decision().approved()).isFalse();
+        assertThat(result.decision().reasons())
+                .contains(PreTradeRiskEngine.Reason.SELLABLE_QUANTITY_UNKNOWN);
+        assertThat(result.paperResult()).isNull();
+        assertThat(attemptRepository.count()).isZero();
+        assertThat(status(intentId)).isEqualTo(OrderIntentStatus.BLOCKED);
+        assertThat(terminalReason(intentId)).isEqualTo("SELLABLE_QUANTITY_UNKNOWN");
+        assertThat(brokerAdapter.calls).hasValue(0);
+    }
+
+    @Test
+    void sellableSufficientAllowsSellSubmissionWithNoRegression() {
+        var owner = owner();
+        var runId = successfulSnapshot(owner, "KNOWN", true, "1000", "1000", null, null);
+        insertSellablePosition(runId, owner, "AAPL", "5");
+        var intentId = intent(owner, OrderSide.SELL, OrderType.MARKET, "AAPL", "2", null);
+        assertThat(riskEngine.approve(command(owner, intentId, "100", T0)).approved()).isTrue();
+
+        var result = riskEngine.submitPaper(
+                owner.userId(), owner.connectionId(),
+                paperCommand(intentId, "risk-sellable-ok", "100"));
+
+        assertThat(result.decision().approved()).isTrue();
+        assertThat(result.paperResult()).isNotNull();
+        assertThat(status(intentId)).isEqualTo(OrderIntentStatus.COMPLETED);
+        assertThat(brokerAdapter.calls).hasValue(0);
+    }
+
+    @Test
+    void sameSymbolOpenOrderBlocksNewSubmissionWithoutCallingPaper() {
+        var owner = owner();
+        successfulSnapshot(owner, "KNOWN", true, "1000", "1000", "MSFT", "100");
+        insertOpenOrderIntent(owner, "AAPL");
+        var intentId = intent(owner, OrderSide.BUY, OrderType.MARKET, "AAPL", "1", null);
+        assertThat(riskEngine.approve(command(owner, intentId, "100", T0)).approved()).isTrue();
+
+        var result = riskEngine.submitPaper(
+                owner.userId(), owner.connectionId(),
+                paperCommand(intentId, "risk-open-order", "100"));
+
+        assertThat(result.decision().approved()).isFalse();
+        assertThat(result.decision().reasons())
+                .contains(PreTradeRiskEngine.Reason.OPEN_ORDER_EXISTS);
+        assertThat(result.paperResult()).isNull();
+        assertThat(attemptRepository.count()).isZero();
+        assertThat(status(intentId)).isEqualTo(OrderIntentStatus.BLOCKED);
+        assertThat(terminalReason(intentId)).isEqualTo("OPEN_ORDER_EXISTS");
+        assertThat(brokerAdapter.calls).hasValue(0);
+    }
+
+    private void insertSellablePosition(UUID runId, Owner owner, String symbol, String sellable) {
+        jdbc.update("""
+                INSERT INTO position_snapshots (
+                    id, sync_run_id, user_id, broker_connection_id, symbol, name,
+                    market_country, quantity, currency, average_price, last_price,
+                    purchase_amount, market_value_amount, market_value_after_cost,
+                    profit_loss_amount, profit_loss_after_cost, profit_loss_rate,
+                    profit_loss_rate_after_cost, daily_profit_loss_amount,
+                    daily_profit_loss_rate, commission, tax, sellable_quantity,
+                    observed_at, created_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, 'US', 1, 'USD', 1, 1,
+                    1, 1, 1, 0, 0, 0, 0, 0, 0, 0, NULL, CAST(? AS numeric), ?, ?
+                )
+                """, UUID.randomUUID(), runId, owner.userId(), owner.connectionId(),
+                symbol, symbol, sellable, at(T0), at(T0));
+    }
+
+    private void insertOpenOrderIntent(Owner owner, String symbol) {
+        var accountId = UUID.randomUUID();
+        jdbc.update("INSERT INTO broker_accounts (id) VALUES (?)", accountId);
+        jdbc.update("""
+                INSERT INTO order_intents (
+                    id, broker_account_id, user_id, broker_connection_id, quantity,
+                    side, order_type, symbol, trading_currency, status, version
+                ) VALUES (?, ?, ?, ?, 1, 'BUY', 'MARKET', ?, 'USD', 'ACTIVE', 0)
+                """, UUID.randomUUID(), accountId, owner.userId(), owner.connectionId(), symbol);
+    }
+
+    private OrderIntentStatus status(UUID intentId) {
+        return orderIntentRepository.findById(intentId).orElseThrow().getStatus();
+    }
+
+    private String terminalReason(UUID intentId) {
+        return jdbc.queryForObject(
+                "SELECT terminal_reason FROM order_intents WHERE id = ?", String.class, intentId);
+    }
+
     private void seedPolicy(
             UUID userId,
             long version,
@@ -604,6 +728,11 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
                 BrokerAccountRef account,
                 Currency currency
         ) {
+            throw called();
+        }
+
+        @Override
+        public BrokerResponse<SellableQuantitySnapshot> getSellableQuantity(BrokerAccountRef account, String symbol) {
             throw called();
         }
 

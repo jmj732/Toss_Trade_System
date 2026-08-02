@@ -53,7 +53,7 @@ class PaperTradingBrokerIntegrationTest extends PostgresIntegrationTest {
         jdbcTemplate.execute("DROP TRIGGER IF EXISTS trg_fail_paper_outbox_insert ON order_submission_outbox_events");
         jdbcTemplate.execute("DROP FUNCTION IF EXISTS fail_paper_outbox_insert()");
         jdbcTemplate.execute("""
-                TRUNCATE paper_order_workflow_commands,
+                TRUNCATE order_approval_step_up_tokens, paper_order_workflow_commands,
                          pre_trade_risk_decisions,
                          order_submission_outbox_events,
                          order_submission_audit_logs,
@@ -64,7 +64,7 @@ class PaperTradingBrokerIntegrationTest extends PostgresIntegrationTest {
                          order_intent_audit_logs,
                          execution_snapshots,
                          broker_orders,
-                         order_intents,
+                         real_order_daily_reservations, real_order_account_allowlist, order_intents,
                          broker_accounts
                 """);
     }

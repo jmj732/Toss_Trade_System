@@ -3,6 +3,7 @@ package com.jmj.trade.order;
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
 import com.jmj.trade.broker.AccountCapacitySnapshot;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 import com.jmj.trade.broker.AccountSnapshot;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAccountView;
@@ -100,7 +101,7 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                          order_intent_audit_logs,
                          execution_snapshots,
                          broker_orders,
-                         order_intents,
+                         real_order_daily_reservations, real_order_account_allowlist, order_intents,
                          broker_accounts,
                          account_capacity_snapshots,
                          position_snapshots,
@@ -166,13 +167,15 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                 "proposal-approve",
                 PaperOrderWorkflowService.Channel.WEB,
                 proposal(connectionId, "AAPL")).id();
+        insertStepUpToken(intentId, "stepup-approve-100");
 
         mockMvc.perform(post("/api/v1/paper-orders/{id}/approve", intentId)
                         .with(user(USER_ID.toString()))
                         .with(csrf())
                         .header("Idempotency-Key", "approve-100")
+                        .header("X-Step-Up-Token", "stepup-approve-100")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"channel\":\"MESSENGER\"}"))
+                        .content(approveJson("MESSENGER", "1", "100")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.riskDecisions.length()").value(2))
@@ -183,8 +186,9 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                         .with(user(USER_ID.toString()))
                         .with(csrf())
                         .header("Idempotency-Key", "approve-100")
+                        .header("X-Step-Up-Token", "stepup-approve-100")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"channel\":\"MESSENGER\"}"))
+                        .content(approveJson("MESSENGER", "1", "100")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"));
         mockMvc.perform(post("/api/v1/paper-orders/{id}/submit", intentId)
@@ -226,8 +230,9 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                         .with(user(USER_ID.toString()))
                         .with(csrf())
                         .header("Idempotency-Key", "approve-canceled")
+                        .header("X-Step-Up-Token", "unused-token")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"channel\":\"WEB\"}"))
+                        .content(approveJson("WEB", "1", "100")))
                 .andExpect(status().isConflict());
         assertThat(broker.quoteCalls).hasValue(0);
     }
@@ -254,7 +259,7 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                 USER_ID,
                 intentId,
                 "approve-inactive",
-                PaperOrderWorkflowService.Channel.WEB))
+                approveCommand(PaperOrderWorkflowService.Channel.WEB, "unused-token")))
                 .isInstanceOf(PaperOrderWorkflowException.class)
                 .satisfies(exception -> assertThat(((PaperOrderWorkflowException) exception).code())
                         .isEqualTo(PaperOrderWorkflowException.Code.NOT_FOUND));
@@ -311,12 +316,14 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                 "proposal-concurrent",
                 PaperOrderWorkflowService.Channel.API,
                 proposal(connectionId, "AAPL")).id();
+        insertStepUpToken(intentId, "stepup-a");
+        insertStepUpToken(intentId, "stepup-b");
         var ready = new CountDownLatch(2);
         var start = new CountDownLatch(1);
 
         try (var executor = Executors.newFixedThreadPool(2)) {
-            var first = executor.submit(() -> approveAfterGate(intentId, "approve-a", ready, start));
-            var second = executor.submit(() -> approveAfterGate(intentId, "approve-b", ready, start));
+            var first = executor.submit(() -> approveAfterGate(intentId, "approve-a", "stepup-a", ready, start));
+            var second = executor.submit(() -> approveAfterGate(intentId, "approve-b", "stepup-b", ready, start));
             assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
             start.countDown();
 
@@ -353,11 +360,13 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                 FOR EACH ROW EXECUTE FUNCTION fail_workflow_paper_outbox()
                 """);
 
+        insertStepUpToken(intentId, "stepup-rollback");
         assertThatThrownBy(() -> workflow.approve(
                 USER_ID,
                 intentId,
                 "approve-rollback",
-                PaperOrderWorkflowService.Channel.WEB)).isInstanceOf(RuntimeException.class);
+                approveCommand(PaperOrderWorkflowService.Channel.WEB, "stepup-rollback")))
+                .isInstanceOf(RuntimeException.class);
 
         assertThat(workflow.read(USER_ID, intentId).status()).isEqualTo(OrderIntentStatus.PROPOSED);
         assertThat(count("""
@@ -373,12 +382,51 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
     private PaperOrderWorkflowService.OrderView approveAfterGate(
             UUID intentId,
             String key,
+            String stepUpToken,
             CountDownLatch ready,
             CountDownLatch start
     ) throws InterruptedException {
         ready.countDown();
         assertThat(start.await(10, TimeUnit.SECONDS)).isTrue();
-        return workflow.approve(USER_ID, intentId, key, PaperOrderWorkflowService.Channel.API);
+        return workflow.approve(
+                USER_ID,
+                intentId,
+                key,
+                approveCommand(PaperOrderWorkflowService.Channel.API, stepUpToken));
+    }
+
+    private PaperOrderWorkflowService.ApproveCommand approveCommand(
+            PaperOrderWorkflowService.Channel channel,
+            String stepUpToken
+    ) {
+        return new PaperOrderWorkflowService.ApproveCommand(
+                channel, BigDecimal.ONE, new BigDecimal("100"), Currency.USD, stepUpToken, null);
+    }
+
+    private String approveJson(String channel, String quantity, String maxLoss) {
+        return """
+                {
+                  "channel":"%s",
+                  "displayedQuantity":%s,
+                  "displayedMaxLoss":%s,
+                  "displayedCurrency":"USD",
+                  "proposalVersion":null
+                }
+                """.formatted(channel, quantity, maxLoss);
+    }
+
+    private void insertStepUpToken(UUID intentId, String rawToken) {
+        var now = Instant.now();
+        jdbc.update("""
+                INSERT INTO order_approval_step_up_tokens (
+                    token_hash, user_id, order_intent_id, issued_at, expires_at, consumed_at
+                ) VALUES (?, ?, ?, ?, ?, NULL)
+                """,
+                OrderApprovalStepUpService.sha256Hex(rawToken),
+                USER_ID,
+                intentId,
+                at(now.minusSeconds(1)),
+                at(now.plusSeconds(300)));
     }
 
     private static String outcome(java.util.concurrent.Future<PaperOrderWorkflowService.OrderView> future)
@@ -527,6 +575,11 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                 Currency currency
         ) {
             throw new AssertionError("workflow must not read live buying power");
+        }
+
+        @Override
+        public BrokerResponse<SellableQuantitySnapshot> getSellableQuantity(BrokerAccountRef account, String symbol) {
+            throw new AssertionError("workflow must not read live sellable quantity");
         }
     }
 }

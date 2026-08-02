@@ -122,10 +122,13 @@ public final class PredictionIngestionApiKeyService {
             return Optional.empty();
         }
         return jdbc.query("""
-                SELECT id, user_id, model_version, contract_version, key_prefix, expires_at
+                SELECT id, user_id, model_version, contract_version, key_prefix, expires_at,
+                       status = 'EXPIRED'
+                         OR (expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP)
+                         AS expired
                   FROM prediction_ingestion_api_keys
                  WHERE key_hash = ?
-                   AND status = 'ACTIVE'
+                   AND status IN ('ACTIVE', 'EXPIRED')
                 """, (result, row) -> new AuthenticatedKey(
                         result.getObject("id", UUID.class),
                         result.getObject("user_id", UUID.class),
@@ -133,7 +136,8 @@ public final class PredictionIngestionApiKeyService {
                         new AnalysisPredictionService.ModelContractScope(
                                 result.getString("model_version"),
                                 result.getString("contract_version")),
-                        instant(result, "expires_at")),
+                        instant(result, "expires_at"),
+                        result.getBoolean("expired")),
                 hash(rawKey)).stream().findFirst();
     }
 
@@ -173,15 +177,13 @@ public final class PredictionIngestionApiKeyService {
     ) {
         var rawKey = rawKey();
         var id = UUID.randomUUID();
-        var createdAt = clock.instant();
         jdbc.update("""
                 INSERT INTO prediction_ingestion_api_keys (
                     id, user_id, model_version, contract_version, key_hash, key_prefix,
                     status, created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP, ?)
                 """, id, userId, modelVersion, contractVersion, hash(rawKey),
                 rawKey.substring(0, DISPLAY_PREFIX_LENGTH),
-                OffsetDateTime.ofInstant(createdAt, java.time.ZoneOffset.UTC),
                 expiresAt == null
                         ? null
                         : OffsetDateTime.ofInstant(expiresAt, java.time.ZoneOffset.UTC));
@@ -259,6 +261,7 @@ public final class PredictionIngestionApiKeyService {
 
     enum Status {
         ACTIVE,
+        EXPIRED,
         REVOKED
     }
 
@@ -295,7 +298,8 @@ public final class PredictionIngestionApiKeyService {
             UUID userId,
             String prefix,
             AnalysisPredictionService.ModelContractScope scope,
-            Instant expiresAt
+            Instant expiresAt,
+            boolean expired
     ) {
     }
 

@@ -9,6 +9,7 @@ import { EventWorkflow } from "./event-workflow.js";
 import { NotificationCenter } from "./notification-center.js";
 import { PaperPerformanceView } from "./paper-performance-view.js";
 import { PortfolioHistoryView } from "./portfolio-history-view.js";
+import { PredictionOperationsView } from "./prediction-operations-view.js";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
 import {
   actOnProposal,
@@ -22,12 +23,15 @@ import {
   deprecatePredictionModelVersion,
   listEvents,
   listNotifications,
+  issuePredictionIngestionApiKey,
   loadAnalysisPredictions,
   loadDashboard,
   loadEvent,
   loadPaperPerformance,
   loadPortfolioHistory,
   loadPredictionModelVersions,
+  loadPredictionIngestionApiKeys,
+  loadPredictionOperations,
   loadRiskPolicy,
   loadRiskPolicyHistory,
   loadSession,
@@ -38,6 +42,8 @@ import {
   registerPredictionModelVersion,
   replaceBrokerCredentials,
   reviewEvent,
+  revokePredictionIngestionApiKey,
+  rotatePredictionIngestionApiKey,
   syncPortfolio,
   updateRiskPolicy,
   verifyBrokerConnection
@@ -74,6 +80,11 @@ export default function Home() {
   const [predictionModelVersions, setPredictionModelVersions] = useState([]);
   const [registryBusy, setRegistryBusy] = useState(false);
   const [registryError, setRegistryError] = useState("");
+  const [predictionApiKeys, setPredictionApiKeys] = useState([]);
+  const [issuedPredictionApiKey, setIssuedPredictionApiKey] = useState(null);
+  const [predictionOperations, setPredictionOperations] = useState(null);
+  const [predictionOperationsBusy, setPredictionOperationsBusy] = useState(false);
+  const [predictionOperationsError, setPredictionOperationsError] = useState("");
   const [riskPolicyOpen, setRiskPolicyOpen] = useState(false);
   const [riskPolicy, setRiskPolicy] = useState(null);
   const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
@@ -134,6 +145,16 @@ export default function Home() {
       setPredictionModelVersions(await loadPredictionModelVersions());
     } catch (value) {
       setRegistryError(value.message);
+    }
+    try {
+      const [keys, operations] = await Promise.all([
+        loadPredictionIngestionApiKeys(),
+        loadPredictionOperations()
+      ]);
+      setPredictionApiKeys(keys);
+      setPredictionOperations(operations);
+    } catch (value) {
+      setPredictionOperationsError(value.message);
     }
   }
 
@@ -209,6 +230,59 @@ export default function Home() {
 
   function deleteVersion(id) {
     return registryMutation(() => deletePredictionModelVersion(id, session));
+  }
+
+  function refreshPredictionOperations() {
+    setPredictionOperationsBusy(true);
+    setPredictionOperationsError("");
+    return Promise.all([
+      loadPredictionIngestionApiKeys(),
+      loadPredictionOperations()
+    ]).then(([keys, operations]) => {
+      setPredictionApiKeys(keys);
+      setPredictionOperations(operations);
+    }).catch(value => {
+      setPredictionOperationsError(value.message);
+      throw value;
+    }).finally(() => setPredictionOperationsBusy(false));
+  }
+
+  function predictionKeyMutation(action) {
+    setPredictionOperationsBusy(true);
+    setPredictionOperationsError("");
+    return action().then(result => {
+      if (result?.apiKey) {
+        setIssuedPredictionApiKey(result);
+      }
+      return Promise.all([
+        loadPredictionIngestionApiKeys(),
+        loadPredictionOperations()
+      ]);
+    }).then(([keys, operations]) => {
+      setPredictionApiKeys(keys);
+      setPredictionOperations(operations);
+    }).catch(value => {
+      setPredictionOperationsError(value.message);
+      throw value;
+    }).finally(() => setPredictionOperationsBusy(false));
+  }
+
+  function issuePredictionKey(command) {
+    return predictionKeyMutation(
+      () => issuePredictionIngestionApiKey(command, session));
+  }
+
+  function rotatePredictionKey(id, command) {
+    return predictionKeyMutation(
+      () => rotatePredictionIngestionApiKey(id, command, session));
+  }
+
+  function revokePredictionKey(id) {
+    if (!window.confirm("Revoke this prediction ingestion API key?")) {
+      return Promise.resolve();
+    }
+    return predictionKeyMutation(
+      () => revokePredictionIngestionApiKey(id, session));
   }
 
   async function orderAction(orderId, action) {
@@ -380,6 +454,7 @@ export default function Home() {
       await logout(session);
       setSession(null);
       setDashboard(null);
+      setIssuedPredictionApiKey(null);
     } catch (value) {
       setError(value.message);
     }
@@ -440,6 +515,10 @@ export default function Home() {
             setAnalysisOutcome(null);
             setOutcomeQuery(DEFAULT_OUTCOME_QUERY);
             setOutcomeCreateError("");
+            setPredictionApiKeys([]);
+            setIssuedPredictionApiKey(null);
+            setPredictionOperations(null);
+            setPredictionOperationsError("");
           },
           placeholder: "00000000-0000-0000-0000-000000000000",
           required: true
@@ -501,6 +580,18 @@ export default function Home() {
         onRegister: registerVersion,
         onDeprecate: deprecateVersion,
         onDelete: deleteVersion
+      }),
+      h(PredictionOperationsView, {
+        operations: predictionOperations,
+        keys: predictionApiKeys,
+        issuedKey: issuedPredictionApiKey,
+        busy: predictionOperationsBusy,
+        error: predictionOperationsError,
+        onIssue: issuePredictionKey,
+        onRotate: rotatePredictionKey,
+        onRevoke: revokePredictionKey,
+        onRefresh: refreshPredictionOperations,
+        onDismissKey: () => setIssuedPredictionApiKey(null)
       })) : h("main", { className: "center compact" },
       h("p", null, "Enter an owned broker connection UUID.")));
 }

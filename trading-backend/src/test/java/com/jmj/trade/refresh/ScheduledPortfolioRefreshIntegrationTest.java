@@ -4,6 +4,7 @@ import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
 import com.jmj.trade.broker.AccountCapacitySnapshot;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 import com.jmj.trade.broker.AccountSnapshot;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAccountView;
@@ -553,6 +554,13 @@ class ScheduledPortfolioRefreshIntegrationTest extends PostgresIntegrationTest {
             failIfRequested(account.brokerConnectionId());
             return new BrokerResponse<>(
                     new AccountCapacitySnapshot(account, currency, new BigDecimal("1000"), OBSERVED_AT),
+                    metadata());
+        }
+
+        @Override
+        public BrokerResponse<SellableQuantitySnapshot> getSellableQuantity(BrokerAccountRef account, String symbol) {
+            return new BrokerResponse<>(
+                    SellableQuantitySnapshot.unknown(account, symbol, OBSERVED_AT),
                     metadata());
         }
 

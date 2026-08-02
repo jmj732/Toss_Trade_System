@@ -58,6 +58,10 @@ public class OrderIntent {
     @Column(nullable = false, length = 40)
     private OrderIntentStatus status;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "execution_mode", nullable = false, length = 10)
+    private OrderExecutionMode executionMode = OrderExecutionMode.PAPER;
+
     @Column(name = "terminal_reason", length = 80)
     private String terminalReason;
 
@@ -119,6 +123,24 @@ public class OrderIntent {
         intent.symbol = symbol;
         intent.limitPrice = limitPrice;
         intent.tradingCurrency = tradingCurrency;
+        return intent;
+    }
+
+    public static OrderIntent proposedLive(
+            UUID id,
+            UUID brokerAccountId,
+            UUID userId,
+            UUID brokerConnectionId,
+            OrderSide side,
+            OrderType type,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal limitPrice,
+            Currency tradingCurrency
+    ) {
+        var intent = proposed(id, brokerAccountId, userId, brokerConnectionId, side, type,
+                symbol, quantity, limitPrice, tradingCurrency);
+        intent.executionMode = OrderExecutionMode.LIVE;
         return intent;
     }
 
@@ -347,6 +369,10 @@ public class OrderIntent {
 
     public OrderIntentStatus getStatus() {
         return status;
+    }
+
+    public OrderExecutionMode getExecutionMode() {
+        return executionMode;
     }
 
     public long getVersion() {

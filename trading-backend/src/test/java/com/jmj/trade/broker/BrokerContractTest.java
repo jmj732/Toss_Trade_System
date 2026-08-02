@@ -42,7 +42,8 @@ class BrokerContractTest {
                 "getAccount",
                 "getPositions",
                 "getQuote",
-                "getAccountCapacity"));
+                "getAccountCapacity",
+                "getSellableQuantity"));
         assertThat(publicMethodNames)
                 .noneMatch(name -> name.toLowerCase().contains("order"))
                 .noneMatch(name -> name.toLowerCase().contains("place"))
@@ -134,6 +135,25 @@ class BrokerContractTest {
                 .map(method -> method.getName().toLowerCase())
                 .filter(name -> name.contains("total"))
                 .toList()).isEmpty();
+    }
+
+    @Test
+    void sellableQuantityKeepsUnknownDistinctFromZero() {
+        var known = SellableQuantitySnapshot.known(ACCOUNT, "AAPL", new BigDecimal("0"), OBSERVED_AT);
+        var unknown = SellableQuantitySnapshot.unknown(ACCOUNT, "AAPL", OBSERVED_AT);
+
+        assertThat(known.availability()).isEqualTo(SellableQuantitySnapshot.Availability.KNOWN);
+        assertThat(known.quantity()).isEqualByComparingTo("0");
+        assertThat(unknown.availability()).isEqualTo(SellableQuantitySnapshot.Availability.UNKNOWN);
+        assertThat(unknown.quantity()).isNull();
+        assertThatThrownBy(() -> new SellableQuantitySnapshot(
+                ACCOUNT, "AAPL", SellableQuantitySnapshot.Availability.UNKNOWN,
+                new BigDecimal("1"), OBSERVED_AT))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new SellableQuantitySnapshot(
+                ACCOUNT, "AAPL", SellableQuantitySnapshot.Availability.KNOWN,
+                new BigDecimal("-1"), OBSERVED_AT))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

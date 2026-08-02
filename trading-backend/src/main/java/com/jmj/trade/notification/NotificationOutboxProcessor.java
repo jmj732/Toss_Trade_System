@@ -1,5 +1,6 @@
 package com.jmj.trade.notification;
 
+import com.jmj.trade.inbox.InboxLedger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -19,27 +20,37 @@ import java.util.UUID;
  * idempotently creates the corresponding {@code notifications} row. Each row is claimed and
  * finished in its own transaction via {@code SELECT ... FOR UPDATE SKIP LOCKED}, so concurrent
  * invocations (two scheduler ticks overlapping, or multiple instances) partition the backlog
- * instead of double-processing, and {@code ON CONFLICT (outbox_event_id) DO NOTHING} makes
- * re-processing the same row after a crash (claimed and notified, but {@code processed_at}
- * never got written) a safe no-op rather than a duplicate notification.
+ * instead of double-processing.
+ *
+ * <p>This single-consumer relay runs through the shared {@link InboxLedger}: completion is recorded
+ * against {@link #CONSUMER_NAME} in the same transaction as the notification insert, so re-claiming
+ * a row after a crash (claimed and notified, but {@code processed_at} never got written) skips the
+ * consumer entirely rather than doing the work again. {@code ON CONFLICT (outbox_event_id)
+ * DO NOTHING} on {@code notifications} remains as a second line of defense for the case where the
+ * inbox row itself is lost.
  */
 final class NotificationOutboxProcessor {
+
+    static final String CONSUMER_NAME = "notification-center";
 
     private static final Logger LOG = LoggerFactory.getLogger(NotificationOutboxProcessor.class);
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
     private final ObjectMapper objectMapper;
+    private final InboxLedger inbox;
 
     NotificationOutboxProcessor(
             JdbcTemplate jdbc,
             PlatformTransactionManager transactionManager,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            InboxLedger inbox
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transaction = new TransactionTemplate(
                 Objects.requireNonNull(transactionManager, "transactionManager"));
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.inbox = Objects.requireNonNull(inbox, "inbox");
     }
 
     ProcessResult process(int batchSize) {
@@ -79,6 +90,15 @@ final class NotificationOutboxProcessor {
             return null;
         }
 
+        if (inbox.isProcessed(CONSUMER_NAME, row.id())) {
+            // A prior life already created this notification; the crash only lost processed_at.
+            // Re-stamp it so the row leaves the backlog, without touching notifications again.
+            jdbc.update(
+                    "UPDATE notification_outbox_events SET processed_at = ? WHERE id = ?",
+                    now(), row.id());
+            return true;
+        }
+
         Rendered rendered;
         try {
             rendered = render(row.eventType(), row.payload());
@@ -106,6 +126,7 @@ final class NotificationOutboxProcessor {
                 """,
                 UUID.randomUUID(), row.id(), row.userId(), row.eventType(),
                 rendered.title(), rendered.body(), row.sourceId(), now());
+        inbox.markProcessed(CONSUMER_NAME, row.id(), row.eventType());
         jdbc.update(
                 "UPDATE notification_outbox_events SET processed_at = ? WHERE id = ?",
                 now(), row.id());
@@ -140,6 +161,10 @@ final class NotificationOutboxProcessor {
                                     || payload.get("terminalReason").isNull()
                                     ? "no additional reason"
                                     : payload.get("terminalReason").asText()));
+            case ORDER_RECONCILIATION_MANUAL_REVIEW -> new Rendered(
+                    "Order reconciliation needs manual review",
+                    "An order attempt could not be reconciled automatically and the account is "
+                            + "locked for new orders until an operator resolves it.");
         };
     }
 
