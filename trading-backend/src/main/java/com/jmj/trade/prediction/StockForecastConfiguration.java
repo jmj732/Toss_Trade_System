@@ -35,4 +35,21 @@ public class StockForecastConfiguration {
                 jdbcTemplate, transactionManager, objectMapper, analyses, predictions, registry,
                 baseUrl, connectTimeout, readTimeout);
     }
+
+    @Bean
+    StockAnalysisGeminiExplainService stockAnalysisGeminiExplainService(
+            JdbcTemplate jdbcTemplate,
+            PlatformTransactionManager transactionManager,
+            ObjectMapper objectMapper,
+            @Value("${gemini.api-key:}") String apiKey,
+            @Value("${gemini.model-id:gemini-2.5-flash}") String modelId,
+            @Value("${gemini.prompt-version:stock-analysis-explain-v1}") String promptVersion,
+            @Value("${gemini.base-url:https://generativelanguage.googleapis.com/v1beta}") String baseUrl,
+            @Value("${gemini.connect-timeout:PT2S}") Duration connectTimeout,
+            @Value("${gemini.read-timeout:PT10S}") Duration readTimeout
+    ) {
+        return new StockAnalysisGeminiExplainService(
+                jdbcTemplate, transactionManager, objectMapper, apiKey, modelId, promptVersion,
+                baseUrl, connectTimeout, readTimeout);
+    }
 }

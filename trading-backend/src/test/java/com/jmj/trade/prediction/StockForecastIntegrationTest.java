@@ -32,6 +32,7 @@ import org.springframework.web.context.WebApplicationContext;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
 import org.mockito.Mockito;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -83,6 +84,8 @@ class StockForecastIntegrationTest extends PostgresIntegrationTest {
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("analysis.service.base-url", ANALYSIS::baseUrl);
+        registry.add("gemini.base-url", ANALYSIS::baseUrl);
+        registry.add("gemini.api-key", () -> "test-gemini-key");
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
     }
@@ -192,6 +195,78 @@ class StockForecastIntegrationTest extends PostgresIntegrationTest {
                 "SELECT count(*) FROM analysis_predictions", Integer.class)).isEqualTo(0);
     }
 
+    @Test
+    void storesGroundedExplainOnceAndReturnsOriginalForecastOnReplay() throws Exception {
+        mockMvc.perform(post("/api/v1/stock-forecasts/AAPL")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody()))
+                .andExpect(status().isOk());
+        var generated = "{\"evidence\":[{\"text\":\"가격 흐름은 snapshot 근거로 관찰됩니다.\",\"citationIds\":[\"snapshot:66666666-6666-6666-6666-666666666666:observation:0\"]}],"
+                + "\"counterArguments\":[{\"text\":\"12.5% 상승한다는 단정은 허용되지 않습니다.\",\"citationIds\":[\"snapshot:66666666-6666-6666-6666-666666666666:observation:0\"]}],"
+                + "\"missingData\":[],\"invalidationConditions\":[]}";
+        var geminiBody = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":"
+                + new ObjectMapper().writeValueAsString(generated) + "}]}}]}";
+        ANALYSIS.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
+                urlPathEqualTo("/models/gemini-2.5-flash:generateContent"))
+                .willReturn(aResponse().withHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                        .withBody(geminiBody)));
+
+        mockMvc.perform(post("/api/v1/stock-analysis-explanations/AAPL")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DEGRADED"))
+                .andExpect(jsonPath("$.explanation.evidence[0].text")
+                        .value("가격 흐름은 snapshot 근거로 관찰됩니다."))
+                .andExpect(jsonPath("$.explanation.counterArguments").isEmpty())
+                .andExpect(jsonPath("$.forecast.forecasts[0].value").value("0.55"));
+
+        mockMvc.perform(post("/api/v1/stock-analysis-explanations/AAPL")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DEGRADED"));
+        mockMvc.perform(get("/api/v1/stock-analysis-explanations/AAPL")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.forecast.forecasts[1].value").value("0.02"));
+
+        ANALYSIS.verify(1, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                urlPathEqualTo("/models/gemini-2.5-flash:generateContent")));
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM stock_analysis_explanations", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void degradesExplainOnGeminiFailureAndDoesNotCrossUserBoundary() throws Exception {
+        mockMvc.perform(post("/api/v1/stock-forecasts/AAPL")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody()))
+                .andExpect(status().isOk());
+        ANALYSIS.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(
+                urlPathEqualTo("/models/gemini-2.5-flash:generateContent"))
+                .willReturn(aResponse().withStatus(503)));
+
+        mockMvc.perform(post("/api/v1/stock-analysis-explanations/AAPL")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DEGRADED"))
+                .andExpect(jsonPath("$.missingData[0]").value("GEMINI_UPSTREAM_ERROR"))
+                .andExpect(jsonPath("$.forecast.forecasts[0].value").value("0.55"));
+
+        mockMvc.perform(get("/api/v1/stock-analysis-explanations/AAPL")
+                        .with(user(UUID.randomUUID().toString())))
+                .andExpect(status().isNotFound());
+
+        ANALYSIS.verify(1, com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor(
+                urlPathEqualTo("/models/gemini-2.5-flash:generateContent")));
+    }
+
     private String requestBody() {
         return """
                 {"connectionId":"%s","modelVersion":"deterministic-v1","contractVersion":"forecast-v1"}
@@ -234,11 +309,15 @@ class StockForecastIntegrationTest extends PostgresIntegrationTest {
                   "analyzers":[]
                 }
                 """.formatted(SNAPSHOT_ID, observations);
+        var snapshotPayload = """
+                {"snapshotId":"%s","symbol":"AAPL","schemaVersion":"1",
+                 "collectedAt":"2026-08-02T00:00:00Z","observations":%s}
+                """.formatted(SNAPSHOT_ID, observations).replaceAll("\\s+", "");
         jdbc.update("""
                 INSERT INTO analysis_input_snapshots (
                     id, user_id, symbol, schema_version, payload, payload_hash, collected_at, created_at
                 ) VALUES (?, ?, 'AAPL', '1', CAST(? AS jsonb), ?, ?, ?)
-                """, SNAPSHOT_ID, USER_ID, "{}", "0".repeat(64), offset(AS_OF), offset(AS_OF));
+                """, SNAPSHOT_ID, USER_ID, snapshotPayload, "0".repeat(64), offset(AS_OF), offset(AS_OF));
         jdbc.update("""
                 INSERT INTO stock_analysis_runs (
                     id, user_id, input_snapshot_id, symbol, status, started_at, completed_at
