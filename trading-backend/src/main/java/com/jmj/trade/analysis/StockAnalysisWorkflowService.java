@@ -7,6 +7,7 @@ import com.jmj.trade.observability.CorrelationIdFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.SqlParameterValue;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -18,15 +19,19 @@ import org.slf4j.MDC;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.SocketTimeoutException;
 import java.net.http.HttpClient;
 import java.net.http.HttpTimeoutException;
+import java.sql.Types;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -83,7 +88,7 @@ public final class StockAnalysisWorkflowService {
             var payload = hasher.canonicalJson(input);
             var payloadHash = hasher.hash(input);
             started = transaction.execute(status -> attach(reserved, input, payload, payloadHash));
-            var response = call(new StockAnalysisContract.Request(started.runId(), input));
+            var response = call(new StockAnalysisCoreContract.Request(started.runId(), input));
             validate(started.runId(), input, response);
             var responseJson = encode(response);
             var completed = started;
@@ -133,7 +138,7 @@ public final class StockAnalysisWorkflowService {
                     id, user_id, symbol, schema_version, payload, payload_hash, collected_at, created_at
                 ) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?)
                 """, input.snapshotId(), reserved.userId(), reserved.symbol(), input.schemaVersion(), payload, payloadHash,
-                input.collectedAt(), createdAt);
+                timestamp(input.collectedAt()), createdAt);
         if (snapshotInserted != 1) {
             throw new IllegalStateException("stock analysis input snapshot insert failed");
         }
@@ -149,10 +154,38 @@ public final class StockAnalysisWorkflowService {
                 reserved.runId(), reserved.userId(), input.snapshotId(), reserved.symbol(), reserved.startedAt());
     }
 
-    private StockAnalysisContract.Response call(StockAnalysisContract.Request request) {
+    public StockAnalysisView latest(UUID userId, String symbol) {
+        requireId(userId, "userId");
+        var normalizedSymbol = normalizeSymbol(symbol);
+        if (!userExists(userId)) {
+            throw new StockAnalysisException(StockAnalysisException.Code.NOT_FOUND);
+        }
+        return jdbc.query("""
+                SELECT run.id, run.input_snapshot_id, run.symbol, run.completed_at, result.response::text
+                  FROM stock_analysis_runs run
+                  JOIN stock_analysis_results result
+                    ON result.stock_analysis_run_id = run.id
+                   AND result.user_id = run.user_id
+                   AND result.input_snapshot_id = run.input_snapshot_id
+                 WHERE run.user_id = ?
+                   AND run.symbol = ?
+                   AND run.status = 'SUCCEEDED'
+                 ORDER BY run.completed_at DESC, run.id DESC
+                 LIMIT 1
+                """, (resultSet, rowNum) -> new StockAnalysisView(
+                resultSet.getObject("id", UUID.class),
+                resultSet.getObject("input_snapshot_id", UUID.class),
+                resultSet.getString("symbol"),
+                resultSet.getObject("completed_at", OffsetDateTime.class).toInstant(),
+                decode(resultSet.getString("response"))
+        ), userId, normalizedSymbol).stream().findFirst().orElseThrow(() ->
+                new StockAnalysisException(StockAnalysisException.Code.RESULT_NOT_FOUND));
+    }
+
+    private StockAnalysisCoreContract.Response call(StockAnalysisCoreContract.Request request) {
         try {
             var response = restClient.post()
-                    .uri("/internal/v2/stock-analysis-inputs")
+                    .uri("/internal/v3/stock-analyses")
                     .headers(headers -> {
                         var correlationId = MDC.get(CorrelationIdFilter.MDC_KEY);
                         if (correlationId != null) {
@@ -165,7 +198,7 @@ public final class StockAnalysisWorkflowService {
             if (response == null || response.isBlank()) {
                 throw new StockAnalysisException(StockAnalysisException.Code.CONTRACT_ERROR);
             }
-            return objectMapper.readValue(response, StockAnalysisContract.Response.class);
+            return objectMapper.readValue(response, StockAnalysisCoreContract.Response.class);
         } catch (StockAnalysisException exception) {
             throw exception;
         } catch (RestClientResponseException exception) {
@@ -187,7 +220,7 @@ public final class StockAnalysisWorkflowService {
 
     private StockAnalysisView complete(
             Started started,
-            StockAnalysisContract.Response response,
+            StockAnalysisCoreContract.Response response,
             String responseJson
     ) {
         var completedAt = now();
@@ -225,26 +258,102 @@ public final class StockAnalysisWorkflowService {
     private void validate(
             UUID runId,
             StockAnalysisInput input,
-            StockAnalysisContract.Response response
+            StockAnalysisCoreContract.Response response
     ) {
         if (response == null
                 || !runId.equals(response.requestId())
-                || !StockAnalysisContract.SCHEMA_VERSION.equals(response.schemaVersion())
+                || !StockAnalysisCoreContract.SCHEMA_VERSION.equals(response.schemaVersion())
                 || !input.snapshotId().equals(response.inputSnapshotId())
                 || !input.symbol().equals(response.symbol())
+                || !input.collectedAt().equals(response.asOf())
                 || response.observations() == null
-                || !input.observations().equals(response.observations())) {
+                || !input.observations().equals(response.observations())
+                || response.missingData() == null
+                || response.analyzers() == null
+                || response.analyzers().size() != StockAnalysisCoreContract.ANALYZER_ORDER.size()) {
             throw new StockAnalysisException(StockAnalysisException.Code.CONTRACT_ERROR);
         }
-        var expectedMissing = input.observations().stream()
-                .flatMap(item -> item.missingData().stream()
-                        .map(reason -> item.provider() + ":" + item.field() + ":" + reason))
-                .toList();
+        for (int index = 0; index < response.analyzers().size(); index++) {
+            var analyzer = response.analyzers().get(index);
+            if (analyzer == null
+                    || !StockAnalysisCoreContract.ANALYZER_ORDER.get(index).equals(analyzer.analyzer())
+                    || analyzer.confidence() == null
+                    || analyzer.confidence().signum() < 0
+                    || analyzer.confidence().compareTo(BigDecimal.ONE) > 0
+                    || analyzer.missingData() == null
+                    || analyzer.metrics() == null
+                    || analyzer.metrics().stream().anyMatch(this::invalidMetric)) {
+                throw new StockAnalysisException(StockAnalysisException.Code.CONTRACT_ERROR);
+            }
+            var expectedMetrics = StockAnalysisCoreContract.metricOrder(analyzer.analyzer());
+            if (!expectedMetrics.equals(analyzer.metrics().stream()
+                    .map(StockAnalysisCoreContract.Metric::name).toList())) {
+                throw new StockAnalysisException(StockAnalysisException.Code.CONTRACT_ERROR);
+            }
+            var expectedMissing = unique(analyzer.metrics().stream()
+                    .flatMap(metric -> metric.missingData().stream()));
+            var expectedConfidence = new BigDecimal(
+                    analyzer.metrics().stream().filter(metric -> metric.missingData().isEmpty()).count())
+                    .divide(new BigDecimal(analyzer.metrics().size()), 10, RoundingMode.HALF_EVEN);
+            if (!expectedMissing.equals(analyzer.missingData())
+                    || analyzer.confidence().compareTo(expectedConfidence) != 0) {
+                throw new StockAnalysisException(StockAnalysisException.Code.CONTRACT_ERROR);
+            }
+        }
+        var analyzerDegraded = response.analyzers().stream()
+                .anyMatch(analyzer -> !analyzer.missingData().isEmpty());
         var expectedStatus = input.degraded()
-                ? StockAnalysisContract.Status.DEGRADED
-                : StockAnalysisContract.Status.COMPLETED;
-        if (response.status() != expectedStatus || !expectedMissing.equals(response.missingData())) {
+                || analyzerDegraded
+                ? StockAnalysisCoreContract.Status.DEGRADED
+                : StockAnalysisCoreContract.Status.COMPLETED;
+        var expectedMissing = new ArrayList<String>();
+        input.observations().forEach(observation -> observation.missingData().forEach(reason ->
+                addUnique(expectedMissing, observation.provider() + ":" + observation.field() + ":" + reason)));
+        response.analyzers().forEach(analyzer -> analyzer.missingData().forEach(reason ->
+                addUnique(expectedMissing, analyzer.analyzer() + ":" + reason)));
+        if (response.status() != expectedStatus
+                || (expectedStatus == StockAnalysisCoreContract.Status.COMPLETED
+                ? !response.missingData().isEmpty()
+                : !expectedMissing.equals(response.missingData()))) {
             throw new StockAnalysisException(StockAnalysisException.Code.CONTRACT_ERROR);
+        }
+    }
+
+    private boolean invalidMetric(StockAnalysisCoreContract.Metric metric) {
+        var missingData = metric == null ? null : metric.missingData();
+        var missing = missingData != null && !missingData.isEmpty();
+        var nullValue = metric == null || metric.value() == null || metric.value().isNull();
+        return metric == null
+                || metric.name() == null
+                || metric.name().isBlank()
+                || metric.unit() == null
+                || metric.provenance() == null
+                || missingData == null
+                || metric.provenance().stream().anyMatch(provenance -> provenance == null
+                || provenance.provider() == null
+                || provenance.field() == null
+                || provenance.collectedAt() == null
+                || (!missing && provenance.asOf() == null))
+                || (missing ? !nullValue || metric.asOf() != null : nullValue || metric.asOf() == null);
+    }
+
+    private static List<String> unique(java.util.stream.Stream<String> values) {
+        var result = new ArrayList<String>();
+        values.forEach(value -> addUnique(result, value));
+        return result;
+    }
+
+    private static void addUnique(List<String> values, String value) {
+        if (!values.contains(value)) {
+            values.add(value);
+        }
+    }
+
+    private StockAnalysisCoreContract.Response decode(String json) {
+        try {
+            return objectMapper.readValue(json, StockAnalysisCoreContract.Response.class);
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("stored stock analysis result is invalid", exception);
         }
     }
 
@@ -290,6 +399,10 @@ public final class StockAnalysisWorkflowService {
         return value;
     }
 
+    private static SqlParameterValue timestamp(Instant value) {
+        return new SqlParameterValue(Types.TIMESTAMP_WITH_TIMEZONE, OffsetDateTime.ofInstant(value, ZoneOffset.UTC));
+    }
+
     private OffsetDateTime now() {
         return OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS);
     }
@@ -314,7 +427,7 @@ public final class StockAnalysisWorkflowService {
             UUID inputSnapshotId,
             String symbol,
             Instant completedAt,
-            StockAnalysisContract.Response result
+            StockAnalysisCoreContract.Response result
     ) {
     }
 }

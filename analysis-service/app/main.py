@@ -14,6 +14,7 @@ from pydantic.alias_generators import to_camel
 
 
 RATIO_SCALE = Decimal("0.0000000001")
+CORE_SCALE = Decimal("0.0000000001")
 CORRELATION_HEADER = "X-Correlation-Id"
 CORRELATION_ID = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -135,6 +136,53 @@ class StockAnalysisResponse(ContractModel):
     observations: list[StockAnalysisObservation]
 
 
+class AnalysisProvenance(ContractModel):
+    provider: ProviderId
+    field: str
+    as_of: datetime | None
+    collected_at: datetime
+
+
+class AnalysisMetric(ContractModel):
+    name: str
+    value: Any | None
+    unit: str
+    as_of: datetime | None
+    provenance: list[AnalysisProvenance]
+    missing_data: list[str]
+
+    @model_validator(mode="after")
+    def require_missing_data_for_null(self) -> "AnalysisMetric":
+        if self.missing_data and (self.value is not None or self.as_of is not None):
+            raise ValueError("missing metric must have null value and asOf")
+        if not self.missing_data and (
+            self.value is None
+            or self.as_of is None
+            or any(provenance.as_of is None for provenance in self.provenance)
+        ):
+            raise ValueError("null metric value or asOf requires missingData")
+        return self
+
+
+class AnalyzerResult(ContractModel):
+    analyzer: Literal["fundamental", "valuation", "technical", "marketRegime"]
+    confidence: Decimal
+    missing_data: list[str]
+    metrics: list[AnalysisMetric]
+
+
+class StockAnalysisCoreResponse(ContractModel):
+    request_id: UUID
+    schema_version: Literal["1"]
+    input_snapshot_id: UUID
+    symbol: str
+    as_of: datetime
+    status: Status
+    missing_data: list[str]
+    observations: list[StockAnalysisObservation]
+    analyzers: list[AnalyzerResult]
+
+
 app = FastAPI(title="Portfolio Analysis Service", version="1")
 
 
@@ -154,7 +202,7 @@ async def correlate(request: Request, call_next):
             "analysis"
             if request.url.path.endswith("/portfolio-analyses")
             else "stock-analysis-input"
-            if request.url.path.endswith("/stock-analysis-inputs")
+            if request.url.path.endswith(("/stock-analysis-inputs", "/stock-analyses"))
             else "request"
         )
         LOG.info(
@@ -247,6 +295,212 @@ def analyze_stock_input(request: StockAnalysisRequest) -> StockAnalysisResponse:
         missing_data=missing_data,
         observations=request.input.observations,
     )
+
+
+@app.post(
+    "/internal/v3/stock-analyses",
+    response_model=StockAnalysisCoreResponse,
+)
+def analyze_stock_core(request: StockAnalysisRequest) -> StockAnalysisCoreResponse:
+    indexed = _index_observations(request.input.observations)
+    analyzers = [
+        _fundamental(indexed, request.input.collected_at),
+        _valuation(indexed, request.input.collected_at),
+        _technical(indexed, request.input.collected_at),
+        _market_regime(indexed, request.input.collected_at),
+    ]
+    input_missing = [
+        f"{observation.provider}:{observation.field}:{reason}"
+        for observation in request.input.observations
+        for reason in observation.missing_data
+    ]
+    analyzer_missing = [
+        f"{result.analyzer}:{reason}"
+        for result in analyzers
+        for reason in result.missing_data
+    ]
+    missing_data = _stable_unique(input_missing + analyzer_missing)
+    return StockAnalysisCoreResponse(
+        request_id=request.request_id,
+        schema_version=request.input.schema_version,
+        input_snapshot_id=request.input.snapshot_id,
+        symbol=request.input.symbol,
+        as_of=request.input.collected_at,
+        status=Status.DEGRADED if missing_data else Status.COMPLETED,
+        missing_data=missing_data,
+        observations=request.input.observations,
+        analyzers=analyzers,
+    )
+
+
+def _index_observations(observations: list[StockAnalysisObservation]):
+    indexed: dict[str, list[StockAnalysisObservation]] = {}
+    for observation in observations:
+        indexed.setdefault(observation.field, []).append(observation)
+    return indexed
+
+
+def _provenance(observation: StockAnalysisObservation) -> AnalysisProvenance:
+    return AnalysisProvenance(
+        provider=observation.provider,
+        field=observation.field,
+        as_of=observation.as_of,
+        collected_at=observation.collected_at,
+    )
+
+
+def _resolve(indexed, field: str):
+    matches = indexed.get(field, [])
+    references = [_provenance(observation) for observation in matches]
+    if not matches:
+        return None, references, [f"FIELD_MISSING:{field}"]
+    if len(matches) != 1:
+        return None, references, [f"AMBIGUOUS_DUPLICATE_FIELD:{field}"]
+    observation = matches[0]
+    if observation.missing_data:
+        return None, references, [f"{reason}:{field}" for reason in observation.missing_data]
+    if observation.value is None:
+        return None, references, [f"MISSING_VALUE:{field}"]
+    if observation.as_of is None:
+        return None, references, [f"MISSING_AS_OF:{field}"]
+    try:
+        value = Decimal(str(observation.value))
+        if not value.is_finite():
+            raise ValueError("non-finite numeric value")
+        return value, references, []
+    except (ArithmeticError, ValueError):
+        return None, references, [f"INVALID_NUMERIC_VALUE:{field}"]
+
+
+def _metric(name, unit, basis_as_of, fields, indexed, operation=None):
+    resolved = [_resolve(indexed, field) for field in fields]
+    values = [item[0] for item in resolved]
+    references = [reference for item in resolved for reference in item[1]]
+    missing = [reason for item in resolved for reason in item[2]]
+    if missing:
+        return AnalysisMetric(
+            name=name,
+            value=None,
+            unit=unit,
+            as_of=None,
+            provenance=references,
+            missing_data=_stable_unique(missing),
+        )
+    try:
+        value = values[0] if operation is None else operation(values)
+    except ArithmeticError:
+        return AnalysisMetric(
+            name=name,
+            value=None,
+            unit=unit,
+            as_of=None,
+            provenance=references,
+            missing_data=[f"DIVISION_BY_ZERO:{name}"],
+        )
+    return AnalysisMetric(
+        name=name,
+        value=_decimal_text(value)
+        if operation is not None and isinstance(value, Decimal)
+        else value,
+        unit=unit,
+        as_of=basis_as_of,
+        provenance=references,
+        missing_data=[],
+    )
+
+
+def _direct_metric(name, unit, field, indexed, basis_as_of):
+    return _metric(name, unit, basis_as_of, [field], indexed)
+
+
+def _result(name, metrics):
+    missing = _stable_unique(reason for metric in metrics for reason in metric.missing_data)
+    complete = sum(not metric.missing_data for metric in metrics)
+    confidence = (Decimal(complete) / Decimal(len(metrics))).quantize(
+        CORE_SCALE, rounding=ROUND_HALF_EVEN
+    )
+    return AnalyzerResult(
+        analyzer=name,
+        confidence=_decimal_text(confidence),
+        missing_data=missing,
+        metrics=metrics,
+    )
+
+
+def _fundamental(indexed, basis_as_of):
+    return _result("fundamental", [
+        _metric("fundamental.profit_margin", "ratio", basis_as_of,
+                ["fundamental.net_income", "fundamental.revenue"], indexed,
+                lambda values: values[0] / values[1]),
+        _metric("fundamental.roe", "ratio", basis_as_of,
+                ["fundamental.net_income", "fundamental.equity"], indexed,
+                lambda values: values[0] / values[1]),
+        _metric("fundamental.debt_to_equity", "ratio", basis_as_of,
+                ["fundamental.total_liabilities", "fundamental.equity"], indexed,
+                lambda values: values[0] / values[1]),
+        _metric("fundamental.operating_cash_flow_margin", "ratio", basis_as_of,
+                ["fundamental.operating_cash_flow", "fundamental.revenue"], indexed,
+                lambda values: values[0] / values[1]),
+    ])
+
+
+def _valuation(indexed, basis_as_of):
+    return _result("valuation", [
+        _metric("valuation.pe", "multiple", basis_as_of,
+                ["quote.price", "fundamental.eps"], indexed,
+                lambda values: values[0] / values[1]),
+        _metric("valuation.price_to_book", "multiple", basis_as_of,
+                ["quote.price", "fundamental.book_value_per_share"], indexed,
+                lambda values: values[0] / values[1]),
+        _metric("valuation.price_to_sales", "multiple", basis_as_of,
+                ["quote.price", "fundamental.revenue_per_share"], indexed,
+                lambda values: values[0] / values[1]),
+        _metric("valuation.fcf_yield", "ratio", basis_as_of,
+                ["fundamental.free_cash_flow_per_share", "quote.price"], indexed,
+                lambda values: values[0] / values[1]),
+    ])
+
+
+def _technical(indexed, basis_as_of):
+    return _result("technical", [
+        _metric("technical.price_vs_sma20", "ratio", basis_as_of,
+                ["quote.price", "technical.sma20"], indexed,
+                lambda values: values[0] / values[1] - 1),
+        _metric("technical.price_vs_sma50", "ratio", basis_as_of,
+                ["quote.price", "technical.sma50"], indexed,
+                lambda values: values[0] / values[1] - 1),
+        _metric("technical.sma_trend", "ratio", basis_as_of,
+                ["technical.sma20", "technical.sma50"], indexed,
+                lambda values: values[0] / values[1] - 1),
+        _direct_metric("technical.rsi14", "ratio", "technical.rsi14", indexed, basis_as_of),
+        _direct_metric("technical.volatility20", "ratio", "technical.volatility20", indexed, basis_as_of),
+    ])
+
+
+def _market_regime(indexed, basis_as_of):
+    return _result("marketRegime", [
+        _direct_metric("marketRegime.vix", "index", "macro.vix", indexed, basis_as_of),
+        _direct_metric("marketRegime.sp500Return20d", "ratio", "macro.sp500_return20d", indexed, basis_as_of),
+        _metric("marketRegime.state", "state", basis_as_of,
+                ["macro.vix", "macro.sp500_return20d"], indexed,
+                lambda values: (
+                    "RISK_ON" if values[0] <= 20 and values[1] >= 0
+                    else "RISK_OFF" if values[0] >= 30 and values[1] < 0
+                    else "NEUTRAL"
+                )),
+    ])
+
+
+def _decimal_text(value: Decimal) -> str:
+    quantized = value.quantize(CORE_SCALE, rounding=ROUND_HALF_EVEN)
+    text = format(quantized.normalize(), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _stable_unique(values):
+    return list(dict.fromkeys(values))
 
 
 def ratio(value: Decimal, total: Decimal) -> Decimal:

@@ -17,6 +17,7 @@ public final class StockAnalysisException extends RuntimeException {
         INVALID_USER,
         INVALID_SYMBOL,
         NOT_FOUND,
+        RESULT_NOT_FOUND,
         ALREADY_RUNNING,
         TIMEOUT,
         CONTRACT_ERROR,

@@ -83,7 +83,7 @@ class StockAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
         PROVIDERS.stubFor(get(urlPathEqualTo("/provider"))
                 .willReturn(aResponse().withHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                         .withBody("{\"price\":\"189.40\",\"asOf\":\"2026-08-01T20:00:00Z\"}")));
-        PROVIDERS.stubFor(post("/internal/v2/stock-analysis-inputs")
+        PROVIDERS.stubFor(post("/internal/v3/stock-analyses")
                 .willReturn(aResponse().withHeader("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                         .withBody("""
                                 {
@@ -91,9 +91,36 @@ class StockAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                                   "schemaVersion":"1",
                                   "inputSnapshotId":"{{jsonPath request.body '$.input.snapshotId'}}",
                                   "symbol":"{{jsonPath request.body '$.input.symbol'}}",
-                                  "status":"COMPLETED",
-                                  "missingData":[],
-                                  "observations":{{jsonPath request.body '$.input.observations'}}
+                                  "asOf":"{{jsonPath request.body '$.input.collectedAt'}}",
+                                  "status":"DEGRADED",
+                                  "missingData":["fundamental:FIELD_MISSING:fundamental.net_income","valuation:FIELD_MISSING:fundamental.eps","technical:FIELD_MISSING:technical.sma20","marketRegime:FIELD_MISSING:macro.vix"],
+                                  "observations":{{jsonPath request.body '$.input.observations'}},
+                                  "analyzers":[
+                                    {"analyzer":"fundamental","confidence":"0","missingData":["FIELD_MISSING:fundamental.net_income"],"metrics":[
+                                      {"name":"fundamental.profit_margin","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.net_income"]},
+                                      {"name":"fundamental.roe","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.net_income"]},
+                                      {"name":"fundamental.debt_to_equity","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.net_income"]},
+                                      {"name":"fundamental.operating_cash_flow_margin","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.net_income"]}
+                                    ]},
+                                    {"analyzer":"valuation","confidence":"0","missingData":["FIELD_MISSING:fundamental.eps"],"metrics":[
+                                      {"name":"valuation.pe","value":null,"unit":"multiple","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.eps"]},
+                                      {"name":"valuation.price_to_book","value":null,"unit":"multiple","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.eps"]},
+                                      {"name":"valuation.price_to_sales","value":null,"unit":"multiple","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.eps"]},
+                                      {"name":"valuation.fcf_yield","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.eps"]}
+                                    ]},
+                                    {"analyzer":"technical","confidence":"0","missingData":["FIELD_MISSING:technical.sma20"],"metrics":[
+                                      {"name":"technical.price_vs_sma20","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:technical.sma20"]},
+                                      {"name":"technical.price_vs_sma50","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:technical.sma20"]},
+                                      {"name":"technical.sma_trend","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:technical.sma20"]},
+                                      {"name":"technical.rsi14","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:technical.sma20"]},
+                                      {"name":"technical.volatility20","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:technical.sma20"]}
+                                    ]},
+                                    {"analyzer":"marketRegime","confidence":"0","missingData":["FIELD_MISSING:macro.vix"],"metrics":[
+                                      {"name":"marketRegime.vix","value":null,"unit":"index","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:macro.vix"]},
+                                      {"name":"marketRegime.sp500Return20d","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:macro.vix"]},
+                                      {"name":"marketRegime.state","value":null,"unit":"state","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:macro.vix"]}
+                                    ]}
+                                  ]
                                 }
                                 """)));
     }
@@ -111,9 +138,16 @@ class StockAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.symbol").value("AAPL"))
-                .andExpect(jsonPath("$.result.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.result.status").value("DEGRADED"))
                 .andExpect(jsonPath("$.result.observations[0].provider").value("FMP"))
                 .andExpect(jsonPath("$.result.observations[0].value").value("189.40"));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                        "/api/v1/stock-analyses/AAPL")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.analyzers[0].analyzer").value("fundamental"))
+                .andExpect(jsonPath("$.result.observations[0].provider").value("FMP"));
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM analysis_input_snapshots", Integer.class))
                 .isEqualTo(1);
@@ -121,6 +155,15 @@ class StockAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                 .isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM stock_analysis_results", Integer.class))
                 .isEqualTo(1);
-        PROVIDERS.verify(1, postRequestedFor(urlPathEqualTo("/internal/v2/stock-analysis-inputs")));
+        PROVIDERS.verify(1, postRequestedFor(urlPathEqualTo("/internal/v3/stock-analyses")));
+    }
+
+    @Test
+    void returnsNotFoundWhenNoCompletedAnalysisExists() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                        "/api/v1/stock-analyses/AAPL")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("STOCK_ANALYSIS_RESULT_NOT_FOUND"));
     }
 }

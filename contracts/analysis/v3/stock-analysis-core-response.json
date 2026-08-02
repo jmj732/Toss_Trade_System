@@ -1,0 +1,94 @@
+{
+  "requestId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+  "schemaVersion": "1",
+  "inputSnapshotId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "symbol": "AAPL",
+  "asOf": "2026-08-02T00:00:00Z",
+  "status": "DEGRADED",
+  "missingData": [
+    "fundamental:FIELD_MISSING:fundamental.net_income",
+    "fundamental:FIELD_MISSING:fundamental.revenue",
+    "fundamental:FIELD_MISSING:fundamental.equity",
+    "fundamental:FIELD_MISSING:fundamental.total_liabilities",
+    "fundamental:FIELD_MISSING:fundamental.operating_cash_flow",
+    "valuation:FIELD_MISSING:quote.price",
+    "valuation:FIELD_MISSING:fundamental.eps",
+    "valuation:FIELD_MISSING:fundamental.book_value_per_share",
+    "valuation:FIELD_MISSING:fundamental.revenue_per_share",
+    "valuation:FIELD_MISSING:fundamental.free_cash_flow_per_share",
+    "technical:FIELD_MISSING:technical.sma20",
+    "technical:FIELD_MISSING:technical.sma50",
+    "technical:FIELD_MISSING:technical.rsi14",
+    "technical:FIELD_MISSING:technical.volatility20",
+    "marketRegime:FIELD_MISSING:macro.vix",
+    "marketRegime:FIELD_MISSING:macro.sp500_return20d"
+  ],
+  "observations": [],
+  "analyzers": [
+    {
+      "analyzer": "fundamental",
+      "confidence": "0",
+      "missingData": [
+        "FIELD_MISSING:fundamental.net_income",
+        "FIELD_MISSING:fundamental.revenue",
+        "FIELD_MISSING:fundamental.equity",
+        "FIELD_MISSING:fundamental.total_liabilities",
+        "FIELD_MISSING:fundamental.operating_cash_flow"
+      ],
+      "metrics": [
+        {"name":"fundamental.profit_margin","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.net_income","FIELD_MISSING:fundamental.revenue"]},
+        {"name":"fundamental.roe","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.net_income","FIELD_MISSING:fundamental.equity"]},
+        {"name":"fundamental.debt_to_equity","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.total_liabilities","FIELD_MISSING:fundamental.equity"]},
+        {"name":"fundamental.operating_cash_flow_margin","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.operating_cash_flow","FIELD_MISSING:fundamental.revenue"]}
+      ]
+    },
+    {
+      "analyzer": "valuation",
+      "confidence": "0",
+      "missingData": [
+        "FIELD_MISSING:quote.price",
+        "FIELD_MISSING:fundamental.eps",
+        "FIELD_MISSING:fundamental.book_value_per_share",
+        "FIELD_MISSING:fundamental.revenue_per_share",
+        "FIELD_MISSING:fundamental.free_cash_flow_per_share"
+      ],
+      "metrics": [
+        {"name":"valuation.pe","value":null,"unit":"multiple","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:quote.price","FIELD_MISSING:fundamental.eps"]},
+        {"name":"valuation.price_to_book","value":null,"unit":"multiple","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:quote.price","FIELD_MISSING:fundamental.book_value_per_share"]},
+        {"name":"valuation.price_to_sales","value":null,"unit":"multiple","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:quote.price","FIELD_MISSING:fundamental.revenue_per_share"]},
+        {"name":"valuation.fcf_yield","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:fundamental.free_cash_flow_per_share","FIELD_MISSING:quote.price"]}
+      ]
+    },
+    {
+      "analyzer": "technical",
+      "confidence": "0",
+      "missingData": [
+        "FIELD_MISSING:quote.price",
+        "FIELD_MISSING:technical.sma20",
+        "FIELD_MISSING:technical.sma50",
+        "FIELD_MISSING:technical.rsi14",
+        "FIELD_MISSING:technical.volatility20"
+      ],
+      "metrics": [
+        {"name":"technical.price_vs_sma20","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:quote.price","FIELD_MISSING:technical.sma20"]},
+        {"name":"technical.price_vs_sma50","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:quote.price","FIELD_MISSING:technical.sma50"]},
+        {"name":"technical.sma_trend","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:technical.sma20","FIELD_MISSING:technical.sma50"]},
+        {"name":"technical.rsi14","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:technical.rsi14"]},
+        {"name":"technical.volatility20","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:technical.volatility20"]}
+      ]
+    },
+    {
+      "analyzer": "marketRegime",
+      "confidence": "0",
+      "missingData": [
+        "FIELD_MISSING:macro.vix",
+        "FIELD_MISSING:macro.sp500_return20d"
+      ],
+      "metrics": [
+        {"name":"marketRegime.vix","value":null,"unit":"index","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:macro.vix"]},
+        {"name":"marketRegime.sp500Return20d","value":null,"unit":"ratio","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:macro.sp500_return20d"]},
+        {"name":"marketRegime.state","value":null,"unit":"state","asOf":null,"provenance":[],"missingData":["FIELD_MISSING:macro.vix","FIELD_MISSING:macro.sp500_return20d"]}
+      ]
+    }
+  ]
+}

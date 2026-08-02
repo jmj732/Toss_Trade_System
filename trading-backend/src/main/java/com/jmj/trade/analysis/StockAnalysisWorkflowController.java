@@ -3,6 +3,7 @@ package com.jmj.trade.analysis;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -32,12 +33,21 @@ public class StockAnalysisWorkflowController {
         return service.execute(userId(principal), symbol, request == null ? Map.of() : request.identifiers());
     }
 
+    @GetMapping("/{symbol}")
+    StockAnalysisWorkflowService.StockAnalysisView latest(
+            Principal principal,
+            @PathVariable String symbol
+    ) {
+        return service.latest(userId(principal), symbol);
+    }
+
     @ExceptionHandler(StockAnalysisException.class)
     ResponseEntity<PublicError> analysis(StockAnalysisException exception) {
         return switch (exception.code()) {
             case INVALID_USER -> error(HttpStatus.FORBIDDEN, "AUTHENTICATED_USER_INVALID");
             case INVALID_SYMBOL -> error(HttpStatus.BAD_REQUEST, "STOCK_SYMBOL_INVALID");
             case NOT_FOUND -> error(HttpStatus.NOT_FOUND, "STOCK_ANALYSIS_OWNER_NOT_FOUND");
+            case RESULT_NOT_FOUND -> error(HttpStatus.NOT_FOUND, "STOCK_ANALYSIS_RESULT_NOT_FOUND");
             case ALREADY_RUNNING -> error(HttpStatus.CONFLICT, "STOCK_ANALYSIS_ALREADY_RUNNING");
             case TIMEOUT -> error(HttpStatus.GATEWAY_TIMEOUT, "STOCK_ANALYSIS_TIMEOUT");
             case CONTRACT_ERROR -> error(HttpStatus.BAD_GATEWAY, "STOCK_ANALYSIS_CONTRACT_ERROR");
