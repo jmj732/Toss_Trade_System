@@ -5,6 +5,7 @@ import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.analysis.PortfolioAnalysisWorkflowService;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
+import com.jmj.trade.intelligence.EventIntelligenceService;
 import com.jmj.trade.order.OrderIntentStatus;
 import com.jmj.trade.order.OrderSide;
 import com.jmj.trade.order.OrderType;
@@ -101,7 +102,7 @@ public final class DashboardReadModelService {
         return jdbc.query("""
                 SELECT event.id, event.source, event.source_event_id, event.event_type,
                        event.summary, event.affected_symbols::text, event.occurred_at,
-                       event.collected_at,
+                       event.macro_scope::text, event.collected_at,
                        EXISTS (
                            SELECT 1
                              FROM event_analysis_comparisons comparison
@@ -127,6 +128,7 @@ public final class DashboardReadModelService {
                 resultSet.getString("event_type"),
                 resultSet.getString("summary"),
                 decodeSymbols(resultSet.getString("affected_symbols")),
+                decodeMacroScope(resultSet.getString("macro_scope")),
                 instant(resultSet.getObject("occurred_at", OffsetDateTime.class)),
                 instant(resultSet.getObject("collected_at", OffsetDateTime.class)),
                 resultSet.getBoolean("comparison_available")
@@ -160,6 +162,15 @@ public final class DashboardReadModelService {
             return List.copyOf(List.of(objectMapper.readValue(json, String[].class)));
         } catch (JacksonException exception) {
             throw new IllegalStateException("stored event symbols are invalid", exception);
+        }
+    }
+
+    private List<EventIntelligenceService.MacroScope> decodeMacroScope(String json) {
+        try {
+            return List.of(objectMapper.readValue(
+                    json, EventIntelligenceService.MacroScope[].class));
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("stored event macro scope is invalid", exception);
         }
     }
 
@@ -205,6 +216,7 @@ public final class DashboardReadModelService {
             String type,
             String summary,
             List<String> affectedSymbols,
+            List<EventIntelligenceService.MacroScope> macroScope,
             Instant occurredAt,
             Instant collectedAt,
             boolean comparisonAvailable

@@ -186,7 +186,8 @@ public final class EventReviewWorkflowService {
             boolean comparisonAvailable
     ) {
         return new ReviewSummary(event.id(), event.source(), event.sourceEventId(), event.type(),
-                event.summary(), event.affectedSymbols(), event.occurredAt(), event.collectedAt(),
+                event.summary(), event.affectedSymbols(), event.macroScope(), event.occurredAt(),
+                event.collectedAt(),
                 state == null ? ReviewStatus.PENDING : state.status(),
                 state == null ? 0 : state.version(),
                 state == null ? null : state.reviewedAt(), comparisonAvailable);
@@ -200,7 +201,7 @@ public final class EventReviewWorkflowService {
         var summary = summary(event, state, comparison != null);
         return new ReviewDetail(summary.id(), summary.source(), summary.sourceEventId(),
                 summary.type(), summary.summary(), summary.affectedSymbols(),
-                summary.occurredAt(), summary.collectedAt(), summary.reviewStatus(),
+                summary.macroScope(), summary.occurredAt(), summary.collectedAt(), summary.reviewStatus(),
                 summary.reviewVersion(), summary.reviewedAt(), summary.comparisonAvailable(),
                 comparison);
     }
@@ -245,6 +246,7 @@ public final class EventReviewWorkflowService {
             String type,
             String summary,
             List<String> affectedSymbols,
+            List<EventIntelligenceService.MacroScope> macroScope,
             Instant occurredAt,
             Instant collectedAt,
             ReviewStatus reviewStatus,
@@ -261,6 +263,7 @@ public final class EventReviewWorkflowService {
             String type,
             String summary,
             List<String> affectedSymbols,
+            List<EventIntelligenceService.MacroScope> macroScope,
             Instant occurredAt,
             Instant collectedAt,
             ReviewStatus reviewStatus,

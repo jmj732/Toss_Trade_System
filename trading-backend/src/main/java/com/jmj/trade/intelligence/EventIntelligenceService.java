@@ -2,6 +2,7 @@ package com.jmj.trade.intelligence;
 
 import com.jmj.trade.analysis.PortfolioAnalysisContract;
 import com.jmj.trade.analysis.PortfolioAnalysisWorkflowService;
+import com.jmj.trade.intelligence.ingestion.MarketEvent;
 import com.jmj.trade.notification.NotificationEventType;
 import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -62,21 +63,60 @@ public class EventIntelligenceService {
         var type = text(command.type(), 60);
         var summary = text(command.summary(), 1000);
         var symbols = symbols(command.affectedSymbols());
+        var macroScope = macroScope(command.macroScope());
+        return insert(userId, connectionId, source, sourceEventId, type, summary, symbols,
+                macroScope, command.occurredAt(), true).orElseThrow();
+    }
+
+    @Transactional
+    public boolean ingest(UUID userId, UUID connectionId, MarketEvent event) {
+        requireId(userId);
+        requireId(connectionId);
+        if (event == null) {
+            invalid();
+        }
+        if (!ownedConnection(userId, connectionId)) {
+            throw new EventIntelligenceException(
+                    EventIntelligenceException.Code.CONNECTION_NOT_FOUND);
+        }
+        var symbols = symbols(event.affectedSymbols(), true);
+        return insert(userId, connectionId, event.provider().name(), event.sourceEventId(),
+                event.type(), event.summary(), symbols, macroScope(event.macroScope()),
+                event.occurredAt(), false).isPresent();
+    }
+
+    private java.util.Optional<EventView> insert(
+            UUID userId,
+            UUID connectionId,
+            String source,
+            String sourceEventId,
+            String type,
+            String summary,
+            List<String> symbols,
+            List<MacroScope> macroScope,
+            Instant occurredAt,
+            boolean failOnDuplicate
+    ) {
         var eventId = UUID.randomUUID();
         var collectedAt = now();
         var inserted = jdbc.update("""
                 INSERT INTO intelligence_events (
                     id, user_id, broker_connection_id, source, source_event_id, event_type,
-                    summary, affected_symbols, occurred_at, collected_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?)
+                    summary, affected_symbols, macro_scope, occurred_at, collected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?)
                 ON CONFLICT (user_id, broker_connection_id, source, source_event_id)
                 DO NOTHING
-                """, eventId, userId, connectionId, source, sourceEventId, type, summary,
-                encode(symbols), OffsetDateTime.ofInstant(command.occurredAt(), ZoneOffset.UTC),
+                """, eventId, userId, connectionId, text(source, 80),
+                text(sourceEventId, 200), text(type, 60), text(summary, 1000),
+                encode(symbols), encode(macroScope),
+                OffsetDateTime.ofInstant(Objects.requireNonNull(occurredAt), ZoneOffset.UTC),
                 collectedAt);
         if (inserted != 1) {
-            throw new EventIntelligenceException(
-                    EventIntelligenceException.Code.EVENT_ALREADY_EXISTS);
+            if (failOnDuplicate) {
+                throw new EventIntelligenceException(
+                        EventIntelligenceException.Code.EVENT_ALREADY_EXISTS);
+            }
+            return java.util.Optional.empty();
         }
         notifications.emit(userId, NotificationEventType.EVENT_CREATED, eventId,
                 Map.of(
@@ -85,8 +125,9 @@ public class EventIntelligenceService {
                         "type", type,
                         "affectedSymbols", symbols),
                 collectedAt.toInstant());
-        return new EventView(eventId, source, sourceEventId, type, summary, symbols,
-                command.occurredAt(), collectedAt.toInstant());
+        return java.util.Optional.of(new EventView(eventId, text(source, 80),
+                text(sourceEventId, 200), text(type, 60), text(summary, 1000), symbols,
+                macroScope, occurredAt, collectedAt.toInstant()));
     }
 
     EventView get(UUID userId, UUID connectionId, UUID eventId) {
@@ -95,7 +136,7 @@ public class EventIntelligenceService {
         requireId(eventId);
         return jdbc.query("""
                 SELECT id, source, source_event_id, event_type, summary,
-                       affected_symbols::text, occurred_at, collected_at
+                       affected_symbols::text, macro_scope::text, occurred_at, collected_at
                   FROM intelligence_events
                  WHERE id = ?
                    AND user_id = ?
@@ -107,6 +148,7 @@ public class EventIntelligenceService {
                 resultSet.getString("event_type"),
                 resultSet.getString("summary"),
                 resultSet.getString("affected_symbols"),
+                resultSet.getString("macro_scope"),
                 resultSet.getObject("occurred_at", OffsetDateTime.class),
                 resultSet.getObject("collected_at", OffsetDateTime.class)
         ), eventId, userId, connectionId).stream().findFirst().orElseThrow(() ->
@@ -125,7 +167,7 @@ public class EventIntelligenceService {
         }
         return jdbc.query("""
                 SELECT id, source, source_event_id, event_type, summary,
-                       affected_symbols::text, occurred_at, collected_at
+                       affected_symbols::text, macro_scope::text, occurred_at, collected_at
                   FROM intelligence_events
                  WHERE user_id = ?
                    AND broker_connection_id = ?
@@ -138,6 +180,7 @@ public class EventIntelligenceService {
                 resultSet.getString("event_type"),
                 resultSet.getString("summary"),
                 resultSet.getString("affected_symbols"),
+                resultSet.getString("macro_scope"),
                 resultSet.getObject("occurred_at", OffsetDateTime.class),
                 resultSet.getObject("collected_at", OffsetDateTime.class)
         ), userId, connectionId, limit);
@@ -298,11 +341,18 @@ public class EventIntelligenceService {
             String type,
             String summary,
             String affectedSymbols,
+            String macroScope,
             OffsetDateTime occurredAt,
             OffsetDateTime collectedAt
     ) {
         return new EventView(id, source, sourceEventId, type, summary,
-                decodeSymbols(affectedSymbols), occurredAt.toInstant(), collectedAt.toInstant());
+                decodeSymbols(affectedSymbols), decodeMacroScope(macroScope),
+                occurredAt.toInstant(), collectedAt.toInstant());
+    }
+
+    private List<MacroScope> decodeMacroScope(String json) {
+        var values = decode(json, MacroScope[].class);
+        return values == null ? List.of() : List.of(values);
     }
 
     private boolean ownedConnection(UUID userId, UUID connectionId) {
@@ -348,7 +398,11 @@ public class EventIntelligenceService {
     }
 
     private static List<String> symbols(List<String> values) {
-        if (values == null || values.isEmpty() || values.size() > 100) {
+        return symbols(values, false);
+    }
+
+    private static List<String> symbols(List<String> values, boolean allowEmpty) {
+        if (values == null || (!allowEmpty && values.isEmpty()) || values.size() > 100) {
             invalid();
         }
         var symbols = new LinkedHashSet<String>();
@@ -360,6 +414,13 @@ public class EventIntelligenceService {
             symbols.add(symbol);
         }
         return List.copyOf(symbols);
+    }
+
+    private static List<MacroScope> macroScope(List<MacroScope> values) {
+        if (values == null || values.size() > 100 || values.stream().anyMatch(Objects::isNull)) {
+            invalid();
+        }
+        return values == null ? List.of() : List.copyOf(values);
     }
 
     private static void requireId(UUID value) {
@@ -382,8 +443,24 @@ public class EventIntelligenceService {
             String type,
             String summary,
             List<String> affectedSymbols,
-            Instant occurredAt
+            Instant occurredAt,
+            List<MacroScope> macroScope
     ) {
+
+        public CreateEvent {
+            macroScope = macroScope == null ? List.of() : List.copyOf(macroScope);
+        }
+
+        public CreateEvent(
+                String source,
+                String sourceEventId,
+                String type,
+                String summary,
+                List<String> affectedSymbols,
+                Instant occurredAt
+        ) {
+            this(source, sourceEventId, type, summary, affectedSymbols, occurredAt, List.of());
+        }
     }
 
     public record EventView(
@@ -393,9 +470,43 @@ public class EventIntelligenceService {
             String type,
             String summary,
             List<String> affectedSymbols,
+            List<MacroScope> macroScope,
             Instant occurredAt,
             Instant collectedAt
     ) {
+    }
+
+    public record MacroScope(
+            String provider,
+            String identifier,
+            String period,
+            String vintage
+    ) {
+
+        public MacroScope(String provider, String identifier, String period) {
+            this(provider, identifier, period, null);
+        }
+
+        public MacroScope {
+            if (provider == null || provider.isBlank()
+                    || identifier == null || identifier.isBlank()) {
+                throw new IllegalArgumentException("macro scope provider and identifier required");
+            }
+            provider = provider.trim().toUpperCase(Locale.ROOT);
+            identifier = identifier.trim();
+            period = optional(period);
+            vintage = optional(vintage);
+            if (!Set.of("SEC", "IR", "FED", "FRED", "BLS", "BEA").contains(provider)
+                    || identifier.length() > 200
+                    || (period != null && period.length() > 80)
+                    || (vintage != null && vintage.length() > 80)) {
+                throw new IllegalArgumentException("macro scope is invalid");
+            }
+        }
+
+        private static String optional(String value) {
+            return value == null || value.isBlank() ? null : value.trim();
+        }
     }
 
     public record ComparisonView(

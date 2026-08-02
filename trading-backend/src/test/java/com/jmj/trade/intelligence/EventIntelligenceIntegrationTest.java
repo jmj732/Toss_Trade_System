@@ -3,6 +3,8 @@ package com.jmj.trade.intelligence;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
+import com.jmj.trade.intelligence.ingestion.MarketEvent;
+import com.jmj.trade.intelligence.ingestion.MarketEventProviderId;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -246,6 +248,46 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
         assertThatThrownBy(() -> jdbc.update(
                 "UPDATE event_analysis_comparisons SET comparison = '{}'::jsonb WHERE event_id = ?",
                 eventId)).hasMessageContaining("append-only");
+    }
+
+    @Test
+    void automatedMacroEventUsesTheExistingReviewAndReanalyzeFlow() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertSuccessfulPortfolio(connectionId, USER_ID, "120", TIME);
+        stubAnalysis();
+        postAnalysis(connectionId);
+
+        assertThat(eventIntelligenceService.ingest(
+                USER_ID,
+                connectionId,
+                new MarketEvent(
+                        MarketEventProviderId.FRED,
+                        "CPIAUCSL:2026-07-28:2026-08-01:120.1",
+                        "FRED_OBSERVATION",
+                        "CPI observation",
+                        TIME.toInstant(),
+                        List.of(),
+                        List.of(new EventIntelligenceService.MacroScope(
+                                "FRED", "CPIAUCSL", "2026-07", "2026-08-01")))))
+                .isTrue();
+        var eventId = jdbc.queryForObject(
+                "SELECT id FROM intelligence_events WHERE source = 'FRED'", UUID.class);
+        insertSuccessfulPortfolio(connectionId, USER_ID, "150", TIME.plusMinutes(1));
+
+        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/events/{eventId}",
+                        connectionId, eventId).with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.macroScope[0].provider").value("FRED"))
+                .andExpect(jsonPath("$.reviewStatus").value("PENDING"));
+
+        mockMvc.perform(post(
+                                "/api/v1/broker-connections/{connectionId}/events/{eventId}/reanalyze",
+                                connectionId, eventId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.eventId").value(eventId.toString()))
+                .andExpect(jsonPath("$.comparison.baselineAvailable").value(true));
     }
 
     @Test

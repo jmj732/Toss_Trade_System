@@ -34,6 +34,32 @@ stock-analysis:
       enabled: ${STOCK_ANALYSIS_POLYGON_ENABLED:false}
     twelve-data:
       enabled: ${STOCK_ANALYSIS_TWELVE_DATA_ENABLED:false}
+market-events:
+  scheduler:
+    enabled: ${MARKET_EVENTS_SCHEDULER_ENABLED:false}
+  interval: ${MARKET_EVENTS_INTERVAL:PT15M}
+  initial-delay: ${MARKET_EVENTS_INITIAL_DELAY:PT1M}
+  lease-ttl: ${MARKET_EVENTS_LEASE_TTL:PT10M}
+  stale-after: ${MARKET_EVENTS_STALE_AFTER:PT30M}
+  lookback: ${MARKET_EVENTS_LOOKBACK:P2D}
+  retry-backoff: ${MARKET_EVENTS_RETRY_BACKOFF:PT30S}
+  max-retry-backoff: ${MARKET_EVENTS_MAX_RETRY_BACKOFF:PT30M}
+  max-attempts: ${MARKET_EVENTS_MAX_ATTEMPTS:3}
+  batch-size: ${MARKET_EVENTS_BATCH_SIZE:25}
+  max-events-per-provider: ${MARKET_EVENTS_MAX_EVENTS_PER_PROVIDER:200}
+  providers:
+    sec:
+      enabled: ${MARKET_EVENTS_SEC_ENABLED:false}
+    ir:
+      enabled: ${MARKET_EVENTS_IR_ENABLED:false}
+    fed:
+      enabled: ${MARKET_EVENTS_FED_ENABLED:false}
+    fred:
+      enabled: ${MARKET_EVENTS_FRED_ENABLED:false}
+    bls:
+      enabled: ${MARKET_EVENTS_BLS_ENABLED:false}
+    bea:
+      enabled: ${MARKET_EVENTS_BEA_ENABLED:false}
 management:
   endpoints:
     web:
