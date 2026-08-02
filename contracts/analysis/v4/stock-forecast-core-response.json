@@ -1,0 +1,74 @@
+{
+  "requestId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+  "schemaVersion": "1",
+  "inputSnapshotId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "symbol": "AAPL",
+  "asOf": "2026-08-02T00:00:00Z",
+  "evaluatedAt": "2026-08-02T00:00:00Z",
+  "status": "DEGRADED",
+  "missingData": [
+    "FORECAST_METRIC_MISSING:technical.price_vs_sma20",
+    "FORECAST_METRIC_MISSING:technical.rsi14",
+    "FORECAST_METRIC_MISSING:technical.volatility20",
+    "FORECAST_METRIC_MISSING:marketRegime.sp500Return20d",
+    "FORECAST_METRIC_MISSING:technical.price_vs_sma50",
+    "FORECAST_METRIC_MISSING:fundamental.profit_margin",
+    "FORECAST_METRIC_MISSING:fundamental.roe",
+    "FORECAST_METRIC_MISSING:valuation.fcf_yield",
+    "FORECAST_METRIC_MISSING:technical.sma_trend"
+  ],
+  "confidence": "0",
+  "modelVersion": "deterministic-v1",
+  "contractVersion": "forecast-v1",
+  "forecasts": [
+    {
+      "name": "forecast.d1_up_probability",
+      "value": null,
+      "unit": "probability",
+      "asOf": null,
+      "provenance": [],
+      "missingData": [
+        "FORECAST_METRIC_MISSING:technical.price_vs_sma20",
+        "FORECAST_METRIC_MISSING:technical.rsi14",
+        "FORECAST_METRIC_MISSING:technical.volatility20",
+        "FORECAST_METRIC_MISSING:marketRegime.sp500Return20d"
+      ]
+    },
+    {
+      "name": "forecast.d5_expected_return",
+      "value": null,
+      "unit": "ratio",
+      "asOf": null,
+      "provenance": [],
+      "missingData": [
+        "FORECAST_METRIC_MISSING:technical.price_vs_sma20",
+        "FORECAST_METRIC_MISSING:technical.price_vs_sma50",
+        "FORECAST_METRIC_MISSING:technical.volatility20",
+        "FORECAST_METRIC_MISSING:marketRegime.sp500Return20d"
+      ]
+    },
+    {
+      "name": "forecast.d20_expected_return",
+      "value": null,
+      "unit": "ratio",
+      "asOf": null,
+      "provenance": [],
+      "missingData": [
+        "FORECAST_METRIC_MISSING:fundamental.profit_margin",
+        "FORECAST_METRIC_MISSING:fundamental.roe",
+        "FORECAST_METRIC_MISSING:valuation.fcf_yield",
+        "FORECAST_METRIC_MISSING:technical.sma_trend",
+        "FORECAST_METRIC_MISSING:marketRegime.sp500Return20d",
+        "FORECAST_METRIC_MISSING:technical.volatility20"
+      ]
+    },
+    {
+      "name": "forecast.expected_max_loss",
+      "value": null,
+      "unit": "ratio",
+      "asOf": null,
+      "provenance": [],
+      "missingData": ["FORECAST_METRIC_MISSING:technical.volatility20"]
+    }
+  ]
+}

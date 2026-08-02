@@ -1,0 +1,18 @@
+{
+  "requestId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+  "schemaVersion": "1",
+  "analysis": {
+    "requestId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "schemaVersion": "1",
+    "inputSnapshotId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "symbol": "AAPL",
+    "asOf": "2026-08-02T00:00:00Z",
+    "status": "DEGRADED",
+    "missingData": [],
+    "observations": [],
+    "analyzers": []
+  },
+  "evaluatedAt": "2026-08-02T00:00:00Z",
+  "modelVersion": "deterministic-v1",
+  "contractVersion": "forecast-v1"
+}

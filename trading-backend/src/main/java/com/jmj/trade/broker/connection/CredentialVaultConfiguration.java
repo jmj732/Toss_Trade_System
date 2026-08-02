@@ -185,11 +185,6 @@ public class CredentialVaultConfiguration {
     }
 
     @Bean
-    PredictionModelRegistryService predictionModelRegistryService(JdbcTemplate jdbcTemplate) {
-        return new PredictionModelRegistryService(jdbcTemplate);
-    }
-
-    @Bean
     PredictionIngestionApiKeyService predictionIngestionApiKeyService(
             JdbcTemplate jdbcTemplate,
             PredictionModelRegistryService registry,

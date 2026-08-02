@@ -75,4 +75,56 @@ class StockAnalysisCoreContractTest {
                     .containsExactlyElementsOf(StockAnalysisCoreContract.metricOrder(analyzer.analyzer()));
         }
     }
+
+    @Test
+    void readsForecastResponseWithVersionSnapshotAndProvenance() throws Exception {
+        var response = objectMapper.readValue("""
+                {
+                  "requestId":"cccccccc-cccc-cccc-cccc-cccccccccccc",
+                  "schemaVersion":"1",
+                  "inputSnapshotId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                  "symbol":"AAPL",
+                  "asOf":"2026-08-02T00:00:00Z",
+                  "evaluatedAt":"2026-08-02T00:00:00Z",
+                  "status":"COMPLETED",
+                  "missingData":[],
+                  "confidence":"1",
+                  "modelVersion":"deterministic-v1",
+                  "contractVersion":"forecast-v1",
+                  "forecasts":[{
+                    "name":"forecast.d1_up_probability",
+                    "value":"0.55",
+                    "unit":"probability",
+                    "asOf":"2026-08-01T20:00:00Z",
+                    "provenance":[{
+                      "provider":"FMP",
+                      "field":"quote.price",
+                      "asOf":"2026-08-01T20:00:00Z",
+                      "collectedAt":"2026-08-02T00:00:00Z"
+                    }],
+                    "missingData":[]
+                  }]
+                }
+                """, StockForecastCoreContract.Response.class);
+
+        assertThat(response.confidence()).isEqualByComparingTo("1");
+        assertThat(response.modelVersion()).isEqualTo("deterministic-v1");
+        assertThat(response.forecasts().getFirst().provenance().getFirst().provider())
+                .isEqualTo(StockDataProviderId.FMP);
+    }
+
+    @Test
+    void readsPinnedDegradedV4ForecastFixture() throws Exception {
+        var root = Path.of("").toAbsolutePath();
+        if (!Files.isDirectory(root.resolve("contracts"))) {
+            root = root.getParent();
+        }
+        var response = objectMapper.readValue(
+                Files.readString(root.resolve("contracts/analysis/v4/stock-forecast-core-response.json")),
+                StockForecastCoreContract.Response.class);
+
+        assertThat(response.status()).isEqualTo(StockAnalysisCoreContract.Status.DEGRADED);
+        assertThat(response.forecasts()).extracting(StockForecastCoreContract.Metric::name)
+                .containsExactlyElementsOf(StockForecastCoreContract.FORECAST_ORDER);
+    }
 }

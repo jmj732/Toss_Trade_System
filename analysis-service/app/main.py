@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_EVEN
 from enum import Enum
 from typing import Annotated, Any, Literal
@@ -183,6 +183,60 @@ class StockAnalysisCoreResponse(ContractModel):
     analyzers: list[AnalyzerResult]
 
 
+FORECAST_METRIC_ORDER = [
+    "forecast.d1_up_probability",
+    "forecast.d5_expected_return",
+    "forecast.d20_expected_return",
+    "forecast.expected_max_loss",
+]
+FORECAST_FRESHNESS = timedelta(days=1)
+
+
+class StockForecastRequest(ContractModel):
+    request_id: UUID
+    schema_version: Literal["1"]
+    analysis: StockAnalysisCoreResponse
+    evaluated_at: datetime
+    model_version: Annotated[str, Field(min_length=1, max_length=50)]
+    contract_version: Annotated[str, Field(min_length=1, max_length=50)]
+
+
+class ForecastMetric(ContractModel):
+    name: str
+    value: str | None
+    unit: str
+    as_of: datetime | None
+    provenance: list[AnalysisProvenance]
+    missing_data: list[str]
+
+    @model_validator(mode="after")
+    def require_consistent_missing_shape(self) -> "ForecastMetric":
+        if self.missing_data and (self.value is not None or self.as_of is not None):
+            raise ValueError("missing forecast metric must have null value and asOf")
+        if not self.missing_data and (
+            self.value is None
+            or self.as_of is None
+            or any(item.as_of is None for item in self.provenance)
+        ):
+            raise ValueError("complete forecast metric requires value, asOf and provenance")
+        return self
+
+
+class StockForecastCoreResponse(ContractModel):
+    request_id: UUID
+    schema_version: Literal["1"]
+    input_snapshot_id: UUID
+    symbol: str
+    as_of: datetime
+    evaluated_at: datetime
+    status: Status
+    missing_data: list[str]
+    confidence: str
+    model_version: str
+    contract_version: str
+    forecasts: list[ForecastMetric]
+
+
 app = FastAPI(title="Portfolio Analysis Service", version="1")
 
 
@@ -203,6 +257,8 @@ async def correlate(request: Request, call_next):
             if request.url.path.endswith("/portfolio-analyses")
             else "stock-analysis-input"
             if request.url.path.endswith(("/stock-analysis-inputs", "/stock-analyses"))
+            else "stock-forecast"
+            if request.url.path.endswith("/stock-forecasts")
             else "request"
         )
         LOG.info(
@@ -333,11 +389,240 @@ def analyze_stock_core(request: StockAnalysisRequest) -> StockAnalysisCoreRespon
     )
 
 
+@app.post(
+    "/internal/v4/stock-forecasts",
+    response_model=StockForecastCoreResponse,
+)
+def forecast_stock(request: StockForecastRequest) -> StockForecastCoreResponse:
+    metrics = _forecast_metrics(request.analysis, request.evaluated_at)
+    missing_data = _stable_unique(
+        reason for metric in metrics for reason in metric.missing_data
+    )
+    confidence = min(
+        (Decimal("0") if metric.missing_data else _metric_confidence(
+            metric, request.analysis
+        ) for metric in metrics),
+        default=Decimal("0"),
+    )
+    return StockForecastCoreResponse(
+        request_id=request.request_id,
+        schema_version=request.schema_version,
+        input_snapshot_id=request.analysis.input_snapshot_id,
+        symbol=request.analysis.symbol,
+        as_of=request.analysis.as_of,
+        evaluated_at=request.evaluated_at,
+        status=Status.DEGRADED if missing_data else Status.COMPLETED,
+        missing_data=missing_data,
+        confidence=_decimal_text(confidence),
+        model_version=request.model_version,
+        contract_version=request.contract_version,
+        forecasts=metrics,
+    )
+
+
 def _index_observations(observations: list[StockAnalysisObservation]):
     indexed: dict[str, list[StockAnalysisObservation]] = {}
     for observation in observations:
         indexed.setdefault(observation.field, []).append(observation)
     return indexed
+
+
+def _forecast_metrics(analysis: StockAnalysisCoreResponse, evaluated_at: datetime):
+    indexed = _index_metrics(analysis.analyzers)
+    return [
+        _forecast_metric(
+            "forecast.d1_up_probability",
+            "probability",
+            [
+                "technical.price_vs_sma20",
+                "technical.rsi14",
+                "technical.volatility20",
+                "marketRegime.sp500Return20d",
+            ],
+            indexed,
+            evaluated_at,
+            lambda values: Decimal("0.5")
+            + values[0] / Decimal("4")
+            + (values[1] - Decimal("50")) / Decimal("200")
+            + values[3] / Decimal("4")
+            - values[2] / Decimal("2"),
+            probability=True,
+        ),
+        _forecast_metric(
+            "forecast.d5_expected_return",
+            "ratio",
+            [
+                "technical.price_vs_sma20",
+                "technical.price_vs_sma50",
+                "technical.volatility20",
+                "marketRegime.sp500Return20d",
+            ],
+            indexed,
+            evaluated_at,
+            lambda values: values[0] / Decimal("5")
+            + values[1] / Decimal("5")
+            + values[3] / Decimal("2")
+            - values[2] / Decimal("5"),
+        ),
+        _forecast_metric(
+            "forecast.d20_expected_return",
+            "ratio",
+            [
+                "fundamental.profit_margin",
+                "fundamental.roe",
+                "valuation.fcf_yield",
+                "technical.sma_trend",
+                "marketRegime.sp500Return20d",
+                "technical.volatility20",
+            ],
+            indexed,
+            evaluated_at,
+            lambda values: values[0] / Decimal("5")
+            + values[1] / Decimal("10")
+            + values[2]
+            + values[3] / Decimal("2")
+            + values[4]
+            - values[5],
+        ),
+        _forecast_metric(
+            "forecast.expected_max_loss",
+            "ratio",
+            ["technical.volatility20"],
+            indexed,
+            evaluated_at,
+            lambda values: -values[0] * Decimal("0.2817"),
+        ),
+    ]
+
+
+def _index_metrics(analyzers: list[AnalyzerResult]):
+    indexed: dict[str, list[AnalysisMetric]] = {}
+    for analyzer in analyzers:
+        for metric in analyzer.metrics:
+            indexed.setdefault(metric.name, []).append(metric)
+    return indexed
+
+
+def _metric_confidence(metric: ForecastMetric, analysis: StockAnalysisCoreResponse):
+    source_to_analyzer = {"quote": "technical", "macro": "marketRegime"}
+    analyzer_confidence = {
+        analyzer.analyzer: Decimal(str(analyzer.confidence))
+        for analyzer in analysis.analyzers
+    }
+    return min(
+        (
+            analyzer_confidence.get(
+                source_to_analyzer.get(
+                    metric_name.split(".", 1)[0], metric_name.split(".", 1)[0]
+                ),
+                Decimal("0"),
+            )
+            for item in metric.provenance
+            for metric_name in [item.field]
+        ),
+        default=Decimal("0"),
+    )
+
+
+def _forecast_metric(
+    name,
+    unit,
+    dependencies,
+    indexed,
+    evaluated_at,
+    operation,
+    probability=False,
+):
+    matches = []
+    provenance = []
+    missing = []
+    for dependency in dependencies:
+        candidates = indexed.get(dependency, [])
+        if len(candidates) != 1:
+            missing.append(
+                f"AMBIGUOUS_DUPLICATE_METRIC:{dependency}"
+                if candidates
+                else f"FORECAST_METRIC_MISSING:{dependency}"
+            )
+            provenance.extend(
+                item for candidate in candidates for item in candidate.provenance
+            )
+            continue
+        metric = candidates[0]
+        matches.append(metric)
+        provenance.extend(metric.provenance)
+        if metric.missing_data:
+            missing.extend(f"ANALYSIS_METRIC_MISSING:{dependency}:{reason}" for reason in metric.missing_data)
+        elif metric.value is None:
+            missing.append(f"FORECAST_METRIC_MISSING:{dependency}")
+        elif metric.as_of is None:
+            missing.append(f"MISSING_AS_OF:{dependency}")
+
+    provenance = _unique_provenance(provenance)
+    as_ofs = {
+        item.as_of for metric in matches for item in metric.provenance if item.as_of is not None
+    }
+    if len(as_ofs) > 1:
+        missing.append(f"TIME_SERIES_INCONSISTENT:{name}")
+    if as_ofs:
+        source_as_of = max(as_ofs)
+        if source_as_of > evaluated_at or evaluated_at - source_as_of > FORECAST_FRESHNESS:
+            missing.append(f"STALE_DATA:{name}")
+    else:
+        source_as_of = None
+
+    if missing:
+        return ForecastMetric(
+            name=name,
+            value=None,
+            unit=unit,
+            as_of=None,
+            provenance=provenance,
+            missing_data=_stable_unique(missing),
+        )
+
+    try:
+        values = [Decimal(str(metric.value)) for metric in matches]
+        if any(not value.is_finite() for value in values):
+            raise ValueError("non-finite forecast input")
+        value = operation(values)
+        if not value.is_finite():
+            raise ValueError("non-finite forecast output")
+        if probability and not Decimal("0") <= value <= Decimal("1"):
+            raise ValueError("probability out of range")
+    except (ArithmeticError, ValueError):
+        reason = (
+            f"PROBABILITY_OUT_OF_RANGE:{name}"
+            if probability
+            else f"INVALID_FORECAST_VALUE:{name}"
+        )
+        return ForecastMetric(
+            name=name,
+            value=None,
+            unit=unit,
+            as_of=None,
+            provenance=provenance,
+            missing_data=[reason],
+        )
+    return ForecastMetric(
+        name=name,
+        value=_decimal_text(value),
+        unit=unit,
+        as_of=source_as_of,
+        provenance=provenance,
+        missing_data=[],
+    )
+
+
+def _unique_provenance(values):
+    result = []
+    seen = set()
+    for value in values:
+        key = (value.provider, value.field, value.as_of, value.collected_at)
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+    return result
 
 
 def _provenance(observation: StockAnalysisObservation) -> AnalysisProvenance:

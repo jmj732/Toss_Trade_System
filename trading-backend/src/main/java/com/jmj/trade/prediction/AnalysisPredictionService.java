@@ -30,9 +30,9 @@ import java.util.UUID;
 import java.util.function.BooleanSupplier;
 
 /**
- * Stores caller-submitted directional predictions (a person or, later, a real model — this
- * service never generates a prediction itself) with a live-quote baseline price, and grades
- * them against a later live quote once each horizon's wall-clock time has actually passed.
+ * Stores caller-submitted or forecast-derived directional predictions with an immutable
+ * baseline price, and grades them against a later live quote once each horizon's wall-clock
+ * time has actually passed.
  * Never imports from {@code com.jmj.trade.order} — this is a read-only reporting feature,
  * not an order or auto-trading integration.
  *
@@ -68,6 +68,77 @@ public final class AnalysisPredictionService {
         command = normalize(command);
         requireOwnedConnection(userId, connectionId);
         return createNew(userId, connectionId, null, command, now);
+    }
+
+    PredictionView createFromForecast(
+            UUID userId,
+            UUID connectionId,
+            String clientRequestId,
+            CreateCommand command,
+            BigDecimal baselinePrice,
+            Instant now
+    ) {
+        Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(connectionId, "connectionId");
+        var forecastCommand = normalize(command);
+        requireOwnedConnection(userId, connectionId);
+        requireActiveVersion(userId, forecastCommand);
+        if (baselinePrice == null || baselinePrice.signum() <= 0) {
+            throw new AnalysisPredictionException(AnalysisPredictionException.Code.QUOTE_UNAVAILABLE);
+        }
+        var existing = findByClientRequestId(userId, clientRequestId);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        return transactions.execute(status -> {
+            if (!registry.lockActive(userId, forecastCommand.modelVersion(), forecastCommand.contractVersion())) {
+                throw new AnalysisPredictionException(
+                        AnalysisPredictionException.Code.MODEL_VERSION_NOT_ACTIVE);
+            }
+            var id = UUID.randomUUID();
+            jdbc.update("""
+                    INSERT INTO analysis_predictions (
+                        id, user_id, broker_connection_id, symbol, currency, predicted_direction,
+                        model_version, contract_version, baseline_price, predicted_at, created_at,
+                        client_request_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, id, userId, connectionId, forecastCommand.symbol(), forecastCommand.currency().name(),
+                    forecastCommand.predictedDirection().name(), forecastCommand.modelVersion(), forecastCommand.contractVersion(),
+                    baselinePrice, offset(now), offset(now), clientRequestId);
+            return new PredictionView(
+                    id, connectionId, forecastCommand.symbol(), forecastCommand.currency(), forecastCommand.predictedDirection(),
+                    forecastCommand.modelVersion(), forecastCommand.contractVersion(), baselinePrice, now, Map.of());
+        });
+    }
+
+    PredictionView createFromForecast(
+            UUID userId,
+            UUID connectionId,
+            String clientRequestId,
+            String symbol,
+            String currency,
+            PredictedDirection direction,
+            String modelVersion,
+            String contractVersion,
+            BigDecimal baselinePrice,
+            Instant now
+    ) {
+        try {
+            return createFromForecast(
+                    userId,
+                    connectionId,
+                    clientRequestId,
+                    new CreateCommand(
+                            symbol,
+                            Currency.valueOf(currency),
+                            direction,
+                            modelVersion,
+                            contractVersion),
+                    baselinePrice,
+                    now);
+        } catch (IllegalArgumentException exception) {
+            throw new AnalysisPredictionException(AnalysisPredictionException.Code.INVALID_INPUT);
+        }
     }
 
     BatchView createBatch(
@@ -322,7 +393,7 @@ public final class AnalysisPredictionService {
         }
     }
 
-    private void requireOwnedConnection(UUID userId, UUID connectionId) {
+    void requireOwnedConnection(UUID userId, UUID connectionId) {
         if (jdbc.queryForList("""
                 SELECT 1
                   FROM broker_connections
