@@ -88,6 +88,40 @@ class StockAnalysisDataFoundationTest {
     }
 
     @Test
+    void unexpectedProviderFailureIsSafeAndProviderSpecific() {
+        var failing = new StockDataProvider() {
+            @Override
+            public StockDataProviderId id() {
+                return StockDataProviderId.FMP;
+            }
+
+            @Override
+            public DataProviderRole role() {
+                return DataProviderRole.FUNDAMENTALS;
+            }
+
+            @Override
+            public Set<String> fields() {
+                return Set.of("quote.price");
+            }
+
+            @Override
+            public List<ProviderValue> fetch(ProviderRequest request) {
+                throw new IllegalStateException("unexpected test fault");
+            }
+        };
+
+        var input = new StockAnalysisInputAssembler(
+                new StockDataProviderRegistry(List.of(failing)),
+                Clock.fixed(COLLECTED_AT, ZoneOffset.UTC)).assemble("AAPL", Map.of());
+
+        assertThat(input.observations()).singleElement().satisfies(item -> {
+            assertThat(item.provider()).isEqualTo(StockDataProviderId.FMP);
+            assertThat(item.missingData()).containsExactly("PROVIDER_FAILURE");
+        });
+    }
+
+    @Test
     void disabledProviderIsNotInRegistry() {
         var registry = StockDataProviderRegistry.optIn(
                 Map.of(StockDataProviderId.FMP, false, StockDataProviderId.SEC, true),
@@ -120,6 +154,12 @@ class StockAnalysisDataFoundationTest {
                 .defaultApiKeyQueryParameter()).isEqualTo("api_key");
         assertThat(ProviderCatalog.transportOf(StockDataProviderId.FMP)
                 .defaultApiKeyQueryParameter()).isEqualTo("apikey");
+        assertThat(ProviderCatalog.credentialsPresent(StockDataProviderId.FMP, "", "User-Agent"))
+                .isFalse();
+        assertThat(ProviderCatalog.credentialsPresent(StockDataProviderId.SEC, "secret", ""))
+                .isFalse();
+        assertThat(ProviderCatalog.credentialsPresent(StockDataProviderId.SEC, "", "User-Agent"))
+                .isTrue();
     }
 
     private static StockDataProvider provider(

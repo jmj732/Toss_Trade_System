@@ -426,6 +426,15 @@ export function loadPredictionOperations(fetcher = fetch) {
   return readEvent("/api/v1/prediction-operations", fetcher);
 }
 
+export function loadOperationalReadiness(fetcher = fetch) {
+  return readEvent("/api/v1/operations/readiness", fetcher);
+}
+
+export function runProviderReadinessCheck(symbol, session, fetcher = fetch) {
+  return brokerCommand(
+    "/api/v1/operations/readiness/provider-check", "POST", session, { symbol }, fetcher);
+}
+
 function notificationPath(suffix = "") {
   return `/api/v1/notifications${suffix}`;
 }

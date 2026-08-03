@@ -22,6 +22,7 @@ import {
   loadPredictionModelVersions,
   loadPredictionIngestionApiKeys,
   loadPredictionOperations,
+  loadOperationalReadiness,
   loadRiskPolicy,
   loadRiskPolicyHistory,
   loadStockAnalysis,
@@ -40,6 +41,7 @@ import {
   registerPredictionModelVersion,
   revokePredictionIngestionApiKey,
   rotatePredictionIngestionApiKey,
+  runProviderReadinessCheck,
   replaceBrokerCredentials,
   reviewEvent,
   syncPortfolio,
@@ -122,6 +124,25 @@ test("stock product APIs preserve owner paths, history selection, and CSRF mutat
 
 test("treats an unauthenticated session as signed out", async () => {
   assert.equal(await loadSession(async () => new Response(null, { status: 401 })), null);
+});
+
+test("reads readiness and probes providers with session CSRF", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ status: "DEGRADED" });
+  };
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+
+  await loadOperationalReadiness(fetcher);
+  await runProviderReadinessCheck("AAPL", session, fetcher);
+
+  assert.equal(calls[0][0], "/api/v1/operations/readiness");
+  assert.equal(calls[0][1].credentials, "same-origin");
+  assert.equal(calls[1][0], "/api/v1/operations/readiness/provider-check");
+  assert.equal(calls[1][1].method, "POST");
+  assert.equal(calls[1][1].headers["X-CSRF-TOKEN"], "csrf");
+  assert.deepEqual(JSON.parse(calls[1][1].body), { symbol: "AAPL" });
 });
 
 test("approval obtains a preview and step-up token before submitting", async () => {

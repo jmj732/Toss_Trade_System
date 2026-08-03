@@ -34,6 +34,9 @@ stock-analysis:
       enabled: ${STOCK_ANALYSIS_POLYGON_ENABLED:false}
     twelve-data:
       enabled: ${STOCK_ANALYSIS_TWELVE_DATA_ENABLED:false}
+production:
+  readiness:
+    max-data-age: ${PRODUCTION_READINESS_MAX_DATA_AGE:PT15M}
 market-events:
   scheduler:
     enabled: ${MARKET_EVENTS_SCHEDULER_ENABLED:false}

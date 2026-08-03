@@ -165,6 +165,9 @@ final class NotificationOutboxProcessor {
                     "Order reconciliation needs manual review",
                     "An order attempt could not be reconciled automatically and the account is "
                             + "locked for new orders until an operator resolves it.");
+            case PRODUCTION_READINESS_ALERT -> new Rendered(
+                    "Production readiness needs attention",
+                    "Provider credentials, freshness, scheduling, or safety gates are not ready.");
         };
     }
 

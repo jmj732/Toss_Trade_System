@@ -7,6 +7,7 @@ import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
 import { OrdersView } from "./orders-view.js";
+import { OperationsReadinessView } from "./operations-readiness-view.js";
 import { PortfolioHistoryView } from "./portfolio-history-view.js";
 import { PredictionOperationsView } from "./prediction-operations-view.js";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
@@ -33,6 +34,7 @@ import {
   loadPredictionIngestionApiKeys,
   loadPredictionModelVersions,
   loadPredictionOperations,
+  loadOperationalReadiness,
   loadRiskPolicy,
   loadSession,
   loadStockAnalysis,
@@ -49,7 +51,8 @@ import {
   rotatePredictionIngestionApiKey,
   syncPortfolio,
   updateRiskPolicy,
-  verifyBrokerConnection
+  verifyBrokerConnection,
+  runProviderReadinessCheck
 } from "../lib/api.js";
 
 const HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
@@ -97,6 +100,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [error, setError] = useState("");
   const [riskPolicy, setRiskPolicy] = useState(null);
   const [riskOpen, setRiskOpen] = useState(false);
+  const [readiness, setReadiness] = useState(null);
+  const [readinessError, setReadinessError] = useState("");
   const opened = useRef(false);
 
   useEffect(() => {
@@ -109,6 +114,9 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     opened.current = true;
     loadRiskPolicy().then(setRiskPolicy).catch(value => setError(value.message));
+    if (route === "settings") {
+      loadOperationalReadiness().then(setReadiness).catch(value => setReadinessError(value.message));
+    }
     const saved = window.localStorage.getItem("trade.connectionId") ?? "";
     if (saved) {
       setConnectionId(saved);
@@ -349,6 +357,21 @@ export function RouteWorkspace({ route, symbol = "" }) {
     });
   }
 
+  function refreshReadiness() {
+    setReadinessError("");
+    return loadOperationalReadiness().then(setReadiness).catch(value => {
+      setReadinessError(value.message);
+      throw value;
+    });
+  }
+
+  function probeReadiness(symbol) {
+    setReadinessError("");
+    return mutation("readiness", async () => {
+      setReadiness(await runProviderReadinessCheck(symbol, session));
+    });
+  }
+
   function stockSurface() {
     return h(StockAnalysisProductSurface, {
       symbol: stockSymbol, analysis: stockAnalysis, forecast: stockForecast, explanation: stockExplanation,
@@ -446,6 +469,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
         }));
     }
     return h("main", { className: "route-stack" },
+      route === "settings" ? h(OperationsReadinessView, {
+        readiness, busy: busy === "readiness", error: readinessError,
+        onRefresh: () => refreshReadiness().catch(() => {}),
+        onProbe: probeReadiness
+      }) : null,
       h(BrokerOnboarding, {
         connection, connectionId, busyAction: busy,
         onCredentials: credentialsAction, onCommand: brokerAction

@@ -39,6 +39,34 @@ public final class ProviderCatalog {
         return ROLES;
     }
 
+    public static boolean requiresCredential(StockDataProviderId provider) {
+        return requiresApiKey(provider) || requiresUserAgent(provider);
+    }
+
+    public static boolean requiresApiKey(StockDataProviderId provider) {
+        var profile = TRANSPORTS.get(provider);
+        return profile != null && (!profile.defaultApiKeyHeader().isBlank()
+                || !profile.defaultApiKeyQueryParameter().isBlank());
+    }
+
+    public static boolean requiresUserAgent(StockDataProviderId provider) {
+        var profile = TRANSPORTS.get(provider);
+        return profile != null && profile.userAgentRequired();
+    }
+
+    public static boolean credentialsPresent(
+            StockDataProviderId provider,
+            String apiKey,
+            String userAgent
+    ) {
+        return (!requiresApiKey(provider) || nonBlank(apiKey))
+                && (!requiresUserAgent(provider) || nonBlank(userAgent));
+    }
+
+    private static boolean nonBlank(String value) {
+        return value != null && !value.isBlank();
+    }
+
     static ProviderTransportProfile transportOf(StockDataProviderId provider) {
         return TRANSPORTS.get(provider);
     }

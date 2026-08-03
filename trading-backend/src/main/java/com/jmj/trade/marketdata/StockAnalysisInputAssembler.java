@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.Set;
 
 public final class StockAnalysisInputAssembler {
 
@@ -42,11 +43,13 @@ public final class StockAnalysisInputAssembler {
             ProviderRequest request,
             List<StockAnalysisInput.Observation> target
     ) {
-        var declared = provider.fields();
-        if (declared == null) {
-            throw new IllegalStateException("provider fields are required");
-        }
+        Set<String> declared = Set.of();
         try {
+            declared = provider.fields();
+            if (declared == null) {
+                declared = Set.of("provider");
+                throw new IllegalStateException("provider fields are required");
+            }
             var values = provider.fetch(request);
             if (values == null) {
                 throw new IllegalStateException("provider returned null values");
@@ -79,6 +82,13 @@ public final class StockAnalysisInputAssembler {
                     .sorted()
                     .forEach(field -> target.add(missing(
                             field, provider.id(), collectedAt, "PROVIDER_UNAVAILABLE")));
+        } catch (RuntimeException exception) {
+            var collectedAt = clock.instant();
+            var fields = declared.isEmpty() ? Set.of("provider") : declared;
+            fields.stream()
+                    .sorted()
+                    .forEach(field -> target.add(missing(
+                            field, provider.id(), collectedAt, "PROVIDER_FAILURE")));
         }
     }
 

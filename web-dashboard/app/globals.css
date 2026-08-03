@@ -328,6 +328,12 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
 .missing-data, .provenance { border-top: 1px solid #223140; margin-top: 1rem; padding-top: .7rem; }
 .missing-data h3, .provenance h3 { font-size: .9rem; }
 .stock-surface-panel .table-wrap { margin-top: .5rem; }
+.operations-readiness { margin-top: 1rem; }
+.operations-readiness > header { align-items: flex-start; display: flex; justify-content: space-between; gap: .75rem; }
+.readiness-probe-form { align-items: flex-end; display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+.readiness-probe-form label { color: var(--muted); display: flex; flex-direction: column; gap: .2rem; }
+.readiness-probe-form input { width: auto; }
+.readiness-alerts { color: var(--warning); margin: .7rem 0; }
 
 
 @media (max-width: 760px) {
