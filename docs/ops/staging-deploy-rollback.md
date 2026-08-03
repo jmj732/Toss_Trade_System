@@ -2,10 +2,9 @@
 
 ## Scope
 
-- `compose.staging.yaml` is a production-like overlay on `compose.yaml`. It always layers on
-  `compose.mock.yaml` too, **never** `compose.dev.yaml` — this environment never holds real
-  OIDC or Toss credentials, and `BrokerAdapter` has no order-placement method at all, so no
-  real order submission is possible here regardless of which compose files are combined.
+- `compose.staging.yaml` is a production-like overlay on `compose.yaml`. The existing mock
+  profile layers on `compose.mock.yaml`, **never** `compose.dev.yaml`; it remains credential-free
+  for OIDC/Toss and is the rollback-drill profile.
 - Deploy:
 
   ```sh
@@ -18,7 +17,7 @@
   real deploy pushes those tags to a registry ahead of time and never passes `--build`; `up`
   reuses whatever is already tagged.
 
-## Secrets
+## Mock staging secrets
 
 - The **only** two real secret values anywhere in this stack are the Postgres password and
   the broker credential encryption key.
@@ -43,6 +42,25 @@
   key type to accommodate this would touch application source code broader than this
   delta's scope. It remains at least as secure as every prior delta's handling of it: never
   committed, never baked into an image layer, set only at the container level.
+
+## Credentialed staging
+
+Credentialed staging is a separate, opt-in overlay. It uses Doppler `trade/staging` and never
+layers on `compose.mock.yaml`:
+
+```sh
+./scripts/credentialed-staging-preflight.sh
+doppler run --project trade --config staging -- docker compose \
+  -f compose.yaml -f compose.staging.yaml -f compose.staging.credentialed.yaml up -d --wait
+```
+
+The overlay wires the official FMP, FRED, SEC, and Gemini endpoints and fields. Provider keys,
+SEC User-Agent, OIDC values, the database password file, and the credential-vault key come from
+Doppler or the mounted secret file; no value is committed or printed. Toss client credentials
+are accepted only through the authenticated onboarding endpoint and encrypted in the vault —
+there is no Toss client-secret environment variable. `REAL_ORDER_ENABLED` and
+`REAL_ORDER_CANARY_ENABLED` are explicitly false until onboarding and separate order activation
+are completed.
 
 ## Migration runs exactly once
 
@@ -98,5 +116,5 @@ logs and exits non-zero.
 - No real registry push, no orchestrator (Kubernetes/Swarm/ECS), no CI wiring for staging
   deploys, no autoscaling, no canary/blue-green strategy — this is the compose-level
   mechanics only.
-- No real OIDC or Toss credential ever belongs in this profile. If a task seems to need one,
-  it belongs in a different, explicitly-real-credential environment, not here.
+- The mock rollback profile does not cover real OIDC/provider connectivity or Toss onboarding;
+  use the credentialed overlay and preflight for that separate environment.

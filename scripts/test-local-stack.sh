@@ -10,6 +10,7 @@ for file in \
   compose.yaml \
   compose.dev.yaml \
   compose.mock.yaml \
+  compose.staging.credentialed.yaml \
   .env.example \
   .env.staging.example \
   trading-backend/Dockerfile \
@@ -19,6 +20,49 @@ for file in \
 do
   test -f "$file" || fail "missing $file"
 done
+
+test -x scripts/credentialed-staging-preflight.sh ||
+  fail "credentialed staging preflight must be executable"
+grep -q 'doppler run' scripts/credentialed-staging-preflight.sh ||
+  fail "credentialed preflight must load Doppler trade/staging"
+grep -q 'financialmodelingprep.com/stable' compose.staging.credentialed.yaml ||
+  fail "missing FMP stable endpoint"
+grep -q 'api.stlouisfed.org' compose.staging.credentialed.yaml &&
+grep -q '"path":"/fred/series/observations"' compose.staging.credentialed.yaml ||
+  fail "missing FRED observations endpoint"
+grep -q 'data.sec.gov' compose.staging.credentialed.yaml ||
+  fail "missing SEC data endpoint"
+grep -q 'generativelanguage.googleapis.com/v1beta' compose.staging.credentialed.yaml ||
+  fail "missing Gemini endpoint"
+grep -q '"as-of-path":"/0/timestamp"' compose.staging.credentialed.yaml ||
+  fail "missing FMP freshness field"
+grep -q '"fields":{"macro.value":"/observations/0/value"}' compose.staging.credentialed.yaml ||
+  fail "missing FRED value field"
+grep -q '/filings/recent/acceptanceDateTime/0' compose.staging.credentialed.yaml ||
+  fail "missing SEC freshness field"
+grep -q '"api-key-query-parameter":"apikey"' compose.staging.credentialed.yaml ||
+  fail "missing FMP API-key query configuration"
+grep -q '"api-key-query-parameter":"api_key"' compose.staging.credentialed.yaml ||
+  fail "missing FRED API-key query configuration"
+grep -q 'x-goog-api-key' scripts/credentialed-staging-preflight.sh ||
+  fail "missing Gemini API-key header configuration"
+grep -q 'curl --config "\$curl_config"' scripts/credentialed-staging-preflight.sh ||
+  fail "preflight must keep provider credentials out of curl argv"
+if grep -Eq 'curl .*FMP_API_KEY|curl .*FRED_API_KEY|curl .*GEMINI_API_KEY' scripts/credentialed-staging-preflight.sh; then
+  fail "preflight must not pass provider credentials as curl arguments"
+fi
+grep -q 'doppler run --project trade --config staging -- docker compose' \
+  docs/ops/staging-deploy-rollback.md ||
+  fail "credentialed deploy must retain Doppler injection"
+grep -q 'BROKER_CREDENTIALS_ENABLED: "true"' compose.staging.credentialed.yaml ||
+  fail "credentialed staging must expose broker onboarding"
+grep -q 'REAL_ORDER_ENABLED: "false"' compose.staging.credentialed.yaml ||
+  fail "credentialed staging must block real order activation"
+grep -q 'REAL_ORDER_CANARY_ENABLED: "false"' compose.staging.credentialed.yaml ||
+  fail "credentialed staging must block live canary"
+if grep -q 'TOSS_CLIENT_SECRET' compose.staging.credentialed.yaml; then
+  fail "Toss client secret must not be an environment setting"
+fi
 
 git check-ignore -q .env || fail ".env is not ignored"
 git check-ignore -q .env.local || fail ".env.local is not ignored"
