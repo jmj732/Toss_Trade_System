@@ -12,7 +12,8 @@ The target host must already have:
 - Docker Engine and Docker Compose v2.
 - A checkout at the deploy path containing `compose.yaml`, `compose.staging.yaml`, and
   `compose.staging.credentialed.yaml`.
-- Doppler CLI authenticated on the host for project `trade`, config `staging`.
+- Doppler CLI authenticated on the host for project `trade`, config `stg`.
+  The deploy command also searches `$HOME/bin`, which supports a user-local CLI install.
 - The existing database secret file and Doppler-backed provider/OIDC values. These stay on
   the server and are never sent through GitHub Actions.
 - The reverse proxy forwarding the public HTTPS host to the backend's loopback port 8080.
@@ -20,7 +21,7 @@ The target host must already have:
 The server-side command used by CD is equivalent to:
 
 ```sh
-doppler run --project trade --config staging -- env BACKEND_IMAGE=trade-backend:<commit> \
+doppler run --project trade --config stg -- env BACKEND_IMAGE=trade-backend:<commit> \
   docker compose -f compose.yaml -f compose.staging.yaml \
     -f compose.staging.credentialed.yaml up -d --wait migrate backend
 ```

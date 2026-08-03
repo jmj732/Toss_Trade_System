@@ -23,8 +23,10 @@ grep -q 'BACKEND_DEPLOY_PORT' "$workflow" || fail "SSH port must be configurable
 grep -q -- '-p \"\$BACKEND_DEPLOY_PORT\"' "$workflow" || fail "SSH must use the configured port"
 grep -q 'StrictHostKeyChecking=yes' "$workflow" || fail "SSH host verification must stay enabled"
 grep -q 'UserKnownHostsFile=' "$workflow" || fail "SSH must use pinned known hosts"
-grep -q 'doppler run --project trade --config staging' "$workflow" ||
-  fail "server deploy must load trade/staging through Doppler"
+grep -q 'doppler run --project trade --config stg' "$workflow" ||
+  fail "server deploy must load trade/stg through Doppler"
+grep -q 'PATH="\$HOME/bin:\$PATH"' "$workflow" ||
+  fail "server deploy must find a user-local Doppler CLI"
 grep -q 'compose.staging.credentialed.yaml' "$workflow" ||
   fail "server deploy must use the credentialed staging overlay"
 grep -q 'migrate backend' "$workflow" || fail "server deploy must run migration before backend"
