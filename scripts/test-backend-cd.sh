@@ -18,7 +18,12 @@ grep -q 'npm-audit' "$workflow" || fail "backend CD must depend on audit gates"
 grep -q 'compose-smoke' "$workflow" || fail "backend CD must depend on compose gates"
 grep -q 'cancel-in-progress: false' "$workflow" ||
   fail "an active backend deploy must not be cancelled by a newer push"
-grep -q 'docker save' "$workflow" || fail "backend image must transfer without a registry secret"
+grep -q 'docker build --pull --tag "\$ANALYSIS_IMAGE" analysis-service' "$workflow" ||
+  fail "analysis image must be built in the verified checkout"
+grep -q 'docker build --pull --tag "\$DASHBOARD_IMAGE"' "$workflow" ||
+  fail "dashboard image must be built in the verified checkout"
+grep -q 'docker save "\$IMAGE_TAG" "\$ANALYSIS_IMAGE" "\$DASHBOARD_IMAGE"' "$workflow" ||
+  fail "all runtime images must transfer without a registry secret"
 grep -q 'tar -czf - compose.yaml' "$workflow" ||
   fail "deploy must sync the compose files to the server"
 grep -q 'tar -xzf - -C' "$workflow" ||
@@ -29,6 +34,10 @@ grep -q 'StrictHostKeyChecking=yes' "$workflow" || fail "SSH host verification m
 grep -q 'UserKnownHostsFile=' "$workflow" || fail "SSH must use pinned known hosts"
 grep -q 'doppler run --project trade --config stg' "$workflow" ||
   fail "server deploy must load trade/stg through Doppler"
+grep -q 'ANALYSIS_IMAGE="\$ANALYSIS_IMAGE"' "$workflow" ||
+  fail "server deploy must select the transferred analysis image"
+grep -q 'DASHBOARD_IMAGE="\$DASHBOARD_IMAGE"' "$workflow" ||
+  fail "server deploy must select the transferred dashboard image"
 grep -q 'PATH="\$HOME/bin:\$PATH"' "$workflow" ||
   fail "server deploy must find a user-local Doppler CLI"
 grep -q 'compose.staging.credentialed.yaml' "$workflow" ||

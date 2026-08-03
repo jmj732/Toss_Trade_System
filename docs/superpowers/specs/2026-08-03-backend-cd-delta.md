@@ -8,8 +8,8 @@ release gates pass on `design/modular-monolith-architecture`.
 ## Contract
 
 - Keep provider and Toss secrets out of GitHub Actions, Git, image layers, and logs.
-- Build the backend image in GitHub Actions and stream it over a pinned SSH connection; no
-  registry credential is required on the server.
+- Build the backend, analysis, and dashboard images in GitHub Actions and stream them over a
+  pinned SSH connection; no registry credential is required on the server.
 - Sync the three Compose files to the writable server deploy path from the verified commit;
   the server does not need a Git checkout.
 - On the server, run the existing Doppler `trade/stg` Compose path with
