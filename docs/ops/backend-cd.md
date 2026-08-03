@@ -21,12 +21,16 @@ The target host must already have:
 The server-side command used by CD is equivalent to:
 
 ```sh
-doppler run --project trade --config stg -- env BACKEND_IMAGE=trade-backend:<commit> \
+doppler run --project trade --config stg -- env \
+  BACKEND_IMAGE=trade-backend:<commit> \
+  ANALYSIS_IMAGE=trade-analysis:<commit> \
+  DASHBOARD_IMAGE=trade-dashboard:<commit> \
   docker compose -f compose.yaml -f compose.staging.yaml \
     -f compose.staging.credentialed.yaml up -d --wait migrate backend
 ```
 
-The image is streamed over SSH and loaded on the host, so no registry token is needed.
+The backend, analysis, and dashboard images are built from the verified checkout, streamed
+over SSH, and loaded on the host, so no registry token or remote source checkout is needed.
 
 ## GitHub Secrets
 

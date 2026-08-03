@@ -170,9 +170,20 @@ jobs:
           IMAGE_TAG: trade-backend:${{ github.sha }}
         run: docker build --pull --tag "$IMAGE_TAG" trading-backend
 
+      - name: Build analysis and dashboard images
+        env:
+          ANALYSIS_IMAGE: trade-analysis:${{ github.sha }}
+          DASHBOARD_IMAGE: trade-dashboard:${{ github.sha }}
+        run: |
+          docker build --pull --tag "$ANALYSIS_IMAGE" analysis-service
+          docker build --pull --tag "$DASHBOARD_IMAGE" \
+            --build-arg BACKEND_URL=http://backend:8080 web-dashboard
+
       - name: Stream image and deploy over pinned SSH
         env:
           IMAGE_TAG: trade-backend:${{ github.sha }}
+          ANALYSIS_IMAGE: trade-analysis:${{ github.sha }}
+          DASHBOARD_IMAGE: trade-dashboard:${{ github.sha }}
           BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
           BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
           BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
@@ -206,13 +217,15 @@ jobs:
             -o UserKnownHostsFile="$known_hosts_file"
           )
 
-          docker save "$IMAGE_TAG" |
+          docker save "$IMAGE_TAG" "$ANALYSIS_IMAGE" "$DASHBOARD_IMAGE" |
             gzip -c |
             ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
               'gzip -d | docker load'
 
           remote_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
           remote_image="$(printf '%q' "$IMAGE_TAG")"
+          remote_analysis_image="$(printf '%q' "$ANALYSIS_IMAGE")"
+          remote_dashboard_image="$(printf '%q' "$DASHBOARD_IMAGE")"
           # The quoted path is intentionally expanded locally into the remote command.
           # shellcheck disable=SC2029
           tar -czf - compose.yaml compose.staging.yaml compose.staging.credentialed.yaml |
@@ -222,7 +235,7 @@ jobs:
           # The quoted values are intentionally expanded locally into the remote command.
           # shellcheck disable=SC2029
           ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
-            "DEPLOY_PATH=$remote_path IMAGE_TAG=$remote_image bash -s" <<'REMOTE'
+            "DEPLOY_PATH=$remote_path IMAGE_TAG=$remote_image ANALYSIS_IMAGE=$remote_analysis_image DASHBOARD_IMAGE=$remote_dashboard_image bash -s" <<'REMOTE'
           set -euo pipefail
           cd -- "$DEPLOY_PATH"
           export PATH="$HOME/bin:$PATH"
@@ -230,7 +243,10 @@ jobs:
             echo "Doppler CLI is required at $HOME/bin/doppler or on PATH" >&2
             exit 1
           }
-          doppler run --project trade --config stg -- env BACKEND_IMAGE="$IMAGE_TAG" \
+          doppler run --project trade --config stg -- env \
+            BACKEND_IMAGE="$IMAGE_TAG" \
+            ANALYSIS_IMAGE="$ANALYSIS_IMAGE" \
+            DASHBOARD_IMAGE="$DASHBOARD_IMAGE" \
             docker compose \
               -f compose.yaml \
               -f compose.staging.yaml \
