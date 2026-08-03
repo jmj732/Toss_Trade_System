@@ -128,26 +128,35 @@ public final class StockForecastService {
     }
 
     public StockForecastView latest(UUID userId, String symbol) {
+        return latest(userId, symbol, null);
+    }
+
+    public StockForecastView latest(UUID userId, String symbol, UUID runId) {
         requireId(userId);
         var normalizedSymbol = normalizeSymbol(symbol);
         if (jdbc.queryForList("SELECT 1 FROM users WHERE id = ?", Integer.class, userId).isEmpty()) {
             throw new StockForecastException(StockForecastException.Code.NOT_FOUND);
         }
-        return jdbc.query("""
+        var query = """
                 SELECT id, stock_analysis_run_id, input_snapshot_id, symbol, prediction_id,
                        created_at, response::text
                   FROM stock_forecasts
                  WHERE user_id = ? AND symbol = ?
+                """ + (runId == null ? "" : " AND stock_analysis_run_id = ? ") + """
                  ORDER BY created_at DESC, id DESC
                  LIMIT 1
-                """, (result, row) -> new StockForecastView(
+                """;
+        var arguments = runId == null
+                ? new Object[]{userId, normalizedSymbol}
+                : new Object[]{userId, normalizedSymbol, runId};
+        return jdbc.query(query, (result, row) -> new StockForecastView(
                 result.getObject("id", UUID.class),
                 result.getObject("stock_analysis_run_id", UUID.class),
                 result.getObject("input_snapshot_id", UUID.class),
                 result.getString("symbol"),
                 result.getObject("prediction_id", UUID.class),
                 result.getObject("created_at", OffsetDateTime.class).toInstant(),
-                decode(result.getString("response"))), userId, normalizedSymbol)
+                decode(result.getString("response"))), arguments)
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new StockForecastException(StockForecastException.Code.NOT_FOUND));

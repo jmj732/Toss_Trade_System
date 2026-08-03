@@ -78,7 +78,7 @@ public final class StockAnalysisGeminiExplainService {
 
     public StockAnalysisGeminiExplainView execute(UUID userId, String symbol) {
         requireId(userId);
-        var source = loadSource(userId, normalizeSymbol(symbol));
+        var source = loadSource(userId, normalizeSymbol(symbol), null);
         var cached = findExisting(userId, source);
         if (cached.isPresent()) {
             return cached.get();
@@ -106,8 +106,12 @@ public final class StockAnalysisGeminiExplainService {
     }
 
     public StockAnalysisGeminiExplainView latest(UUID userId, String symbol) {
+        return latest(userId, symbol, null);
+    }
+
+    public StockAnalysisGeminiExplainView latest(UUID userId, String symbol, UUID runId) {
         requireId(userId);
-        var source = loadSource(userId, normalizeSymbol(symbol));
+        var source = loadSource(userId, normalizeSymbol(symbol), runId);
         return findLatest(userId, source)
                 .orElseThrow(() -> new StockForecastException(StockForecastException.Code.NOT_FOUND));
     }
@@ -171,8 +175,8 @@ public final class StockAnalysisGeminiExplainService {
                 source.forecast());
     }
 
-    private Source loadSource(UUID userId, String symbol) {
-        var rows = jdbc.query("""
+    private Source loadSource(UUID userId, String symbol, UUID runId) {
+        var query = """
                 SELECT f.id AS forecast_id, f.stock_analysis_run_id, f.input_snapshot_id, f.symbol,
                        f.response::text AS forecast_response,
                        ar.response::text AS analysis_response,
@@ -185,16 +189,21 @@ public final class StockAnalysisGeminiExplainService {
                   JOIN analysis_input_snapshots s
                     ON s.user_id = f.user_id AND s.id = f.input_snapshot_id
                  WHERE f.user_id = ? AND f.symbol = ?
+                """ + (runId == null ? "" : " AND f.stock_analysis_run_id = ? ") + """
                  ORDER BY f.created_at DESC, f.id DESC
                  LIMIT 1
-                """, (result, row) -> decodeSource(
+                """;
+        var arguments = runId == null
+                ? new Object[]{userId, symbol}
+                : new Object[]{userId, symbol, runId};
+        var rows = jdbc.query(query, (result, row) -> decodeSource(
                 result.getObject("forecast_id", UUID.class),
                 result.getObject("stock_analysis_run_id", UUID.class),
                 result.getObject("input_snapshot_id", UUID.class),
                 result.getString("symbol"),
                 result.getString("forecast_response"),
                 result.getString("analysis_response"),
-                result.getString("snapshot_payload")), userId, symbol);
+                result.getString("snapshot_payload")), arguments);
         if (rows.isEmpty()) {
             throw new StockForecastException(StockForecastException.Code.NOT_FOUND);
         }

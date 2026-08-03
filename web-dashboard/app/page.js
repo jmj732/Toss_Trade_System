@@ -11,6 +11,7 @@ import { PaperPerformanceView } from "./paper-performance-view.js";
 import { PortfolioHistoryView } from "./portfolio-history-view.js";
 import { PredictionOperationsView } from "./prediction-operations-view.js";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
+import { RouteNav } from "./route-workspace.js";
 import {
   actOnProposal,
   analyzePortfolio,
@@ -496,6 +497,9 @@ export default function Home() {
           onMarkRead: notificationMarkRead
         }),
         h("button", { type: "button", className: "secondary", onClick: signOut }, "Sign out"))),
+    h(RouteNav, {
+      symbol: dashboard?.portfolio?.data?.positions?.[0]?.symbol
+    }),
     h("form", { className: "connection-form", onSubmit: openDashboard },
       h("label", { htmlFor: "connection-id" }, "Broker connection UUID"),
       h("div", null,

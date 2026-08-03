@@ -24,6 +24,69 @@ export async function loadDashboard(connectionId, fetcher = fetch) {
   return body(response);
 }
 
+function stockPath(prefix, symbol, suffix = "") {
+  return `/api/v1/${prefix}/${encodeURIComponent(symbol)}${suffix}`;
+}
+
+export function loadStockAnalysis(symbol, fetcher = fetch) {
+  return readEvent(stockPath("stock-analyses", symbol), fetcher);
+}
+
+export function loadStockAnalysisHistory(symbol, limit = 20, fetcher = fetch) {
+  const query = limit ? `?limit=${encodeURIComponent(limit)}` : "";
+  return readEvent(stockPath("stock-analyses", symbol, `/history${query}`), fetcher);
+}
+
+export function loadStockAnalysisRun(symbol, runId, fetcher = fetch) {
+  return readEvent(
+    stockPath("stock-analyses", symbol, `/runs/${encodeURIComponent(runId)}`), fetcher);
+}
+
+export function createStockAnalysis(symbol, command, session, fetcher = fetch) {
+  return brokerCommand(stockPath("stock-analyses", symbol), "POST", session, command, fetcher);
+}
+
+export function loadStockForecast(symbol, runId = "", fetcher = fetch) {
+  if (typeof runId === "function") {
+    fetcher = runId;
+    runId = "";
+  }
+  const suffix = runId ? `?runId=${encodeURIComponent(runId)}` : "";
+  return readEvent(stockPath("stock-forecasts", symbol, suffix), fetcher);
+}
+
+export function createStockForecast(symbol, command, session, fetcher = fetch) {
+  return brokerCommand(stockPath("stock-forecasts", symbol), "POST", session, command, fetcher);
+}
+
+export function loadStockAnalysisExplanation(symbol, runId = "", fetcher = fetch) {
+  if (typeof runId === "function") {
+    fetcher = runId;
+    runId = "";
+  }
+  const suffix = runId ? `?runId=${encodeURIComponent(runId)}` : "";
+  return readEvent(stockPath("stock-analysis-explanations", symbol, suffix), fetcher);
+}
+
+export function createStockAnalysisExplanation(symbol, session, fetcher = fetch) {
+  return brokerCommand(
+    stockPath("stock-analysis-explanations", symbol), "POST", session, null, fetcher);
+}
+
+export function loadOrderApprovalPreview(orderId, fetcher = fetch) {
+  return readEvent(
+    `/api/v1/paper-orders/${encodeURIComponent(orderId)}/approval-preview`, fetcher);
+}
+
+export function loadPaperOrder(orderId, fetcher = fetch) {
+  return readEvent(`/api/v1/paper-orders/${encodeURIComponent(orderId)}`, fetcher);
+}
+
+export function issueOrderStepUp(orderId, session, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/paper-orders/${encodeURIComponent(orderId)}/step-up`, "POST", session, null, fetcher);
+}
+
 export async function actOnProposal(
   orderId,
   action,
@@ -34,17 +97,42 @@ export async function actOnProposal(
   if (action !== "approve" && action !== "cancel") {
     throw new Error("Unsupported proposal action");
   }
+  let approval = null;
+  if (action === "approve") {
+    const current = await loadPaperOrder(orderId, fetcher);
+    const replay = current.commands?.some(command =>
+      command.action === "APPROVE" && command.idempotencyKey === idempotencyKey);
+    approval = replay
+      ? {
+        displayedQuantity: current.quantity ?? 0, displayedMaxLoss: 0,
+        displayedCurrency: current.currency, proposalVersion: null
+      }
+      : { ...await loadOrderApprovalPreview(orderId, fetcher),
+        ...(await issueOrderStepUp(orderId, session, fetcher)) };
+  }
+  const headers = {
+    "content-type": "application/json",
+    "Idempotency-Key": idempotencyKey,
+    [session.csrfHeaderName]: session.csrfToken
+  };
+  if (approval?.stepUpToken) {
+    headers["X-Step-Up-Token"] = approval.stepUpToken;
+  }
   const response = await fetcher(
     `/api/v1/paper-orders/${encodeURIComponent(orderId)}/${action}`,
     {
       method: "POST",
       credentials: "same-origin",
-      headers: {
-        "content-type": "application/json",
-        "Idempotency-Key": idempotencyKey,
-        [session.csrfHeaderName]: session.csrfToken
-      },
-      body: JSON.stringify({ channel: "WEB" })
+      headers,
+      body: JSON.stringify(approval
+        ? {
+          channel: "WEB",
+          displayedQuantity: approval.displayedQuantity,
+          displayedMaxLoss: approval.displayedMaxLoss,
+          displayedCurrency: approval.displayedCurrency,
+          proposalVersion: approval.proposalVersion ?? null
+        }
+        : { channel: "WEB" })
     });
   return body(response);
 }

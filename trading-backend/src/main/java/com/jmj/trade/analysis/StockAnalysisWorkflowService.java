@@ -182,6 +182,65 @@ public final class StockAnalysisWorkflowService {
                 new StockAnalysisException(StockAnalysisException.Code.RESULT_NOT_FOUND));
     }
 
+    public List<StockAnalysisHistoryView> history(UUID userId, String symbol, int limit) {
+        requireId(userId, "userId");
+        var normalizedSymbol = normalizeSymbol(symbol);
+        if (limit < 1 || limit > 100) {
+            throw new IllegalArgumentException("limit must be between 1 and 100");
+        }
+        if (!userExists(userId)) {
+            throw new StockAnalysisException(StockAnalysisException.Code.NOT_FOUND);
+        }
+        return jdbc.query("""
+                SELECT run.id, run.input_snapshot_id, run.symbol, run.status, run.error_code,
+                       run.started_at, run.completed_at, result.response::text
+                  FROM stock_analysis_runs run
+                  LEFT JOIN stock_analysis_results result
+                    ON result.stock_analysis_run_id = run.id
+                   AND result.user_id = run.user_id
+                   AND result.input_snapshot_id = run.input_snapshot_id
+                 WHERE run.user_id = ? AND run.symbol = ?
+                 ORDER BY COALESCE(run.completed_at, run.started_at) DESC, run.id DESC
+                 LIMIT ?
+                """, (resultSet, rowNumber) -> historyView(resultSet),
+                userId, normalizedSymbol, limit);
+    }
+
+    public StockAnalysisHistoryView run(UUID userId, String symbol, UUID runId) {
+        requireId(userId, "userId");
+        var normalizedSymbol = normalizeSymbol(symbol);
+        if (!userExists(userId)) {
+            throw new StockAnalysisException(StockAnalysisException.Code.NOT_FOUND);
+        }
+        return jdbc.query("""
+                SELECT run.id, run.input_snapshot_id, run.symbol, run.status, run.error_code,
+                       run.started_at, run.completed_at, result.response::text
+                  FROM stock_analysis_runs run
+                  LEFT JOIN stock_analysis_results result
+                    ON result.stock_analysis_run_id = run.id
+                   AND result.user_id = run.user_id
+                   AND result.input_snapshot_id = run.input_snapshot_id
+                 WHERE run.user_id = ? AND run.symbol = ? AND run.id = ?
+                """, (resultSet, rowNumber) -> historyView(resultSet),
+                userId, normalizedSymbol, runId).stream().findFirst().orElseThrow(() ->
+                new StockAnalysisException(StockAnalysisException.Code.RESULT_NOT_FOUND));
+    }
+
+    private StockAnalysisHistoryView historyView(java.sql.ResultSet resultSet) throws java.sql.SQLException {
+        var response = resultSet.getString("response");
+        var startedAt = resultSet.getObject("started_at", OffsetDateTime.class);
+        var completedAt = resultSet.getObject("completed_at", OffsetDateTime.class);
+        return new StockAnalysisHistoryView(
+                resultSet.getObject("id", UUID.class),
+                resultSet.getObject("input_snapshot_id", UUID.class),
+                resultSet.getString("symbol"),
+                resultSet.getString("status"),
+                resultSet.getString("error_code"),
+                startedAt == null ? null : startedAt.toInstant(),
+                completedAt == null ? null : completedAt.toInstant(),
+                response == null ? null : decode(response));
+    }
+
     private StockAnalysisCoreContract.Response call(StockAnalysisCoreContract.Request request) {
         try {
             var response = restClient.post()
@@ -426,6 +485,18 @@ public final class StockAnalysisWorkflowService {
             UUID runId,
             UUID inputSnapshotId,
             String symbol,
+            Instant completedAt,
+            StockAnalysisCoreContract.Response result
+    ) {
+    }
+
+    public record StockAnalysisHistoryView(
+            UUID runId,
+            UUID inputSnapshotId,
+            String symbol,
+            String status,
+            String errorCode,
+            Instant startedAt,
             Instant completedAt,
             StockAnalysisCoreContract.Response result
     ) {

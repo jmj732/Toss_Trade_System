@@ -297,8 +297,42 @@ th { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
 }
 .prediction-model-registry td button + button { margin-left: .4rem; }
 
+.route-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin: 1rem 0;
+}
+.route-nav a {
+  border: 1px solid #2a4050;
+  border-radius: 999px;
+  color: var(--muted);
+  padding: .35rem .7rem;
+  text-decoration: none;
+}
+.route-nav a:hover { border-color: var(--accent); color: var(--accent); }
+.route-stack { display: grid; gap: 1rem; }
+.orders-surface { margin-top: 1rem; }
+.stock-surface { margin-top: 1rem; }
+.stock-surface-heading { margin-bottom: 1rem; }
+.stock-surface-grid { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.stock-surface-panel { margin: 0; }
+.stock-surface-panel > header { align-items: flex-start; display: flex; justify-content: space-between; gap: .75rem; }
+.panel-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .45rem; justify-content: flex-end; }
+.surface-state { border: 1px solid #355064; border-radius: 999px; font-size: .65rem; font-weight: 800; letter-spacing: .08em; padding: .15rem .45rem; }
+.surface-state.progress { border-color: var(--warning); color: var(--warning); }
+.surface-state.failed { border-color: var(--danger); color: var(--danger); }
+.surface-state.degraded { border-color: var(--warning); color: var(--warning); }
+.surface-state.ready { color: var(--accent); }
+.analysis-metrics { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); margin: 1rem 0; }
+.missing-data, .provenance { border-top: 1px solid #223140; margin-top: 1rem; padding-top: .7rem; }
+.missing-data h3, .provenance h3 { font-size: .9rem; }
+.stock-surface-panel .table-wrap { margin-top: .5rem; }
+
+
 @media (max-width: 760px) {
   .grid { grid-template-columns: 1fr; }
+  .stock-surface-grid { grid-template-columns: 1fr; }
   .credential-grid, .event-layout { grid-template-columns: 1fr; }
   .event-detail > header { display: block; }
   .connection-form > div, .list li { align-items: stretch; flex-direction: column; }

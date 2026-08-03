@@ -134,10 +134,10 @@ class StockForecastIntegrationTest extends PostgresIntegrationTest {
                                   "modelVersion":"{{jsonPath request.body '$.modelVersion'}}",
                                   "contractVersion":"{{jsonPath request.body '$.contractVersion'}}",
                                   "forecasts":[
-                                    {"name":"forecast.d1_up_probability","value":"0.55","unit":"probability","asOf":"2026-08-01T20:00:00Z","provenance":[{"provider":"FMP","field":"quote.price","asOf":"2026-08-01T20:00:00Z","collectedAt":"2026-08-02T00:00:00Z"}],"missingData":[]},
-                                    {"name":"forecast.d5_expected_return","value":"0.02","unit":"ratio","asOf":"2026-08-01T20:00:00Z","provenance":[{"provider":"FMP","field":"quote.price","asOf":"2026-08-01T20:00:00Z","collectedAt":"2026-08-02T00:00:00Z"}],"missingData":[]},
-                                    {"name":"forecast.d20_expected_return","value":"0.05","unit":"ratio","asOf":"2026-08-01T20:00:00Z","provenance":[{"provider":"FMP","field":"quote.price","asOf":"2026-08-01T20:00:00Z","collectedAt":"2026-08-02T00:00:00Z"}],"missingData":[]},
-                                    {"name":"forecast.expected_max_loss","value":"-0.10","unit":"ratio","asOf":"2026-08-01T20:00:00Z","provenance":[{"provider":"FMP","field":"quote.price","asOf":"2026-08-01T20:00:00Z","collectedAt":"2026-08-02T00:00:00Z"}],"missingData":[]}
+                                    {"name":"forecast.d1_up_probability","value":"0.55","unit":"probability","asOf":"{{jsonPath request.body '$.evaluatedAt'}}","provenance":[{"provider":"FMP","field":"quote.price","asOf":"{{jsonPath request.body '$.evaluatedAt'}}","collectedAt":"2026-08-02T00:00:00Z"}],"missingData":[]},
+                                    {"name":"forecast.d5_expected_return","value":"0.02","unit":"ratio","asOf":"{{jsonPath request.body '$.evaluatedAt'}}","provenance":[{"provider":"FMP","field":"quote.price","asOf":"{{jsonPath request.body '$.evaluatedAt'}}","collectedAt":"2026-08-02T00:00:00Z"}],"missingData":[]},
+                                    {"name":"forecast.d20_expected_return","value":"0.05","unit":"ratio","asOf":"{{jsonPath request.body '$.evaluatedAt'}}","provenance":[{"provider":"FMP","field":"quote.price","asOf":"{{jsonPath request.body '$.evaluatedAt'}}","collectedAt":"2026-08-02T00:00:00Z"}],"missingData":[]},
+                                    {"name":"forecast.expected_max_loss","value":"-0.10","unit":"ratio","asOf":"{{jsonPath request.body '$.evaluatedAt'}}","provenance":[{"provider":"FMP","field":"quote.price","asOf":"{{jsonPath request.body '$.evaluatedAt'}}","collectedAt":"2026-08-02T00:00:00Z"}],"missingData":[]}
                                   ]
                                 }
                                 """)));

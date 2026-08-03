@@ -122,14 +122,14 @@ function Proposals({ section, busyOrderId, onOrderAction }) {
       : h("p", { className: "empty" }, "No pending proposals"));
 }
 
-export function DashboardView({ dashboard, busyOrderId, onOrderAction }) {
+export function DashboardView({ dashboard, busyOrderId, onOrderAction, includeOrders = true }) {
   return h("main", { className: "grid" },
     h(Portfolio, { section: dashboard.portfolio }),
     h(Analysis, { section: dashboard.analysis }),
     h(Events, { section: dashboard.pendingEvents }),
-    h(Proposals, {
+    includeOrders ? h(Proposals, {
       section: dashboard.pendingOrderProposals,
       busyOrderId,
       onOrderAction
-    }));
+    }) : null);
 }

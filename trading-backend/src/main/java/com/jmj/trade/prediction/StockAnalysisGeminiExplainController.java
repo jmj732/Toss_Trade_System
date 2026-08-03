@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
 import java.util.UUID;
+import org.springframework.web.bind.annotation.RequestParam;
 
 @RestController
 @RequestMapping("/api/v1/stock-analysis-explanations")
@@ -30,8 +31,9 @@ public class StockAnalysisGeminiExplainController {
 
     @GetMapping("/{symbol}")
     StockAnalysisGeminiExplainService.StockAnalysisGeminiExplainView latest(
-            Principal principal, @PathVariable String symbol) {
-        return explanations.latest(userId(principal), symbol);
+            Principal principal, @PathVariable String symbol,
+            @RequestParam(required = false) UUID runId) {
+        return explanations.latest(userId(principal), symbol, runId);
     }
 
     @ExceptionHandler(StockForecastException.class)

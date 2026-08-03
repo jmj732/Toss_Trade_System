@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
@@ -40,8 +41,12 @@ public class StockForecastController {
     }
 
     @GetMapping("/{symbol}")
-    StockForecastService.StockForecastView latest(Principal principal, @PathVariable String symbol) {
-        return forecasts.latest(userId(principal), symbol);
+    StockForecastService.StockForecastView latest(
+            Principal principal,
+            @PathVariable String symbol,
+            @RequestParam(required = false) UUID runId
+    ) {
+        return forecasts.latest(userId(principal), symbol, runId);
     }
 
     @ExceptionHandler(StockForecastException.class)

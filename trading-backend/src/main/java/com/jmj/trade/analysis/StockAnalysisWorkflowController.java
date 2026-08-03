@@ -8,9 +8,11 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -39,6 +41,24 @@ public class StockAnalysisWorkflowController {
             @PathVariable String symbol
     ) {
         return service.latest(userId(principal), symbol);
+    }
+
+    @GetMapping("/{symbol}/history")
+    List<StockAnalysisWorkflowService.StockAnalysisHistoryView> history(
+            Principal principal,
+            @PathVariable String symbol,
+            @RequestParam(defaultValue = "20") int limit
+    ) {
+        return service.history(userId(principal), symbol, limit);
+    }
+
+    @GetMapping("/{symbol}/runs/{runId}")
+    StockAnalysisWorkflowService.StockAnalysisHistoryView run(
+            Principal principal,
+            @PathVariable String symbol,
+            @PathVariable UUID runId
+    ) {
+        return service.run(userId(principal), symbol, runId);
     }
 
     @ExceptionHandler(StockAnalysisException.class)

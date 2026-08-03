@@ -166,4 +166,35 @@ class StockAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("STOCK_ANALYSIS_RESULT_NOT_FOUND"));
     }
+
+    @Test
+    void exposesOwnerSafeImmutableAnalysisHistoryAndRunSelection() throws Exception {
+        var result = mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
+                        "/api/v1/stock-analyses/AAPL")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf()))
+                .andExpect(status().isOk())
+                .andReturn();
+        var runId = result.getResponse().getContentAsString()
+                .replaceFirst(".*\\\"runId\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                        "/api/v1/stock-analyses/AAPL/history").param("limit", "7")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].runId").value(runId))
+                .andExpect(jsonPath("$[0].status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$[0].result.status").value("DEGRADED"));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                        "/api/v1/stock-analyses/AAPL/runs/" + runId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.inputSnapshotId").isNotEmpty());
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                        "/api/v1/stock-analyses/AAPL/history")
+                        .with(user(UUID.randomUUID().toString())))
+                .andExpect(status().isNotFound());
+    }
 }

@@ -24,6 +24,14 @@ import {
   loadPredictionOperations,
   loadRiskPolicy,
   loadRiskPolicyHistory,
+  loadStockAnalysis,
+  loadStockAnalysisHistory,
+  loadStockAnalysisRun,
+  createStockAnalysis,
+  loadStockForecast,
+  createStockForecast,
+  loadStockAnalysisExplanation,
+  createStockAnalysisExplanation,
   loadSession,
   loadUnreadCount,
   logout,
@@ -66,14 +74,69 @@ test("loads the internal session and owned dashboard with same-origin cookies", 
   ]);
 });
 
+test("stock product APIs preserve owner paths, history selection, and CSRF mutations", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ symbol: "AAPL", result: { status: "DEGRADED" } });
+  };
+  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
+
+  await loadStockAnalysis("AAPL", fetcher);
+  await loadStockAnalysisHistory("AAPL", 7, fetcher);
+  await loadStockAnalysisRun("AAPL", "run/1", fetcher);
+  await createStockAnalysis("AAPL", { identifiers: { cik: "1" } }, session, fetcher);
+  await loadStockForecast("AAPL", fetcher);
+  await loadStockForecast("AAPL", "run-1", fetcher);
+  await createStockForecast(
+    "AAPL",
+    { connectionId: "connection/1", modelVersion: "model-v1", contractVersion: "forecast-v1" },
+    session,
+    fetcher);
+  await loadStockAnalysisExplanation("AAPL", fetcher);
+  await loadStockAnalysisExplanation("AAPL", "run-1", fetcher);
+  await createStockAnalysisExplanation("AAPL", session, fetcher);
+
+  assert.deepEqual(calls.map(([url, options]) => [
+    url,
+    options.method,
+    options.credentials,
+    options.headers?.["X-CSRF-TOKEN"]
+  ]), [
+    ["/api/v1/stock-analyses/AAPL", undefined, "same-origin", undefined],
+    ["/api/v1/stock-analyses/AAPL/history?limit=7", undefined, "same-origin", undefined],
+    ["/api/v1/stock-analyses/AAPL/runs/run%2F1", undefined, "same-origin", undefined],
+    ["/api/v1/stock-analyses/AAPL", "POST", "same-origin", "csrf"],
+    ["/api/v1/stock-forecasts/AAPL", undefined, "same-origin", undefined],
+    ["/api/v1/stock-forecasts/AAPL?runId=run-1", undefined, "same-origin", undefined],
+    ["/api/v1/stock-forecasts/AAPL", "POST", "same-origin", "csrf"],
+    ["/api/v1/stock-analysis-explanations/AAPL", undefined, "same-origin", undefined],
+    ["/api/v1/stock-analysis-explanations/AAPL?runId=run-1", undefined, "same-origin", undefined],
+    ["/api/v1/stock-analysis-explanations/AAPL", "POST", "same-origin", "csrf"]
+  ]);
+  assert.deepEqual(JSON.parse(calls[3][1].body), { identifiers: { cik: "1" } });
+  assert.deepEqual(JSON.parse(calls[6][1].body), {
+    connectionId: "connection/1", modelVersion: "model-v1", contractVersion: "forecast-v1"
+  });
+});
+
 test("treats an unauthenticated session as signed out", async () => {
   assert.equal(await loadSession(async () => new Response(null, { status: 401 })), null);
 });
 
-test("approval and cancellation use only the channel-neutral command API", async () => {
+test("approval obtains a preview and step-up token before submitting", async () => {
   const calls = [];
   const fetcher = async (url, options) => {
     calls.push([url, options]);
+    if (url.endsWith("/approval-preview")) {
+      return json({
+        displayedQuantity: 1, displayedMaxLoss: 100, displayedCurrency: "USD",
+        proposalVersion: null
+      });
+    }
+    if (url.endsWith("/step-up")) {
+      return json({ stepUpToken: "step-up-token" });
+    }
     return json({ status: "COMPLETED" });
   };
   const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
@@ -81,14 +144,28 @@ test("approval and cancellation use only the channel-neutral command API", async
   await actOnProposal("order-1", "approve", session, "idem-1", fetcher);
   await actOnProposal("order-2", "cancel", session, "idem-2", fetcher);
 
-  for (const [index, action] of ["approve", "cancel"].entries()) {
+  assert.equal(calls.length, 5);
+  assert.equal(calls[0][0], "/api/v1/paper-orders/order-1");
+  assert.equal(calls[1][0], "/api/v1/paper-orders/order-1/approval-preview");
+  assert.equal(calls[2][0], "/api/v1/paper-orders/order-1/step-up");
+  assert.equal(calls[2][1].headers["X-CSRF-TOKEN"], "csrf");
+
+  for (const [index, orderId, action] of [[3, "order-1", "approve"], [4, "order-2", "cancel"]]) {
     const [url, options] = calls[index];
-    assert.equal(url, `/api/v1/paper-orders/order-${index + 1}/${action}`);
+    assert.equal(url, `/api/v1/paper-orders/${orderId}/${action}`);
     assert.equal(options.method, "POST");
     assert.equal(options.credentials, "same-origin");
     assert.equal(options.headers["X-CSRF-TOKEN"], "csrf");
-    assert.equal(options.headers["Idempotency-Key"], `idem-${index + 1}`);
-    assert.deepEqual(JSON.parse(options.body), { channel: "WEB" });
+    assert.equal(options.headers["Idempotency-Key"], action === "approve" ? "idem-1" : "idem-2");
+    assert.deepEqual(JSON.parse(options.body), action === "approve"
+      ? {
+        channel: "WEB", displayedQuantity: 1, displayedMaxLoss: 100,
+        displayedCurrency: "USD", proposalVersion: null
+      }
+      : { channel: "WEB" });
+    if (action === "approve") {
+      assert.equal(options.headers["X-Step-Up-Token"], "step-up-token");
+    }
   }
 });
 

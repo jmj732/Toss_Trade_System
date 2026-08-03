@@ -60,6 +60,12 @@ public class PaperOrderWorkflowController {
         return workflow.read(userId(principal), id);
     }
 
+    @GetMapping("/{id}/approval-preview")
+    PaperOrderWorkflowService.ApprovalPreview approvalPreview(
+            Principal principal, @PathVariable UUID id) {
+        return workflow.approvalPreview(userId(principal), id);
+    }
+
     /**
      * step-up 재인증 토큰 발급. 최근 OIDC 재인증(auth_time)만이 근거이며, 값이 없거나 오래되면 401.
      * 원문 토큰은 이 응답에서 한 번만 노출되고 서버는 해시만 저장한다.

@@ -286,6 +286,18 @@ public final class PaperOrderWorkflowService {
                 commands(userId, orderIntentId));
     }
 
+    public ApprovalPreview approvalPreview(UUID userId, UUID orderIntentId) {
+        requireId(userId);
+        requireId(orderIntentId);
+        var target = quoteTarget(userId, orderIntentId);
+        if (target.status() != OrderIntentStatus.PROPOSED) {
+            throw PaperOrderWorkflowException.conflict();
+        }
+        var snapshot = displaySnapshot(target, serverPrice(target));
+        return new ApprovalPreview(
+                snapshot.quantity(), snapshot.maxLoss(), snapshot.currency(), null);
+    }
+
     private BigDecimal serverPrice(QuoteTarget target) {
         var quote = broker.getQuote(new BrokerConnectionRef(target.connectionId()), target.symbol()).value();
         if (!quote.connection().brokerConnectionId().equals(target.connectionId())
@@ -615,6 +627,14 @@ public final class PaperOrderWorkflowService {
             Currency displayedCurrency,
             String stepUpToken,
             // E1(TradeProposal) 도입 시 승인 대상 버전 대조에 쓰일 seam. 현재는 미사용.
+            Long proposalVersion
+    ) {
+    }
+
+    public record ApprovalPreview(
+            BigDecimal displayedQuantity,
+            BigDecimal displayedMaxLoss,
+            Currency displayedCurrency,
             Long proposalVersion
     ) {
     }
