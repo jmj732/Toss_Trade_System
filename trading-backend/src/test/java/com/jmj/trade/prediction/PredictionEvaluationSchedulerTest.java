@@ -47,7 +47,7 @@ class PredictionEvaluationSchedulerTest {
         when(lease.acquire(any())).thenReturn(true);
         when(lease.renew(any())).thenReturn(true);
         when(predictions.evaluateDueWithResult(any(), anyInt(), anyInt(), any()))
-                .thenReturn(new AnalysisPredictionService.EvaluationTickResult(5, 3, 1, true));
+                .thenReturn(new AnalysisPredictionService.EvaluationTickResult(5, 3, 1, 1, true));
         var scheduler = scheduler(lease, predictions, fixture.metrics(), Clock.fixed(T0, ZoneOffset.UTC));
 
         scheduler.evaluate();
@@ -55,6 +55,7 @@ class PredictionEvaluationSchedulerTest {
         assertThat(counter(fixture.registry(), "trade.prediction.evaluation.attempted")).isEqualTo(5);
         assertThat(counter(fixture.registry(), "trade.prediction.evaluation.succeeded")).isEqualTo(3);
         assertThat(counter(fixture.registry(), "trade.prediction.evaluation.quote.failed")).isEqualTo(1);
+        assertThat(counter(fixture.registry(), "trade.prediction.evaluation.item.failed")).isEqualTo(1);
         assertThat(fixture.registry().get("trade.prediction.evaluation.early.stop")
                 .tag("reason", "count").counter().count()).isEqualTo(1);
     }

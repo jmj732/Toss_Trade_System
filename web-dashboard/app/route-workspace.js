@@ -53,7 +53,7 @@ import {
 } from "../lib/api.js";
 
 const HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
-const OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "" };
+const OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "", symbol: "" };
 
 export function RouteNav({ symbol }) {
   const links = [

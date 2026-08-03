@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -74,19 +75,29 @@ final class PredictionOperationsController {
                    COALESCE(GREATEST(0, floor(EXTRACT(
                        EPOCH FROM (CURRENT_TIMESTAMP - min(target_due_at))) * 1000)), 0)::bigint
                        AS max_lag_ms,
+                   count(*) FILTER (WHERE target_due_at <= CURRENT_TIMESTAMP
+                       - CAST(? AS bigint) * INTERVAL '1 millisecond') AS long_ungraded_count,
+                   min(target_due_at) FILTER (WHERE target_due_at <= CURRENT_TIMESTAMP
+                       - CAST(? AS bigint) * INTERVAL '1 millisecond') AS oldest_long_ungraded_due_at,
                    CURRENT_TIMESTAMP AS measured_at
               FROM due_predictions
             """;
 
     private final JdbcTemplate jdbc;
     private final boolean evaluationEnabled;
+    private final Duration longUngradedAfter;
 
     PredictionOperationsController(
             JdbcTemplate jdbc,
-            @Value("${prediction.evaluation.enabled:false}") boolean evaluationEnabled
+            @Value("${prediction.evaluation.enabled:false}") boolean evaluationEnabled,
+            @Value("${prediction.evaluation.long-ungraded-after:PT24H}") Duration longUngradedAfter
     ) {
         this.jdbc = jdbc;
         this.evaluationEnabled = evaluationEnabled;
+        if (!longUngradedAfter.isPositive()) {
+            throw new IllegalArgumentException("longUngradedAfter must be positive");
+        }
+        this.longUngradedAfter = longUngradedAfter;
     }
 
     @GetMapping
@@ -96,14 +107,20 @@ final class PredictionOperationsController {
                 evaluationEnabled,
                 result.getLong("backlog"),
                 result.getLong("max_lag_ms"),
+                result.getLong("long_ungraded_count"),
+                result.getObject("oldest_long_ungraded_due_at", OffsetDateTime.class) == null
+                        ? null
+                        : result.getObject("oldest_long_ungraded_due_at", OffsetDateTime.class).toInstant(),
                 result.getObject("measured_at", OffsetDateTime.class).toInstant()),
-                userId, userId, userId);
+                userId, userId, userId, longUngradedAfter.toMillis(), longUngradedAfter.toMillis());
     }
 
     record OperationsView(
             boolean evaluationEnabled,
             long backlog,
             long maxLagMs,
+            long longUngradedCount,
+            Instant oldestLongUngradedDueAt,
             Instant measuredAt
     ) {
     }

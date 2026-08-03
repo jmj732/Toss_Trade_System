@@ -25,6 +25,8 @@ Set these variables in the deployment environment:
 | `PREDICTION_EVALUATION_MAX_PER_TICK` | `1000` | Count cap per tick |
 | `PREDICTION_EVALUATION_MAX_RUNTIME` | `PT5M` | Runtime cap per tick |
 | `PREDICTION_EVALUATION_METRICS_CACHE_TTL` | `PT30S` | Backlog snapshot TTL |
+| `PREDICTION_EVALUATION_LONG_UNGRADED_AFTER` | `PT24H` | Dashboard threshold for long-ungraded rows |
+| `PREDICTION_FORECAST_QUALITY_MINIMUM_SAMPLE_COUNT` | `10` | Minimum completed outcomes before publishing quality metrics |
 | `PREDICTION_INGESTION_API_KEY_CLEANUP_ENABLED` | `true` | Marks due keys `EXPIRED` |
 | `PREDICTION_INGESTION_API_KEY_CLEANUP_INTERVAL` | `PT1H` | Expiry sweep interval |
 | `PREDICTION_INGESTION_API_KEY_CLEANUP_INITIAL_DELAY` | `PT1M` | First expiry sweep delay |
@@ -46,6 +48,12 @@ The API key cleanup uses PostgreSQL time and only performs the immutable
 
 After opening an owned broker connection, the `Prediction operations` panel shows only the
 signed-in user's earliest due/ungraded backlog, maximum lag, and ingestion API keys. It can
+also show the long-ungraded count and oldest long-ungraded due time. The prediction panel's
+forecast-quality table groups immutable D1/D5/D20 forecast rows by symbol, model/contract
+version, and horizon. It shows hit rate, D5/D20 signed error and MAE, D1 calibration error and
+Brier score, plus explicit `DATA_SHORTAGE`, `NO_DATA`, and drift states. Metrics and drift are
+suppressed until the configured minimum completed sample count is reached; pending and
+missing forecast data remain visible as counts.
 issue, rotate, and revoke keys through the existing session/CSRF boundary. Raw key material is
 shown only in the issue/rotation response and disappears when dismissed or the page reloads.
 The panel cannot trigger evaluation, create predictions, or execute orders.
@@ -57,6 +65,7 @@ The panel cannot trigger evaluation, create predictions, or execute orders.
 - `trade_prediction_evaluation_attempted_total`
 - `trade_prediction_evaluation_succeeded_total`
 - `trade_prediction_evaluation_quote_failed_total`
+- `trade_prediction_evaluation_item_failed_total`
 - `trade_prediction_evaluation_lease_failure_total{stage="acquire|renew"}`
 - `trade_prediction_evaluation_early_stop_total{reason="count|time"}`
 

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { AnalysisOutcomeView } from "../app/analysis-outcome-view.js";
 
-const QUERY = { from: "", to: "", modelVersion: "", contractVersion: "" };
+const QUERY = { from: "", to: "", modelVersion: "", contractVersion: "", symbol: "" };
 
 test("renders predictions table, per-horizon grades, and version performance summary", () => {
   const html = renderToStaticMarkup(createElement(AnalysisOutcomeView, {
@@ -30,7 +30,21 @@ test("renders predictions table, per-horizon grades, and version performance sum
           modelVersion: "v1", contractVersion: "1", horizon: "D1",
           sampleCount: 1, hitRate: 1, avgDirectionalReturn: 0.1, avgMaxAdverseExcursion: 0
         }
-      ]
+      ],
+      forecastQuality: {
+        minimumSampleCount: 10,
+        rows: [{
+          symbol: "AAPL", modelVersion: "v1", contractVersion: "1", horizon: "D1",
+          status: "DATA_SHORTAGE", sampleCount: 1, minimumSampleCount: 10,
+          pendingCount: 0, hitRate: null, calibrationError: null, brierScore: null,
+          drift: { status: "DATA_SHORTAGE", degraded: false }
+        }, {
+          symbol: "AAPL", modelVersion: "v1", contractVersion: "1", horizon: "D5",
+          status: "SUFFICIENT", sampleCount: 10, minimumSampleCount: 10,
+          pendingCount: 0, hitRate: 0.4, meanError: -0.1, meanAbsoluteError: 0.2,
+          drift: { status: "DRIFT", degraded: true, hitRateDelta: -0.2 }
+        }]
+      }
     },
     query: QUERY,
     busy: false,
@@ -44,6 +58,9 @@ test("renders predictions table, per-horizon grades, and version performance sum
   assert.match(html, /주문이나 자동매매와 연동되지 않습니다/);
   assert.match(html, /AAPL/);
   assert.match(html, /10\.0%\s*HIT/);
+  assert.match(html, /Forecast quality monitoring/);
+  assert.match(html, /DATA_SHORTAGE/);
+  assert.match(html, /DRIFT \/ hit -20\.0% \/ DEGRADED/);
 });
 
 test("shows an em dash for horizons that have not matured yet and no performance summary until one has", () => {

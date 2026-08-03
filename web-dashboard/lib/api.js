@@ -342,7 +342,7 @@ export function createAnalysisPrediction(connectionId, command, session, fetcher
 
 export function loadAnalysisPredictions(
   connectionId,
-  { from, to, modelVersion, contractVersion } = {},
+  { from, to, modelVersion, contractVersion, symbol } = {},
   fetcher = fetch
 ) {
   const params = new URLSearchParams();
@@ -357,6 +357,9 @@ export function loadAnalysisPredictions(
   }
   if (contractVersion) {
     params.set("contractVersion", contractVersion);
+  }
+  if (symbol) {
+    params.set("symbol", symbol);
   }
   const query = params.toString();
   return readEvent(

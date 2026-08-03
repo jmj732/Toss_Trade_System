@@ -20,6 +20,15 @@ public class StockForecastConfiguration {
     }
 
     @Bean
+    ForecastQualityMonitoringService forecastQualityMonitoringService(
+            JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper,
+            @Value("${prediction.forecast-quality.minimum-sample-count:10}") int minimumSampleCount
+    ) {
+        return new ForecastQualityMonitoringService(jdbcTemplate, objectMapper, minimumSampleCount);
+    }
+
+    @Bean
     StockForecastService stockForecastService(
             JdbcTemplate jdbcTemplate,
             PlatformTransactionManager transactionManager,

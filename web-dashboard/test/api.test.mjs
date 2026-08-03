@@ -429,14 +429,14 @@ test("loads analysis predictions with optional period/version filters", async ()
       "connection/1",
       {
         from: "2026-01-01T00:00:00Z", to: "2026-02-01T00:00:00Z",
-        modelVersion: "v1", contractVersion: "1"
+        modelVersion: "v1", contractVersion: "1", symbol: "AAPL"
       },
       fetcher);
 
   assert.deepEqual(calls.map(([url, options]) => [url, options.credentials]), [
     ["/api/v1/broker-connections/connection%2F1/analysis-predictions", "same-origin"],
     ["/api/v1/broker-connections/connection%2F1/analysis-predictions"
-      + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&modelVersion=v1&contractVersion=1",
+      + "?from=2026-01-01T00%3A00%3A00Z&to=2026-02-01T00%3A00%3A00Z&modelVersion=v1&contractVersion=1&symbol=AAPL",
       "same-origin"]
   ]);
 });

@@ -1026,6 +1026,8 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.evaluationEnabled").value(true))
                 .andExpect(jsonPath("$.backlog").value(1))
+                .andExpect(jsonPath("$.longUngradedCount").value(1))
+                .andExpect(jsonPath("$.oldestLongUngradedDueAt").isNotEmpty())
                 .andExpect(jsonPath("$.maxLagMs").isNumber())
                 .andExpect(jsonPath("$.measuredAt").isNotEmpty());
     }
@@ -1239,6 +1241,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         org.assertj.core.api.Assertions.assertThat(result.attempted()).isEqualTo(2);
         org.assertj.core.api.Assertions.assertThat(result.succeeded()).isEqualTo(1);
         org.assertj.core.api.Assertions.assertThat(result.quoteFailed()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(result.itemFailed()).isZero();
         org.assertj.core.api.Assertions.assertThat(result.countLimitReached()).isFalse();
         assertCount("analysis_prediction_outcomes", 1);
     }

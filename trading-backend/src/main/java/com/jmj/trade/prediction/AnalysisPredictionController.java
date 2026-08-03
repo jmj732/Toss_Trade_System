@@ -25,9 +25,14 @@ import java.util.UUID;
 public class AnalysisPredictionController {
 
     private final AnalysisPredictionService predictions;
+    private final ForecastQualityMonitoringService quality;
 
-    AnalysisPredictionController(AnalysisPredictionService predictions) {
+    AnalysisPredictionController(
+            AnalysisPredictionService predictions,
+            ForecastQualityMonitoringService quality
+    ) {
         this.predictions = predictions;
+        this.quality = quality;
     }
 
     @PostMapping
@@ -83,10 +88,17 @@ public class AnalysisPredictionController {
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
             @RequestParam(required = false) String modelVersion,
-            @RequestParam(required = false) String contractVersion
+            @RequestParam(required = false) String contractVersion,
+            @RequestParam(required = false) String symbol
     ) {
-        return predictions.read(
-                userId(principal), connectionId, from, to, modelVersion, contractVersion, Instant.now());
+        var userId = userId(principal);
+        var now = Instant.now();
+        var performance = predictions.read(
+                userId, connectionId, from, to, modelVersion, contractVersion, now);
+        return new AnalysisPredictionService.PredictionPerformanceView(
+                performance.predictions(),
+                performance.byVersion(),
+                quality.read(userId, connectionId, from, to, modelVersion, contractVersion, symbol, now));
     }
 
     @ExceptionHandler(AnalysisPredictionException.class)

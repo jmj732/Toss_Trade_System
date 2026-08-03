@@ -84,7 +84,8 @@ public final class PredictionEvaluationScheduler {
                         }
                         return true;
                     });
-            metrics.recordTick(result.attempted(), result.succeeded(), result.quoteFailed());
+            metrics.recordTick(
+                    result.attempted(), result.succeeded(), result.quoteFailed(), result.itemFailed());
             if (renewFailed.get()) {
                 metrics.recordLeaseFailure(PredictionEvaluationMetrics.LeaseStage.RENEW);
             } else if (timeStopped.get()) {

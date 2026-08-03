@@ -450,6 +450,7 @@ public final class AnalysisPredictionService {
         var quotes = new HashMap<QuoteKey, Optional<ObservedQuote>>();
         var succeeded = 0;
         var quoteFailed = 0;
+        var itemFailed = 0;
         DueCursor cursor = null;
         while (attempted.size() < maxPerTick && continueBeforeBatch.getAsBoolean()) {
             var limit = Math.min(batchSize, maxPerTick - attempted.size());
@@ -459,19 +460,23 @@ public final class AnalysisPredictionService {
             }
             for (var prediction : batch) {
                 attempted.add(prediction.id());
-                switch (evaluateOne(prediction, prediction.horizon(), prediction.dueAt(), quotes)) {
-                    case GRADED -> succeeded++;
-                    case QUOTE_FAILED -> quoteFailed++;
-                    case DUPLICATE -> {
-                        // The database uniqueness constraint already preserved the outcome.
+                try {
+                    switch (evaluateOne(prediction, prediction.horizon(), prediction.dueAt(), quotes)) {
+                        case GRADED -> succeeded++;
+                        case QUOTE_FAILED -> quoteFailed++;
+                        case DUPLICATE -> {
+                            // The database uniqueness constraint already preserved the outcome.
+                        }
                     }
+                } catch (RuntimeException exception) {
+                    itemFailed++;
                 }
             }
             var last = batch.getLast();
             cursor = new DueCursor(last.dueAt(), last.id());
         }
         return new EvaluationTickResult(
-                attempted.size(), succeeded, quoteFailed, attempted.size() >= maxPerTick);
+                attempted.size(), succeeded, quoteFailed, itemFailed, attempted.size() >= maxPerTick);
     }
 
     private List<DuePrediction> fetchDuePredictions(
@@ -928,15 +933,26 @@ public final class AnalysisPredictionService {
 
     public record PredictionPerformanceView(
             List<PredictionView> predictions,
-            List<PerformanceRow> byVersion
+            List<PerformanceRow> byVersion,
+            ForecastQualityMonitoringService.ForecastQualityView forecastQuality
     ) {
+        public PredictionPerformanceView(
+                List<PredictionView> predictions,
+                List<PerformanceRow> byVersion
+        ) {
+            this(predictions, byVersion, null);
+        }
     }
 
     record EvaluationTickResult(
             int attempted,
             int succeeded,
             int quoteFailed,
+            int itemFailed,
             boolean countLimitReached
     ) {
+        EvaluationTickResult(int attempted, int succeeded, int quoteFailed, boolean countLimitReached) {
+            this(attempted, succeeded, quoteFailed, 0, countLimitReached);
+        }
     }
 }

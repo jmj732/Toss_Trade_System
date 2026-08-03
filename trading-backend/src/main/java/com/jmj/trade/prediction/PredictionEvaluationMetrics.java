@@ -85,6 +85,7 @@ public final class PredictionEvaluationMetrics {
     private final Counter attempted;
     private final Counter succeeded;
     private final Counter quoteFailed;
+    private final Counter itemFailed;
     private final Counter leaseAcquireFailed;
     private final Counter leaseRenewFailed;
     private final Counter countStopped;
@@ -127,6 +128,7 @@ public final class PredictionEvaluationMetrics {
         attempted = counter(registry, "trade.prediction.evaluation.attempted");
         succeeded = counter(registry, "trade.prediction.evaluation.succeeded");
         quoteFailed = counter(registry, "trade.prediction.evaluation.quote.failed");
+        itemFailed = counter(registry, "trade.prediction.evaluation.item.failed");
         leaseAcquireFailed = taggedCounter(
                 registry, "trade.prediction.evaluation.lease.failure", "stage", "acquire");
         leaseRenewFailed = taggedCounter(
@@ -138,12 +140,17 @@ public final class PredictionEvaluationMetrics {
     }
 
     void recordTick(int attempted, int succeeded, int quoteFailed) {
-        if (attempted < 0 || succeeded < 0 || quoteFailed < 0) {
+        recordTick(attempted, succeeded, quoteFailed, 0);
+    }
+
+    void recordTick(int attempted, int succeeded, int quoteFailed, int itemFailed) {
+        if (attempted < 0 || succeeded < 0 || quoteFailed < 0 || itemFailed < 0) {
             throw new IllegalArgumentException("tick counts must not be negative");
         }
         this.attempted.increment(attempted);
         this.succeeded.increment(succeeded);
         this.quoteFailed.increment(quoteFailed);
+        this.itemFailed.increment(itemFailed);
     }
 
     void recordLeaseFailure(LeaseStage stage) {

@@ -11,6 +11,8 @@ test("renders owned evaluation operations and safe API key management", () => {
       evaluationEnabled: true,
       backlog: 2,
       maxLagMs: 3723000,
+      longUngradedCount: 1,
+      oldestLongUngradedDueAt: "2026-07-29T00:00:00Z",
       measuredAt: "2026-07-31T00:00:00Z"
     },
     keys: [
@@ -54,6 +56,8 @@ test("renders owned evaluation operations and safe API key management", () => {
   assert.match(html, /Evaluation enabled/);
   assert.match(html, />2</);
   assert.match(html, /1h 2m 3s/);
+  assert.match(html, /Long ungraded/);
+  assert.match(html, /2026-07-29T00:00:00Z/);
   assert.match(html, /tpik_once_only_secret/);
   assert.match(html, /This key is shown once/);
   assert.match(html, /tpik_12345678/);

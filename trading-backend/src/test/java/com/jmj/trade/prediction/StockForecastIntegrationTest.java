@@ -59,6 +59,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "broker.credentials.active-key-version=1",
                 "broker.credentials.keys.1=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
                 "prediction.evaluation.enabled=false",
+                "prediction.forecast-quality.minimum-sample-count=1",
                 "prediction.ingestion-api-key.cleanup.enabled=false"
         })
 @Import(StockForecastIntegrationTest.ForecastConfiguration.class)
@@ -176,6 +177,35 @@ class StockForecastIntegrationTest extends PostgresIntegrationTest {
                 "SELECT count(*) FROM stock_forecasts", Integer.class)).isEqualTo(1);
         org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM analysis_predictions", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void exposesForecastQualityFromTheImmutableForecastAndGradedOutcomeRows() throws Exception {
+        mockMvc.perform(post("/api/v1/stock-forecasts/AAPL")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody()))
+                .andExpect(status().isOk());
+        var predictionId = jdbc.queryForObject(
+                "SELECT prediction_id FROM stock_forecasts WHERE user_id = ?", UUID.class, USER_ID);
+        jdbc.update("""
+                INSERT INTO analysis_prediction_outcomes (
+                    id, prediction_id, horizon, price, actual_return, direction_correct,
+                    target_due_at, observation_time, lag_ms
+                ) VALUES (?, ?, 'D1', 110, 0.1, true,
+                          CURRENT_TIMESTAMP - INTERVAL '1 hour', CURRENT_TIMESTAMP, 3600000)
+                """, UUID.randomUUID(), predictionId);
+
+        mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/analysis-predictions", CONNECTION_ID)
+                        .queryParam("symbol", "AAPL")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.forecastQuality.minimumSampleCount").value(1))
+                .andExpect(jsonPath("$.forecastQuality.rows[?(@.horizon == 'D1')].status")
+                        .value(org.hamcrest.Matchers.contains("SUFFICIENT")))
+                .andExpect(jsonPath("$.forecastQuality.rows[?(@.horizon == 'D1')].calibrationError")
+                        .value(org.hamcrest.Matchers.contains(0.45)));
     }
 
     @Test

@@ -52,7 +52,7 @@ import {
 
 const DEFAULT_HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
 const DEFAULT_PERFORMANCE_QUERY = { from: "", to: "", maxPoints: 90 };
-const DEFAULT_OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "" };
+const DEFAULT_OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "", symbol: "" };
 
 export default function Home() {
   const [session, setSession] = useState(undefined);

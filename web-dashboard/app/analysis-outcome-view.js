@@ -6,6 +6,51 @@ function percent(value) {
   return value == null ? "—" : `${(Number(value) * 100).toFixed(1)}%`;
 }
 
+function decimal(value) {
+  return value == null ? "—" : Number(value).toFixed(4);
+}
+
+function driftLabel(drift) {
+  if (!drift) {
+    return "—";
+  }
+  const deltas = [];
+  if (drift.hitRateDelta != null) {
+    deltas.push(`hit ${percent(drift.hitRateDelta)}`);
+  }
+  if (drift.meanAbsoluteErrorDelta != null) {
+    deltas.push(`MAE ${percent(drift.meanAbsoluteErrorDelta)}`);
+  }
+  if (drift.calibrationErrorDelta != null) {
+    deltas.push(`cal ${percent(drift.calibrationErrorDelta)}`);
+  }
+  if (drift.degraded) {
+    deltas.push("DEGRADED");
+  }
+  return [drift.status, ...deltas].join(" / ");
+}
+
+function qualityRow(row) {
+  return h("tr", {
+    key: `${row.symbol}-${row.modelVersion}-${row.contractVersion}-${row.horizon}`
+  },
+    h("td", null, row.symbol),
+    h("td", null, row.modelVersion),
+    h("td", null, row.contractVersion),
+    h("td", null, row.horizon),
+    h("td", null, row.status),
+    h("td", null, `${row.sampleCount}/${row.minimumSampleCount}`),
+    h("td", null, row.pendingCount),
+    h("td", null, percent(row.hitRate)),
+    h("td", null, row.horizon === "D1"
+      ? "—"
+      : `${percent(row.meanError)} / ${percent(row.meanAbsoluteError)}`),
+    h("td", null, row.horizon === "D1"
+      ? `${percent(row.calibrationError)} / ${decimal(row.brierScore)}`
+      : "—"),
+    h("td", null, driftLabel(row.drift)));
+}
+
 function th(label) {
   return h("th", { key: label, scope: "col" }, label);
 }
@@ -52,6 +97,20 @@ function PredictionsTable({ predictions }) {
       outcomeCell(prediction.outcomes?.D1),
       outcomeCell(prediction.outcomes?.D5),
       outcomeCell(prediction.outcomes?.D20))))));
+}
+
+function ForecastQualityTable({ quality }) {
+  const rows = quality?.rows ?? [];
+  if (rows.length === 0) {
+    return h("p", { className: "empty" }, "No forecast quality data");
+  }
+  return h("div", { className: "table-wrap" },
+    h("table", null,
+      h("thead", null,
+        h("tr", null,
+          ["Symbol", "Model", "Contract", "Horizon", "Status", "Samples", "Pending",
+            "Hit rate", "Error / MAE", "Calibration / Brier", "Drift"].map(th))),
+      h("tbody", null, ...rows.map(qualityRow))));
 }
 
 function RegistryPanel({ versions, busy, error, onRegister, onDeprecate, onDelete }) {
@@ -160,7 +219,8 @@ export function AnalysisOutcomeView({
       from: from ? `${from}T00:00:00.000Z` : "",
       to: to ? `${to}T23:59:59.999Z` : "",
       modelVersion: data.get("modelVersion") || "",
-      contractVersion: data.get("contractVersion") || ""
+      contractVersion: data.get("contractVersion") || "",
+      symbol: data.get("symbol") || ""
     });
   }
 
@@ -194,7 +254,12 @@ export function AnalysisOutcomeView({
       h("label", null, "Model version", h("input", { name: "modelVersion", defaultValue: query.modelVersion })),
       h("label", null, "Contract version",
         h("input", { name: "contractVersion", defaultValue: query.contractVersion })),
+      h("label", null, "Symbol", h("input", { name: "symbol", defaultValue: query.symbol })),
       h("button", { type: "submit", disabled: busy }, "Apply")),
     h(PerformanceTable, { rows: byVersion }),
+    h("h3", null, "Forecast quality monitoring"),
+    h("p", { className: "disclaimer" },
+      "D1/D5/D20는 기존 outcome 채점과 연결됩니다. 표본 부족 상태에서는 성능과 drift를 결론내리지 않습니다."),
+    h(ForecastQualityTable, { quality: performance?.forecastQuality }),
     h(PredictionsTable, { predictions }));
 }
