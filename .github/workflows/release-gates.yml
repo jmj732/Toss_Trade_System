@@ -219,7 +219,12 @@ jobs:
             "DEPLOY_PATH=$remote_path IMAGE_TAG=$remote_image bash -s" <<'REMOTE'
           set -euo pipefail
           cd -- "$DEPLOY_PATH"
-          doppler run --project trade --config staging -- env BACKEND_IMAGE="$IMAGE_TAG" \
+          export PATH="$HOME/bin:$PATH"
+          command -v doppler >/dev/null 2>&1 || {
+            echo "Doppler CLI is required at $HOME/bin/doppler or on PATH" >&2
+            exit 1
+          }
+          doppler run --project trade --config stg -- env BACKEND_IMAGE="$IMAGE_TAG" \
             docker compose \
               -f compose.yaml \
               -f compose.staging.yaml \
