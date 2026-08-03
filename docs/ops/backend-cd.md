@@ -10,8 +10,8 @@ cancelled by a newer push.
 The target host must already have:
 
 - Docker Engine and Docker Compose v2.
-- A checkout at the deploy path containing `compose.yaml`, `compose.staging.yaml`, and
-  `compose.staging.credentialed.yaml`.
+- A writable deploy path. CD syncs `compose.yaml`, `compose.staging.yaml`, and
+  `compose.staging.credentialed.yaml` there on every deployment.
 - Doppler CLI authenticated on the host for project `trade`, config `stg`.
   The deploy command also searches `$HOME/bin`, which supports a user-local CLI install.
 - The existing database secret file and Doppler-backed provider/OIDC values. These stay on
@@ -37,7 +37,7 @@ Add these repository or environment secrets before enabling the first deploy:
 | `BACKEND_DEPLOY_HOST` | Public server hostname or IP |
 | `BACKEND_DEPLOY_PORT` | SSH port, for example `2222` |
 | `BACKEND_DEPLOY_USER` | Dedicated deploy user, not root |
-| `BACKEND_DEPLOY_PATH` | Server checkout path, for example `/opt/trade` |
+| `BACKEND_DEPLOY_PATH` | Writable server path for Compose files, for example `/home/deploy/trade` |
 | `BACKEND_DEPLOY_SSH_KEY` | Private key for the deploy user |
 | `BACKEND_DEPLOY_KNOWN_HOSTS` | Pinned output for the host from a trusted `ssh-keyscan -H` |
 

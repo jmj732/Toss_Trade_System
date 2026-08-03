@@ -213,6 +213,12 @@ jobs:
 
           remote_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
           remote_image="$(printf '%q' "$IMAGE_TAG")"
+          # The quoted path is intentionally expanded locally into the remote command.
+          # shellcheck disable=SC2029
+          tar -czf - compose.yaml compose.staging.yaml compose.staging.credentialed.yaml |
+            ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
+              "mkdir -p $remote_path && tar -xzf - -C $remote_path"
+
           # The quoted values are intentionally expanded locally into the remote command.
           # shellcheck disable=SC2029
           ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
