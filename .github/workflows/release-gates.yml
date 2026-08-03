@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   spring-backend:
@@ -143,3 +143,87 @@ jobs:
             smoke-output.log
           if-no-files-found: ignore
           retention-days: 14
+
+  backend-cd:
+    name: Deploy Spring backend
+    if: >-
+      github.ref == 'refs/heads/design/modular-monolith-architecture' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs:
+      - spring-backend
+      - fastapi-analysis
+      - nextjs-dashboard
+      - npm-audit
+      - compose-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: backend-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build backend image
+        env:
+          IMAGE_TAG: trade-backend:${{ github.sha }}
+        run: docker build --pull --tag "$IMAGE_TAG" trading-backend
+
+      - name: Stream image and deploy over pinned SSH
+        env:
+          IMAGE_TAG: trade-backend:${{ github.sha }}
+          BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
+          BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
+          BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
+          BACKEND_DEPLOY_PATH: ${{ secrets.BACKEND_DEPLOY_PATH }}
+          BACKEND_DEPLOY_SSH_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
+          BACKEND_DEPLOY_KNOWN_HOSTS: ${{ secrets.BACKEND_DEPLOY_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          : "${BACKEND_DEPLOY_HOST:?missing BACKEND_DEPLOY_HOST}"
+          : "${BACKEND_DEPLOY_PORT:?missing BACKEND_DEPLOY_PORT}"
+          : "${BACKEND_DEPLOY_USER:?missing BACKEND_DEPLOY_USER}"
+          : "${BACKEND_DEPLOY_PATH:?missing BACKEND_DEPLOY_PATH}"
+          : "${BACKEND_DEPLOY_SSH_KEY:?missing BACKEND_DEPLOY_SSH_KEY}"
+          : "${BACKEND_DEPLOY_KNOWN_HOSTS:?missing BACKEND_DEPLOY_KNOWN_HOSTS}"
+
+          key_file="$(mktemp)"
+          known_hosts_file="$(mktemp)"
+          trap 'rm -f "$key_file" "$known_hosts_file"' EXIT
+          umask 077
+          printf '%s\n' "$BACKEND_DEPLOY_SSH_KEY" >"$key_file"
+          printf '%s\n' "$BACKEND_DEPLOY_KNOWN_HOSTS" >"$known_hosts_file"
+
+          ssh_args=(
+            -i "$key_file"
+            -p "$BACKEND_DEPLOY_PORT"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$known_hosts_file"
+          )
+
+          docker save "$IMAGE_TAG" |
+            gzip -c |
+            ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
+              'gzip -d | docker load'
+
+          remote_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
+          remote_image="$(printf '%q' "$IMAGE_TAG")"
+          # The quoted values are intentionally expanded locally into the remote command.
+          # shellcheck disable=SC2029
+          ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
+            "DEPLOY_PATH=$remote_path IMAGE_TAG=$remote_image bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd -- "$DEPLOY_PATH"
+          doppler run --project trade --config staging -- env BACKEND_IMAGE="$IMAGE_TAG" \
+            docker compose \
+              -f compose.yaml \
+              -f compose.staging.yaml \
+              -f compose.staging.credentialed.yaml \
+              up -d --wait migrate backend
+          curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null
+          REMOTE
