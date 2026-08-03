@@ -19,6 +19,10 @@ grep -q 'compose-smoke' "$workflow" || fail "backend CD must depend on compose g
 grep -q 'cancel-in-progress: false' "$workflow" ||
   fail "an active backend deploy must not be cancelled by a newer push"
 grep -q 'docker save' "$workflow" || fail "backend image must transfer without a registry secret"
+grep -q 'tar -czf - compose.yaml' "$workflow" ||
+  fail "deploy must sync the compose files to the server"
+grep -q 'tar -xzf - -C' "$workflow" ||
+  fail "server must extract the synced compose files"
 grep -q 'BACKEND_DEPLOY_PORT' "$workflow" || fail "SSH port must be configurable"
 grep -q -- '-p \"\$BACKEND_DEPLOY_PORT\"' "$workflow" || fail "SSH must use the configured port"
 grep -q 'StrictHostKeyChecking=yes' "$workflow" || fail "SSH host verification must stay enabled"

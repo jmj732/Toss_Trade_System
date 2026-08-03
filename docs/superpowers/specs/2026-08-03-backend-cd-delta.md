@@ -10,6 +10,8 @@ release gates pass on `design/modular-monolith-architecture`.
 - Keep provider and Toss secrets out of GitHub Actions, Git, image layers, and logs.
 - Build the backend image in GitHub Actions and stream it over a pinned SSH connection; no
   registry credential is required on the server.
+- Sync the three Compose files to the writable server deploy path from the verified commit;
+  the server does not need a Git checkout.
 - On the server, run the existing Doppler `trade/stg` Compose path with
   `compose.yaml`, `compose.staging.yaml`, and `compose.staging.credentialed.yaml`.
 - Run the existing one-shot Flyway `migrate` service before the backend and wait for backend
