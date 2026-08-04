@@ -220,9 +220,10 @@ jobs:
             -o UserKnownHostsFile="$known_hosts_file"
           )
 
-          prune_unused_trade_images() {
+          prune_unused_images() {
             ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" 'bash -s' <<'CLEANUP'
           set -euo pipefail
+          docker builder prune --all --force
           container_image_ids="$(docker ps -aq | while IFS= read -r container_id; do
             docker inspect --format '{{.Image}}' "$container_id"
           done)"
@@ -234,14 +235,13 @@ jobs:
                 printf 'keeping container image %s\n' "$image"
               else
                 printf 'removing unused image %s\n' "$image"
-                # ponytail: retain untagged parents; restore normal prune after daemon GC is healthy.
                 docker image rm --no-prune "$image"
               fi
             done
           CLEANUP
           }
 
-          prune_unused_trade_images
+          prune_unused_images
 
           stream_image() {
             local image="$1"
