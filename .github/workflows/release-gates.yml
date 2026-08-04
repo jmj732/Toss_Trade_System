@@ -220,10 +220,18 @@ jobs:
             -o UserKnownHostsFile="$known_hosts_file"
           )
 
-          docker save "$IMAGE_TAG" "$ANALYSIS_IMAGE" "$DASHBOARD_IMAGE" |
-            gzip -c |
-            ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
-              'gzip -d | docker load'
+          stream_image() {
+            local image="$1"
+            printf 'streaming %s\n' "$image"
+            docker save "$image" |
+              gzip -1 -c |
+              ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
+                'gzip -d | docker load'
+          }
+
+          stream_image "$IMAGE_TAG"
+          stream_image "$ANALYSIS_IMAGE"
+          stream_image "$DASHBOARD_IMAGE"
 
           remote_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
           remote_image="$(printf '%q' "$IMAGE_TAG")"
