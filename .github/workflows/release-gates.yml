@@ -234,7 +234,8 @@ jobs:
                 printf 'keeping container image %s\n' "$image"
               else
                 printf 'removing unused image %s\n' "$image"
-                docker image rm "$image"
+                # ponytail: retain untagged parents; restore normal prune after daemon GC is healthy.
+                docker image rm --no-prune "$image"
               fi
             done
           CLEANUP
