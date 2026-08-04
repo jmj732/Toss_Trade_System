@@ -69,6 +69,17 @@ export function RouteNav({ symbol }) {
     ...links.map(([href, label]) => h("a", { href, key: href }, label)));
 }
 
+export function loginHref(route, symbol = "") {
+  const path = route === "stock"
+    ? `/stocks/${encodeURIComponent(symbol.trim().toUpperCase() || "AAPL")}`
+    : route === "portfolio" ? "/portfolio"
+      : route === "events" ? "/events"
+        : route === "orders" ? "/orders"
+          : route === "predictions" ? "/predictions"
+            : route === "settings" ? "/settings" : "/";
+  return `/login?returnTo=${encodeURIComponent(path)}`;
+}
+
 function ErrorMessage({ value }) {
   return value ? h("p", { className: "error", role: "alert" }, value) : null;
 }
@@ -492,9 +503,9 @@ export function RouteWorkspace({ route, symbol = "" }) {
   }
   if (session === null) {
     return h("main", { className: "center" }, h("div", { className: "login-card" },
-      h("p", { className: "eyebrow" }, "TRADE CONTROL"),
-        h("h1", null, "로그인이 필요합니다"),
-      h("a", { className: "button-link", href: "/auth/login" }, "로그인")));
+        h("p", { className: "eyebrow" }, "TRADE CONTROL"),
+      h("h1", null, "로그인이 필요합니다"),
+      h("a", { className: "button-link", href: loginHref(route, stockSymbol) }, "로그인")));
   }
   return h("div", null,
     h("header", { className: "topbar" },

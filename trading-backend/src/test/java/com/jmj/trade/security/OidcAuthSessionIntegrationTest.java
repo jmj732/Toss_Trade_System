@@ -185,7 +185,22 @@ class OidcAuthSessionIntegrationTest extends PostgresIntegrationTest {
                         org.hamcrest.Matchers.startsWith("https://issuer.example/authorize")));
 
         mockMvc.perform(get("/login"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().string("Location", "http://localhost:3000/login"));
+    }
+
+    @Test
+    void expiredSessionKeepsApiUnauthorizedAndOffersSafeDashboardLogin() throws Exception {
+        mockMvc.perform(get("/api/v1/session"))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(get("/login")
+                        .queryParam("error", "session_expired")
+                        .queryParam("returnTo", "/portfolio"))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().string(
+                        "Location",
+                        "http://localhost:3000/login?error=session_expired&returnTo=%2Fportfolio"));
     }
 
     private OidcUser mappedUser(String subject) {

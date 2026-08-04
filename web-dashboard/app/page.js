@@ -6,7 +6,7 @@ import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { NotificationCenter } from "./notification-center.js";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
-import { RouteNav } from "./route-workspace.js";
+import { loginHref, RouteNav } from "./route-workspace.js";
 import {
   actOnProposal,
   analyzePortfolio,
@@ -205,7 +205,7 @@ export default function Home() {
         h("p", { className: "eyebrow" }, "TRADE CONTROL"),
         h("h1", null, "내 투자, 한눈에"),
         h("p", null, "계속하려면 로그인해 주세요."),
-        h("a", { className: "button-link", href: "/auth/login" }, "로그인")));
+        h("a", { className: "button-link", href: loginHref("home") }, "로그인")));
   }
 
   const workspaceOpen = Boolean(dashboard);

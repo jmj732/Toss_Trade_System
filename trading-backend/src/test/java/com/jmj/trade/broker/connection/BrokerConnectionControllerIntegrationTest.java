@@ -116,7 +116,9 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 .andExpect(status().isUnauthorized());
 
         mockMvc.perform(get("/login"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().is3xxRedirection())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                        .string("Location", "http://localhost:3000/login"));
     }
 
     @Test
