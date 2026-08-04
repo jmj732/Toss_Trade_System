@@ -11,7 +11,9 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
+import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.logout.HttpStatusReturningLogoutSuccessHandler;
 
 @Configuration(proxyBeanMethods = false)
@@ -23,7 +25,8 @@ public class SecurityConfiguration {
             ObjectProvider<ClientRegistrationRepository> registrations,
             ObjectProvider<InternalOidcUserService> oidcUsers,
             ObjectProvider<PredictionIngestionApiKeyAuthenticationFilter> apiKeyFilter,
-            @Value("${security.oidc.max-age:300}") String oidcMaxAge
+            @Value("${security.oidc.max-age:300}") String oidcMaxAge,
+            @Value("${public.dashboard-url:/}") String publicDashboardUrl
     ) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/api/**").authenticated()
@@ -53,9 +56,17 @@ public class SecurityConfiguration {
                     builder.additionalParameters(parameters -> parameters.put("max_age", oidcMaxAge)));
             http.oauth2Login(oauth2 -> oauth2
                     .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(resolver))
+                    .successHandler(dashboardSuccessHandler(publicDashboardUrl))
                     .userInfoEndpoint(userInfo ->
                             userInfo.oidcUserService(oidcUsers.getObject())));
         }
         return http.build();
+    }
+
+    static AuthenticationSuccessHandler dashboardSuccessHandler(String publicDashboardUrl) {
+        var handler = new SimpleUrlAuthenticationSuccessHandler();
+        handler.setDefaultTargetUrl(publicDashboardUrl);
+        handler.setAlwaysUseDefaultTargetUrl(true);
+        return handler;
     }
 }

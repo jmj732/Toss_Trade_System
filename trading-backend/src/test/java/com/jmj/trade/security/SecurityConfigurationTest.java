@@ -12,6 +12,9 @@ import org.springframework.boot.security.autoconfigure.SecurityAutoConfiguration
 import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.boot.security.autoconfigure.web.servlet.ServletWebSecurityAutoConfiguration;
 import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.authentication.TestingAuthenticationToken;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -28,6 +31,19 @@ class SecurityConfigurationTest {
     void defaultUserDetailsServiceFallbackIsNotCreated() {
         assertThat(TradingBackendApplication.class.getAnnotation(SpringBootApplication.class).exclude())
                 .contains(UserDetailsServiceAutoConfiguration.class);
+    }
+
+    @Test
+    void oidcSuccessRedirectsToConfiguredDashboard() throws Exception {
+        var response = new MockHttpServletResponse();
+
+        SecurityConfiguration.dashboardSuccessHandler("https://dashboard.example")
+                .onAuthenticationSuccess(
+                        new MockHttpServletRequest("GET", "/login/oauth2/code/oidc"),
+                        response,
+                        new TestingAuthenticationToken("user", null));
+
+        assertThat(response.getRedirectedUrl()).isEqualTo("https://dashboard.example");
     }
 
     @Test
