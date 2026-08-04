@@ -222,11 +222,27 @@ jobs:
 
           stream_image() {
             local image="$1"
+            local image_name="${image//:/_}"
+            local archive_dir
+            local remote_archive
+
+            archive_dir="$(mktemp -d)"
+            remote_archive="$(printf '%q' "$BACKEND_DEPLOY_PATH/.${GITHUB_SHA}-${image_name}.tar.gz")"
             printf 'streaming %s\n' "$image"
-            docker save "$image" |
-              gzip -1 -c |
+            docker save "$image" | gzip -1 -c >"$archive_dir/image.tar.gz"
+            split -b 32m -d --additional-suffix=.part \
+              "$archive_dir/image.tar.gz" "$archive_dir/part-"
+
+            ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
+              "rm -f $remote_archive"
+            for part in "$archive_dir"/part-*.part; do
+              printf 'uploading %s\n' "$(basename "$part")"
               ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
-                'gzip -d | docker load'
+                "cat >> $remote_archive" <"$part"
+            done
+            ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
+              "gzip -d < $remote_archive | docker load; rm -f $remote_archive"
+            rm -rf -- "$archive_dir"
           }
 
           stream_image "$IMAGE_TAG"

@@ -22,8 +22,11 @@ grep -q 'docker build --pull --tag "\$ANALYSIS_IMAGE" analysis-service' "$workfl
   fail "analysis image must be built in the verified checkout"
 grep -q 'docker build --pull --tag "\$DASHBOARD_IMAGE"' "$workflow" ||
   fail "dashboard image must be built in the verified checkout"
-grep -q 'docker save "\$IMAGE_TAG" "\$ANALYSIS_IMAGE" "\$DASHBOARD_IMAGE"' "$workflow" ||
-  fail "all runtime images must transfer without a registry secret"
+grep -q 'stream_image()' "$workflow" ||
+  fail "runtime images must transfer without a registry secret"
+grep -q 'stream_image "\$IMAGE_TAG"' "$workflow" || fail "backend image must transfer"
+grep -q 'stream_image "\$ANALYSIS_IMAGE"' "$workflow" || fail "analysis image must transfer"
+grep -q 'stream_image "\$DASHBOARD_IMAGE"' "$workflow" || fail "dashboard image must transfer"
 grep -q 'tar -czf - compose.yaml' "$workflow" ||
   fail "deploy must sync the compose files to the server"
 grep -q 'tar -xzf - -C' "$workflow" ||
