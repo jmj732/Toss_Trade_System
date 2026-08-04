@@ -227,16 +227,6 @@ test("proxies only the session API and OIDC lifecycle to Spring", async () => {
   ]);
 });
 
-test("redirects failed OIDC callbacks back to the dashboard", async () => {
-  assert.deepEqual(await nextConfig.redirects(), [
-    {
-      source: "/login/oauth2/:path*",
-      has: [{ type: "query", key: "error" }],
-      destination: "/?error=login",
-      permanent: false
-    }
-  ]);
-});
 
 test("broker onboarding commands use CSRF and existing APIs", async () => {
   const calls = [];

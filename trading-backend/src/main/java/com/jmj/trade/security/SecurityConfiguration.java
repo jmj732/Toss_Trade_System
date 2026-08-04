@@ -8,14 +8,11 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
-import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.authentication.AuthenticationFailureHandler;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
-import org.springframework.security.web.authentication.SimpleUrlAuthenticationFailureHandler;
-import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.logout.HttpStatusReturningLogoutSuccessHandler;
 
 @Configuration(proxyBeanMethods = false)
@@ -28,7 +25,7 @@ public class SecurityConfiguration {
             ObjectProvider<InternalOidcUserService> oidcUsers,
             ObjectProvider<PredictionIngestionApiKeyAuthenticationFilter> apiKeyFilter,
             @Value("${security.oidc.max-age:300}") String oidcMaxAge,
-            @Value("${public.dashboard-url:/}") String publicDashboardUrl
+            DashboardRedirects dashboardRedirects
     ) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/api/**").authenticated()
@@ -51,31 +48,47 @@ public class SecurityConfiguration {
                         HttpStatus.NO_CONTENT)));
         http.exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)));
-        if (registrations.getIfAvailable() != null) {
-            var resolver = new DefaultOAuth2AuthorizationRequestResolver(
-                    registrations.getIfAvailable(), "/oauth2/authorization");
-            resolver.setAuthorizationRequestCustomizer(builder ->
-                    builder.additionalParameters(parameters -> parameters.put("max_age", oidcMaxAge)));
+        var registrationRepository = registrations.getIfAvailable();
+        if (registrationRepository != null) {
             http.oauth2Login(oauth2 -> oauth2
-                    .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(resolver))
-                    .successHandler(dashboardSuccessHandler(publicDashboardUrl))
-                    .failureHandler(dashboardFailureHandler(publicDashboardUrl))
+                    .loginPage("/login")
+                    .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(
+                            new DashboardAuthorizationRequestResolver(
+                                    registrationRepository,
+                                    builder -> builder.additionalParameters(
+                                            parameters -> parameters.put("max_age", oidcMaxAge)))))
+                    .successHandler(dashboardSuccessHandler(dashboardRedirects))
+                    .failureHandler(dashboardFailureHandler(dashboardRedirects))
                     .userInfoEndpoint(userInfo ->
                             userInfo.oidcUserService(oidcUsers.getObject())));
         }
         return http.build();
     }
 
+    @Bean
+    DashboardRedirects dashboardRedirects(
+            @Value("${public.dashboard-url:http://localhost:3000}") String publicDashboardUrl
+    ) {
+        return new DashboardRedirects(publicDashboardUrl);
+    }
+
     static AuthenticationSuccessHandler dashboardSuccessHandler(String publicDashboardUrl) {
-        var handler = new SimpleUrlAuthenticationSuccessHandler();
-        handler.setDefaultTargetUrl(publicDashboardUrl);
-        handler.setAlwaysUseDefaultTargetUrl(true);
-        return handler;
+        return dashboardSuccessHandler(new DashboardRedirects(publicDashboardUrl));
+    }
+
+    private static AuthenticationSuccessHandler dashboardSuccessHandler(DashboardRedirects redirects) {
+        return (request, response, authentication) -> response.sendRedirect(
+                redirects.dashboardUrl(DashboardAuthorizationRequestResolver.consumeReturnTo(request)));
     }
 
     static AuthenticationFailureHandler dashboardFailureHandler(String publicDashboardUrl) {
-        return new SimpleUrlAuthenticationFailureHandler(
-                publicDashboardUrl + (publicDashboardUrl.contains("?") ? "&" : "?")
-                        + "error=login");
+        return dashboardFailureHandler(new DashboardRedirects(publicDashboardUrl));
+    }
+
+    private static AuthenticationFailureHandler dashboardFailureHandler(DashboardRedirects redirects) {
+        return (request, response, exception) -> response.sendRedirect(
+                redirects.loginUrl(
+                        DashboardRedirects.errorCode(exception),
+                        DashboardAuthorizationRequestResolver.consumeReturnTo(request)));
     }
 }

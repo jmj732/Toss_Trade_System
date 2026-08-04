@@ -5,16 +5,6 @@ if (!/^https?:\/\/[^/]+(?::\d+)?$/.test(backend)) {
 }
 
 export default {
-  async redirects() {
-    return [
-      {
-        source: "/login/oauth2/:path*",
-        has: [{ type: "query", key: "error" }],
-        destination: "/?error=login",
-        permanent: false
-      }
-    ];
-  },
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${backend}/api/:path*` },

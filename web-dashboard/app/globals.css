@@ -191,6 +191,12 @@ th { color: var(--muted); font-size: .75rem; letter-spacing: .035em; text-transf
   max-width: 30rem;
   padding: 2rem;
 }
+.login-error {
+  background: #fff0f1;
+  border-radius: 10px;
+  color: var(--danger);
+  padding: 12px 14px;
+}
 .onboarding-wrap {
   margin: 0 auto;
   max-width: 720px;
