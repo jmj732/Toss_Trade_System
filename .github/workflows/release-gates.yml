@@ -220,10 +220,17 @@ jobs:
             -o UserKnownHostsFile="$known_hosts_file"
           )
 
+          cleanup_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
           prune_unused_images() {
-            ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" 'bash -s' <<'CLEANUP'
+            ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
+              "BACKEND_DEPLOY_PATH=$cleanup_path bash -s" <<'CLEANUP'
           set -euo pipefail
-          docker builder prune --all --force
+          find -- "$BACKEND_DEPLOY_PATH" -maxdepth 1 -type f \
+            \( \
+              -name '.[0-9a-f]*-trade-backend_*.tar.gz' -o \
+              -name '.[0-9a-f]*-trade-analysis_*.tar.gz' -o \
+              -name '.[0-9a-f]*-trade-dashboard_*.tar.gz' \
+            \) -delete
           container_image_ids="$(docker ps -aq | while IFS= read -r container_id; do
             docker inspect --format '{{.Image}}' "$container_id"
           done)"
