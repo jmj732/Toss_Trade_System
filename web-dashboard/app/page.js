@@ -101,7 +101,6 @@ export default function Home() {
         setConnectionId(created.id);
         setConnection(created);
         setDashboard(null);
-        setDashboard(await loadDashboard(created.id));
         return;
       }
       const replaced = await replaceBrokerCredentials(

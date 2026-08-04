@@ -43,6 +43,7 @@ export function BrokerOnboarding({
 }) {
   const busy = Boolean(busyAction);
   const hasConnection = Boolean(connectionId);
+  const active = connection?.status === "ACTIVE";
   const unavailable = busy || !hasConnection;
   return h("section", {
     className: `onboarding panel ${hasConnection ? "onboarding-connected" : "onboarding-first-run"}`,
@@ -77,7 +78,7 @@ export function BrokerOnboarding({
         key: action,
         type: "button",
         className: action === "delete" ? "danger" : "secondary",
-        disabled: unavailable,
+        disabled: unavailable || ((action === "sync" || action === "analysis") && !active),
         onClick: () => onCommand(action)
       }, label))) : null);
 }

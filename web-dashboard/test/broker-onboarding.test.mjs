@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -57,4 +58,23 @@ test("disables every onboarding command during one mutation", () => {
 
   assert.equal((html.match(/disabled=""/g) ?? []).length, 5);
   assert.match(html, /sync…/);
+});
+
+test("keeps sync and analysis disabled until the connection is active", () => {
+  const html = renderToStaticMarkup(createElement(BrokerOnboarding, {
+    connection: { status: "UNVERIFIED" },
+    connectionId: "connection-1",
+    busyAction: null,
+    onCredentials() {},
+    onCommand() {}
+  }));
+
+  assert.match(html, /disabled=""[^>]*>포트폴리오 동기화/);
+  assert.match(html, /disabled=""[^>]*>분석 실행/);
+  assert.doesNotMatch(html, /disabled=""[^>]*>연결 확인/);
+});
+
+test("does not load a dashboard before a new connection is verified", async () => {
+  const source = await readFile(new URL("../app/page.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /setDashboard\(await loadDashboard\(created\.id\)\)/);
 });
