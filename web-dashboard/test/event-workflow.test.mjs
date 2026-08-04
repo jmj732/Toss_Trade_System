@@ -93,7 +93,7 @@ test("disables all event mutations while one is running", () => {
 
 test("scopes affected-symbol state to the current connection", () => {
   const source = readFileSync(
-    new URL("../app/page.js", import.meta.url),
+    new URL("../app/route-workspace.js", import.meta.url),
     "utf8");
 
   assert.match(

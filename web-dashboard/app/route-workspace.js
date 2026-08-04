@@ -60,12 +60,12 @@ const OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "",
 
 export function RouteNav({ symbol }) {
   const links = [
-    ["/", "Dashboard"], ["/portfolio", "Portfolio"],
-    [symbol ? `/stocks/${encodeURIComponent(symbol)}` : "/stocks/AAPL", "Stocks"],
-    ["/events", "Events"], ["/orders", "Orders"], ["/predictions", "Predictions"],
-    ["/settings", "Settings"]
+    ["/", "홈"], ["/portfolio", "포트폴리오"],
+    [symbol ? `/stocks/${encodeURIComponent(symbol)}` : "/stocks/AAPL", "종목"],
+    ["/events", "이벤트"], ["/orders", "주문"], ["/predictions", "예측"],
+    ["/settings", "설정"]
   ];
-  return h("nav", { className: "route-nav", "aria-label": "Primary" },
+  return h("nav", { className: "route-nav", "aria-label": "주요 메뉴" },
     ...links.map(([href, label]) => h("a", { href, key: href }, label)));
 }
 
@@ -197,7 +197,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   async function openWorkspace(value = connectionId) {
     const id = value.trim();
     if (!id) {
-      setError("Broker connection UUID is required for this surface");
+      setError("연결 ID가 필요합니다.");
       return;
     }
     setError("");
@@ -399,7 +399,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
                 .catch(value => setError(value.message)).finally(() => setHistoryBusy(false));
             }
           }))
-        : h("p", { className: "empty" }, "Open a broker connection to view the portfolio");
+        : h("p", { className: "empty" }, "계좌를 연결하면 포트폴리오를 확인할 수 있습니다.");
     }
     if (route === "orders") {
       return h(OrdersView, {
@@ -410,6 +410,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     if (route === "events") {
       return h(EventWorkflow, {
+        key: connectionId.trim(),
         positions: dashboard?.portfolio?.data?.positions ?? [],
         events, selectedEvent, connectionId, busyAction: busy,
         onCreate: eventCreate, onSelect: eventSelect,
@@ -492,25 +493,30 @@ export function RouteWorkspace({ route, symbol = "" }) {
   if (session === null) {
     return h("main", { className: "center" }, h("div", { className: "login-card" },
       h("p", { className: "eyebrow" }, "TRADE CONTROL"),
-      h("h1", null, "Sign in required"),
-      h("a", { className: "button-link", href: "/auth/login" }, "OIDC sign in")));
+        h("h1", null, "로그인이 필요합니다"),
+      h("a", { className: "button-link", href: "/auth/login" }, "로그인")));
   }
   return h("div", null,
     h("header", { className: "topbar" },
-      h("div", null, h("p", { className: "eyebrow" }, "TRADE CONTROL"), h("h1", null, route)),
+      h("div", null,
+        h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
+        h("h1", null, {
+          portfolio: "포트폴리오", stock: stockSymbol || "종목 분석", events: "이벤트",
+          orders: "주문", predictions: "분석", settings: "설정"
+        }[route] ?? "내 자산")),
       h("button", { type: "button", className: "secondary", onClick: () => logout(session).then(() => setSession(null)) },
         "Sign out")),
     h(RouteNav, { symbol: stockSymbol }),
     h("form", { className: "connection-form", onSubmit: event => {
       event.preventDefault(); openWorkspace(event.currentTarget.elements.connectionId.value);
     } },
-      h("label", { htmlFor: "route-connection-id" }, "Broker connection UUID"),
+      h("label", { htmlFor: "route-connection-id" }, "연결 ID"),
       h("div", null,
         h("input", {
           id: "route-connection-id", name: "connectionId", value: connectionId,
           onChange: event => setConnectionId(event.target.value)
         }),
-        h("button", { type: "submit", disabled: Boolean(busy) }, "Open"))),
+        h("button", { type: "submit", disabled: Boolean(busy) }, "열기"))),
     ErrorMessage({ value: error }),
     routeContent());
 }

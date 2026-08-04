@@ -2,10 +2,10 @@
 
 ## Source of truth
 
-- Status: Draft
-- Last refreshed: 2026-07-26
-- Primary product surfaces: dashboard, portfolio, stock analysis, event radar, orders, analysis history, settings
-- Evidence reviewed: `docs/superpowers/specs/2026-07-26-us-equity-trading-platform-design.md`, Toss Invest OpenAPI 1.2.4
+- Status: Active
+- Last refreshed: 2026-08-04
+- Primary product surfaces: 계좌 연결, 홈 대시보드, 포트폴리오, 종목 분석, 이벤트, 주문, 분석, 설정
+- Evidence reviewed: `docs/superpowers/specs/2026-07-26-us-equity-trading-platform-design.md`, `web-dashboard/app/page.js`, `web-dashboard/app/dashboard-view.js`, `web-dashboard/app/globals.css`, Toss Invest OpenAPI 1.2.4
 
 ## Brand
 
@@ -27,7 +27,7 @@
 
 ## Information architecture
 
-- Primary navigation: Dashboard, Portfolio, Stocks, Events, Orders, History, Settings
+- Primary navigation: 홈, 포트폴리오, 종목, 이벤트, 주문, 분석, 설정
 - Core routes/screens: `/dashboard`, `/portfolio`, `/stocks/[symbol]`, `/events`, `/orders`, `/analysis-history`, `/settings`
 - Content hierarchy: 포트폴리오 위험 → 변동 원인 → 종목 근거 → 주문 행동
 
@@ -39,10 +39,10 @@
 
 ## Visual language
 
-- Color: 다크 중립 배경, 제한된 상승·하락·경고 색상
-- Typography: 숫자 가독성이 높은 sans-serif와 tabular numerals
-- Spacing/layout rhythm: 4/8px 기반, 데스크톱 고밀도 카드와 표
-- Shape/radius/elevation: 낮은 radius와 최소 elevation
+- Color: 밝은 중립 캔버스, Toss blue 계열 primary, 상승·하락·경고 색상 제한. 민트·네온·다크 운영 콘솔 톤 금지
+- Typography: 큰 제목 대비, 숫자 가독성이 높은 sans-serif와 tabular numerals
+- Spacing/layout rhythm: 8/12/24px 기반, 한 화면 한 목적, 넓은 여백
+- Shape/radius/elevation: 12px control, 16–20px panel, 약한 shadow
 - Motion: 상태 변화 설명에 필요한 짧은 전환만 사용
 - Imagery/iconography: 장식 이미지 없이 의미가 명확한 아이콘
 

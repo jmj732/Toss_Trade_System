@@ -11,8 +11,10 @@ import org.springframework.security.oauth2.client.registration.ClientRegistratio
 import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
+import org.springframework.security.web.authentication.AuthenticationFailureHandler;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.authentication.SimpleUrlAuthenticationFailureHandler;
 import org.springframework.security.web.authentication.SimpleUrlAuthenticationSuccessHandler;
 import org.springframework.security.web.authentication.logout.HttpStatusReturningLogoutSuccessHandler;
 
@@ -57,6 +59,7 @@ public class SecurityConfiguration {
             http.oauth2Login(oauth2 -> oauth2
                     .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(resolver))
                     .successHandler(dashboardSuccessHandler(publicDashboardUrl))
+                    .failureHandler(dashboardFailureHandler(publicDashboardUrl))
                     .userInfoEndpoint(userInfo ->
                             userInfo.oidcUserService(oidcUsers.getObject())));
         }
@@ -68,5 +71,11 @@ public class SecurityConfiguration {
         handler.setDefaultTargetUrl(publicDashboardUrl);
         handler.setAlwaysUseDefaultTargetUrl(true);
         return handler;
+    }
+
+    static AuthenticationFailureHandler dashboardFailureHandler(String publicDashboardUrl) {
+        return new SimpleUrlAuthenticationFailureHandler(
+                publicDashboardUrl + (publicDashboardUrl.contains("?") ? "&" : "?")
+                        + "error=login");
     }
 }

@@ -75,10 +75,16 @@ test("renders all dashboard sections and explicit data quality", () => {
   }));
 
   for (const text of [
-    "Portfolio", "Analysis", "Events", "Order proposals",
-    "STALE", "UNKNOWN", "UNAVAILABLE", "account.cashBalance",
-    "KRW", "USD", "NVDA", "Approve", "Cancel"
+    "포트폴리오", "분석", "이벤트", "주문 검토",
+    "지연", "확인 필요", "불러오기 실패", "account.cashBalance",
+    "KRW", "USD", "NVDA", "승인", "취소"
   ]) {
     assert.match(html, new RegExp(text));
+  }
+
+  for (const className of [
+    "dashboard-surface", "portfolio-panel", "portfolio-hero", "analysis-panel", "event-panel", "decision-queue"
+  ]) {
+    assert.match(html, new RegExp(`class=\\"[^\\"]*${className}`));
   }
 });

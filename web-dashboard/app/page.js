@@ -2,90 +2,42 @@
 
 import { createElement as h, useEffect, useRef, useState } from "react";
 
-import { AnalysisOutcomeView } from "./analysis-outcome-view.js";
 import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
-import { EventWorkflow } from "./event-workflow.js";
 import { NotificationCenter } from "./notification-center.js";
-import { PaperPerformanceView } from "./paper-performance-view.js";
-import { PortfolioHistoryView } from "./portfolio-history-view.js";
-import { PredictionOperationsView } from "./prediction-operations-view.js";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
 import { RouteNav } from "./route-workspace.js";
 import {
   actOnProposal,
   analyzePortfolio,
-  createAnalysisPrediction,
   createBrokerConnection,
-  createEvent,
   createSingleFlight,
   deleteBrokerConnection,
-  deletePredictionModelVersion,
-  deprecatePredictionModelVersion,
-  listEvents,
   listNotifications,
-  issuePredictionIngestionApiKey,
-  loadAnalysisPredictions,
   loadDashboard,
-  loadEvent,
-  loadPaperPerformance,
-  loadPortfolioHistory,
-  loadPredictionModelVersions,
-  loadPredictionIngestionApiKeys,
-  loadPredictionOperations,
   loadRiskPolicy,
   loadRiskPolicyHistory,
   loadSession,
   loadUnreadCount,
   logout,
   markNotificationRead,
-  reanalyzeEvent,
-  registerPredictionModelVersion,
   replaceBrokerCredentials,
-  reviewEvent,
-  revokePredictionIngestionApiKey,
-  rotatePredictionIngestionApiKey,
   syncPortfolio,
   updateRiskPolicy,
   verifyBrokerConnection
 } from "../lib/api.js";
-
-const DEFAULT_HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
-const DEFAULT_PERFORMANCE_QUERY = { from: "", to: "", maxPoints: 90 };
-const DEFAULT_OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "", symbol: "" };
 
 export default function Home() {
   const [session, setSession] = useState(undefined);
   const [connectionId, setConnectionId] = useState("");
   const [connection, setConnection] = useState(null);
   const [dashboard, setDashboard] = useState(null);
-  const [events, setEvents] = useState([]);
-  const [selectedEvent, setSelectedEvent] = useState(null);
   const [busyAction, setBusyAction] = useState(null);
   const [busyOrderId, setBusyOrderId] = useState(null);
   const [error, setError] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [portfolioHistory, setPortfolioHistory] = useState(null);
-  const [historyQuery, setHistoryQuery] = useState(DEFAULT_HISTORY_QUERY);
-  const [historyBusy, setHistoryBusy] = useState(false);
-  const [paperPerformance, setPaperPerformance] = useState(null);
-  const [performanceQuery, setPerformanceQuery] = useState(DEFAULT_PERFORMANCE_QUERY);
-  const [performanceBusy, setPerformanceBusy] = useState(false);
-  const [analysisOutcome, setAnalysisOutcome] = useState(null);
-  const [outcomeQuery, setOutcomeQuery] = useState(DEFAULT_OUTCOME_QUERY);
-  const [outcomeBusy, setOutcomeBusy] = useState(false);
-  const [outcomeCreateBusy, setOutcomeCreateBusy] = useState(false);
-  const [outcomeCreateError, setOutcomeCreateError] = useState("");
-  const [predictionModelVersions, setPredictionModelVersions] = useState([]);
-  const [registryBusy, setRegistryBusy] = useState(false);
-  const [registryError, setRegistryError] = useState("");
-  const [predictionApiKeys, setPredictionApiKeys] = useState([]);
-  const [issuedPredictionApiKey, setIssuedPredictionApiKey] = useState(null);
-  const [predictionOperations, setPredictionOperations] = useState(null);
-  const [predictionOperationsBusy, setPredictionOperationsBusy] = useState(false);
-  const [predictionOperationsError, setPredictionOperationsError] = useState("");
   const [riskPolicyOpen, setRiskPolicyOpen] = useState(false);
   const [riskPolicy, setRiskPolicy] = useState(null);
   const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
@@ -108,182 +60,11 @@ export default function Home() {
     event.preventDefault();
     setError("");
     const id = connectionId.trim();
-    setHistoryQuery(DEFAULT_HISTORY_QUERY);
-    setPerformanceQuery(DEFAULT_PERFORMANCE_QUERY);
-    setOutcomeQuery(DEFAULT_OUTCOME_QUERY);
-    setPredictionModelVersions([]);
-    setRegistryError("");
     try {
-      const [nextDashboard, nextEvents] = await Promise.all([
-        loadDashboard(id),
-        listEvents(id)
-      ]);
-      setDashboard(nextDashboard);
-      setEvents(nextEvents);
-    } catch (value) {
-      setError(value.message);
-      return;
-    }
-    // A history/performance/outcome load failure is its own section's problem, not a reason
-    // to hide the portfolio/analysis/events/proposals the user actually opened the
-    // connection to see.
-    try {
-      setPortfolioHistory(await loadPortfolioHistory(id, DEFAULT_HISTORY_QUERY));
+      setDashboard(await loadDashboard(id));
     } catch (value) {
       setError(value.message);
     }
-    try {
-      setPaperPerformance(await loadPaperPerformance(id, DEFAULT_PERFORMANCE_QUERY));
-    } catch (value) {
-      setError(value.message);
-    }
-    try {
-      setAnalysisOutcome(await loadAnalysisPredictions(id, DEFAULT_OUTCOME_QUERY));
-    } catch (value) {
-      setError(value.message);
-    }
-    try {
-      setPredictionModelVersions(await loadPredictionModelVersions());
-    } catch (value) {
-      setRegistryError(value.message);
-    }
-    try {
-      const [keys, operations] = await Promise.all([
-        loadPredictionIngestionApiKeys(),
-        loadPredictionOperations()
-      ]);
-      setPredictionApiKeys(keys);
-      setPredictionOperations(operations);
-    } catch (value) {
-      setPredictionOperationsError(value.message);
-    }
-  }
-
-  function historyQueryChange(query) {
-    const id = connectionId.trim();
-    setHistoryQuery(query);
-    setHistoryBusy(true);
-    setError("");
-    loadPortfolioHistory(id, query)
-      .then(setPortfolioHistory)
-      .catch(value => setError(value.message))
-      .finally(() => setHistoryBusy(false));
-  }
-
-  function performanceQueryChange(query) {
-    const id = connectionId.trim();
-    setPerformanceQuery(query);
-    setPerformanceBusy(true);
-    setError("");
-    loadPaperPerformance(id, query)
-      .then(setPaperPerformance)
-      .catch(value => setError(value.message))
-      .finally(() => setPerformanceBusy(false));
-  }
-
-  function outcomeQueryChange(query) {
-    const id = connectionId.trim();
-    setOutcomeQuery(query);
-    setOutcomeBusy(true);
-    setError("");
-    loadAnalysisPredictions(id, query)
-      .then(setAnalysisOutcome)
-      .catch(value => setError(value.message))
-      .finally(() => setOutcomeBusy(false));
-  }
-
-  function outcomeCreate(command) {
-    const id = connectionId.trim();
-    setOutcomeCreateBusy(true);
-    setOutcomeCreateError("");
-    return createAnalysisPrediction(id, command, session)
-      .then(() => loadAnalysisPredictions(id, outcomeQuery))
-      .then(setAnalysisOutcome)
-      .catch(value => {
-        setOutcomeCreateError(value.message);
-        // Rethrown so the create form only clears its inputs on success — an error means
-        // the user likely wants to fix and resubmit the same values, not retype them.
-        throw value;
-      })
-      .finally(() => setOutcomeCreateBusy(false));
-  }
-
-  function registryMutation(action) {
-    setRegistryBusy(true);
-    setRegistryError("");
-    return action()
-      .then(() => loadPredictionModelVersions())
-      .then(setPredictionModelVersions)
-      .catch(value => {
-        setRegistryError(value.message);
-        throw value;
-      })
-      .finally(() => setRegistryBusy(false));
-  }
-
-  function registerVersion(command) {
-    return registryMutation(() => registerPredictionModelVersion(command, session));
-  }
-
-  function deprecateVersion(id) {
-    return registryMutation(() => deprecatePredictionModelVersion(id, session));
-  }
-
-  function deleteVersion(id) {
-    return registryMutation(() => deletePredictionModelVersion(id, session));
-  }
-
-  function refreshPredictionOperations() {
-    setPredictionOperationsBusy(true);
-    setPredictionOperationsError("");
-    return Promise.all([
-      loadPredictionIngestionApiKeys(),
-      loadPredictionOperations()
-    ]).then(([keys, operations]) => {
-      setPredictionApiKeys(keys);
-      setPredictionOperations(operations);
-    }).catch(value => {
-      setPredictionOperationsError(value.message);
-      throw value;
-    }).finally(() => setPredictionOperationsBusy(false));
-  }
-
-  function predictionKeyMutation(action) {
-    setPredictionOperationsBusy(true);
-    setPredictionOperationsError("");
-    return action().then(result => {
-      if (result?.apiKey) {
-        setIssuedPredictionApiKey(result);
-      }
-      return Promise.all([
-        loadPredictionIngestionApiKeys(),
-        loadPredictionOperations()
-      ]);
-    }).then(([keys, operations]) => {
-      setPredictionApiKeys(keys);
-      setPredictionOperations(operations);
-    }).catch(value => {
-      setPredictionOperationsError(value.message);
-      throw value;
-    }).finally(() => setPredictionOperationsBusy(false));
-  }
-
-  function issuePredictionKey(command) {
-    return predictionKeyMutation(
-      () => issuePredictionIngestionApiKey(command, session));
-  }
-
-  function rotatePredictionKey(id, command) {
-    return predictionKeyMutation(
-      () => rotatePredictionIngestionApiKey(id, command, session));
-  }
-
-  function revokePredictionKey(id) {
-    if (!window.confirm("Revoke this prediction ingestion API key?")) {
-      return Promise.resolve();
-    }
-    return predictionKeyMutation(
-      () => revokePredictionIngestionApiKey(id, session));
   }
 
   async function orderAction(orderId, action) {
@@ -320,6 +101,7 @@ export default function Home() {
         setConnectionId(created.id);
         setConnection(created);
         setDashboard(null);
+        setDashboard(await loadDashboard(created.id));
         return;
       }
       const replaced = await replaceBrokerCredentials(
@@ -349,53 +131,7 @@ export default function Home() {
         setConnectionId("");
         setConnection(null);
         setDashboard(null);
-        setEvents([]);
-        setSelectedEvent(null);
       }
-    });
-  }
-
-  function eventCreate(command) {
-    const id = connectionId.trim();
-    return runMutation("event-create", async () => {
-      const created = await createEvent(id, command, session);
-      const [nextDashboard, nextEvents, detail] = await Promise.all([
-        loadDashboard(id),
-        listEvents(id),
-        loadEvent(id, created.id)
-      ]);
-      setDashboard(nextDashboard);
-      setEvents(nextEvents);
-      setSelectedEvent(detail);
-    });
-  }
-
-  function eventSelect(eventId) {
-    return runMutation("event-load", async () => {
-      setSelectedEvent(await loadEvent(connectionId.trim(), eventId));
-    });
-  }
-
-  function eventReanalyze(eventId) {
-    const id = connectionId.trim();
-    return runMutation("event-analysis", async () => {
-      await reanalyzeEvent(id, eventId, session);
-      const [nextEvents, detail] = await Promise.all([
-        listEvents(id),
-        loadEvent(id, eventId)
-      ]);
-      setEvents(nextEvents);
-      setSelectedEvent(detail);
-    });
-  }
-
-  function eventReview(eventId, status, version) {
-    const id = connectionId.trim();
-    return runMutation("event-review", async () => {
-      const detail = await reviewEvent(
-        id, eventId, status, version, session, crypto.randomUUID());
-      setSelectedEvent(detail);
-      setEvents(await listEvents(id));
     });
   }
 
@@ -455,7 +191,6 @@ export default function Home() {
       await logout(session);
       setSession(null);
       setDashboard(null);
-      setIssuedPredictionApiKey(null);
     } catch (value) {
       setError(value.message);
     }
@@ -468,18 +203,20 @@ export default function Home() {
     return h("main", { className: "center" },
       h("div", { className: "login-card" },
         h("p", { className: "eyebrow" }, "TRADE CONTROL"),
-        h("h1", null, "Portfolio cockpit"),
-        h("p", null, "Sign in with your configured identity provider."),
-        h("a", { className: "button-link", href: "/auth/login" }, "OIDC sign in")));
+        h("h1", null, "내 투자, 한눈에"),
+        h("p", null, "계속하려면 로그인해 주세요."),
+        h("a", { className: "button-link", href: "/auth/login" }, "로그인")));
   }
+
+  const workspaceOpen = Boolean(dashboard);
 
   return h("div", null,
     h("header", { className: "topbar" },
       h("div", null,
-        h("p", { className: "eyebrow" }, "TRADE CONTROL"),
-        h("h1", null, "Portfolio cockpit")),
+        h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
+        h("h1", null, workspaceOpen ? "내 자산" : "내 투자, 한눈에")),
       h("div", { className: "topbar-actions" },
-        h(RiskPolicyPanel, {
+        workspaceOpen ? h(RiskPolicyPanel, {
           policy: riskPolicy,
           history: riskPolicyHistory,
           open: riskPolicyOpen,
@@ -487,49 +224,25 @@ export default function Home() {
           onToggle: riskPolicyToggle,
           onUpdate: riskPolicyUpdate,
           onLoadHistory: riskPolicyLoadHistory
-        }),
-        h(NotificationCenter, {
+        }) : null,
+        workspaceOpen ? h(NotificationCenter, {
           unreadCount,
           notifications,
           open: notificationsOpen,
           busy: Boolean(busyAction),
           onToggle: notificationsToggle,
           onMarkRead: notificationMarkRead
-        }),
-        h("button", { type: "button", className: "secondary", onClick: signOut }, "Sign out"))),
-    h(RouteNav, {
+        }) : null,
+        h("button", { type: "button", className: "secondary", onClick: signOut }, "로그아웃"))),
+    workspaceOpen ? h(RouteNav, {
       symbol: dashboard?.portfolio?.data?.positions?.[0]?.symbol
-    }),
-    h("form", { className: "connection-form", onSubmit: openDashboard },
-      h("label", { htmlFor: "connection-id" }, "Broker connection UUID"),
-      h("div", null,
-        h("input", {
-          id: "connection-id",
-          value: connectionId,
-          onChange: event => {
-            setConnectionId(event.target.value);
-            setConnection(null);
-            setDashboard(null);
-            setEvents([]);
-            setSelectedEvent(null);
-            setPortfolioHistory(null);
-            setHistoryQuery(DEFAULT_HISTORY_QUERY);
-            setPaperPerformance(null);
-            setPerformanceQuery(DEFAULT_PERFORMANCE_QUERY);
-            setAnalysisOutcome(null);
-            setOutcomeQuery(DEFAULT_OUTCOME_QUERY);
-            setOutcomeCreateError("");
-            setPredictionApiKeys([]);
-            setIssuedPredictionApiKey(null);
-            setPredictionOperations(null);
-            setPredictionOperationsError("");
-          },
-          placeholder: "00000000-0000-0000-0000-000000000000",
-          required: true
-        }),
-        h("button", { type: "submit" }, "Open dashboard"))),
+    }) : null,
     error ? h("p", { className: "error", role: "alert" }, error) : null,
-    h("main", { className: "onboarding-wrap" },
+    !workspaceOpen ? h("main", { className: "onboarding-wrap landing-shell" },
+      h("div", { className: "landing-copy" },
+        h("p", { className: "landing-kicker" }, "미국주식 투자 관리"),
+        h("h2", null, "오늘의 투자를\n더 또렷하게"),
+        h("p", null, "토스증권 계좌를 연결하면 자산, 위험, 분석을 필요한 순간에만 보여드립니다.")),
       h(BrokerOnboarding, {
         connection,
         connectionId: connectionId.trim(),
@@ -537,65 +250,23 @@ export default function Home() {
         onCredentials: credentialsAction,
         onCommand: brokerAction
       }),
-      h(EventWorkflow, {
-        key: connectionId.trim(),
-        positions: dashboard?.portfolio?.data?.positions ?? [],
-        events,
-        selectedEvent,
-        connectionId: connectionId.trim(),
-        busyAction,
-        onCreate: eventCreate,
-        onSelect: eventSelect,
-        onReanalyze: eventReanalyze,
-        onReview: eventReview
-      })),
-    dashboard ? h("div", null,
+      h("details", { className: "connection-picker" },
+        h("summary", null, "기존 연결 불러오기"),
+        h("form", { className: "connection-form", onSubmit: openDashboard },
+          h("label", { htmlFor: "connection-id" }, "연결 ID"),
+          h("div", null,
+            h("input", {
+              id: "connection-id",
+              value: connectionId,
+              onChange: event => setConnectionId(event.target.value),
+              placeholder: "연결 ID를 입력하세요",
+              required: true
+            }),
+            h("button", { type: "submit" }, "불러오기"))))) : null,
+    workspaceOpen ? h("div", { className: "workspace-content" },
       h(DashboardView, {
         dashboard,
         busyOrderId,
         onOrderAction: orderAction
-      }),
-      h(PortfolioHistoryView, {
-        key: connectionId.trim(),
-        history: portfolioHistory,
-        query: historyQuery,
-        busy: historyBusy,
-        onQuery: historyQueryChange
-      }),
-      h(PaperPerformanceView, {
-        key: connectionId.trim(),
-        performance: paperPerformance,
-        query: performanceQuery,
-        busy: performanceBusy,
-        onQuery: performanceQueryChange
-      }),
-      h(AnalysisOutcomeView, {
-        key: connectionId.trim(),
-        performance: analysisOutcome,
-        versions: predictionModelVersions,
-        query: outcomeQuery,
-        busy: outcomeBusy,
-        onQuery: outcomeQueryChange,
-        createBusy: outcomeCreateBusy,
-        createError: outcomeCreateError,
-        onCreate: outcomeCreate,
-        registryBusy,
-        registryError,
-        onRegister: registerVersion,
-        onDeprecate: deprecateVersion,
-        onDelete: deleteVersion
-      }),
-      h(PredictionOperationsView, {
-        operations: predictionOperations,
-        keys: predictionApiKeys,
-        issuedKey: issuedPredictionApiKey,
-        busy: predictionOperationsBusy,
-        error: predictionOperationsError,
-        onIssue: issuePredictionKey,
-        onRotate: rotatePredictionKey,
-        onRevoke: revokePredictionKey,
-        onRefresh: refreshPredictionOperations,
-        onDismissKey: () => setIssuedPredictionApiKey(null)
-      })) : h("main", { className: "center compact" },
-      h("p", null, "Enter an owned broker connection UUID.")));
+      })) : null);
 }

@@ -15,6 +15,7 @@ import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.authentication.BadCredentialsException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,6 +45,20 @@ class SecurityConfigurationTest {
                         new TestingAuthenticationToken("user", null));
 
         assertThat(response.getRedirectedUrl()).isEqualTo("https://dashboard.example");
+    }
+
+    @Test
+    void oidcFailureRedirectsToConfiguredDashboard() throws Exception {
+        var response = new MockHttpServletResponse();
+
+        SecurityConfiguration.dashboardFailureHandler("https://dashboard.example")
+                .onAuthenticationFailure(
+                        new MockHttpServletRequest("GET", "/login/oauth2/code/oidc"),
+                        response,
+                        new BadCredentialsException("OIDC failed"));
+
+        assertThat(response.getRedirectedUrl())
+                .isEqualTo("https://dashboard.example?error=login");
     }
 
     @Test
