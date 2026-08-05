@@ -1,11 +1,11 @@
 package com.jmj.trade.order;
 
 import com.jmj.trade.broker.Currency;
+import com.jmj.trade.security.AuthenticationClaims;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -43,9 +43,10 @@ public final class LiveOrderActivationController {
     }
 
     @PostMapping("/{id}/step-up")
-    StepUpView stepUp(Principal principal, @AuthenticationPrincipal OidcUser oidcUser,
+    StepUpView stepUp(Principal principal, Authentication authentication,
                      @PathVariable UUID id) {
-        var issued = activation.issueStepUp(userId(principal), id, authenticatedAt(oidcUser));
+        var issued = activation.issueStepUp(
+                userId(principal), id, AuthenticationClaims.authenticatedAt(authentication));
         return new StepUpView(issued.stepUpToken(), issued.expiresAt());
     }
 
@@ -91,11 +92,6 @@ public final class LiveOrderActivationController {
         }
         return activation.modify(userId(principal), id, request.newLimitPrice(), stepUpToken,
                 "WEB:" + principal.getName());
-    }
-
-    private static Instant authenticatedAt(OidcUser oidcUser) {
-        return oidcUser == null || oidcUser.getIdToken() == null
-                ? null : oidcUser.getIdToken().getAuthenticatedAt();
     }
 
     private static UUID userId(Principal principal) {

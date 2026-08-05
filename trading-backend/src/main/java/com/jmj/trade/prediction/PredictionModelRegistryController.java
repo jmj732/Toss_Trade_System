@@ -1,5 +1,6 @@
 package com.jmj.trade.prediction;
 
+import com.jmj.trade.security.AuthenticationClaims;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -31,8 +33,10 @@ public class PredictionModelRegistryController {
     @PostMapping
     PredictionModelRegistryService.VersionView register(
             Principal principal,
+            org.springframework.security.core.Authentication authentication,
             @RequestBody RegisterRequest request
     ) {
+        AuthenticationClaims.requireRecent(authentication, Duration.ofMinutes(5));
         if (request == null) {
             throw new PredictionModelRegistryException(
                     PredictionModelRegistryException.Code.INVALID_INPUT);
@@ -51,14 +55,21 @@ public class PredictionModelRegistryController {
     @PostMapping("/{id}/deprecate")
     PredictionModelRegistryService.VersionView deprecate(
             Principal principal,
+            org.springframework.security.core.Authentication authentication,
             @PathVariable UUID id
     ) {
+        AuthenticationClaims.requireRecent(authentication, Duration.ofMinutes(5));
         return registry.deprecate(userId(principal), id);
     }
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    void delete(Principal principal, @PathVariable UUID id) {
+    void delete(
+            Principal principal,
+            org.springframework.security.core.Authentication authentication,
+            @PathVariable UUID id
+    ) {
+        AuthenticationClaims.requireRecent(authentication, Duration.ofMinutes(5));
         registry.delete(userId(principal), id);
     }
 

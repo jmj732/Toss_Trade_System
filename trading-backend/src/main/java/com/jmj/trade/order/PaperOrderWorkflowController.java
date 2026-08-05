@@ -1,11 +1,11 @@
 package com.jmj.trade.order;
 
 import com.jmj.trade.broker.Currency;
+import com.jmj.trade.security.AuthenticationClaims;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -73,10 +73,11 @@ public class PaperOrderWorkflowController {
     @PostMapping("/{id}/step-up")
     StepUpView stepUp(
             Principal principal,
-            @AuthenticationPrincipal OidcUser oidcUser,
+            Authentication authentication,
             @PathVariable UUID id
     ) {
-        var issued = workflow.issueStepUp(userId(principal), id, authenticatedAt(oidcUser));
+        var issued = workflow.issueStepUp(
+                userId(principal), id, AuthenticationClaims.authenticatedAt(authentication));
         return new StepUpView(issued.stepUpToken(), issued.expiresAt());
     }
 
@@ -129,13 +130,6 @@ public class PaperOrderWorkflowController {
             throw PaperOrderWorkflowException.validationFailed();
         }
         return workflow.withdraw(userId(principal), id, idempotencyKey, request.channel());
-    }
-
-    private static Instant authenticatedAt(OidcUser oidcUser) {
-        if (oidcUser == null || oidcUser.getIdToken() == null) {
-            return null;
-        }
-        return oidcUser.getIdToken().getAuthenticatedAt();
     }
 
     private static UUID userId(Principal principal) {

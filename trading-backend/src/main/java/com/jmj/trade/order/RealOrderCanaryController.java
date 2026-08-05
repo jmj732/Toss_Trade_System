@@ -1,10 +1,10 @@
 package com.jmj.trade.order;
 
 import com.jmj.trade.broker.Currency;
+import com.jmj.trade.security.AuthenticationClaims;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -31,19 +31,20 @@ public final class RealOrderCanaryController {
     @PostMapping("/preflight")
     RealOrderCanaryService.PreflightResult preflight(
             Principal principal,
-            @AuthenticationPrincipal OidcUser oidcUser,
+            Authentication authentication,
             @RequestBody OrderRequest request
     ) {
         if (request == null) {
             throw new CanaryInputException();
         }
-        return canary.preflight(userId(principal), request.toOrder(), authenticatedAt(oidcUser));
+        return canary.preflight(
+                userId(principal), request.toOrder(), AuthenticationClaims.authenticatedAt(authentication));
     }
 
     @PostMapping("/run")
     RealOrderCanaryService.RunResult run(
             Principal principal,
-            @AuthenticationPrincipal OidcUser oidcUser,
+            Authentication authentication,
             @RequestHeader(value = "Idempotency-Key", required = false) String runKey,
             @RequestBody OrderRequest request
     ) {
@@ -51,12 +52,8 @@ public final class RealOrderCanaryController {
             throw new CanaryInputException();
         }
         var userId = userId(principal);
-        return canary.run(userId, request.toOrder(), authenticatedAt(oidcUser), "CANARY:" + userId, runKey);
-    }
-
-    private static Instant authenticatedAt(OidcUser oidcUser) {
-        return oidcUser == null || oidcUser.getIdToken() == null
-                ? null : oidcUser.getIdToken().getAuthenticatedAt();
+        return canary.run(userId, request.toOrder(), AuthenticationClaims.authenticatedAt(authentication),
+                "CANARY:" + userId, runKey);
     }
 
     private static UUID userId(Principal principal) {

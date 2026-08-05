@@ -16,6 +16,7 @@ import com.jmj.trade.broker.BrokerResponse;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
+import com.jmj.trade.security.AccessTokenService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -123,9 +124,17 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
     private MeterRegistry meterRegistry;
 
     @Autowired
+    private AccessTokenService accessTokens;
+
+    @Autowired
     private PlatformTransactionManager transactionManager;
 
     private MockMvc mockMvc;
+
+    private String authorization(UUID userId) {
+        return "Bearer " + accessTokens.issue(
+                userId, UUID.randomUUID(), Instant.now()).value();
+    }
 
     @BeforeEach
     void setUp() {
@@ -144,7 +153,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         insertUser(USER_ID);
 
         var response = mockMvc.perform(post("/api/v1/prediction-model-versions")
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(versionRequest("model-v1", "contract-v1")))
@@ -161,19 +170,19 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$[0].id").value(versionId.toString()));
 
         mockMvc.perform(post("/api/v1/prediction-model-versions/{id}/deprecate", versionId)
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("DEPRECATED"))
                 .andExpect(jsonPath("$.deprecatedAt").isNotEmpty());
         mockMvc.perform(post("/api/v1/prediction-model-versions/{id}/deprecate", versionId)
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("DEPRECATED"));
 
         mockMvc.perform(delete("/api/v1/prediction-model-versions/{id}", versionId)
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isNoContent());
         mockMvc.perform(get("/api/v1/prediction-model-versions")
@@ -187,7 +196,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         insertUser(USER_ID);
         insertUser(OTHER_USER_ID);
         var response = mockMvc.perform(post("/api/v1/prediction-model-versions")
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(versionRequest("model-v1", "contract-v1")))
@@ -196,7 +205,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         var versionId = idFrom(response);
 
         mockMvc.perform(post("/api/v1/prediction-model-versions")
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(versionRequest("model-v1", "contract-v1")))
@@ -208,7 +217,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isEmpty());
         mockMvc.perform(post("/api/v1/prediction-model-versions/{id}/deprecate", versionId)
-                        .with(user(OTHER_USER_ID.toString()))
+                        .header("Authorization", authorization(OTHER_USER_ID))
                         .with(csrf()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code")
@@ -223,7 +232,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         createPrediction(connectionId, "AAPL", "USD", "UP", "model-v1", "contract-v1");
 
         mockMvc.perform(delete("/api/v1/prediction-model-versions/{id}", versionId)
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("PREDICTION_MODEL_VERSION_IN_USE"));
@@ -622,8 +631,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         insertActiveVersion(USER_ID, "model-v1", "contract-v1");
 
         var issued = mockMvc.perform(post("/api/v1/prediction-ingestion-api-keys")
-                        .with(user(USER_ID.toString()))
-                        .with(csrf())
+                        .header("Authorization", authorization(USER_ID))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(apiKeyRequest("model-v1", "contract-v1")))
                 .andExpect(status().isCreated())
@@ -662,8 +670,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isEmpty());
         mockMvc.perform(delete("/api/v1/prediction-ingestion-api-keys/{id}", keyId)
-                        .with(user(OTHER_USER_ID.toString()))
-                        .with(csrf()))
+                        .header("Authorization", authorization(OTHER_USER_ID)))
                 .andExpect(status().isNoContent());
         org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("""
                 SELECT status = 'ACTIVE'
@@ -689,8 +696,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
 
         var inherited = mockMvc.perform(post(
                         "/api/v1/prediction-ingestion-api-keys/{id}/rotate", keyId)
-                        .with(user(USER_ID.toString()))
-                        .with(csrf()))
+                        .header("Authorization", authorization(USER_ID)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.expiresAt").value(expiresAt.toString()))
                 .andReturn().getResponse().getContentAsString();
@@ -699,8 +705,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
 
         mockMvc.perform(post(
                         "/api/v1/prediction-ingestion-api-keys/{id}/rotate", inheritedId)
-                        .with(user(USER_ID.toString()))
-                        .with(csrf())
+                        .header("Authorization", authorization(USER_ID))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"expiresAt\":\"" + replacementExpiry + "\"}"))
                 .andExpect(status().isCreated())
@@ -885,12 +890,11 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         mockMvc.perform(post(
                         "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
                         connectionId)
-                        .with(user(USER_ID.toString()))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(batchRequest(batchItem(
                                 "session-no-csrf", "AAPL", "USD", "UP",
                                 "model-v1", "contract-v1"))))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isUnauthorized());
         mockMvc.perform(post(
                         "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
                         connectionId)
@@ -918,7 +922,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
                         .header("Authorization", "Bearer " + rawKey)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createRequest("AAPL", "USD", "UP", "model-v1", "contract-v1")))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/v1/prediction-ingestion-api-keys")
                         .header("Authorization", "Bearer " + rawKey))
                 .andExpect(status().isUnauthorized());
@@ -935,8 +939,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
 
         var rotated = mockMvc.perform(post(
                         "/api/v1/prediction-ingestion-api-keys/{id}/rotate", keyId)
-                        .with(user(USER_ID.toString()))
-                        .with(csrf()))
+                        .header("Authorization", authorization(USER_ID)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andReturn().getResponse().getContentAsString();
@@ -976,8 +979,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
         var rawKey = stringField(issued, "apiKey");
 
         mockMvc.perform(delete("/api/v1/prediction-ingestion-api-keys/{id}", keyId)
-                        .with(user(USER_ID.toString()))
-                        .with(csrf()))
+                        .header("Authorization", authorization(USER_ID)))
                 .andExpect(status().isNoContent());
         mockMvc.perform(post(
                         "/api/v1/broker-connections/{connectionId}/analysis-predictions/batch",
@@ -1677,7 +1679,7 @@ class AnalysisPredictionIntegrationTest extends PostgresIntegrationTest {
             Instant expiresAt
     ) throws Exception {
         return mockMvc.perform(post("/api/v1/prediction-ingestion-api-keys")
-                        .with(user(userId.toString()))
+                        .header("Authorization", authorization(userId))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(apiKeyRequest(modelVersion, contractVersion, expiresAt)))

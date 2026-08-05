@@ -18,6 +18,7 @@ import com.jmj.trade.broker.CashBalanceStatus;
 import com.jmj.trade.broker.MoneyByCurrency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
+import com.jmj.trade.security.AccessTokenService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -82,6 +83,9 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     @Autowired
     private RecordingBrokerAdapter brokerAdapter;
 
+    @Autowired
+    private AccessTokenService accessTokens;
+
     @BeforeEach
     void cleanConnections() {
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext)
@@ -91,8 +95,13 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         brokerAdapter.reset();
     }
 
+    private String authorization(String userId) {
+        return "Bearer " + accessTokens.issue(
+                UUID.fromString(userId), UUID.randomUUID(), Instant.now()).value();
+    }
+
     @Test
-    void unauthenticatedAndMissingCsrfRequestsAreRejectedAtSecurityBoundary() throws Exception {
+    void unauthenticatedRequestsAreRejectedAtSecurityBoundary() throws Exception {
         mockMvc.perform(post("/api/v1/broker-connections/toss")
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -100,10 +109,10 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 .andExpect(status().isUnauthorized());
 
         mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(USER_ID))
+                        .header("Authorization", "Bearer malformed")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson(CANARY_ID, CANARY_SECRET)))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -128,8 +137,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson(CANARY_ID, CANARY_SECRET)))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("AUTHENTICATED_USER_INVALID"))
+                .andExpect(status().isUnauthorized())
                 .andReturn().getResponse().getContentAsString();
 
         assertThat(body).doesNotContain(CANARY_ID, CANARY_SECRET);
@@ -139,7 +147,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     @Test
     void createReplaceVerifyAndDeleteUsePrincipalUuidAndNeverReturnCredentialHints() throws Exception {
         var created = mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(USER_ID))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson(CANARY_ID, CANARY_SECRET)))
@@ -153,7 +161,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         var connectionId = idFrom(created);
 
         var replaced = mockMvc.perform(put("/api/v1/broker-connections/{id}/credentials", connectionId)
-                        .with(user(USER_ID))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson("replacement-client", "replacement-secret")))
@@ -165,7 +173,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         assertThat(replaced).doesNotContain("replacement-client", "replacement-secret", "secret", "client");
 
         mockMvc.perform(post("/api/v1/broker-connections/{id}/verify", connectionId)
-                        .with(user(USER_ID))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
@@ -173,7 +181,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         assertThat(brokerAdapter.connectionRefs()).containsExactly(new BrokerConnectionRef(UUID.fromString(connectionId)));
 
         mockMvc.perform(delete("/api/v1/broker-connections/{id}", connectionId)
-                        .with(user(USER_ID))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isNoContent());
 
@@ -183,7 +191,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     @Test
     void crossUserReplaceVerifyAndDeleteMatchMissing404() throws Exception {
         var connectionId = idFrom(mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(USER_ID))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson("owner-client", "owner-secret")))
@@ -191,7 +199,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 .andReturn().getResponse().getContentAsString());
 
         mockMvc.perform(put("/api/v1/broker-connections/{id}/credentials", connectionId)
-                        .with(user(OTHER_USER_ID))
+                        .header("Authorization", authorization(OTHER_USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson(CANARY_ID, CANARY_SECRET)))
@@ -199,13 +207,13 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
 
         mockMvc.perform(post("/api/v1/broker-connections/{id}/verify", connectionId)
-                        .with(user(OTHER_USER_ID))
+                        .header("Authorization", authorization(OTHER_USER_ID))
                         .with(csrf()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
 
         mockMvc.perform(delete("/api/v1/broker-connections/{id}", connectionId)
-                        .with(user(OTHER_USER_ID))
+                        .header("Authorization", authorization(OTHER_USER_ID))
                         .with(csrf()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
@@ -214,7 +222,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     @Test
     void publicErrorsMapStableCodesWithoutSecrets() throws Exception {
         var duplicate = post("/api/v1/broker-connections/toss")
-                .with(user(USER_ID))
+                .header("Authorization", authorization(USER_ID))
                 .with(csrf())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(credentialsJson(CANARY_ID, CANARY_SECRET));
@@ -234,14 +242,14 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 "broker message " + CANARY_SECRET));
         var connectionId = jdbcTemplate.queryForObject("SELECT id FROM broker_connections LIMIT 1", UUID.class);
         assertSecretFree(mockMvc.perform(post("/api/v1/broker-connections/{id}/verify", connectionId)
-                        .with(user(USER_ID))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isTooManyRequests())
                 .andExpect(jsonPath("$.code").value("BROKER_RATE_LIMITED"))
                 .andReturn().getResponse().getContentAsString());
 
         var missingSecretBody = mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(UUID.randomUUID().toString()))
+                        .header("Authorization", authorization(UUID.randomUUID().toString()))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson("", CANARY_SECRET)))
@@ -254,7 +262,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     @Test
     void requestValidationAndMalformedJsonReturnSecretFreeValidationFailure() throws Exception {
         var nullBody = mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(UUID.randomUUID().toString()))
+                        .header("Authorization", authorization(UUID.randomUUID().toString()))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"clientId\":null,\"clientSecret\":\"" + CANARY_SECRET + "\"}"))
@@ -265,7 +273,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
 
         var oversizedSecret = "x".repeat(4097);
         var oversizedBody = mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(UUID.randomUUID().toString()))
+                        .header("Authorization", authorization(UUID.randomUUID().toString()))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson(CANARY_ID, oversizedSecret)))
@@ -276,7 +284,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         assertThat(oversizedBody).doesNotContain(CANARY_ID, oversizedSecret, "clientSecret");
 
         var malformedBody = mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(UUID.randomUUID().toString()))
+                        .header("Authorization", authorization(UUID.randomUUID().toString()))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"clientId\":\"" + CANARY_ID + "\",\"clientSecret\":"))
@@ -374,14 +382,13 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
 
         mockMvc.perform(post(
                         "/api/v1/broker-connections/{id}/portfolio-syncs",
-                        connectionId)
-                        .with(user(USER_ID)))
-                .andExpect(status().isForbidden());
+                        connectionId))
+                .andExpect(status().isUnauthorized());
 
         mockMvc.perform(post(
                         "/api/v1/broker-connections/{id}/portfolio-syncs",
                         connectionId)
-                        .with(user(OTHER_USER_ID))
+                        .header("Authorization", authorization(OTHER_USER_ID))
                         .with(csrf()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
@@ -389,7 +396,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         mockMvc.perform(post(
                         "/api/v1/broker-connections/{id}/portfolio-syncs",
                         connectionId)
-                        .with(user(USER_ID))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.runId").isNotEmpty())
@@ -406,7 +413,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         mockMvc.perform(post(
                         "/api/v1/broker-connections/{id}/portfolio-syncs",
                         connectionId)
-                        .with(user(USER_ID))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf()))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.code").value("BROKER_ACCOUNT_COUNT_UNSUPPORTED"));

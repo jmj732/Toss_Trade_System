@@ -19,6 +19,7 @@ import com.jmj.trade.broker.toss.TossApiProperties;
 import com.jmj.trade.broker.toss.TossCredentialMetadata;
 import com.jmj.trade.broker.toss.TossCredentialProvider;
 import com.jmj.trade.broker.toss.TossCredentials;
+import com.jmj.trade.security.AccessTokenService;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.OptimisticLockException;
 import org.junit.jupiter.api.AfterEach;
@@ -125,6 +126,14 @@ class BrokerConnectionSecurityIntegrationTest extends PostgresIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private AccessTokenService accessTokens;
+
+    private String authorization(UUID userId) {
+        return "Bearer " + accessTokens.issue(
+                userId, UUID.randomUUID(), Instant.now()).value();
+    }
+
     @BeforeAll
     static void startRedis() {
         REDIS.start();
@@ -156,7 +165,7 @@ class BrokerConnectionSecurityIntegrationTest extends PostgresIntegrationTest {
     @Test
     void crossUserReadEndpointIsAbsentAndMutationsReturnOwnerScopedNotFound() throws Exception {
         var connectionId = idFrom(mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson("owner-client", "owner-secret")))
@@ -167,20 +176,17 @@ class BrokerConnectionSecurityIntegrationTest extends PostgresIntegrationTest {
                         .with(user(OTHER_USER_ID.toString())))
                 .andExpect(status().isMethodNotAllowed());
         mockMvc.perform(put("/api/v1/broker-connections/{id}/credentials", connectionId)
-                        .with(user(OTHER_USER_ID.toString()))
-                        .with(csrf())
+                        .header("Authorization", authorization(OTHER_USER_ID))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson(CANARY_ID, CANARY_SECRET)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
         mockMvc.perform(post("/api/v1/broker-connections/{id}/verify", connectionId)
-                        .with(user(OTHER_USER_ID.toString()))
-                        .with(csrf()))
+                        .header("Authorization", authorization(OTHER_USER_ID)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
         mockMvc.perform(delete("/api/v1/broker-connections/{id}", connectionId)
-                        .with(user(OTHER_USER_ID.toString()))
-                        .with(csrf()))
+                        .header("Authorization", authorization(OTHER_USER_ID)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
 
@@ -191,7 +197,7 @@ class BrokerConnectionSecurityIntegrationTest extends PostgresIntegrationTest {
     @Test
     void plaintextCanaryIsAbsentFromStoragePublicSurfacesAndRedisCredentialCache() throws Exception {
         var createdBody = mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson(CANARY_ID, CANARY_SECRET)))
@@ -200,14 +206,14 @@ class BrokerConnectionSecurityIntegrationTest extends PostgresIntegrationTest {
         var connectionId = UUID.fromString(idFrom(createdBody));
 
         var duplicateBody = mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(USER_ID.toString()))
+                        .header("Authorization", authorization(USER_ID))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson(CANARY_ID, CANARY_SECRET)))
                 .andExpect(status().isConflict())
                 .andReturn().getResponse().getContentAsString();
         var validationBody = mockMvc.perform(post("/api/v1/broker-connections/toss")
-                        .with(user(UUID.randomUUID().toString()))
+                        .header("Authorization", authorization(UUID.randomUUID()))
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(credentialsJson("", CANARY_SECRET)))

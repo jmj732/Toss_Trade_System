@@ -1,10 +1,10 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.security.AuthenticationClaims;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -41,14 +41,15 @@ public class KillSwitchController {
     @PostMapping("/step-up")
     StepUpView stepUp(
             Principal principal,
-            @AuthenticationPrincipal OidcUser oidcUser,
+            Authentication authentication,
             @RequestBody StepUpRequest request
     ) {
         if (request == null) {
             throw KillSwitchException.invalidInput();
         }
         var issued = ledger.issueDisengageStepUp(
-                userId(principal), scope(request.scope()), request.targetId(), authenticatedAt(oidcUser));
+                userId(principal), scope(request.scope()), request.targetId(),
+                AuthenticationClaims.authenticatedAt(authentication));
         return new StepUpView(issued.stepUpToken(), issued.expiresAt());
     }
 
@@ -83,13 +84,6 @@ public class KillSwitchController {
         } catch (IllegalArgumentException exception) {
             throw KillSwitchException.invalidInput();
         }
-    }
-
-    private static Instant authenticatedAt(OidcUser oidcUser) {
-        if (oidcUser == null || oidcUser.getIdToken() == null) {
-            return null;
-        }
-        return oidcUser.getIdToken().getAuthenticatedAt();
     }
 
     private static UUID userId(Principal principal) {

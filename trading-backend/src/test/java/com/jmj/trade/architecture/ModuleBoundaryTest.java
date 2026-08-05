@@ -52,8 +52,8 @@ class ModuleBoundaryTest {
             Map.entry("marketdata", Set.of()),                               // → broker는 generic provider 경계 밖
             Map.entry("intelligence", Set.of()),                             // event → marketdata/outbox(없음)
             Map.entry("risk", Set.of("account")),                            // → account, portfolio/marketdata(없음)
-            Map.entry("order", Set.of("risk", "broker", "account", "inbox")),// → risk, broker, account, inbox, audit/outbox/marketdata(없음)
-            Map.entry("prediction", Set.of("analysis")),                     // performance → analysis, marketdata(없음)
+            Map.entry("order", Set.of("risk", "broker", "account", "inbox", "security")),// → risk, broker, account, inbox, security
+            Map.entry("prediction", Set.of("analysis", "security")),       // performance → analysis, security, marketdata(없음)
             Map.entry("inbox", Set.of()));                                    // → 없음
 
     private static final Set<String> DOMAIN_MODULES = ALLOWED_DEPENDENCIES.keySet();

@@ -3,6 +3,7 @@ package com.jmj.trade.broker.connection;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.account.AccountSyncResult;
 import com.jmj.trade.account.AccountSyncService;
+import com.jmj.trade.security.AuthenticationClaims;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
+import java.time.Duration;
 import java.util.UUID;
 
 @RestController
@@ -40,7 +42,12 @@ public class BrokerConnectionController {
     }
 
     @PostMapping("/toss")
-    BrokerConnectionResponse createToss(Principal principal, @RequestBody BrokerConnectionRequest request) {
+    BrokerConnectionResponse createToss(
+            Principal principal,
+            org.springframework.security.core.Authentication authentication,
+            @RequestBody BrokerConnectionRequest request
+    ) {
+        AuthenticationClaims.requireRecent(authentication, Duration.ofMinutes(5));
         var validated = validated(request);
         return BrokerConnectionResponse.from(connectionService.createToss(
                 userId(principal),
@@ -51,9 +58,11 @@ public class BrokerConnectionController {
     @PutMapping("/{id}/credentials")
     BrokerConnectionResponse replaceCredentials(
             Principal principal,
+            org.springframework.security.core.Authentication authentication,
             @PathVariable UUID id,
             @RequestBody BrokerConnectionRequest request
     ) {
+        AuthenticationClaims.requireRecent(authentication, Duration.ofMinutes(5));
         var validated = validated(request);
         return BrokerConnectionResponse.from(connectionService.replaceCredentials(
                 userId(principal),
@@ -78,7 +87,12 @@ public class BrokerConnectionController {
     }
 
     @DeleteMapping("/{id}")
-    ResponseEntity<Void> delete(Principal principal, @PathVariable UUID id) {
+    ResponseEntity<Void> delete(
+            Principal principal,
+            org.springframework.security.core.Authentication authentication,
+            @PathVariable UUID id
+    ) {
+        AuthenticationClaims.requireRecent(authentication, Duration.ofMinutes(5));
         connectionService.delete(userId(principal), id);
         return ResponseEntity.noContent().build();
     }
