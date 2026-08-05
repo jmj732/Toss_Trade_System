@@ -308,6 +308,6 @@ jobs:
               -f compose.yaml \
               -f compose.staging.yaml \
               -f compose.staging.credentialed.yaml \
-              up -d --wait migrate backend
+              up -d --wait migrate backend dashboard
           curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null
           REMOTE
