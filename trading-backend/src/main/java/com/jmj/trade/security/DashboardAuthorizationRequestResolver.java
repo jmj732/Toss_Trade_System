@@ -1,9 +1,6 @@
 package com.jmj.trade.security;
 
 import jakarta.servlet.http.HttpServletRequest;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.function.Consumer;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
@@ -12,9 +9,8 @@ import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequ
 
 final class DashboardAuthorizationRequestResolver implements OAuth2AuthorizationRequestResolver {
 
-    private static final String TARGETS_SESSION_ATTRIBUTE =
-            DashboardAuthorizationRequestResolver.class.getName() + ".targets";
-    private static final int MAX_TARGETS = 8;
+    private static final String RETURN_TO_ATTRIBUTE =
+            DashboardAuthorizationRequestResolver.class.getName() + ".returnTo";
 
     private final OAuth2AuthorizationRequestResolver delegate;
 
@@ -45,31 +41,19 @@ final class DashboardAuthorizationRequestResolver implements OAuth2Authorization
         if (state == null || state.isBlank()) {
             return;
         }
-        var session = request.getSession(true);
-        var targets = targets(session);
-        targets.put(state, DashboardRedirects.safeReturnTo(returnTo));
-        while (targets.size() > MAX_TARGETS) {
-            Iterator<String> iterator = targets.keySet().iterator();
-            iterator.next();
-            iterator.remove();
-        }
-        session.setAttribute(TARGETS_SESSION_ATTRIBUTE, targets);
+        request.setAttribute(RETURN_TO_ATTRIBUTE, DashboardRedirects.safeReturnTo(returnTo));
     }
 
     static String consumeReturnTo(HttpServletRequest request) {
-        var session = request.getSession(false);
-        if (session == null) {
-            return null;
+        var requestAuthorization = CookieAuthorizationRequestRepository.request(request);
+        if (requestAuthorization != null) {
+            var value = requestAuthorization.getAttribute(RETURN_TO_ATTRIBUTE);
+            request.removeAttribute(CookieAuthorizationRequestRepository.class.getName());
+            return value instanceof String string ? string : null;
         }
-        var state = request.getParameter("state");
-        if (state == null) {
-            return null;
-        }
-        var value = targets(session).remove(state);
-        if (targets(session).isEmpty()) {
-            session.removeAttribute(TARGETS_SESSION_ATTRIBUTE);
-        }
-        return value;
+        var value = request.getAttribute(RETURN_TO_ATTRIBUTE);
+        request.removeAttribute(RETURN_TO_ATTRIBUTE);
+        return value instanceof String string ? string : null;
     }
 
     private OAuth2AuthorizationRequest remember(
@@ -77,17 +61,14 @@ final class DashboardAuthorizationRequestResolver implements OAuth2Authorization
             OAuth2AuthorizationRequest authorizationRequest
     ) {
         if (authorizationRequest != null && request.getParameter("returnTo") != null) {
-            rememberReturnTo(request, authorizationRequest.getState(), request.getParameter("returnTo"));
+            var returnTo = DashboardRedirects.safeReturnTo(request.getParameter("returnTo"));
+            request.setAttribute(RETURN_TO_ATTRIBUTE, returnTo);
+            return OAuth2AuthorizationRequest.from(authorizationRequest)
+                    .attributes(attributes -> attributes.put(
+                            RETURN_TO_ATTRIBUTE,
+                            returnTo))
+                    .build();
         }
         return authorizationRequest;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, String> targets(jakarta.servlet.http.HttpSession session) {
-        var current = session.getAttribute(TARGETS_SESSION_ATTRIBUTE);
-        if (current instanceof Map<?, ?> map) {
-            return (Map<String, String>) map;
-        }
-        return new LinkedHashMap<>();
     }
 }

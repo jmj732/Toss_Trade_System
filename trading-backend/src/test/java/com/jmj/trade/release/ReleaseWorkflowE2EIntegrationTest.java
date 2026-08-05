@@ -3,6 +3,7 @@ package com.jmj.trade.release;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
+import com.jmj.trade.security.AccessTokenService;
 import com.jmj.trade.broker.AccountCapacitySnapshot;
 import com.jmj.trade.broker.SellableQuantitySnapshot;
 import com.jmj.trade.broker.AccountSnapshot;
@@ -29,7 +30,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -55,7 +55,6 @@ import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -63,9 +62,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Drives the full advertised pipeline (session -> connection -> sync -> analysis -> event ->
- * order propose -> approve -> paper execution) through real HTTP endpoints with a real CSRF
- * token, then exercises the duplicate/idempotency and crash-recovery edges of that same chain.
+ * Drives the full advertised pipeline (bearer -> connection -> sync -> analysis -> event ->
+ * order propose -> approve -> paper execution), then exercises the duplicate/idempotency and
+ * crash-recovery edges of that same chain.
  * No production behavior is asserted beyond what {@code PaperOrderWorkflowApiIntegrationTest},
  * {@code EventIntelligenceIntegrationTest}, and {@code AccountSyncServiceIntegrationTest} already
  * cover in isolation; this test's value is that every step operates on entities produced by the
@@ -107,6 +106,9 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
     private PipelineBrokerAdapter broker;
+
+    @Autowired
+    private AccessTokenService accessTokens;
 
     private MockMvc mockMvc;
 
@@ -179,7 +181,8 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
         reviewEvent(csrf, connectionId, eventId, "CONFIRMED", 0L, "review-1");
 
         var orderId = proposeOrder(csrf, connectionId, "propose-1");
-        mockMvc.perform(get("/api/v1/paper-orders/{id}", orderId).with(user(USER_ID.toString())))
+        mockMvc.perform(get("/api/v1/paper-orders/{id}", orderId)
+                        .header("Authorization", csrf.authorization()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("PROPOSED"));
 
@@ -293,21 +296,18 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
         assertThat(countWhere("analysis_runs", "status = 'SUCCEEDED'")).isEqualTo(1);
     }
 
-    private Csrf bootstrapSession() throws Exception {
-        var session = new MockHttpSession();
+    private Bearer bootstrapSession() throws Exception {
+        var access = accessTokens.issue(USER_ID, UUID.randomUUID(), Instant.now());
         var body = mockMvc.perform(get("/api/v1/session")
-                        .with(user(USER_ID.toString()))
-                        .session(session))
+                        .header("Authorization", "Bearer " + access.value()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.userId").value(USER_ID.toString()))
                 .andReturn().getResponse().getContentAsString();
-        var header = field(body, "csrfHeaderName");
-        var token = field(body, "csrfToken");
-        assertThat(token).isNotBlank();
-        return new Csrf(session, header, token);
+        assertThat(body).doesNotContain("csrfHeaderName", "csrfToken");
+        return new Bearer(access.value());
     }
 
-    private UUID createAndVerifyConnection(Csrf csrf) throws Exception {
+    private UUID createAndVerifyConnection(Bearer csrf) throws Exception {
         var created = mockMvc.perform(csrf.post("/api/v1/broker-connections/toss")
                         .content(credentialsJson("client-id", "client-secret")))
                 .andExpect(status().isOk())
@@ -321,7 +321,7 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
         return connectionId;
     }
 
-    private UUID createEvent(Csrf csrf, UUID connectionId) throws Exception {
+    private UUID createEvent(Bearer csrf, UUID connectionId) throws Exception {
         var body = mockMvc.perform(csrf.post("/api/v1/broker-connections/{id}/events", connectionId)
                         .content("""
                                 {
@@ -339,7 +339,7 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
     }
 
     private ResultActions reviewEvent(
-            Csrf csrf,
+            Bearer csrf,
             UUID connectionId,
             UUID eventId,
             String targetStatus,
@@ -355,7 +355,7 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
                         """.formatted(targetStatus, expectedVersion)));
     }
 
-    private UUID proposeOrder(Csrf csrf, UUID connectionId, String idempotencyKey) throws Exception {
+    private UUID proposeOrder(Bearer csrf, UUID connectionId, String idempotencyKey) throws Exception {
         var body = mockMvc.perform(csrf.post("/api/v1/paper-orders")
                         .header("Idempotency-Key", idempotencyKey)
                         .content(proposalJson(connectionId, "AAPL", "1")))
@@ -365,7 +365,7 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
     }
 
     private ResultActions approveOrder(
-            Csrf csrf,
+            Bearer csrf,
             UUID orderId,
             String idempotencyKey
     ) throws Exception {
@@ -373,7 +373,7 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
     }
 
     private ResultActions approveOrder(
-            Csrf csrf,
+            Bearer csrf,
             UUID orderId,
             String idempotencyKey,
             String displayedQuantity,
@@ -485,28 +485,21 @@ class ReleaseWorkflowE2EIntegrationTest extends PostgresIntegrationTest {
         return json.substring(start, json.indexOf('"', start));
     }
 
-    /**
-     * Wraps every mutating request with the CSRF header/token fetched from the real session and
-     * the same {@link MockHttpSession}, so the token round-trips exactly as it would for a real
-     * browser client instead of relying on the {@code .with(csrf())} bypass every other
-     * integration test in this codebase uses.
-     */
-    private final class Csrf {
-        private final MockHttpSession session;
-        private final String header;
+    /** Wraps every request with the same short-lived bearer token as the dashboard. */
+    private final class Bearer {
         private final String token;
 
-        private Csrf(MockHttpSession session, String header, String token) {
-            this.session = session;
-            this.header = header;
+        private Bearer(String token) {
             this.token = token;
+        }
+
+        private String authorization() {
+            return "Bearer " + token;
         }
 
         MockHttpServletRequestBuilder post(String urlTemplate, Object... vars) {
             return MockMvcRequestBuilders.post(urlTemplate, vars)
-                    .with(user(USER_ID.toString()))
-                    .session(session)
-                    .header(header, token)
+                    .header("Authorization", authorization())
                     .contentType(MediaType.APPLICATION_JSON);
         }
     }

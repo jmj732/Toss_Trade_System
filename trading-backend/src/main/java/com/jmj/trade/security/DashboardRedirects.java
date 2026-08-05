@@ -33,6 +33,11 @@ final class DashboardRedirects {
         return "/".equals(safeReturnTo) ? dashboard.toString() : appendPath(safeReturnTo);
     }
 
+    String dashboardUrl(String returnTo, String accessToken, java.time.Instant expiresAt) {
+        return dashboardUrl(returnTo) + "#access_token=" + encode(accessToken)
+                + "&expires_at=" + expiresAt.getEpochSecond();
+    }
+
     String loginUrl(String error, String returnTo) {
         var query = new StringBuilder();
         var errorCode = errorCode(error);

@@ -3,6 +3,7 @@ package com.jmj.trade.release;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
+import com.jmj.trade.security.AccessTokenService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,7 +12,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -29,7 +29,6 @@ import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -82,6 +81,9 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
     @Autowired
     private ReleaseWorkflowE2EIntegrationTest.PipelineBrokerAdapter broker;
 
+    @Autowired
+    private AccessTokenService accessTokens;
+
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -121,7 +123,8 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void authenticatedResponseCarriesDefaultSecurityHeaders() throws Exception {
-        mockMvc.perform(get("/api/v1/session").with(user(USER_ID.toString())))
+        mockMvc.perform(get("/api/v1/session").header(
+                        "Authorization", bearer(USER_ID).authorization()))
                 .andExpect(status().isOk())
                 .andExpect(header().string("X-Content-Type-Options", "nosniff"))
                 .andExpect(header().string("X-Frame-Options", "DENY"))
@@ -210,14 +213,15 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
         var intruder = bootstrapSession(OTHER_USER_ID);
 
         mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", connectionId)
-                        .with(user(OTHER_USER_ID.toString())))
+                        .header("Authorization", intruder.authorization()))
                 .andExpect(status().isNotFound());
         mockMvc.perform(intruder.post("/api/v1/broker-connections/{id}/portfolio-syncs", connectionId))
                 .andExpect(status().isNotFound());
         mockMvc.perform(intruder.post("/api/v1/broker-connections/{id}/portfolio-analyses", connectionId))
                 .andExpect(status().isNotFound());
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/events/{eventId}",
-                        connectionId, eventId).with(user(OTHER_USER_ID.toString())))
+                        connectionId, eventId).header(
+                                "Authorization", intruder.authorization()))
                 .andExpect(status().isNotFound());
         mockMvc.perform(intruder.post(
                         "/api/v1/broker-connections/{connectionId}/events/{eventId}/review",
@@ -225,7 +229,8 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
                         .header("Idempotency-Key", "intruder-review")
                         .content("{\"status\":\"CONFIRMED\",\"expectedVersion\":0}"))
                 .andExpect(status().isNotFound());
-        mockMvc.perform(get("/api/v1/paper-orders/{id}", orderId).with(user(OTHER_USER_ID.toString())))
+        mockMvc.perform(get("/api/v1/paper-orders/{id}", orderId).header(
+                        "Authorization", intruder.authorization()))
                 .andExpect(status().isNotFound());
         mockMvc.perform(intruder.post("/api/v1/paper-orders/{id}/approve", orderId)
                         .header("Idempotency-Key", "intruder-approve")
@@ -252,12 +257,18 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
                 .isZero();
     }
 
-    private Csrf bootstrapSession(UUID userId) throws Exception {
-        var session = new MockHttpSession();
-        var body = mockMvc.perform(get("/api/v1/session").with(user(userId.toString())).session(session))
+    private Bearer bootstrapSession(UUID userId) throws Exception {
+        var access = accessTokens.issue(userId, UUID.randomUUID(), java.time.Instant.now());
+        mockMvc.perform(get("/api/v1/session").header(
+                        "Authorization", "Bearer " + access.value()))
                 .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-        return new Csrf(userId, session, field(body, "csrfHeaderName"), field(body, "csrfToken"));
+                .andReturn();
+        return new Bearer(userId, access.value());
+    }
+
+    private Bearer bearer(UUID userId) {
+        var access = accessTokens.issue(userId, UUID.randomUUID(), java.time.Instant.now());
+        return new Bearer(userId, access.value());
     }
 
     private void stubAnalysisSuccess() {
@@ -331,33 +342,29 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
         return json.substring(start, json.indexOf('"', start));
     }
 
-    /** Threads the real CSRF token and session across requests, as a genuine browser client would. */
-    private final class Csrf {
+    /** Threads one short-lived bearer token across requests, as a genuine browser client would. */
+    private final class Bearer {
         private final UUID userId;
-        private final MockHttpSession session;
-        private final String header;
         private final String token;
 
-        private Csrf(UUID userId, MockHttpSession session, String header, String token) {
+        private Bearer(UUID userId, String token) {
             this.userId = userId;
-            this.session = session;
-            this.header = header;
             this.token = token;
+        }
+
+        private String authorization() {
+            return "Bearer " + token;
         }
 
         MockHttpServletRequestBuilder post(String urlTemplate, Object... vars) {
             return MockMvcRequestBuilders.post(urlTemplate, vars)
-                    .with(user(userId.toString()))
-                    .session(session)
-                    .header(header, token)
+                    .header("Authorization", authorization())
                     .contentType(MediaType.APPLICATION_JSON);
         }
 
         MockHttpServletRequestBuilder put(String urlTemplate, Object... vars) {
             return MockMvcRequestBuilders.put(urlTemplate, vars)
-                    .with(user(userId.toString()))
-                    .session(session)
-                    .header(header, token)
+                    .header("Authorization", authorization())
                     .contentType(MediaType.APPLICATION_JSON);
         }
     }

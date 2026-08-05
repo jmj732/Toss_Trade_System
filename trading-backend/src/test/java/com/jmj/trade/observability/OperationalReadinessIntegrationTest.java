@@ -122,7 +122,7 @@ class OperationalReadinessIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void readinessRoutesRequireAuthAndCsrfAndRedactProviderSecrets() throws Exception {
+    void readinessRoutesRequireAuthAndRedactProviderSecrets() throws Exception {
         mockMvc.perform(get("/api/v1/operations/readiness"))
                 .andExpect(status().isUnauthorized());
 
@@ -135,7 +135,7 @@ class OperationalReadinessIntegrationTest extends PostgresIntegrationTest {
                         .with(user(USER_ID.toString()))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"symbol\":\"AAPL\"}"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isOk());
 
         mockMvc.perform(post("/api/v1/operations/readiness/provider-check")
                         .with(user(USER_ID.toString())).with(csrf())

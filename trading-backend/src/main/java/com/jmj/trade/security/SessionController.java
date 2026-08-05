@@ -1,12 +1,10 @@
 package com.jmj.trade.security;
 
-import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.core.Authentication;
 
-import java.security.Principal;
 import java.util.UUID;
 
 @RestController
@@ -14,12 +12,13 @@ import java.util.UUID;
 final class SessionController {
 
     @GetMapping
-    SessionView read(Principal principal, HttpServletRequest request) {
-        var userId = UUID.fromString(principal.getName());
-        var csrf = (CsrfToken) request.getAttribute(CsrfToken.class.getName());
-        return new SessionView(userId, csrf.getHeaderName(), csrf.getToken());
+    SessionView read(Authentication authentication) {
+        var userId = UUID.fromString(authentication.getName());
+        var authenticatedAt = authentication.getPrincipal() instanceof AuthenticatedUser user
+                ? user.authenticatedAt() : null;
+        return new SessionView(userId, authenticatedAt);
     }
 
-    record SessionView(UUID userId, String csrfHeaderName, String csrfToken) {
+    record SessionView(UUID userId, java.time.Instant authenticatedAt) {
     }
 }

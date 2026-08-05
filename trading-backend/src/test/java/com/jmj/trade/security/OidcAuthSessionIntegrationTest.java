@@ -22,6 +22,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.web.context.WebApplicationContext;
+import jakarta.servlet.http.Cookie;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -33,7 +34,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -59,6 +59,12 @@ class OidcAuthSessionIntegrationTest extends PostgresIntegrationTest {
 
     @Autowired
     private OidcIdentityService identities;
+
+    @Autowired
+    private AccessTokenService accessTokens;
+
+    @Autowired
+    private RefreshTokenService refreshTokens;
 
     private MockMvc mockMvc;
 
@@ -132,47 +138,77 @@ class OidcAuthSessionIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void sessionEndpointReturnsInternalUuidAndCsrfOnly() throws Exception {
-        var owner = mappedUser("browser-subject");
+    void sessionEndpointReturnsInternalUuidAndAuthenticationTimeForBearerToken() throws Exception {
+        var userId = identities.resolve(ISSUER, "browser-subject");
+        var access = accessTokens.issue(userId, UUID.randomUUID(), NOW.toInstant());
 
         mockMvc.perform(get("/api/v1/session")
-                        .with(oidcLogin().oidcUser(owner)))
+                        .header("Authorization", "Bearer " + access.value()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.userId").value(owner.getName()))
-                .andExpect(jsonPath("$.csrfHeaderName").value("X-CSRF-TOKEN"))
-                .andExpect(jsonPath("$.csrfToken").isNotEmpty())
+                .andExpect(jsonPath("$.userId").value(userId.toString()))
+                .andExpect(jsonPath("$.authenticatedAt").value(NOW.toInstant().toString()))
+                .andExpect(jsonPath("$.csrfHeaderName").doesNotExist())
+                .andExpect(jsonPath("$.csrfToken").doesNotExist())
                 .andExpect(jsonPath("$.accessToken").doesNotExist())
                 .andExpect(jsonPath("$.idToken").doesNotExist())
                 .andExpect(jsonPath("$.credentials").doesNotExist());
     }
 
     @Test
-    void csrfProtectedLogoutInvalidatesServerSessionAndClearsCookie() throws Exception {
-        var owner = mappedUser("session-subject");
-        var connectionId = insertConnection(UUID.fromString(owner.getName()));
-        var authenticated = mockMvc.perform(get(
-                                "/api/v1/broker-connections/{connectionId}/dashboard",
-                                connectionId)
-                        .with(oidcLogin().oidcUser(owner)))
-                .andExpect(status().isOk())
-                .andReturn();
-        var session = authenticated.getRequest().getSession(false);
-        assertThat(session).isNotNull();
+    void logoutRevokesRefreshSessionAndClearsCookieWithoutJsessionId() throws Exception {
+        var userId = identities.resolve(ISSUER, "session-subject");
+        var issued = refreshTokens.issue(userId, NOW.toInstant());
 
-        mockMvc.perform(post("/logout").session((org.springframework.mock.web.MockHttpSession) session))
-                .andExpect(status().isForbidden());
-
-        mockMvc.perform(post("/logout")
-                        .session((org.springframework.mock.web.MockHttpSession) session)
-                        .with(csrf()))
+        mockMvc.perform(post("/api/v1/auth/logout")
+                        .cookie(new Cookie(AuthCookieSupport.REFRESH_COOKIE, issued.refreshToken()))
+                        .header("Origin", "http://localhost:3000"))
                 .andExpect(status().isNoContent())
                 .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.containsString(
-                        "JSESSIONID=;")));
+                        "trade_refresh_token=;")))
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("Secure"),
+                        org.hamcrest.Matchers.containsString("HttpOnly"),
+                        org.hamcrest.Matchers.containsString("SameSite=Strict"),
+                        org.hamcrest.Matchers.containsString("Path=/api/v1/auth"))))
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("JSESSIONID"))));
 
-        assertThat(((org.springframework.mock.web.MockHttpSession) session).isInvalid()).isTrue();
-        mockMvc.perform(get(
-                        "/api/v1/broker-connections/{connectionId}/dashboard",
-                        connectionId))
+        mockMvc.perform(post("/api/v1/auth/refresh")
+                        .cookie(new Cookie(AuthCookieSupport.REFRESH_COOKIE, issued.refreshToken()))
+                        .header("Origin", "http://localhost:3000"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void refreshRequiresExactOriginRotatesTokenAndSetsStrictCookie() throws Exception {
+        var userId = identities.resolve(ISSUER, "refresh-subject");
+        var issued = refreshTokens.issue(userId, NOW.toInstant());
+        var cookie = new Cookie(AuthCookieSupport.REFRESH_COOKIE, issued.refreshToken());
+
+        mockMvc.perform(post("/api/v1/auth/refresh").cookie(cookie))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/v1/auth/refresh")
+                        .cookie(cookie)
+                        .header("Origin", "https://attacker.example"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/api/v1/auth/refresh")
+                        .cookie(cookie)
+                        .header("Origin", "http://localhost:3000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").isNotEmpty())
+                .andExpect(jsonPath("$.expiresAt").isNotEmpty())
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("trade_refresh_token="),
+                        org.hamcrest.Matchers.containsString("Secure"),
+                        org.hamcrest.Matchers.containsString("HttpOnly"),
+                        org.hamcrest.Matchers.containsString("SameSite=Strict"),
+                        org.hamcrest.Matchers.containsString("Path=/api/v1/auth"),
+                        org.hamcrest.Matchers.containsString("Max-Age="))));
+
+        mockMvc.perform(post("/api/v1/auth/refresh")
+                        .cookie(cookie)
+                        .header("Origin", "http://localhost:3000"))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -180,6 +216,15 @@ class OidcAuthSessionIntegrationTest extends PostgresIntegrationTest {
     void oidcAuthorizationEndpointIsEnabledWithoutPasswordLogin() throws Exception {
         mockMvc.perform(get("/oauth2/authorization/mock"))
                 .andExpect(status().is3xxRedirection())
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("trade_oidc_request="),
+                        org.hamcrest.Matchers.containsString("Secure"),
+                        org.hamcrest.Matchers.containsString("HttpOnly"),
+                        org.hamcrest.Matchers.containsString("SameSite=Lax"),
+                        org.hamcrest.Matchers.containsString("Path=/"),
+                        org.hamcrest.Matchers.containsString("Max-Age=300"))))
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("JSESSIONID"))))
                 .andExpect(header().string(
                         "Location",
                         org.hamcrest.Matchers.startsWith("https://issuer.example/authorize")));

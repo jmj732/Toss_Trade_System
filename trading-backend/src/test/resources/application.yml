@@ -1,0 +1,2 @@
+security:
+  access-token-signing-secret: test-only-access-token-signing-secret-32-bytes

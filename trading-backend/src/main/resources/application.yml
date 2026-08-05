@@ -9,6 +9,12 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+security:
+  access-token-signing-secret: ${AUTH_TOKEN_SIGNING_SECRET:}
+  access-token-ttl: ${ACCESS_TOKEN_TTL:PT5M}
+  refresh-token-ttl: ${REFRESH_TOKEN_TTL:P30D}
+public:
+  dashboard-url: ${PUBLIC_DASHBOARD_URL:http://localhost:3000}
 stock-analysis:
   running-timeout: ${STOCK_ANALYSIS_RUNNING_TIMEOUT:PT5M}
   # Enabling a provider requires its base-url, path, fields, and provider policy
