@@ -53,7 +53,7 @@ function Trend({ title, points, field }) {
       },
       krwPath ? h("path", { className: "trend-krw", d: krwPath }) : null,
       usdPath ? h("path", { className: "trend-usd", d: usdPath }) : null)
-      : h("p", { className: "empty" }, "Not enough points for a trend line"),
+      : h("p", { className: "empty" }, "추세선을 그리기에 데이터가 부족합니다"),
     h("div", { className: "trend-legend" },
       h("span", { className: "trend-krw-dot" }, "KRW"),
       h("span", { className: "trend-usd-dot" }, "USD")));
@@ -61,11 +61,11 @@ function Trend({ title, points, field }) {
 
 function PointsTable({ points }) {
   if (points.length === 0) {
-    return h("p", { className: "empty" }, "No points");
+    return h("p", { className: "empty" }, "데이터가 없습니다");
   }
   return h("div", { className: "table-wrap" }, h("table", null,
     h("thead", null, h("tr", null,
-      ...["Time", "Market value KRW", "Market value USD", "P/L KRW", "P/L USD"].map(label =>
+      ...["시각", "평가금액 KRW", "평가금액 USD", "P/L KRW", "P/L USD"].map(label =>
         h("th", { key: label, scope: "col" }, label)))),
     h("tbody", null, ...points.map(point => h("tr", { key: point.syncRunId },
       h("td", null, point.completedAt),
@@ -98,27 +98,27 @@ export function PortfolioHistoryView({ history, query, busy, onQuery }) {
   return h("section", { className: "portfolio-history panel", "aria-busy": busy },
     h("header", null,
       h("div", null,
-        h("p", { className: "eyebrow" }, "PORTFOLIO HISTORY"),
-        h("h2", null, "Asset & P/L trend")),
+        h("p", { className: "eyebrow" }, "포트폴리오 이력"),
+        h("h2", null, "자산 · P/L 추세")),
       history ? h(Quality, { history }) : null),
     h("form", { className: "history-filter", onSubmit: submit },
-      h("label", null, "From",
+      h("label", null, "시작일",
         h("input", { type: "date", name: "from", defaultValue: fromDate })),
-      h("label", null, "To",
+      h("label", null, "종료일",
         h("input", { type: "date", name: "to", defaultValue: toDate })),
-      h("label", null, "Max points",
+      h("label", null, "최대 포인트 수",
         h("input", {
           type: "number", name: "maxPoints", min: 2, max: 500, defaultValue: query.maxPoints
         })),
-      h("button", { type: "submit", disabled: busy }, "Apply")),
+      h("button", { type: "submit", disabled: busy }, "적용")),
     !history || history.unavailable
-      ? h("p", { className: "empty" }, history?.unavailableReason ?? "No history yet")
+      ? h("p", { className: "empty" }, history?.unavailableReason ?? "이력이 아직 없습니다")
       : h("div", null,
         history.data.partial
           ? h("p", { className: "busy" },
-            `Showing ${history.data.returnedPoints} of ${history.data.totalMatched} points`)
+            `${history.data.totalMatched}개 중 ${history.data.returnedPoints}개 표시`)
           : null,
-        h(Trend, { title: "Market value", points, field: "marketValueAmounts" }),
-        h(Trend, { title: "Profit / loss", points, field: "profitLossAmounts" }),
+        h(Trend, { title: "평가금액", points, field: "marketValueAmounts" }),
+        h(Trend, { title: "손익", points, field: "profitLossAmounts" }),
         h(PointsTable, { points })));
 }

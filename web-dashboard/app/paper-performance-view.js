@@ -35,17 +35,17 @@ function CurrencyCard({ currency, breakdown }) {
   return h("div", { className: "paper-performance-currency" },
     h("h3", null, currency),
     h("div", { className: "metrics-grid" },
-      h(Metric, { label: "Realized P/L", value: breakdown.realizedPnl }),
-      h(Metric, { label: "Unrealized P/L", value: breakdown.unrealizedPnl }),
-      h(Metric, { label: "Fees", value: breakdown.totalFees }),
-      h(Metric, { label: "Tax", value: breakdown.totalTax }),
-      h(Metric, { label: "Turnover", value: breakdown.turnover }),
-      h(Metric, { label: "Closed trades", value: breakdown.closedTradeCount }),
-      h(Metric, { label: "Win rate", value: percent(breakdown.winRate) }),
-      h(Metric, { label: "Max drawdown", value: breakdown.maxDrawdown })),
+      h(Metric, { label: "실현 P/L", value: breakdown.realizedPnl }),
+      h(Metric, { label: "미실현 P/L", value: breakdown.unrealizedPnl }),
+      h(Metric, { label: "수수료", value: breakdown.totalFees }),
+      h(Metric, { label: "세금", value: breakdown.totalTax }),
+      h(Metric, { label: "거래대금", value: breakdown.turnover }),
+      h(Metric, { label: "청산 거래", value: breakdown.closedTradeCount }),
+      h(Metric, { label: "승률", value: percent(breakdown.winRate) }),
+      h(Metric, { label: "최대 낙폭", value: breakdown.maxDrawdown })),
     breakdown.partial
       ? h("p", { className: "busy" },
-        `Showing ${breakdown.returnedPoints} of ${breakdown.totalMatched} closed trades`)
+        `청산 거래 ${breakdown.totalMatched}개 중 ${breakdown.returnedPoints}개 표시`)
       : null,
     path
       ? h("svg", {
@@ -53,7 +53,7 @@ function CurrencyCard({ currency, breakdown }) {
         viewBox: `0 0 ${width} ${height}`,
         preserveAspectRatio: "none"
       }, h("path", { className: "trend-pnl", d: path }))
-      : h("p", { className: "empty" }, "Not enough closed trades for an equity curve"));
+      : h("p", { className: "empty" }, "자산 곡선을 그리기에 청산 거래가 부족합니다"));
 }
 
 export function PaperPerformanceView({ performance, query, busy, onQuery }) {
@@ -78,25 +78,25 @@ export function PaperPerformanceView({ performance, query, busy, onQuery }) {
   return h("section", { className: "paper-performance panel", "aria-busy": busy },
     h("header", null,
       h("div", null,
-        h("p", { className: "eyebrow" }, "PAPER PERFORMANCE"),
-        h("h2", null, "Paper trading performance"))),
+        h("p", { className: "eyebrow" }, "모의 성과"),
+        h("h2", null, "모의 매매 성과"))),
     h("p", { className: "disclaimer" },
       "모의(Paper) 매매 시뮬레이션 결과이며 "
       + "실제 주문 체결이나 수익을 보장하지 않습니다."),
     h("form", { className: "history-filter", onSubmit: submit },
-      h("label", null, "From",
+      h("label", null, "시작일",
         h("input", { type: "date", name: "from", defaultValue: fromDate })),
-      h("label", null, "To",
+      h("label", null, "종료일",
         h("input", { type: "date", name: "to", defaultValue: toDate })),
-      h("label", null, "Max points",
+      h("label", null, "최대 포인트 수",
         h("input", {
           type: "number", name: "maxPoints", min: 2, max: 500, defaultValue: query.maxPoints
         })),
-      h("button", { type: "submit", disabled: busy }, "Apply")),
+      h("button", { type: "submit", disabled: busy }, "적용")),
     !performance || performance.unavailable
-      ? h("p", { className: "empty" }, performance?.unavailableReason ?? "No paper trades yet")
+      ? h("p", { className: "empty" }, performance?.unavailableReason ?? "모의 거래가 아직 없습니다")
       : currencies.length === 0
-        ? h("p", { className: "empty" }, "No paper trades in this period")
+        ? h("p", { className: "empty" }, "이 기간에 모의 거래가 없습니다")
         : h("div", null, ...currencies.map(currency =>
           h(CurrencyCard, { key: currency, currency, breakdown: byCurrency[currency] }))));
 }

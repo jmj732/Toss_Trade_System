@@ -15,7 +15,7 @@ test("renders the unread badge and toggle without opening the panel", () => {
     onMarkRead() {}
   }));
 
-  assert.match(html, /Notifications/);
+  assert.match(html, /알림/);
   assert.match(html, />3</);
   assert.doesNotMatch(html, /notification-panel/);
 });
@@ -62,7 +62,7 @@ test("lists notifications and only offers mark-read for unread ones", () => {
 
   assert.match(html, /Order COMPLETED/);
   assert.match(html, /Portfolio sync completed/);
-  assert.equal((html.match(/Mark read/g) ?? []).length, 1);
+  assert.equal((html.match(/읽음 표시/g) ?? []).length, 1);
 });
 
 test("shows an empty state when the panel is open with no notifications", () => {
@@ -75,7 +75,7 @@ test("shows an empty state when the panel is open with no notifications", () => 
     onMarkRead() {}
   }));
 
-  assert.match(html, /No notifications/);
+  assert.match(html, /알림이 없습니다/);
 });
 
 test("disables mark-read while a mutation is in flight", () => {

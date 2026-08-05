@@ -57,7 +57,7 @@ function Portfolio({ section }) {
     positions.length
       ? h("div", { className: "table-wrap" }, h("table", null,
         h("thead", null, h("tr", null,
-          ...["Symbol", "Name", "Quantity", "Value", "P/L"].map(label =>
+          ...["종목", "종목명", "수량", "평가금액", "P/L"].map(label =>
             h("th", { key: label, scope: "col" }, label)))),
         h("tbody", null, ...positions.map(position => h("tr", { key: position.symbol },
           h("td", null, position.symbol),

@@ -21,7 +21,7 @@ test("renders safe provider and safety readiness without secrets or values", () 
     onProbe() {}
   }));
 
-  assert.match(html, /Operational readiness/);
+  assert.match(html, /운영 준비 상태/);
   assert.match(html, /FMP/);
   assert.match(html, /5m 1s/);
   assert.doesNotMatch(html, /provider-secret|189\.40|raw-response/);

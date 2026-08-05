@@ -499,7 +499,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   }
 
   if (session === undefined) {
-    return h("main", { className: "center" }, h("p", null, "Loading session…"));
+    return h("main", { className: "center" }, h("p", null, "세션 불러오는 중…"));
   }
   if (session === null) {
     return h("main", { className: "center" }, h("div", { className: "login-card" },
@@ -516,7 +516,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
           orders: "주문", predictions: "분석", settings: "설정"
         }[route] ?? "내 자산")),
       h("button", { type: "button", className: "secondary", onClick: () => logout().then(() => setSession(null)) },
-        "Sign out")),
+        "로그아웃")),
     h(RouteNav, { symbol: stockSymbol }),
     h("form", { className: "connection-form", onSubmit: event => {
       event.preventDefault(); openWorkspace(event.currentTarget.elements.connectionId.value);

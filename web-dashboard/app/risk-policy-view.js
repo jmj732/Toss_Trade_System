@@ -4,7 +4,7 @@ import { createElement as h } from "react";
 
 function HistoryList({ history }) {
   if (history.length === 0) {
-    return h("p", { className: "empty" }, "No changes yet");
+    return h("p", { className: "empty" }, "변경 이력이 아직 없습니다");
   }
   return h("ul", { className: "list risk-policy-history" }, ...history.map(entry =>
     h("li", { key: entry.version },
@@ -13,7 +13,7 @@ function HistoryList({ history }) {
         h("span", null, `${entry.changedBy} · ${entry.changedAt}`)),
       h("span", null,
         `KRW ${entry.maxOrderAmountKrw} · USD ${entry.maxOrderAmountUsd} · `
-        + `qty ${entry.maxQuantity} · concentration ${entry.maxConcentration}`))));
+        + `수량 ${entry.maxQuantity} · 집중도 ${entry.maxConcentration}`))));
 }
 
 export function RiskPolicyPanel({
@@ -44,45 +44,45 @@ export function RiskPolicyPanel({
       className: "secondary risk-policy-toggle",
       "aria-expanded": open,
       onClick: onToggle
-    }, "Risk policy"),
+    }, "리스크 정책"),
     open ? h("div", { className: "risk-policy-panel panel" },
       h("header", null,
-        h("h2", null, "Order risk limits"),
+        h("h2", null, "주문 리스크 한도"),
         policy
           ? h("span", { className: policy.customized ? "customized" : "default" },
             policy.customized ? "CUSTOM" : "DEFAULT")
           : null),
       !policy
-        ? h("p", { className: "empty" }, "Loading…")
+        ? h("p", { className: "empty" }, "불러오는 중…")
         // Keyed on version so the form remounts (and its defaultValue inputs refresh) after
         // every successful save, instead of silently keeping the previous values on screen.
         : h("form", {
           key: policy.version, className: "risk-policy-form", onSubmit: submit
         },
-        h("label", null, "Max order amount (KRW)",
+        h("label", null, "최대 주문 금액 (KRW)",
           h("input", {
             type: "number", name: "maxOrderAmountKrw", step: "any", min: "0",
             defaultValue: policy.maxOrderAmountKrw, required: true
           })),
-        h("label", null, "Max order amount (USD)",
+        h("label", null, "최대 주문 금액 (USD)",
           h("input", {
             type: "number", name: "maxOrderAmountUsd", step: "any", min: "0",
             defaultValue: policy.maxOrderAmountUsd, required: true
           })),
-        h("label", null, "Max quantity",
+        h("label", null, "최대 수량",
           h("input", {
             type: "number", name: "maxQuantity", step: "any", min: "0",
             defaultValue: policy.maxQuantity, required: true
           })),
-        h("label", null, "Max symbol concentration (0–1)",
+        h("label", null, "최대 종목 집중도 (0–1)",
           h("input", {
             type: "number", name: "maxConcentration", step: "any", min: "0", max: "1",
             defaultValue: policy.maxConcentration, required: true
           })),
-        h("button", { type: "submit", disabled: busy }, "Save")),
-      h("h3", null, "Change history"),
+        h("button", { type: "submit", disabled: busy }, "저장")),
+      h("h3", null, "변경 이력"),
       h("button", {
         type: "button", className: "secondary", disabled: busy, onClick: onLoadHistory
-      }, "Load history"),
+      }, "이력 불러오기"),
       h(HistoryList, { history })) : null);
 }

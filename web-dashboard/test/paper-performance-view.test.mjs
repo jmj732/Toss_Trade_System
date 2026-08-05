@@ -54,7 +54,7 @@ test("renders per-currency metrics without summing or converting KRW/USD", () =>
     onQuery() {}
   }));
 
-  assert.match(html, /Paper trading performance/);
+  assert.match(html, /모의 매매 성과/);
   assert.match(html, /실제 주문 체결이나/);
   assert.match(html, />USD</);
   assert.match(html, />KRW</);
@@ -114,7 +114,7 @@ test("shows a truncated-coverage notice when the equity curve was downsampled", 
     onQuery() {}
   }));
 
-  assert.match(html, /Showing 3 of 10 closed trades/);
+  assert.match(html, /청산 거래 10개 중 3개 표시/);
 });
 
 test("renders nothing before a connection has ever been opened", () => {
@@ -125,7 +125,7 @@ test("renders nothing before a connection has ever been opened", () => {
     onQuery() {}
   }));
 
-  assert.match(html, /No paper trades yet/);
+  assert.match(html, /모의 거래가 아직 없습니다/);
 });
 
 test("disables the apply button while a query is in flight", () => {

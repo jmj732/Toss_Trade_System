@@ -9,7 +9,7 @@ function State({ value }) {
 function Panel({ title, state, error, action, children }) {
   return h("section", { className: "panel stock-surface-panel" },
     h("header", null,
-      h("div", null, h("p", { className: "eyebrow" }, "STOCK SURFACE"), h("h2", null, title)),
+      h("div", null, h("p", { className: "eyebrow" }, "종목 화면"), h("h2", null, title)),
       h("div", { className: "panel-actions" }, h(State, { value: state }), action)),
     error ? h("p", { className: "error", role: "alert" }, error) : null,
     children);
@@ -17,24 +17,24 @@ function Panel({ title, state, error, action, children }) {
 
 function MissingData({ values = [] }) {
   return h("div", { className: "missing-data" },
-    h("h3", null, "Missing data"),
+    h("h3", null, "누락 데이터"),
     values.length
       ? h("ul", { className: "list" }, ...values.map(value => h("li", { key: value }, value)))
-      : h("p", { className: "empty" }, "None reported"));
+      : h("p", { className: "empty" }, "보고된 항목 없음"));
 }
 
 function Provenance({ values = [] }) {
   return h("div", { className: "provenance" },
-    h("h3", null, "Provenance"),
+    h("h3", null, "데이터 출처"),
     values.length
       ? h("div", { className: "table-wrap" }, h("table", null,
         h("thead", null, h("tr", null,
-          ...["Provider", "Field", "As of", "Collected at"].map(label =>
+          ...["제공자", "필드", "기준 시각", "수집 시각"].map(label =>
             h("th", { key: label, scope: "col" }, label)))),
         h("tbody", null, ...values.map((item, index) => h("tr", { key: `${item.provider}-${item.field}-${index}` },
           h("td", null, item.provider), h("td", null, item.field),
           h("td", null, item.asOf ?? "—"), h("td", null, item.collectedAt ?? "—"))))))
-      : h("p", { className: "empty" }, "No provenance reported"));
+      : h("p", { className: "empty" }, "보고된 출처가 없습니다"));
 }
 
 function analysisParts(analysis) {
@@ -51,26 +51,26 @@ function analysisParts(analysis) {
 function AnalysisPanel({ analysis, state, error, onCreate }) {
   const { result, metrics, provenance } = analysisParts(analysis);
   return h(Panel, {
-    title: "Analysis",
+    title: "분석",
     state,
     error,
     action: h("button", {
       type: "button", disabled: state === "PROGRESS", onClick: onCreate
-    }, analysis ? "Re-run analysis" : "Create analysis")
+    }, analysis ? "분석 재실행" : "분석 생성")
   },
   result ? h("div", null,
     h("p", { className: "disclaimer" },
-      `Snapshot ${analysis.inputSnapshotId ?? "—"} · as of ${result.asOf ?? "—"}`),
+      `스냅샷 ${analysis.inputSnapshotId ?? "—"} · 기준 ${result.asOf ?? "—"}`),
     h("div", { className: "analysis-metrics" },
       metrics.length
         ? metrics.map(metric => h("div", { className: "metric", key: metric.name },
           h("span", { className: "metric-label" }, metric.name),
           h("span", { className: "metric-value" }, metric.value ?? "—"),
           h("small", null, metric.unit ?? "")))
-        : h("p", { className: "empty" }, "No analyzer metrics")),
+        : h("p", { className: "empty" }, "분석 지표가 없습니다")),
     h(MissingData, { values: result.missingData }),
     h(Provenance, { values: provenance }))
-    : h("p", { className: "empty" }, state === "PROGRESS" ? "Analysis in progress…" : "No analysis yet"));
+    : h("p", { className: "empty" }, state === "PROGRESS" ? "분석 진행 중…" : "분석 결과가 아직 없습니다"));
 }
 
 function ForecastPanel({ forecast, state, error, onCreate }) {
@@ -78,23 +78,23 @@ function ForecastPanel({ forecast, state, error, onCreate }) {
   const metrics = result?.forecasts ?? [];
   const provenance = metrics.flatMap(metric => metric.provenance ?? []);
   return h(Panel, {
-    title: "Forecast",
+    title: "예측",
     state,
     error,
     action: h("button", {
       type: "button", disabled: state === "PROGRESS", onClick: onCreate
-    }, forecast ? "Re-run forecast" : "Create forecast")
+    }, forecast ? "예측 재실행" : "예측 생성")
   },
   result ? h("div", null,
     h("p", { className: "disclaimer" },
-      `Snapshot ${forecast.inputSnapshotId ?? result.inputSnapshotId ?? "—"} · Confidence ${result.confidence ?? "—"}`),
+      `스냅샷 ${forecast.inputSnapshotId ?? result.inputSnapshotId ?? "—"} · 신뢰도 ${result.confidence ?? "—"}`),
     metrics.length
       ? h("ul", { className: "list" }, ...metrics.map(metric => h("li", { key: metric.name },
         h("strong", null, metric.name), h("span", null, metric.value ?? "—"))))
-      : h("p", { className: "empty" }, "No forecast metrics"),
+      : h("p", { className: "empty" }, "예측 지표가 없습니다"),
     h(MissingData, { values: result.missingData }),
     h(Provenance, { values: provenance }))
-    : h("p", { className: "empty" }, state === "PROGRESS" ? "Forecast in progress…" : "No forecast yet"));
+    : h("p", { className: "empty" }, state === "PROGRESS" ? "예측 진행 중…" : "예측 결과가 아직 없습니다"));
 }
 
 function ExplanationPanel({ explanation, state, error, onCreate }) {
@@ -102,52 +102,52 @@ function ExplanationPanel({ explanation, state, error, onCreate }) {
   const citations = explanation?.citations ?? [];
   const evidence = [...(claims.evidence ?? []), ...(claims.counterArguments ?? [])];
   return h(Panel, {
-    title: "Gemini explain",
+    title: "Gemini 설명",
     state,
     error,
     action: h("button", {
       type: "button", disabled: state === "PROGRESS", onClick: onCreate
-    }, explanation ? "Regenerate explain" : "Generate explain")
+    }, explanation ? "설명 재생성" : "설명 생성")
   },
   explanation ? h("div", null,
-    h("p", { className: "disclaimer" }, `Snapshot ${explanation.inputSnapshotId ?? "—"}`),
+    h("p", { className: "disclaimer" }, `스냅샷 ${explanation.inputSnapshotId ?? "—"}`),
     evidence.length
       ? h("ul", { className: "list" }, ...evidence.map((claim, index) => h("li", { key: `${claim.text}-${index}` },
-        h("strong", null, claim.text), h("span", null, claim.citationIds?.join(", ") ?? "No citation"))))
-      : h("p", { className: "empty" }, "No explanation claims"),
-    h("h3", null, "Citations"),
+        h("strong", null, claim.text), h("span", null, claim.citationIds?.join(", ") ?? "출처 없음"))))
+      : h("p", { className: "empty" }, "설명 근거가 없습니다"),
+    h("h3", null, "출처"),
     citations.length
       ? h("ul", { className: "list" }, ...citations.map(citation => h("li", { key: citation.id },
         `${citation.id} · ${citation.provider} · ${citation.field}`)))
-      : h("p", { className: "empty" }, "No citations"),
+      : h("p", { className: "empty" }, "출처가 없습니다"),
     h(MissingData, { values: [...(explanation.missingData ?? []), ...(claims.missingData ?? [])] }))
-    : h("p", { className: "empty" }, state === "PROGRESS" ? "Explanation in progress…" : "No explanation yet"));
+    : h("p", { className: "empty" }, state === "PROGRESS" ? "설명 진행 중…" : "설명 결과가 아직 없습니다"));
 }
 
 function RelatedEvents({ events = [] }) {
   return h("section", { className: "panel stock-surface-panel" },
-    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "EVENT RADAR"), h("h2", null, "Related events")),
+    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "이벤트 레이더"), h("h2", null, "관련 이벤트")),
       h(State, { value: "READY" })),
     events.length
       ? h("ul", { className: "list" }, ...events.map(event => h("li", { key: event.id },
         h("strong", null, event.summary), h("span", null,
           `${event.source ?? "—"} · ${event.occurredAt ?? "—"} · ${event.reviewStatus ?? "PENDING"}`))))
-      : h("p", { className: "empty" }, "No related events"));
+      : h("p", { className: "empty" }, "관련 이벤트가 없습니다"));
 }
 
 function SnapshotHistory({ history = [], onSelectSnapshot }) {
   return h("section", { className: "panel stock-surface-panel" },
-    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "IMMUTABLE INPUTS"), h("h2", null, "Snapshot history")),
+    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "불변 입력"), h("h2", null, "스냅샷 이력")),
       h(State, { value: "READY" })),
     history.length
       ? h("ul", { className: "list" }, ...history.map(item => h("li", { key: item.runId },
         h("div", null,
           h("strong", null, `${item.status} · ${item.completedAt ?? item.startedAt ?? "—"}`),
-          h("span", null, `run ${item.runId} · snapshot ${item.inputSnapshotId ?? "—"}`),
+          h("span", null, `실행 ${item.runId} · 스냅샷 ${item.inputSnapshotId ?? "—"}`),
           item.errorCode ? h("small", null, item.errorCode) : null),
         h("button", { type: "button", className: "secondary", onClick: () => onSelectSnapshot(item.runId) },
-          "View snapshot"))))
-      : h("p", { className: "empty" }, "No snapshots yet"));
+          "스냅샷 보기"))))
+      : h("p", { className: "empty" }, "스냅샷이 아직 없습니다"));
 }
 
 export function StockAnalysisProductSurface({
@@ -166,7 +166,7 @@ export function StockAnalysisProductSurface({
 }) {
   return h("main", { className: "stock-surface" },
     h("header", { className: "stock-surface-heading" },
-      h("p", { className: "eyebrow" }, "STOCK ANALYSIS"), h("h1", null, symbol)),
+      h("p", { className: "eyebrow" }, "종목 분석"), h("h1", null, symbol)),
     h("div", { className: "stock-surface-grid" },
       h(AnalysisPanel, {
         analysis, state: status.analysis ?? "READY", error: errors.analysis, onCreate: onCreateAnalysis

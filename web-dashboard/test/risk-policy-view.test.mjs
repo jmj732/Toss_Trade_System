@@ -16,7 +16,7 @@ test("shows the toggle without the panel when closed", () => {
     onLoadHistory() {}
   }));
 
-  assert.match(html, /Risk policy/);
+  assert.match(html, /리스크 정책/);
   assert.doesNotMatch(html, /risk-policy-panel/);
 });
 

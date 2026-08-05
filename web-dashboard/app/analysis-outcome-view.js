@@ -57,11 +57,11 @@ function th(label) {
 
 function PerformanceTable({ rows }) {
   if (rows.length === 0) {
-    return h("p", { className: "empty" }, "No graded outcomes yet");
+    return h("p", { className: "empty" }, "채점된 결과가 아직 없습니다");
   }
   return h("div", { className: "table-wrap" }, h("table", null,
     h("thead", null, h("tr", null,
-      ...["Model", "Contract", "Horizon", "Samples", "Hit rate", "Avg directional return", "Avg max adverse excursion"]
+      ...["모델", "계약", "예측 구간", "표본", "적중률", "평균 방향 수익률", "평균 최대 역행 폭"]
         .map(th))),
     h("tbody", null, ...rows.map(row => h("tr", { key: `${row.modelVersion}-${row.contractVersion}-${row.horizon}` },
       h("td", null, row.modelVersion),
@@ -82,11 +82,11 @@ function outcomeCell(outcome) {
 
 function PredictionsTable({ predictions }) {
   if (predictions.length === 0) {
-    return h("p", { className: "empty" }, "No predictions recorded yet");
+    return h("p", { className: "empty" }, "기록된 예측이 아직 없습니다");
   }
   return h("div", { className: "table-wrap" }, h("table", null,
     h("thead", null, h("tr", null,
-      ...["Predicted at", "Symbol", "Direction", "Baseline", "Model", "Contract", "D1", "D5", "D20"].map(th))),
+      ...["예측 시각", "종목", "방향", "기준선", "모델", "계약", "D1", "D5", "D20"].map(th))),
     h("tbody", null, ...predictions.map(prediction => h("tr", { key: prediction.id },
       h("td", null, prediction.predictedAt),
       h("td", null, prediction.symbol),
@@ -102,14 +102,14 @@ function PredictionsTable({ predictions }) {
 function ForecastQualityTable({ quality }) {
   const rows = quality?.rows ?? [];
   if (rows.length === 0) {
-    return h("p", { className: "empty" }, "No forecast quality data");
+    return h("p", { className: "empty" }, "예측 품질 데이터가 없습니다");
   }
   return h("div", { className: "table-wrap" },
     h("table", null,
       h("thead", null,
         h("tr", null,
-          ["Symbol", "Model", "Contract", "Horizon", "Status", "Samples", "Pending",
-            "Hit rate", "Error / MAE", "Calibration / Brier", "Drift"].map(th))),
+          ["종목", "모델", "계약", "예측 구간", "상태", "표본", "대기",
+            "적중률", "오차 / MAE", "캘리브레이션 / Brier", "드리프트"].map(th))),
       h("tbody", null, ...rows.map(qualityRow))));
 }
 
@@ -125,18 +125,18 @@ function RegistryPanel({ versions, busy, error, onRegister, onDeprecate, onDelet
   }
 
   return h("section", { className: "prediction-model-registry", "aria-busy": busy },
-    h("h3", null, "Prediction model registry"),
+    h("h3", null, "예측 모델 레지스트리"),
     h("form", { className: "prediction-registry-form", onSubmit: submit },
-      h("label", null, "Model version",
+      h("label", null, "모델 버전",
         h("input", { name: "modelVersion", maxLength: 50, required: true })),
-      h("label", null, "Contract version",
+      h("label", null, "계약 버전",
         h("input", { name: "contractVersion", maxLength: 50, required: true })),
-      h("button", { type: "submit", disabled: busy }, "Register version")),
+      h("button", { type: "submit", disabled: busy }, "버전 등록")),
     error ? h("p", { className: "error" }, error) : null,
     versions.length === 0
-      ? h("p", { className: "empty" }, "No model versions registered")
+      ? h("p", { className: "empty" }, "등록된 모델 버전이 없습니다")
       : h("div", { className: "table-wrap" }, h("table", null,
-        h("thead", null, h("tr", null, ...["Model", "Contract", "Status", "Actions"].map(th))),
+        h("thead", null, h("tr", null, ...["모델", "계약", "상태", "작업"].map(th))),
         h("tbody", null, ...versions.map(version => h("tr", { key: version.id },
           h("td", null, version.modelVersion),
           h("td", null, version.contractVersion),
@@ -146,12 +146,12 @@ function RegistryPanel({ versions, busy, error, onRegister, onDeprecate, onDelet
               type: "button",
               disabled: busy || version.status !== "ACTIVE",
               onClick: () => Promise.resolve(onDeprecate(version.id)).catch(() => {})
-            }, "Deprecate"),
+            }, "지원 중단"),
             h("button", {
               type: "button",
               disabled: busy,
               onClick: () => Promise.resolve(onDelete(version.id)).catch(() => {})
-            }, "Delete"))))))));
+            }, "삭제"))))))));
 }
 
 function CreateForm({ versions, busy, onCreate }) {
@@ -178,20 +178,20 @@ function CreateForm({ versions, busy, onCreate }) {
   }
 
   return h("form", { className: "prediction-create-form", onSubmit: submit },
-    h("label", null, "Symbol", h("input", { name: "symbol", required: true })),
-    h("label", null, "Currency",
+    h("label", null, "종목", h("input", { name: "symbol", required: true })),
+    h("label", null, "통화",
       h("select", { name: "currency" }, h("option", { value: "USD" }, "USD"), h("option", { value: "KRW" }, "KRW"))),
-    h("label", null, "Direction",
+    h("label", null, "방향",
       h("select", { name: "predictedDirection" },
         h("option", { value: "UP" }, "UP"), h("option", { value: "DOWN" }, "DOWN"))),
-    h("label", null, "Model / contract version",
+    h("label", null, "모델 / 계약 버전",
       h("select", { name: "versionId", required: true },
         ...active.map(version => h("option", { key: version.id, value: version.id },
           `${version.modelVersion} / ${version.contractVersion}`)))),
     active.length === 0
-      ? h("p", { className: "empty" }, "Register an ACTIVE model version first")
+      ? h("p", { className: "empty" }, "먼저 ACTIVE 모델 버전을 등록하세요")
       : null,
-    h("button", { type: "submit", disabled: busy || active.length === 0 }, "Record prediction"));
+    h("button", { type: "submit", disabled: busy || active.length === 0 }, "예측 기록"));
 }
 
 export function AnalysisOutcomeView({
@@ -232,8 +232,8 @@ export function AnalysisOutcomeView({
   return h("section", { className: "analysis-outcome panel", "aria-busy": busy },
     h("header", null,
       h("div", null,
-        h("p", { className: "eyebrow" }, "ANALYSIS OUTCOME TRACKING"),
-        h("h2", null, "Prediction performance"))),
+        h("p", { className: "eyebrow" }, "분석 결과 추적"),
+        h("h2", null, "예측 성과"))),
     h("p", { className: "disclaimer" },
       "예측 기록 및 채점 전용 기능입니다 — 주문이나 자동매매와 연동되지 않습니다."),
     h(RegistryPanel, {
@@ -247,17 +247,17 @@ export function AnalysisOutcomeView({
     h(CreateForm, { versions, busy: createBusy, onCreate }),
     createError ? h("p", { className: "error" }, createError) : null,
     h("form", { className: "history-filter", onSubmit: submitFilter },
-      h("label", null, "From",
+      h("label", null, "시작일",
         h("input", { type: "date", name: "from", defaultValue: fromDate })),
-      h("label", null, "To",
+      h("label", null, "종료일",
         h("input", { type: "date", name: "to", defaultValue: toDate })),
-      h("label", null, "Model version", h("input", { name: "modelVersion", defaultValue: query.modelVersion })),
-      h("label", null, "Contract version",
+      h("label", null, "모델 버전", h("input", { name: "modelVersion", defaultValue: query.modelVersion })),
+      h("label", null, "계약 버전",
         h("input", { name: "contractVersion", defaultValue: query.contractVersion })),
-      h("label", null, "Symbol", h("input", { name: "symbol", defaultValue: query.symbol })),
-      h("button", { type: "submit", disabled: busy }, "Apply")),
+      h("label", null, "종목", h("input", { name: "symbol", defaultValue: query.symbol })),
+      h("button", { type: "submit", disabled: busy }, "적용")),
     h(PerformanceTable, { rows: byVersion }),
-    h("h3", null, "Forecast quality monitoring"),
+    h("h3", null, "예측 품질 모니터링"),
     h("p", { className: "disclaimer" },
       "D1/D5/D20는 기존 outcome 채점과 연결됩니다. 표본 부족 상태에서는 성능과 drift를 결론내리지 않습니다."),
     h(ForecastQualityTable, { quality: performance?.forecastQuality }),

@@ -63,10 +63,10 @@ test("renders manual ingestion, affected symbols, review, and comparison", () =>
   }));
 
   for (const text of [
-    "Manual event", "Source event ID", "Rate decision", "HELD · v2",
-    "Reanalyze", "Confirm", "Hold", "Ignore", "Before", "After", "Change",
-    "NVDA", "AAPL", "Currency totals", "Market value", "Profit / loss",
-    "Weight", "Concentration"
+    "수동 이벤트", "출처 이벤트 ID", "Rate decision", "HELD · v2",
+    "재분석", "확인", "보류", "무시", "이전", "이후", "변화",
+    "NVDA", "AAPL", "통화별 합계", "평가금액", "손익",
+    "비중", "집중도"
   ]) {
     assert.match(html, new RegExp(text));
   }

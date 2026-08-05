@@ -51,8 +51,8 @@ test("integrates analysis, forecast, explanation, events, provenance, and missin
   }));
 
   for (const text of [
-    "AAPL", "Analysis", "Forecast", "Gemini explain", "Related events",
-    "Provenance", "Missing data", "DEGRADED", "FAILED", "GEMINI_UPSTREAM_ERROR",
+    "AAPL", "분석", "예측", "Gemini 설명", "관련 이벤트",
+    "데이터 출처", "누락 데이터", "DEGRADED", "FAILED", "GEMINI_UPSTREAM_ERROR",
     "Rate decision", "Grounded evidence", "snapshot-1"
   ]) {
     assert.match(html, new RegExp(text));

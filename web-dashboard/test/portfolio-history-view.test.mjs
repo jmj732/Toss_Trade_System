@@ -46,14 +46,14 @@ test("renders separate KRW/USD trend lines, quality, and the raw points table", 
     onQuery() {}
   }));
 
-  assert.match(html, /Asset &amp; P\/L trend/);
+  assert.match(html, /자산 · P\/L 추세/);
   assert.match(html, /UNKNOWN/);
   assert.match(html, /account\.cashBalance/);
   assert.equal((html.match(/class="trend-krw"/g) ?? []).length, 2);
   assert.equal((html.match(/class="trend-usd"/g) ?? []).length, 2);
   assert.match(html, /130000/);
   assert.match(html, /110/);
-  assert.doesNotMatch(html, /Showing \d+ of \d+/);
+  assert.doesNotMatch(html, /\d+개 중 \d+개 표시/);
 });
 
 test("aligns a currency that only appears on later points to its actual position on the axis", () => {
@@ -132,7 +132,7 @@ test("shows a truncated-coverage notice when the series was downsampled", () => 
     onQuery() {}
   }));
 
-  assert.match(html, /Showing 3 of 10 points/);
+  assert.match(html, /10개 중 3개 표시/);
 });
 
 test("renders nothing before a connection has ever been opened", () => {
@@ -143,7 +143,7 @@ test("renders nothing before a connection has ever been opened", () => {
     onQuery() {}
   }));
 
-  assert.match(html, /No history yet/);
+  assert.match(html, /이력이 아직 없습니다/);
 });
 
 test("disables the apply button while a query is in flight", () => {

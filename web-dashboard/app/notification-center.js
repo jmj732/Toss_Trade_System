@@ -9,7 +9,7 @@ function formatTime(value) {
 
 function NotificationList({ notifications, busy, onMarkRead }) {
   if (notifications.length === 0) {
-    return h("p", { className: "empty" }, "No notifications");
+    return h("p", { className: "empty" }, "알림이 없습니다");
   }
   return h("ul", { className: "list notification-list" }, ...notifications.map(item =>
     h("li", { key: item.id, className: item.readAt ? "read" : "unread" },
@@ -24,7 +24,7 @@ function NotificationList({ notifications, busy, onMarkRead }) {
           className: "secondary",
           disabled: busy,
           onClick: () => onMarkRead(item.id)
-        }, "Mark read"))));
+        }, "읽음 표시"))));
 }
 
 export function NotificationCenter({
@@ -42,7 +42,7 @@ export function NotificationCenter({
       "aria-expanded": open,
       onClick: onToggle
     },
-    "Notifications",
+    "알림",
     unreadCount > 0 ? h("span", { className: "badge" }, String(unreadCount)) : null),
     open ? h("div", { className: "notification-panel panel" },
       h(NotificationList, { notifications, busy, onMarkRead })) : null);

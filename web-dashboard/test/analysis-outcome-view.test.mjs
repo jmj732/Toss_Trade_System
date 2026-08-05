@@ -54,11 +54,11 @@ test("renders predictions table, per-horizon grades, and version performance sum
     onCreate() {}
   }));
 
-  assert.match(html, /Prediction performance/);
+  assert.match(html, /예측 성과/);
   assert.match(html, /주문이나 자동매매와 연동되지 않습니다/);
   assert.match(html, /AAPL/);
   assert.match(html, /10\.0%\s*HIT/);
-  assert.match(html, /Forecast quality monitoring/);
+  assert.match(html, /예측 품질 모니터링/);
   assert.match(html, /DATA_SHORTAGE/);
   assert.match(html, /DRIFT \/ hit -20\.0% \/ DEGRADED/);
 });
@@ -89,7 +89,7 @@ test("shows an em dash for horizons that have not matured yet and no performance
     onCreate() {}
   }));
 
-  assert.match(html, /No graded outcomes yet/);
+  assert.match(html, /채점된 결과가 아직 없습니다/);
   assert.match(html, /AAPL/);
 });
 
@@ -104,8 +104,8 @@ test("shows an empty state before any connection has ever been opened", () => {
     onCreate() {}
   }));
 
-  assert.match(html, /No predictions recorded yet/);
-  assert.match(html, /No graded outcomes yet/);
+  assert.match(html, /기록된 예측이 아직 없습니다/);
+  assert.match(html, /채점된 결과가 아직 없습니다/);
 });
 
 test("surfaces a create error without blanking the rest of the panel", () => {
@@ -120,7 +120,7 @@ test("surfaces a create error without blanking the rest of the panel", () => {
   }));
 
   assert.match(html, /ANALYSIS_PREDICTION_QUOTE_UNAVAILABLE/);
-  assert.match(html, /Record prediction/);
+  assert.match(html, /예측 기록/);
 });
 
 test("renders the model registry and offers only ACTIVE versions for prediction creation", () => {
@@ -150,12 +150,12 @@ test("renders the model registry and offers only ACTIVE versions for prediction 
     onDelete() {}
   }));
 
-  assert.match(html, /Prediction model registry/);
+  assert.match(html, /예측 모델 레지스트리/);
   assert.match(html, /value="active-1">model-v1 \/ contract-v1/);
   assert.doesNotMatch(html, /value="deprecated-1">old \/ v1/);
   assert.match(html, /DEPRECATED/);
-  assert.match(html, /Deprecate/);
-  assert.match(html, /Delete/);
+  assert.match(html, /지원 중단/);
+  assert.match(html, /삭제/);
 });
 
 test("disables prediction creation when no ACTIVE version exists", () => {
@@ -175,8 +175,8 @@ test("disables prediction creation when no ACTIVE version exists", () => {
     onDelete() {}
   }));
 
-  assert.match(html, /Register an ACTIVE model version first/);
-  assert.match(html, /disabled="">Record prediction/);
+  assert.match(html, /먼저 ACTIVE 모델 버전을 등록하세요/);
+  assert.match(html, /disabled="">예측 기록/);
 });
 
 test("disables record and apply while a mutation is in flight", () => {
