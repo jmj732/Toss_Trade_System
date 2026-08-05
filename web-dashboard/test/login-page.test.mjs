@@ -24,6 +24,6 @@ test("renders invalid or expired state as a retryable login error", () => {
 });
 
 test("session-expiry login links preserve the current dashboard route", () => {
-  assert.equal(loginHref("portfolio"), "/login?returnTo=%2Fportfolio");
-  assert.equal(loginHref("stock", "AAPL"), "/login?returnTo=%2Fstocks%2FAAPL");
+  assert.equal(loginHref("portfolio"), "/auth/login?returnTo=%2Fportfolio");
+  assert.equal(loginHref("stock", "AAPL"), "/auth/login?returnTo=%2Fstocks%2FAAPL");
 });

@@ -77,7 +77,7 @@ export function loginHref(route, symbol = "") {
         : route === "orders" ? "/orders"
           : route === "predictions" ? "/predictions"
             : route === "settings" ? "/settings" : "/";
-  return `/login?returnTo=${encodeURIComponent(path)}`;
+  return `/auth/login?returnTo=${encodeURIComponent(path)}`;
 }
 
 function ErrorMessage({ value }) {

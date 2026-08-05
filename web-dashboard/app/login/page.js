@@ -34,7 +34,8 @@ export function LoginPage({ searchParams = {} }) {
       h("h1", null, "로그인"),
       message ? h("p", { className: "login-error", role: "alert" }, message) : null,
       h("p", null, "계속하려면 로그인해 주세요."),
-      h("a", { className: "button-link", href: authorizationUrl }, "로그인 다시 시도")));
+      h("a", { className: "button-link", href: authorizationUrl },
+        message ? "로그인 다시 시도" : "로그인")));
 }
 
 export default async function LoginRoute({ searchParams }) {
