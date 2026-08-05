@@ -1,3 +1,9 @@
+import {
+  authorizedFetch,
+  captureAccessTokenFromLocation,
+  clearAccessToken
+} from "./auth.js";
+
 async function body(response) {
   if (response.ok) {
     return response.status === 204 ? null : response.json();
@@ -13,14 +19,15 @@ async function body(response) {
 }
 
 export async function loadSession(fetcher = fetch) {
-  const response = await fetcher("/api/v1/session", { credentials: "same-origin" });
+  captureAccessTokenFromLocation();
+  const response = await authorizedFetch("/api/v1/session", {}, fetcher);
   return response.status === 401 ? null : body(response);
 }
 
 export async function loadDashboard(connectionId, fetcher = fetch) {
-  const response = await fetcher(
+  const response = await authorizedFetch(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/dashboard`,
-    { credentials: "same-origin" });
+    {}, fetcher);
   return body(response);
 }
 
@@ -42,8 +49,8 @@ export function loadStockAnalysisRun(symbol, runId, fetcher = fetch) {
     stockPath("stock-analyses", symbol, `/runs/${encodeURIComponent(runId)}`), fetcher);
 }
 
-export function createStockAnalysis(symbol, command, session, fetcher = fetch) {
-  return brokerCommand(stockPath("stock-analyses", symbol), "POST", session, command, fetcher);
+export function createStockAnalysis(symbol, command, fetcher = fetch) {
+  return brokerCommand(stockPath("stock-analyses", symbol), "POST", command, fetcher);
 }
 
 export function loadStockForecast(symbol, runId = "", fetcher = fetch) {
@@ -55,8 +62,8 @@ export function loadStockForecast(symbol, runId = "", fetcher = fetch) {
   return readEvent(stockPath("stock-forecasts", symbol, suffix), fetcher);
 }
 
-export function createStockForecast(symbol, command, session, fetcher = fetch) {
-  return brokerCommand(stockPath("stock-forecasts", symbol), "POST", session, command, fetcher);
+export function createStockForecast(symbol, command, fetcher = fetch) {
+  return brokerCommand(stockPath("stock-forecasts", symbol), "POST", command, fetcher);
 }
 
 export function loadStockAnalysisExplanation(symbol, runId = "", fetcher = fetch) {
@@ -68,9 +75,8 @@ export function loadStockAnalysisExplanation(symbol, runId = "", fetcher = fetch
   return readEvent(stockPath("stock-analysis-explanations", symbol, suffix), fetcher);
 }
 
-export function createStockAnalysisExplanation(symbol, session, fetcher = fetch) {
-  return brokerCommand(
-    stockPath("stock-analysis-explanations", symbol), "POST", session, null, fetcher);
+export function createStockAnalysisExplanation(symbol, fetcher = fetch) {
+  return brokerCommand(stockPath("stock-analysis-explanations", symbol), "POST", null, fetcher);
 }
 
 export function loadOrderApprovalPreview(orderId, fetcher = fetch) {
@@ -82,15 +88,14 @@ export function loadPaperOrder(orderId, fetcher = fetch) {
   return readEvent(`/api/v1/paper-orders/${encodeURIComponent(orderId)}`, fetcher);
 }
 
-export function issueOrderStepUp(orderId, session, fetcher = fetch) {
+export function issueOrderStepUp(orderId, fetcher = fetch) {
   return brokerCommand(
-    `/api/v1/paper-orders/${encodeURIComponent(orderId)}/step-up`, "POST", session, null, fetcher);
+    `/api/v1/paper-orders/${encodeURIComponent(orderId)}/step-up`, "POST", null, fetcher);
 }
 
 export async function actOnProposal(
   orderId,
   action,
-  session,
   idempotencyKey,
   fetcher = fetch
 ) {
@@ -108,21 +113,19 @@ export async function actOnProposal(
         displayedCurrency: current.currency, proposalVersion: null
       }
       : { ...await loadOrderApprovalPreview(orderId, fetcher),
-        ...(await issueOrderStepUp(orderId, session, fetcher)) };
+        ...(await issueOrderStepUp(orderId, fetcher)) };
   }
   const headers = {
     "content-type": "application/json",
-    "Idempotency-Key": idempotencyKey,
-    [session.csrfHeaderName]: session.csrfToken
+    "Idempotency-Key": idempotencyKey
   };
   if (approval?.stepUpToken) {
     headers["X-Step-Up-Token"] = approval.stepUpToken;
   }
-  const response = await fetcher(
+  const response = await authorizedFetch(
     `/api/v1/paper-orders/${encodeURIComponent(orderId)}/${action}`,
     {
       method: "POST",
-      credentials: "same-origin",
       headers,
       body: JSON.stringify(approval
         ? {
@@ -133,94 +136,96 @@ export async function actOnProposal(
           proposalVersion: approval.proposalVersion ?? null
         }
         : { channel: "WEB" })
-    });
+    }, fetcher);
   return body(response);
 }
 
-export async function logout(session, fetcher = fetch) {
-  const response = await fetcher("/logout", {
+export async function logout(fetcher = fetch) {
+  const response = await authorizedFetch("/api/v1/auth/logout", {
     method: "POST",
-    credentials: "same-origin",
-    headers: { [session.csrfHeaderName]: session.csrfToken }
-  });
-  return body(response);
+    headers: {}
+  }, fetcher);
+  const result = await body(response);
+  clearAccessToken();
+  return result;
+}
+
+export async function logoutAll(fetcher = fetch) {
+  const response = await authorizedFetch("/api/v1/auth/logout-all", {
+    method: "POST",
+    headers: {}
+  }, fetcher);
+  const result = await body(response);
+  clearAccessToken();
+  return result;
 }
 
 async function brokerCommand(
   path,
   method,
-  session,
   payload,
   fetcher,
   extraHeaders = {}
 ) {
   const headers = {
-    ...extraHeaders,
-    [session.csrfHeaderName]: session.csrfToken
+    ...extraHeaders
   };
   if (payload) {
     headers["content-type"] = "application/json";
   }
-  const response = await fetcher(path, {
+  const response = await authorizedFetch(path, {
     method,
-    credentials: "same-origin",
     headers,
     ...(payload ? { body: JSON.stringify(payload) } : {})
-  });
+  }, fetcher);
   return body(response);
 }
 
-export function createBrokerConnection(credentials, session, fetcher = fetch) {
+export function createBrokerConnection(credentials, fetcher = fetch) {
   return brokerCommand(
-    "/api/v1/broker-connections/toss", "POST", session, credentials, fetcher);
+    "/api/v1/broker-connections/toss", "POST", credentials, fetcher);
 }
 
 export function replaceBrokerCredentials(
   connectionId,
   credentials,
-  session,
   fetcher = fetch
 ) {
   return brokerCommand(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/credentials`,
     "PUT",
-    session,
     credentials,
     fetcher);
 }
 
-export function verifyBrokerConnection(connectionId, session, fetcher = fetch) {
+export function verifyBrokerConnection(connectionId, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/verify`,
     "POST",
-    session,
     null,
     fetcher);
 }
 
-export function syncPortfolio(connectionId, session, fetcher = fetch) {
+export function syncPortfolio(connectionId, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/portfolio-syncs`,
     "POST",
-    session,
     null,
     fetcher);
 }
 
-export function analyzePortfolio(connectionId, session, fetcher = fetch) {
+export function analyzePortfolio(connectionId, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/portfolio-analyses`,
     "POST",
-    session,
     null,
     fetcher);
 }
 
-export function deleteBrokerConnection(connectionId, session, fetcher = fetch) {
+export function deleteBrokerConnection(connectionId, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}`,
     "DELETE",
-    session,
     null,
     fetcher);
 }
@@ -243,12 +248,12 @@ function eventPath(connectionId, suffix = "") {
 }
 
 async function readEvent(path, fetcher) {
-  return body(await fetcher(path, { credentials: "same-origin" }));
+  return body(await authorizedFetch(path, {}, fetcher));
 }
 
-export function createEvent(connectionId, command, session, fetcher = fetch) {
+export function createEvent(connectionId, command, fetcher = fetch) {
   return brokerCommand(
-    eventPath(connectionId), "POST", session, command, fetcher);
+    eventPath(connectionId), "POST", command, fetcher);
 }
 
 export function listEvents(connectionId, fetcher = fetch) {
@@ -260,11 +265,10 @@ export function loadEvent(connectionId, eventId, fetcher = fetch) {
     eventPath(connectionId, `/${encodeURIComponent(eventId)}`), fetcher);
 }
 
-export function reanalyzeEvent(connectionId, eventId, session, fetcher = fetch) {
+export function reanalyzeEvent(connectionId, eventId, fetcher = fetch) {
   return brokerCommand(
     eventPath(connectionId, `/${encodeURIComponent(eventId)}/reanalyze`),
     "POST",
-    session,
     null,
     fetcher);
 }
@@ -274,14 +278,12 @@ export function reviewEvent(
   eventId,
   status,
   expectedVersion,
-  session,
   idempotencyKey,
   fetcher = fetch
 ) {
   return brokerCommand(
     eventPath(connectionId, `/${encodeURIComponent(eventId)}/review`),
     "POST",
-    session,
     { status, expectedVersion },
     fetcher,
     { "Idempotency-Key": idempotencyKey });
@@ -331,11 +333,10 @@ export function loadPaperPerformance(
     fetcher);
 }
 
-export function createAnalysisPrediction(connectionId, command, session, fetcher = fetch) {
+export function createAnalysisPrediction(connectionId, command, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/analysis-predictions`,
     "POST",
-    session,
     command,
     fetcher);
 }
@@ -372,25 +373,23 @@ export function loadPredictionModelVersions(fetcher = fetch) {
   return readEvent("/api/v1/prediction-model-versions", fetcher);
 }
 
-export function registerPredictionModelVersion(command, session, fetcher = fetch) {
+export function registerPredictionModelVersion(command, fetcher = fetch) {
   return brokerCommand(
-    "/api/v1/prediction-model-versions", "POST", session, command, fetcher);
+    "/api/v1/prediction-model-versions", "POST", command, fetcher);
 }
 
-export function deprecatePredictionModelVersion(id, session, fetcher = fetch) {
+export function deprecatePredictionModelVersion(id, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/prediction-model-versions/${encodeURIComponent(id)}/deprecate`,
     "POST",
-    session,
     null,
     fetcher);
 }
 
-export function deletePredictionModelVersion(id, session, fetcher = fetch) {
+export function deletePredictionModelVersion(id, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/prediction-model-versions/${encodeURIComponent(id)}`,
     "DELETE",
-    session,
     null,
     fetcher);
 }
@@ -399,25 +398,23 @@ export function loadPredictionIngestionApiKeys(fetcher = fetch) {
   return readEvent("/api/v1/prediction-ingestion-api-keys", fetcher);
 }
 
-export function issuePredictionIngestionApiKey(command, session, fetcher = fetch) {
+export function issuePredictionIngestionApiKey(command, fetcher = fetch) {
   return brokerCommand(
-    "/api/v1/prediction-ingestion-api-keys", "POST", session, command, fetcher);
+    "/api/v1/prediction-ingestion-api-keys", "POST", command, fetcher);
 }
 
-export function rotatePredictionIngestionApiKey(id, command, session, fetcher = fetch) {
+export function rotatePredictionIngestionApiKey(id, command, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/prediction-ingestion-api-keys/${encodeURIComponent(id)}/rotate`,
     "POST",
-    session,
     command,
     fetcher);
 }
 
-export function revokePredictionIngestionApiKey(id, session, fetcher = fetch) {
+export function revokePredictionIngestionApiKey(id, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/prediction-ingestion-api-keys/${encodeURIComponent(id)}`,
     "DELETE",
-    session,
     null,
     fetcher);
 }
@@ -430,9 +427,9 @@ export function loadOperationalReadiness(fetcher = fetch) {
   return readEvent("/api/v1/operations/readiness", fetcher);
 }
 
-export function runProviderReadinessCheck(symbol, session, fetcher = fetch) {
+export function runProviderReadinessCheck(symbol, fetcher = fetch) {
   return brokerCommand(
-    "/api/v1/operations/readiness/provider-check", "POST", session, { symbol }, fetcher);
+    "/api/v1/operations/readiness/provider-check", "POST", { symbol }, fetcher);
 }
 
 function notificationPath(suffix = "") {
@@ -455,11 +452,10 @@ export function loadUnreadCount(fetcher = fetch) {
   return readEvent(notificationPath("/unread-count"), fetcher);
 }
 
-export function markNotificationRead(notificationId, session, fetcher = fetch) {
+export function markNotificationRead(notificationId, fetcher = fetch) {
   return brokerCommand(
     notificationPath(`/${encodeURIComponent(notificationId)}/read`),
     "POST",
-    session,
     null,
     fetcher);
 }
@@ -481,6 +477,6 @@ export function loadRiskPolicyHistory(limit, fetcher = fetch) {
   return readEvent(riskPolicyPath(`/history${query ? `?${query}` : ""}`), fetcher);
 }
 
-export function updateRiskPolicy(input, session, fetcher = fetch) {
-  return brokerCommand(riskPolicyPath(), "PUT", session, input, fetcher);
+export function updateRiskPolicy(input, fetcher = fetch) {
+  return brokerCommand(riskPolicyPath(), "PUT", input, fetcher);
 }

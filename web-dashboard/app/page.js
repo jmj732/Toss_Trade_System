@@ -71,7 +71,7 @@ export default function Home() {
     setBusyOrderId(orderId);
     setError("");
     try {
-      await actOnProposal(orderId, action, session, crypto.randomUUID());
+      await actOnProposal(orderId, action, crypto.randomUUID());
       setDashboard(await loadDashboard(connectionId.trim()));
     } catch (value) {
       setError(value.message);
@@ -97,14 +97,14 @@ export default function Home() {
   function credentialsAction(action, credentials) {
     return runMutation(action, async () => {
       if (action === "create") {
-        const created = await createBrokerConnection(credentials, session);
+        const created = await createBrokerConnection(credentials);
         setConnectionId(created.id);
         setConnection(created);
         setDashboard(null);
         return;
       }
       const replaced = await replaceBrokerCredentials(
-        connectionId.trim(), credentials, session);
+        connectionId.trim(), credentials);
       setConnection(replaced);
       setDashboard(null);
     });
@@ -118,15 +118,15 @@ export default function Home() {
     }
     return runMutation(action, async () => {
       if (action === "verify") {
-        setConnection(await verifyBrokerConnection(id, session));
+        setConnection(await verifyBrokerConnection(id));
       } else if (action === "sync") {
-        await syncPortfolio(id, session);
+        await syncPortfolio(id);
         setDashboard(await loadDashboard(id));
       } else if (action === "analysis") {
-        await analyzePortfolio(id, session);
+        await analyzePortfolio(id);
         setDashboard(await loadDashboard(id));
       } else if (action === "delete") {
-        await deleteBrokerConnection(id, session);
+        await deleteBrokerConnection(id);
         setConnectionId("");
         setConnection(null);
         setDashboard(null);
@@ -145,7 +145,7 @@ export default function Home() {
 
   function notificationMarkRead(notificationId) {
     return runMutation("notification-read", async () => {
-      await markNotificationRead(notificationId, session);
+      await markNotificationRead(notificationId);
       const [nextNotifications, nextUnreadCount] = await Promise.all([
         listNotifications(false, 50),
         loadUnreadCount()
@@ -162,7 +162,7 @@ export default function Home() {
   function riskPolicyUpdate(input) {
     return runMutation("risk-policy-update", async () => {
       try {
-        setRiskPolicy(await updateRiskPolicy(input, session));
+        setRiskPolicy(await updateRiskPolicy(input));
       } catch (value) {
         // A stale expectedVersion means someone else's edit already landed — refresh so the
         // next Save attempt uses the real current version instead of retrying the same one
@@ -187,7 +187,7 @@ export default function Home() {
   async function signOut() {
     setError("");
     try {
-      await logout(session);
+      await logout();
       setSession(null);
       setDashboard(null);
     } catch (value) {

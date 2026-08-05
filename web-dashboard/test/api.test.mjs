@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { resetAuthForTest } from "../lib/auth.js";
+
 import {
   actOnProposal,
   analyzePortfolio,
@@ -50,6 +52,8 @@ import {
 } from "../lib/api.js";
 import nextConfig from "../next.config.js";
 
+test.afterEach(() => resetAuthForTest());
+
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -57,12 +61,12 @@ function json(body, status = 200) {
   });
 }
 
-test("loads the internal session and owned dashboard with same-origin cookies", async () => {
+test("loads bearer metadata and owned dashboard with same-origin cookies", async () => {
   const calls = [];
   const fetcher = async (url, options) => {
     calls.push([url, options]);
     return json(url.includes("session")
-      ? { userId: "user-1", csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" }
+      ? { userId: "user-1", authenticatedAt: "2026-07-28T00:00:00Z" }
       : { portfolio: {}, analysis: {}, pendingEvents: {}, pendingOrderProposals: {} });
   };
 
@@ -76,45 +80,44 @@ test("loads the internal session and owned dashboard with same-origin cookies", 
   ]);
 });
 
-test("stock product APIs preserve owner paths, history selection, and CSRF mutations", async () => {
+test("stock product APIs preserve owner paths, history selection, and bearer mutations", async () => {
+  resetAuthForTest("access-token");
   const calls = [];
   const fetcher = async (url, options = {}) => {
     calls.push([url, options]);
     return json({ symbol: "AAPL", result: { status: "DEGRADED" } });
   };
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
 
   await loadStockAnalysis("AAPL", fetcher);
   await loadStockAnalysisHistory("AAPL", 7, fetcher);
   await loadStockAnalysisRun("AAPL", "run/1", fetcher);
-  await createStockAnalysis("AAPL", { identifiers: { cik: "1" } }, session, fetcher);
+  await createStockAnalysis("AAPL", { identifiers: { cik: "1" } }, fetcher);
   await loadStockForecast("AAPL", fetcher);
   await loadStockForecast("AAPL", "run-1", fetcher);
   await createStockForecast(
     "AAPL",
     { connectionId: "connection/1", modelVersion: "model-v1", contractVersion: "forecast-v1" },
-    session,
     fetcher);
   await loadStockAnalysisExplanation("AAPL", fetcher);
   await loadStockAnalysisExplanation("AAPL", "run-1", fetcher);
-  await createStockAnalysisExplanation("AAPL", session, fetcher);
+  await createStockAnalysisExplanation("AAPL", fetcher);
 
   assert.deepEqual(calls.map(([url, options]) => [
     url,
     options.method,
     options.credentials,
-    options.headers?.["X-CSRF-TOKEN"]
+    options.headers?.Authorization
   ]), [
-    ["/api/v1/stock-analyses/AAPL", undefined, "same-origin", undefined],
-    ["/api/v1/stock-analyses/AAPL/history?limit=7", undefined, "same-origin", undefined],
-    ["/api/v1/stock-analyses/AAPL/runs/run%2F1", undefined, "same-origin", undefined],
-    ["/api/v1/stock-analyses/AAPL", "POST", "same-origin", "csrf"],
-    ["/api/v1/stock-forecasts/AAPL", undefined, "same-origin", undefined],
-    ["/api/v1/stock-forecasts/AAPL?runId=run-1", undefined, "same-origin", undefined],
-    ["/api/v1/stock-forecasts/AAPL", "POST", "same-origin", "csrf"],
-    ["/api/v1/stock-analysis-explanations/AAPL", undefined, "same-origin", undefined],
-    ["/api/v1/stock-analysis-explanations/AAPL?runId=run-1", undefined, "same-origin", undefined],
-    ["/api/v1/stock-analysis-explanations/AAPL", "POST", "same-origin", "csrf"]
+    ["/api/v1/stock-analyses/AAPL", undefined, "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-analyses/AAPL/history?limit=7", undefined, "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-analyses/AAPL/runs/run%2F1", undefined, "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-analyses/AAPL", "POST", "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-forecasts/AAPL", undefined, "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-forecasts/AAPL?runId=run-1", undefined, "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-forecasts/AAPL", "POST", "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-analysis-explanations/AAPL", undefined, "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-analysis-explanations/AAPL?runId=run-1", undefined, "same-origin", "Bearer access-token"],
+    ["/api/v1/stock-analysis-explanations/AAPL", "POST", "same-origin", "Bearer access-token"]
   ]);
   assert.deepEqual(JSON.parse(calls[3][1].body), { identifiers: { cik: "1" } });
   assert.deepEqual(JSON.parse(calls[6][1].body), {
@@ -126,26 +129,27 @@ test("treats an unauthenticated session as signed out", async () => {
   assert.equal(await loadSession(async () => new Response(null, { status: 401 })), null);
 });
 
-test("reads readiness and probes providers with session CSRF", async () => {
+test("reads readiness and probes providers with bearer auth", async () => {
+  resetAuthForTest("access-token");
   const calls = [];
   const fetcher = async (url, options = {}) => {
     calls.push([url, options]);
     return json({ status: "DEGRADED" });
   };
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
 
   await loadOperationalReadiness(fetcher);
-  await runProviderReadinessCheck("AAPL", session, fetcher);
+  await runProviderReadinessCheck("AAPL", fetcher);
 
   assert.equal(calls[0][0], "/api/v1/operations/readiness");
   assert.equal(calls[0][1].credentials, "same-origin");
   assert.equal(calls[1][0], "/api/v1/operations/readiness/provider-check");
   assert.equal(calls[1][1].method, "POST");
-  assert.equal(calls[1][1].headers["X-CSRF-TOKEN"], "csrf");
+  assert.equal(calls[1][1].headers.Authorization, "Bearer access-token");
   assert.deepEqual(JSON.parse(calls[1][1].body), { symbol: "AAPL" });
 });
 
-test("approval obtains a preview and step-up token before submitting", async () => {
+test("approval obtains a preview and step-up token before submitting with bearer auth", async () => {
+  resetAuthForTest("access-token");
   const calls = [];
   const fetcher = async (url, options) => {
     calls.push([url, options]);
@@ -160,23 +164,22 @@ test("approval obtains a preview and step-up token before submitting", async () 
     }
     return json({ status: "COMPLETED" });
   };
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
 
-  await actOnProposal("order-1", "approve", session, "idem-1", fetcher);
-  await actOnProposal("order-2", "cancel", session, "idem-2", fetcher);
+  await actOnProposal("order-1", "approve", "idem-1", fetcher);
+  await actOnProposal("order-2", "cancel", "idem-2", fetcher);
 
   assert.equal(calls.length, 5);
   assert.equal(calls[0][0], "/api/v1/paper-orders/order-1");
   assert.equal(calls[1][0], "/api/v1/paper-orders/order-1/approval-preview");
   assert.equal(calls[2][0], "/api/v1/paper-orders/order-1/step-up");
-  assert.equal(calls[2][1].headers["X-CSRF-TOKEN"], "csrf");
+  assert.equal(calls[2][1].headers.Authorization, "Bearer access-token");
 
   for (const [index, orderId, action] of [[3, "order-1", "approve"], [4, "order-2", "cancel"]]) {
     const [url, options] = calls[index];
     assert.equal(url, `/api/v1/paper-orders/${orderId}/${action}`);
     assert.equal(options.method, "POST");
     assert.equal(options.credentials, "same-origin");
-    assert.equal(options.headers["X-CSRF-TOKEN"], "csrf");
+    assert.equal(options.headers.Authorization, "Bearer access-token");
     assert.equal(options.headers["Idempotency-Key"], action === "approve" ? "idem-1" : "idem-2");
     assert.deepEqual(JSON.parse(options.body), action === "approve"
       ? {
@@ -190,19 +193,19 @@ test("approval obtains a preview and step-up token before submitting", async () 
   }
 });
 
-test("logout posts the session CSRF token", async () => {
+test("logout posts the refresh-cookie endpoint", async () => {
+  resetAuthForTest("access-token");
   let call;
   await logout(
-    { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" },
     async (...args) => {
       call = args;
       return new Response(null, { status: 204 });
     });
 
-  assert.deepEqual(call, ["/logout", {
+  assert.deepEqual(call, ["/api/v1/auth/logout", {
     method: "POST",
     credentials: "same-origin",
-    headers: { "X-CSRF-TOKEN": "csrf" }
+    headers: { Authorization: "Bearer access-token" }
   }]);
 });
 
@@ -220,15 +223,12 @@ test("proxies only the session API and OIDC lifecycle to Spring", async () => {
       source: "/login/oauth2/:path*",
       destination: "http://localhost:8080/login/oauth2/:path*"
     },
-    {
-      source: "/logout",
-      destination: "http://localhost:8080/logout"
-    }
   ]);
 });
 
 
-test("broker onboarding commands use CSRF and existing APIs", async () => {
+test("broker onboarding commands use bearer auth and existing APIs", async () => {
+  resetAuthForTest("access-token");
   const calls = [];
   const fetcher = async (url, options) => {
     calls.push([url, options]);
@@ -236,31 +236,30 @@ test("broker onboarding commands use CSRF and existing APIs", async () => {
       ? new Response(null, { status: 204 })
       : json({ id: "connection-1", status: "ACTIVE" });
   };
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
   const credentials = { clientId: "client", clientSecret: "secret" };
 
-  await createBrokerConnection(credentials, session, fetcher);
-  await replaceBrokerCredentials("connection-1", credentials, session, fetcher);
-  await verifyBrokerConnection("connection-1", session, fetcher);
-  await syncPortfolio("connection-1", session, fetcher);
-  await analyzePortfolio("connection-1", session, fetcher);
-  await deleteBrokerConnection("connection-1", session, fetcher);
+  await createBrokerConnection(credentials, fetcher);
+  await replaceBrokerCredentials("connection-1", credentials, fetcher);
+  await verifyBrokerConnection("connection-1", fetcher);
+  await syncPortfolio("connection-1", fetcher);
+  await analyzePortfolio("connection-1", fetcher);
+  await deleteBrokerConnection("connection-1", fetcher);
 
   assert.deepEqual(calls.map(([url, options]) => [
     url,
     options.method,
-    options.headers["X-CSRF-TOKEN"],
+    options.headers.Authorization,
     options.body && JSON.parse(options.body)
   ]), [
-    ["/api/v1/broker-connections/toss", "POST", "csrf", credentials],
+    ["/api/v1/broker-connections/toss", "POST", "Bearer access-token", credentials],
     ["/api/v1/broker-connections/connection-1/credentials",
-      "PUT", "csrf", credentials],
-    ["/api/v1/broker-connections/connection-1/verify", "POST", "csrf", undefined],
+      "PUT", "Bearer access-token", credentials],
+    ["/api/v1/broker-connections/connection-1/verify", "POST", "Bearer access-token", undefined],
     ["/api/v1/broker-connections/connection-1/portfolio-syncs",
-      "POST", "csrf", undefined],
+      "POST", "Bearer access-token", undefined],
     ["/api/v1/broker-connections/connection-1/portfolio-analyses",
-      "POST", "csrf", undefined],
-    ["/api/v1/broker-connections/connection-1", "DELETE", "csrf", undefined]
+      "POST", "Bearer access-token", undefined],
+    ["/api/v1/broker-connections/connection-1", "DELETE", "Bearer access-token", undefined]
   ]);
 });
 
@@ -284,7 +283,8 @@ test("single-flight returns one promise and runs one mutation", async () => {
   assert.equal(await first, "done");
 });
 
-test("manual event commands use owned paths, CSRF, version, and idempotency", async () => {
+test("manual event commands use owned paths, bearer auth, version, and idempotency", async () => {
+  resetAuthForTest("access-token");
   const calls = [];
   const fetcher = async (url, options = {}) => {
     calls.push([url, options]);
@@ -292,7 +292,6 @@ test("manual event commands use owned paths, CSRF, version, and idempotency", as
       ? [{ id: "event-1", reviewStatus: "PENDING" }]
       : { id: "event-1", reviewStatus: "CONFIRMED" });
   };
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
   const command = {
     source: "MANUAL",
     sourceEventId: "fed-rate-1",
@@ -302,30 +301,30 @@ test("manual event commands use owned paths, CSRF, version, and idempotency", as
     occurredAt: "2026-07-28T00:00:00.000Z"
   };
 
-  await createEvent("connection/1", command, session, fetcher);
+  await createEvent("connection/1", command, fetcher);
   await listEvents("connection/1", fetcher);
   await loadEvent("connection/1", "event/1", fetcher);
-  await reanalyzeEvent("connection/1", "event/1", session, fetcher);
+  await reanalyzeEvent("connection/1", "event/1", fetcher);
   await reviewEvent(
-    "connection/1", "event/1", "CONFIRMED", 2, session, "idem-1", fetcher);
+    "connection/1", "event/1", "CONFIRMED", 2, "idem-1", fetcher);
 
   assert.deepEqual(calls.map(([url, options]) => [
     url,
     options.method,
-    options.headers?.["X-CSRF-TOKEN"],
+    options.headers?.Authorization,
     options.headers?.["Idempotency-Key"],
     options.body && JSON.parse(options.body)
   ]), [
     ["/api/v1/broker-connections/connection%2F1/events",
-      "POST", "csrf", undefined, command],
+      "POST", "Bearer access-token", undefined, command],
     ["/api/v1/broker-connections/connection%2F1/events",
-      undefined, undefined, undefined, undefined],
+      undefined, "Bearer access-token", undefined, undefined],
     ["/api/v1/broker-connections/connection%2F1/events/event%2F1",
-      undefined, undefined, undefined, undefined],
+      undefined, "Bearer access-token", undefined, undefined],
     ["/api/v1/broker-connections/connection%2F1/events/event%2F1/reanalyze",
-      "POST", "csrf", undefined, undefined],
+      "POST", "Bearer access-token", undefined, undefined],
     ["/api/v1/broker-connections/connection%2F1/events/event%2F1/review",
-      "POST", "csrf", "idem-1", { status: "CONFIRMED", expectedVersion: 2 }]
+      "POST", "Bearer access-token", "idem-1", { status: "CONFIRMED", expectedVersion: 2 }]
   ]);
 });
 
@@ -359,11 +358,11 @@ test("loads the unread notification count", async () => {
   ]);
 });
 
-test("marks a notification read with the session CSRF token", async () => {
+test("marks a notification read with bearer auth", async () => {
+  resetAuthForTest("access-token");
   let call;
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
 
-  await markNotificationRead("notification/1", session, async (...args) => {
+  await markNotificationRead("notification/1", async (...args) => {
     call = args;
     return json({ id: "notification/1", readAt: "2026-07-28T00:00:00Z" });
   });
@@ -372,7 +371,7 @@ test("marks a notification read with the session CSRF token", async () => {
   assert.equal(url, "/api/v1/notifications/notification%2F1/read");
   assert.equal(options.method, "POST");
   assert.equal(options.credentials, "same-origin");
-  assert.equal(options.headers["X-CSRF-TOKEN"], "csrf");
+  assert.equal(options.headers.Authorization, "Bearer access-token");
   assert.equal(options.body, undefined);
 });
 
@@ -414,26 +413,26 @@ test("loads paper performance with an optional from/to/maxPoints query", async (
   ]);
 });
 
-test("records an analysis prediction with the session CSRF token", async () => {
+test("records an analysis prediction with bearer auth", async () => {
+  resetAuthForTest("access-token");
   let call;
   const fetcher = async (...args) => {
     call = args;
     return json({ id: "prediction-1" });
   };
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
   const command = {
     symbol: "AAPL", currency: "USD", predictedDirection: "UP",
     modelVersion: "v1", contractVersion: "1"
   };
 
-  await createAnalysisPrediction("connection/1", command, session, fetcher);
+  await createAnalysisPrediction("connection/1", command, fetcher);
 
   assert.deepEqual(call, [
     "/api/v1/broker-connections/connection%2F1/analysis-predictions",
     {
       method: "POST",
       credentials: "same-origin",
-      headers: { "X-CSRF-TOKEN": "csrf", "content-type": "application/json" },
+      headers: { Authorization: "Bearer access-token", "content-type": "application/json" },
       body: JSON.stringify(command)
     }
   ]);
@@ -463,7 +462,8 @@ test("loads analysis predictions with optional period/version filters", async ()
   ]);
 });
 
-test("manages prediction model versions with same-origin credentials and CSRF", async () => {
+test("manages prediction model versions with same-origin credentials and bearer auth", async () => {
+  resetAuthForTest("access-token");
   const calls = [];
   const fetcher = async (url, options = {}) => {
     calls.push([url, options]);
@@ -471,36 +471,38 @@ test("manages prediction model versions with same-origin credentials and CSRF", 
       ? new Response(null, { status: 204 })
       : json([]);
   };
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
   const command = { modelVersion: "v1", contractVersion: "1" };
 
   await loadPredictionModelVersions(fetcher);
-  await registerPredictionModelVersion(command, session, fetcher);
-  await deprecatePredictionModelVersion("version/1", session, fetcher);
-  await deletePredictionModelVersion("version/1", session, fetcher);
+  await registerPredictionModelVersion(command, fetcher);
+  await deprecatePredictionModelVersion("version/1", fetcher);
+  await deletePredictionModelVersion("version/1", fetcher);
 
   assert.deepEqual(calls, [
-    ["/api/v1/prediction-model-versions", { credentials: "same-origin" }],
+    ["/api/v1/prediction-model-versions", {
+      credentials: "same-origin", headers: { Authorization: "Bearer access-token" }
+    }],
     ["/api/v1/prediction-model-versions", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "X-CSRF-TOKEN": "csrf", "content-type": "application/json" },
+      headers: { Authorization: "Bearer access-token", "content-type": "application/json" },
       body: JSON.stringify(command)
     }],
     ["/api/v1/prediction-model-versions/version%2F1/deprecate", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "X-CSRF-TOKEN": "csrf" }
+      headers: { Authorization: "Bearer access-token" }
     }],
     ["/api/v1/prediction-model-versions/version%2F1", {
       method: "DELETE",
       credentials: "same-origin",
-      headers: { "X-CSRF-TOKEN": "csrf" }
+      headers: { Authorization: "Bearer access-token" }
     }]
   ]);
 });
 
-test("manages prediction ingestion API keys and reads operations with session CSRF", async () => {
+test("manages prediction ingestion API keys and reads operations with bearer auth", async () => {
+  resetAuthForTest("access-token");
   const calls = [];
   const fetcher = async (url, options = {}) => {
     calls.push([url, options]);
@@ -511,7 +513,6 @@ test("manages prediction ingestion API keys and reads operations with session CS
       ? { evaluationEnabled: true, backlog: 2, maxLagMs: 3000 }
       : []);
   };
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
   const command = {
     modelVersion: "model-v1",
     contractVersion: "contract-v1",
@@ -519,31 +520,35 @@ test("manages prediction ingestion API keys and reads operations with session CS
   };
 
   await loadPredictionIngestionApiKeys(fetcher);
-  await issuePredictionIngestionApiKey(command, session, fetcher);
-  await rotatePredictionIngestionApiKey("key/1", { expiresAt: null }, session, fetcher);
-  await revokePredictionIngestionApiKey("key/1", session, fetcher);
+  await issuePredictionIngestionApiKey(command, fetcher);
+  await rotatePredictionIngestionApiKey("key/1", { expiresAt: null }, fetcher);
+  await revokePredictionIngestionApiKey("key/1", fetcher);
   await loadPredictionOperations(fetcher);
 
   assert.deepEqual(calls, [
-    ["/api/v1/prediction-ingestion-api-keys", { credentials: "same-origin" }],
+    ["/api/v1/prediction-ingestion-api-keys", {
+      credentials: "same-origin", headers: { Authorization: "Bearer access-token" }
+    }],
     ["/api/v1/prediction-ingestion-api-keys", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "X-CSRF-TOKEN": "csrf", "content-type": "application/json" },
+      headers: { Authorization: "Bearer access-token", "content-type": "application/json" },
       body: JSON.stringify(command)
     }],
     ["/api/v1/prediction-ingestion-api-keys/key%2F1/rotate", {
       method: "POST",
       credentials: "same-origin",
-      headers: { "X-CSRF-TOKEN": "csrf", "content-type": "application/json" },
+      headers: { Authorization: "Bearer access-token", "content-type": "application/json" },
       body: JSON.stringify({ expiresAt: null })
     }],
     ["/api/v1/prediction-ingestion-api-keys/key%2F1", {
       method: "DELETE",
       credentials: "same-origin",
-      headers: { "X-CSRF-TOKEN": "csrf" }
+      headers: { Authorization: "Bearer access-token" }
     }],
-    ["/api/v1/prediction-operations", { credentials: "same-origin" }]
+    ["/api/v1/prediction-operations", {
+      credentials: "same-origin", headers: { Authorization: "Bearer access-token" }
+    }]
   ]);
 });
 
@@ -565,15 +570,15 @@ test("loads the risk policy and its optional-limit history", async () => {
   ]);
 });
 
-test("updates the risk policy with the session CSRF token", async () => {
+test("updates the risk policy with bearer auth", async () => {
+  resetAuthForTest("access-token");
   let call;
-  const session = { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" };
   const input = {
     expectedVersion: 0, maxOrderAmountKrw: 500000, maxOrderAmountUsd: 500,
     maxQuantity: 2, maxConcentration: 0.3
   };
 
-  await updateRiskPolicy(input, session, async (...args) => {
+  await updateRiskPolicy(input, async (...args) => {
     call = args;
     return json({ version: 1, customized: true });
   });
@@ -582,7 +587,7 @@ test("updates the risk policy with the session CSRF token", async () => {
   assert.equal(url, "/api/v1/risk-policy");
   assert.equal(options.method, "PUT");
   assert.equal(options.credentials, "same-origin");
-  assert.equal(options.headers["X-CSRF-TOKEN"], "csrf");
+  assert.equal(options.headers.Authorization, "Bearer access-token");
   assert.deepEqual(JSON.parse(options.body), input);
 });
 
@@ -598,7 +603,6 @@ test("manual event duplicate exposes only public code", async () => {
         affectedSymbols: ["NVDA"],
         occurredAt: "2026-07-28T00:00:00.000Z"
       },
-      { csrfHeaderName: "X-CSRF-TOKEN", csrfToken: "csrf" },
-      async () => json({ code: "EVENT_ALREADY_EXISTS" }, 409)),
+    async () => json({ code: "EVENT_ALREADY_EXISTS" }, 409)),
     { message: "EVENT_ALREADY_EXISTS", status: 409 });
 });

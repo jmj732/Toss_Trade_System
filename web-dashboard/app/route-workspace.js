@@ -260,7 +260,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   function orderAction(orderId, action) {
     setBusyOrderId(orderId);
-    return actOnProposal(orderId, action, session, crypto.randomUUID())
+    return actOnProposal(orderId, action, crypto.randomUUID())
       .then(() => loadDashboard(connectionId.trim()).then(setDashboard))
       .catch(value => setError(value.message))
       .finally(() => setBusyOrderId(null));
@@ -268,7 +268,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   function createAnalysis() {
     return mutation("analysis", async () => {
-      await createStockAnalysis(stockSymbol, {}, session);
+      await createStockAnalysis(stockSymbol, {});
       await loadStockSurface();
     });
   }
@@ -288,14 +288,14 @@ export function RouteWorkspace({ route, symbol = "" }) {
     return mutation("forecast", async () => {
       await createStockForecast(stockSymbol, {
         connectionId, modelVersion: active.modelVersion, contractVersion: active.contractVersion
-      }, session);
+      });
       await loadStockSurface();
     });
   }
 
   function createExplanation() {
     return mutation("explanation", async () => {
-      await createStockAnalysisExplanation(stockSymbol, session);
+      await createStockAnalysisExplanation(stockSymbol);
       await loadStockSurface();
     });
   }
@@ -310,7 +310,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   function eventCreate(command) {
     return mutation("event", async () => {
-      const created = await createEvent(connectionId, command, session);
+      const created = await createEvent(connectionId, command);
       const [nextEvents, detail] = await Promise.all([
         listEvents(connectionId), loadEvent(connectionId, created.id)
       ]);
@@ -321,7 +321,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   function eventReanalyze(id) {
     return mutation("event", async () => {
-      await reanalyzeEvent(connectionId, id, session);
+      await reanalyzeEvent(connectionId, id);
       setSelectedEvent(await loadEvent(connectionId, id));
       setEvents(await listEvents(connectionId));
     });
@@ -330,7 +330,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   function eventReview(id, status, version) {
     return mutation("event", async () => {
       setSelectedEvent(await reviewEvent(
-        connectionId, id, status, version, session, crypto.randomUUID()));
+        connectionId, id, status, version, crypto.randomUUID()));
       setEvents(await listEvents(connectionId));
     });
   }
@@ -338,8 +338,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
   function credentialsAction(action, credentials) {
     return mutation(action, async () => {
       const result = action === "create"
-        ? await createBrokerConnection(credentials, session)
-        : await replaceBrokerCredentials(connectionId, credentials, session);
+        ? await createBrokerConnection(credentials)
+        : await replaceBrokerCredentials(connectionId, credentials);
       setConnection(result);
       if (action === "create") {
         setConnectionId(result.id);
@@ -352,15 +352,15 @@ export function RouteWorkspace({ route, symbol = "" }) {
     const id = connectionId.trim();
     return mutation(action, async () => {
       if (action === "verify") {
-        setConnection(await verifyBrokerConnection(id, session));
+        setConnection(await verifyBrokerConnection(id));
       } else if (action === "sync") {
-        await syncPortfolio(id, session);
+        await syncPortfolio(id);
         await openWorkspace(id);
       } else if (action === "analysis") {
-        await analyzePortfolio(id, session);
+        await analyzePortfolio(id);
         await openWorkspace(id);
       } else if (action === "delete") {
-        await deleteBrokerConnection(id, session);
+        await deleteBrokerConnection(id);
         setConnection(null);
         setConnectionId("");
         window.localStorage.removeItem("trade.connectionId");
@@ -379,7 +379,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   function probeReadiness(symbol) {
     setReadinessError("");
     return mutation("readiness", async () => {
-      setReadiness(await runProviderReadinessCheck(symbol, session));
+      setReadiness(await runProviderReadinessCheck(symbol));
     });
   }
 
@@ -439,37 +439,37 @@ export function RouteWorkspace({ route, symbol = "" }) {
               .catch(value => setPredictionError(value.message));
           },
           onCreate: command => mutation("prediction", async () => {
-            await createAnalysisPrediction(connectionId, command, session);
+            await createAnalysisPrediction(connectionId, command);
             setOutcome(await loadAnalysisPredictions(connectionId, outcomeQuery));
           }),
           registryBusy: Boolean(busy), registryError: predictionError,
           onRegister: command => mutation("model", async () => {
-            await registerPredictionModelVersion(command, session);
+            await registerPredictionModelVersion(command);
             setModels(await loadPredictionModelVersions());
           }),
           onDeprecate: id => mutation("model", async () => {
-            await deprecatePredictionModelVersion(id, session);
+            await deprecatePredictionModelVersion(id);
             setModels(await loadPredictionModelVersions());
           }),
           onDelete: id => mutation("model", async () => {
-            await deletePredictionModelVersion(id, session);
+            await deletePredictionModelVersion(id);
             setModels(await loadPredictionModelVersions());
           })
         }),
         h(PredictionOperationsView, {
           operations: predictionOperations, keys: predictionKeys, busy: Boolean(busy),
           error: predictionError, onIssue: command => mutation("key", async () => {
-            const result = await issuePredictionIngestionApiKey(command, session);
+            const result = await issuePredictionIngestionApiKey(command);
             if (result?.apiKey) {
               setPredictionKeys(await loadPredictionIngestionApiKeys());
             }
           }),
           onRotate: (id, command) => mutation("key", async () => {
-            await rotatePredictionIngestionApiKey(id, command, session);
+            await rotatePredictionIngestionApiKey(id, command);
             setPredictionKeys(await loadPredictionIngestionApiKeys());
           }),
           onRevoke: id => mutation("key", async () => {
-            await revokePredictionIngestionApiKey(id, session);
+            await revokePredictionIngestionApiKey(id);
             setPredictionKeys(await loadPredictionIngestionApiKeys());
           }),
           onRefresh: () => Promise.all([
@@ -493,7 +493,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       h(RiskPolicyPanel, {
         policy: riskPolicy, history: [], open: riskOpen, busy: Boolean(busy),
         onToggle: () => setRiskOpen(value => !value),
-        onUpdate: input => mutation("risk-policy", async () => setRiskPolicy(await updateRiskPolicy(input, session))),
+        onUpdate: input => mutation("risk-policy", async () => setRiskPolicy(await updateRiskPolicy(input))),
         onLoadHistory() {}
       }));
   }
@@ -515,7 +515,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
           portfolio: "포트폴리오", stock: stockSymbol || "종목 분석", events: "이벤트",
           orders: "주문", predictions: "분석", settings: "설정"
         }[route] ?? "내 자산")),
-      h("button", { type: "button", className: "secondary", onClick: () => logout(session).then(() => setSession(null)) },
+      h("button", { type: "button", className: "secondary", onClick: () => logout().then(() => setSession(null)) },
         "Sign out")),
     h(RouteNav, { symbol: stockSymbol }),
     h("form", { className: "connection-form", onSubmit: event => {
