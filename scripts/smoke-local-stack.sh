@@ -21,6 +21,7 @@ trap cleanup EXIT INT TERM
 cat >"$env_file" <<EOF
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 CREDENTIAL_KEY_BASE64=$(openssl rand -base64 32)
+AUTH_TOKEN_SIGNING_SECRET=$(openssl rand -hex 32)
 POSTGRES_PORT=$base_port
 REDIS_PORT=$((base_port + 1))
 ANALYSIS_PORT=$((base_port + 2))

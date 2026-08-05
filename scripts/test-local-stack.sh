@@ -62,6 +62,8 @@ grep -q 'REAL_ORDER_CANARY_ENABLED: "false"' compose.staging.credentialed.yaml |
   fail "credentialed staging must block live canary"
 grep -q '^      PUBLIC_DASHBOARD_URL: ' compose.staging.credentialed.yaml ||
   fail "credentialed staging must pass dashboard URL into Spring"
+grep -q 'SECURITY_ACCESS_TOKEN_SIGNING_SECRET' compose.staging.credentialed.yaml ||
+  fail "credentialed staging must pass the token signing secret"
 if grep -q 'TOSS_CLIENT_SECRET' compose.staging.credentialed.yaml; then
   fail "Toss client secret must not be an environment setting"
 fi

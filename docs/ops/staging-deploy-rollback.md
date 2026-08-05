@@ -19,8 +19,11 @@
 
 ## Mock staging secrets
 
-- The **only** two real secret values anywhere in this stack are the Postgres password and
-  the broker credential encryption key.
+- The real secret values in this stack are the Postgres password, the broker credential
+  encryption key, and `AUTH_TOKEN_SIGNING_SECRET`.
+- `AUTH_TOKEN_SIGNING_SECRET` is required in staging, must be at least 32 bytes, and must be
+  identical across backend replicas. The backend fails closed when it is missing; it is not
+  committed, baked into an image, or printed by the deploy scripts.
 - The Postgres password is never a plain environment variable in staging. It's injected as a
   file: Postgres itself via its own `POSTGRES_PASSWORD_FILE` support, and the backend via
   Spring Boot's **Config Tree** feature (`spring.config.import=optional:configtree:/run/secrets/`)
@@ -85,11 +88,15 @@ are completed.
 
 - `SERVER_FORWARD_HEADERS_STRATEGY=framework` makes the backend trust `X-Forwarded-Proto` /
   `X-Forwarded-Host` from the reverse proxy that terminates TLS in front of it.
-- `SERVER_SERVLET_SESSION_COOKIE_SECURE=true` marks the session cookie `Secure`.
+- Refresh tokens are stored only in the `trade_refresh_token` cookie, with `Secure`,
+  `HttpOnly`, `SameSite=Strict`, and `Path=/api/v1/auth`; the plaintext value is never stored
+  in the database. Refresh and logout also require the exact configured dashboard `Origin`.
+- OIDC authorization transactions use a separate signed, short-lived `trade_oidc_request`
+  cookie with `Secure`, `HttpOnly`, `SameSite=Lax`, and no server session.
+- There is no JSESSIONID/session-cookie dependency. Access tokens are short-lived Bearer
+  tokens kept by the dashboard only in module memory.
 - Verified with a real request carrying `X-Forwarded-Proto: https`: the response's
-  `Set-Cookie` includes `Secure; HttpOnly`, and `Strict-Transport-Security` is present —
-  which only appears when Spring Security perceives the request as HTTPS, confirming the
-  forwarded-header trust is actually taking effect, not just configured.
+  security headers reflect HTTPS, confirming forwarded-header trust is taking effect.
 
 ## Resource limits
 

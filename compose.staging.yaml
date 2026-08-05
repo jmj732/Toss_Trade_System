@@ -78,11 +78,8 @@ services:
     environment:
       SPRING_FLYWAY_ENABLED: "false"
       SPRING_CONFIG_IMPORT: optional:configtree:/run/secrets/
-      # Perceive scheme/host through the reverse proxy's X-Forwarded-* headers, which is
-      # what makes SERVER_SERVLET_SESSION_COOKIE_SECURE below actually take effect for a
-      # client connecting over HTTPS to the proxy while this container only sees plain HTTP.
       SERVER_FORWARD_HEADERS_STRATEGY: framework
-      SERVER_SERVLET_SESSION_COOKIE_SECURE: "true"
+      SECURITY_ACCESS_TOKEN_SIGNING_SECRET: ${AUTH_TOKEN_SIGNING_SECRET:?set AUTH_TOKEN_SIGNING_SECRET in the deployment secret store}
     secrets:
       - spring.datasource.password
     depends_on:

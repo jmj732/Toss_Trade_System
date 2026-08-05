@@ -64,6 +64,7 @@ services:
       # feature instead. Every other caller sets POSTGRES_PASSWORD explicitly, so this
       # is a no-op for them.
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-}
+      SECURITY_ACCESS_TOKEN_SIGNING_SECRET: ${AUTH_TOKEN_SIGNING_SECRET:-local-development-only-secret-32-bytes}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       ANALYSIS_SERVICE_BASE_URL: http://analysis:8000
