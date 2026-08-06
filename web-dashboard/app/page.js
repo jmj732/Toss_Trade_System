@@ -5,10 +5,12 @@ import { createElement as h, useEffect, useRef, useState } from "react";
 import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { NotificationCenter } from "./notification-center.js";
+import { OrderApprovalPanel } from "./order-approval-panel.jsx";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
-import { loginHref, RouteNav } from "./route-workspace.js";
+import { describeError, loginHref, RouteNav } from "./route-workspace.js";
 import {
   actOnProposal,
+  orderActionKey,
   analyzePortfolio,
   createBrokerConnection,
   createSingleFlight,
@@ -33,11 +35,16 @@ export default function Home() {
   const [connection, setConnection] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [busyAction, setBusyAction] = useState(null);
-  const [busyOrderId, setBusyOrderId] = useState(null);
+  // 주문별 진행 상태는 Set 으로 둔다. 스칼라면 두 주문 동시 처리 시
+  // 먼저 끝난 쪽이 진행 중인 다른 버튼을 재활성화한다(D-13).
+  const [busyOrderIds, setBusyOrderIds] = useState(() => new Set());
+  const [approvalOrder, setApprovalOrder] = useState(null);
+  const [approvalError, setApprovalError] = useState(null);
   const [error, setError] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
-  const [unreadCount, setUnreadCount] = useState(0);
+  // 로드 전/실패는 null(미확정)로 둔다. 실패를 삼켜 0("읽지 않음 없음")으로 오인시키지 않는다.
+  const [unreadCount, setUnreadCount] = useState(null);
   const [riskPolicyOpen, setRiskPolicyOpen] = useState(false);
   const [riskPolicy, setRiskPolicy] = useState(null);
   const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
@@ -45,15 +52,18 @@ export default function Home() {
   singleFlight.current ??= createSingleFlight();
 
   useEffect(() => {
-    loadSession().then(setSession).catch(value => setError(value.message));
+    loadSession().then(setSession).catch(value => {
+      setError(describeError(value.message));
+      setSession(null);
+    });
   }, []);
 
   useEffect(() => {
     if (!session) {
       return;
     }
-    loadUnreadCount().then(result => setUnreadCount(result.count)).catch(() => {});
-    loadRiskPolicy().then(setRiskPolicy).catch(value => setError(value.message));
+    loadUnreadCount().then(result => setUnreadCount(result.count)).catch(() => setUnreadCount(null));
+    loadRiskPolicy().then(setRiskPolicy).catch(value => setError(describeError(value.message)));
   }, [session]);
 
   async function openDashboard(event) {
@@ -63,21 +73,55 @@ export default function Home() {
     try {
       setDashboard(await loadDashboard(id));
     } catch (value) {
-      setError(value.message);
+      setError(describeError(value.message));
     }
   }
 
-  async function orderAction(orderId, action) {
-    setBusyOrderId(orderId);
-    setError("");
-    try {
-      await actOnProposal(orderId, action, crypto.randomUUID());
-      setDashboard(await loadDashboard(connectionId.trim()));
-    } catch (value) {
-      setError(value.message);
-    } finally {
-      setBusyOrderId(null);
+  function markOrderBusy(orderId, busyState) {
+    setBusyOrderIds(previous => {
+      const next = new Set(previous);
+      if (busyState) {
+        next.add(orderId);
+      } else {
+        next.delete(orderId);
+      }
+      return next;
+    });
+  }
+
+  // 승인은 2단계다. 목록의 "승인" 은 미리보기 패널을 열기만 하고, 실제 요청은
+  // 사용자가 화면에서 확인한 값(displayed)으로만 runOrderCommand 에서 전송한다(D-01).
+  function orderAction(orderId, action) {
+    if (action === "approve") {
+      const order = (dashboard?.pendingOrderProposals?.data ?? [])
+        .find(candidate => candidate.id === orderId);
+      setApprovalError(null);
+      setApprovalOrder(order ?? { id: orderId });
+      return Promise.resolve();
     }
+    return runOrderCommand(orderId, "cancel");
+  }
+
+  function runOrderCommand(orderId, action, displayed) {
+    markOrderBusy(orderId, true);
+    setError("");
+    const options = { idempotencyKey: orderActionKey(orderId, action) };
+    if (displayed) {
+      options.displayed = displayed;
+    }
+    return actOnProposal(orderId, action, options)
+      .then(() => loadDashboard(connectionId.trim()).then(setDashboard))
+      .then(() => {
+        setApprovalOrder(null);
+        setApprovalError(null);
+      })
+      .catch(value => {
+        if (action === "approve") {
+          setApprovalError(value);
+        }
+        setError(describeError(value.message));
+      })
+      .finally(() => markOrderBusy(orderId, false));
   }
 
   function runMutation(action, task) {
@@ -87,7 +131,7 @@ export default function Home() {
       try {
         await task();
       } catch (value) {
-        setError(value.message);
+        setError(describeError(value.message));
       } finally {
         setBusyAction(null);
       }
@@ -113,7 +157,7 @@ export default function Home() {
   function brokerAction(action) {
     const id = connectionId.trim();
     if (action === "delete"
-        && !window.confirm("Delete this broker connection and its credentials?")) {
+        && !window.confirm("이 브로커 연결과 자격 증명을 삭제할까요?")) {
       return;
     }
     return runMutation(action, async () => {
@@ -188,10 +232,12 @@ export default function Home() {
     setError("");
     try {
       await logout();
+    } catch (value) {
+      setError(describeError(value.message));
+    } finally {
+      // 로그아웃 요청이 실패해도 로컬 세션은 반드시 폐기해 탈출구를 보장한다.
       setSession(null);
       setDashboard(null);
-    } catch (value) {
-      setError(value.message);
     }
   }
 
@@ -203,6 +249,7 @@ export default function Home() {
       h("div", { className: "login-card" },
         h("p", { className: "eyebrow" }, "TRADE CONTROL"),
         h("h1", null, "내 투자, 한눈에"),
+        error ? h("p", { className: "error", role: "alert" }, error) : null,
         h("p", null, "계속하려면 로그인해 주세요."),
         h("a", { className: "button-link", href: loginHref("home") }, "로그인")));
   }
@@ -263,9 +310,22 @@ export default function Home() {
             }),
             h("button", { type: "submit" }, "불러오기"))))) : null,
     workspaceOpen ? h("div", { className: "workspace-content" },
+      approvalOrder
+        ? h(OrderApprovalPanel, {
+          order: approvalOrder,
+          busy: busyOrderIds.has(approvalOrder.id),
+          error: approvalError,
+          onConfirm: displayed => runOrderCommand(approvalOrder.id, "approve", displayed),
+          onReject: () => runOrderCommand(approvalOrder.id, "cancel"),
+          onClose: () => {
+            setApprovalOrder(null);
+            setApprovalError(null);
+          }
+        })
+        : null,
       h(DashboardView, {
         dashboard,
-        busyOrderId,
+        busyOrderId: busyOrderIds,
         onOrderAction: orderAction
       })) : null);
 }

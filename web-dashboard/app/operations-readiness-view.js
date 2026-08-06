@@ -45,7 +45,7 @@ export function OperationsReadinessView({
     readiness?.alerts?.length
       ? h("ul", { className: "readiness-alerts" }, ...readiness.alerts.map(alert =>
         h("li", { key: alert }, alert))) : null,
-    h("div", { className: "table-wrap" }, h("table", null,
+    h("div", { className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "제공자 운영 준비 상태 표" }, h("table", null,
       h("thead", null, h("tr", null,
         ...["제공자", "상태", "자격 증명", "지연", "누락 데이터"].map(label =>
           h("th", { key: label, scope: "col" }, label)))),

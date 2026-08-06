@@ -52,12 +52,53 @@ test("integrates analysis, forecast, explanation, events, provenance, and missin
 
   for (const text of [
     "AAPL", "분석", "예측", "Gemini 설명", "관련 이벤트",
-    "데이터 출처", "누락 데이터", "DEGRADED", "FAILED", "GEMINI_UPSTREAM_ERROR",
+    "데이터 출처", "누락 데이터", "부분 저하", "실패", "GEMINI_UPSTREAM_ERROR",
     "Rate decision", "Grounded evidence", "snapshot-1"
   ]) {
     assert.match(html, new RegExp(text));
   }
   assert.doesNotMatch(html, /Approve|Cancel|actOnProposal/);
+  // 상태 배지는 한국어로만 노출한다(D-40).
+  assert.doesNotMatch(html, /surface-state[^>]*>DEGRADED</);
+});
+
+test("never leaks raw undefined for missing optional fields", () => {
+  const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
+    symbol: "AAPL",
+    // 상단 status/runId/inputSnapshotId 가 없는 이력 항목(partial·stale 재현).
+    analysis: null,
+    forecast: { result: { confidence: null, forecasts: [] } },
+    explanation: null,
+    relatedEvents: [{ id: "event-1", summary: "제목만" }],
+    history: [{ runId: undefined, inputSnapshotId: undefined, completedAt: undefined }],
+    status: { analysis: "DEGRADED", forecast: "DEGRADED", explanation: "IDLE" },
+    onCreateAnalysis() {},
+    onCreateForecast() {},
+    onCreateExplanation() {},
+    onSelectSnapshot() {}
+  }));
+
+  assert.doesNotMatch(html, /undefined/);
+  assert.doesNotMatch(html, /NaN|Invalid Date/);
+});
+
+test("labels unknown status values instead of pretending they are ready", () => {
+  const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
+    symbol: "AAPL",
+    analysis: null,
+    forecast: null,
+    explanation: null,
+    relatedEvents: [],
+    history: [],
+    status: { analysis: "QUEUED", forecast: "IDLE", explanation: "IDLE" },
+    onCreateAnalysis() {},
+    onCreateForecast() {},
+    onCreateExplanation() {},
+    onSelectSnapshot() {}
+  }));
+
+  assert.match(html, /알 수 없음 \(QUEUED\)/);
+  assert.doesNotMatch(html, /surface-state ready/);
 });
 
 test("distinguishes progress and failed analysis states", () => {
@@ -76,8 +117,9 @@ test("distinguishes progress and failed analysis states", () => {
     onSelectSnapshot() {}
   }));
 
-  assert.match(html, /PROGRESS/);
+  assert.match(html, /진행 중/);
   assert.match(html, /Still running/);
+  assert.match(html, /실패/);
   assert.match(html, /FAILED/);
   assert.match(html, /UPSTREAM/);
 });

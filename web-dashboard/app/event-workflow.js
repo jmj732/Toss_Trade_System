@@ -2,8 +2,20 @@
 
 import { createElement as h, useState } from "react";
 
-function value(number) {
-  return number ?? "확인 필요";
+import {
+  formatAmount, formatRatio, formatSignedAmount, localInputToInstant
+} from "../lib/format.js";
+
+function amount(currency, number) {
+  return formatAmount(currency, number);
+}
+
+function signed(currency, number) {
+  return formatSignedAmount(currency, number);
+}
+
+function ratio(number) {
+  return formatRatio(number);
 }
 
 function Comparison({ detail }) {
@@ -16,7 +28,9 @@ function Comparison({ detail }) {
       h("span", null, comparison.baselineAvailable ? "BASELINE" : "NO BASELINE")),
     h("h3", null, "영향받은 포지션"),
     comparison.positions.length
-      ? h("div", { className: "table-wrap" }, h("table", null,
+      ? h("div", {
+        className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "영향받은 포지션 변화 표"
+      }, h("table", null,
         h("thead", null, h("tr", null,
           ...[
             "종목", "통화",
@@ -29,19 +43,21 @@ function Comparison({ detail }) {
           h("tr", { key: `${position.currency}-${position.symbol}` },
             h("td", null, position.symbol),
             h("td", null, position.currency),
-            h("td", null, value(position.beforeMarketValue)),
-            h("td", null, value(position.afterMarketValue)),
-            h("td", null, value(position.marketValueChange)),
-            h("td", null, value(position.beforeProfitLoss)),
-            h("td", null, value(position.afterProfitLoss)),
-            h("td", null, value(position.profitLossChange)),
-            h("td", null, value(position.beforeWeight)),
-            h("td", null, value(position.afterWeight)),
-            h("td", null, value(position.weightChange)))))))
+            h("td", null, amount(position.currency, position.beforeMarketValue)),
+            h("td", null, amount(position.currency, position.afterMarketValue)),
+            h("td", null, signed(position.currency, position.marketValueChange)),
+            h("td", null, signed(position.currency, position.beforeProfitLoss)),
+            h("td", null, signed(position.currency, position.afterProfitLoss)),
+            h("td", null, signed(position.currency, position.profitLossChange)),
+            h("td", null, ratio(position.beforeWeight)),
+            h("td", null, ratio(position.afterWeight)),
+            h("td", null, ratio(position.weightChange)))))))
       : h("p", { className: "empty" }, "영향받은 포지션 변화가 없습니다"),
     h("h3", null, "통화별 합계"),
     comparison.currencyTotals.length
-      ? h("div", { className: "table-wrap" }, h("table", null,
+      ? h("div", {
+        className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "통화별 합계 변화 표"
+      }, h("table", null,
         h("thead", null, h("tr", null,
           ...[
             "통화",
@@ -53,15 +69,15 @@ function Comparison({ detail }) {
         h("tbody", null, ...comparison.currencyTotals.map(total =>
           h("tr", { key: total.currency },
             h("td", null, total.currency),
-            h("td", null, value(total.beforeMarketValue)),
-            h("td", null, value(total.afterMarketValue)),
-            h("td", null, value(total.marketValueChange)),
-            h("td", null, value(total.beforeProfitLoss)),
-            h("td", null, value(total.afterProfitLoss)),
-            h("td", null, value(total.profitLossChange)),
-            h("td", null, value(total.beforeConcentration)),
-            h("td", null, value(total.afterConcentration)),
-            h("td", null, value(total.concentrationChange)))))))
+            h("td", null, amount(total.currency, total.beforeMarketValue)),
+            h("td", null, amount(total.currency, total.afterMarketValue)),
+            h("td", null, signed(total.currency, total.marketValueChange)),
+            h("td", null, signed(total.currency, total.beforeProfitLoss)),
+            h("td", null, signed(total.currency, total.afterProfitLoss)),
+            h("td", null, signed(total.currency, total.profitLossChange)),
+            h("td", null, ratio(total.beforeConcentration)),
+            h("td", null, ratio(total.afterConcentration)),
+            h("td", null, ratio(total.concentrationChange)))))))
       : h("p", { className: "empty" }, "통화별 합계 변화가 없습니다"));
 }
 
@@ -109,16 +125,18 @@ export function EventWorkflow({
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    onCreate({
+    // 생성 성공 시에만 폼을 비운다. 실패하면 입력값을 보존해 재시도를 가능하게 한다.
+    Promise.resolve(onCreate({
       source: "MANUAL",
       sourceEventId: data.get("sourceEventId"),
       type: data.get("type"),
       summary: data.get("summary"),
       affectedSymbols: [...selectedSymbols],
-      occurredAt: new Date(data.get("occurredAt")).toISOString()
-    });
-    form.reset();
-    setSelectedSymbols(new Set());
+      occurredAt: localInputToInstant(data.get("occurredAt"))
+    })).then(() => {
+      form.reset();
+      setSelectedSymbols(new Set());
+    }).catch(() => {});
   }
 
   return h("section", { className: "event-workflow panel", "aria-busy": busy },
@@ -135,7 +153,7 @@ export function EventWorkflow({
           h("input", { name: "type", required: true, maxLength: 60 })),
         h("label", null, "요약",
           h("textarea", { name: "summary", required: true, maxLength: 1000 })),
-        h("label", null, "발생 시각",
+        h("label", null, "발생 시각 (현지 시각으로 입력)",
           h("input", { name: "occurredAt", type: "datetime-local", required: true })),
         h("fieldset", { className: "symbol-picker" },
           h("legend", null, "영향받은 종목"),

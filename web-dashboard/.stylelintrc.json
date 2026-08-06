@@ -1,0 +1,33 @@
+{
+  "extends": ["stylelint-config-standard"],
+  "rules": {
+    "declaration-property-value-disallowed-list": [
+      {
+        "/^(color|background-color|border-color)$/": ["/#[0-9a-fA-F]{3,8}/"],
+        "/^(margin|padding)(-[a-z]+)*$/": ["/\\d*\\.?\\d+px/"],
+        "/^((row|column)-)?gap$/": ["/\\d*\\.?\\d+px/"]
+      },
+      {
+        "message": "토큰만 허용하세요: 색은 var(--…), 간격은 var(--sp-…)."
+      }
+    ],
+    "declaration-property-value-allowed-list": {
+      "font-size": ["/^var\\(--fs-/", "inherit"],
+      "border-radius": ["/^var\\(--r-/"]
+    },
+
+    "color-hex-length": null,
+    "color-function-notation": null,
+    "color-function-alias-notation": null,
+    "alpha-value-notation": null,
+    "shorthand-property-no-redundant-values": null,
+    "no-descending-specificity": null,
+    "declaration-block-single-line-max-declarations": null,
+    "rule-empty-line-before": null,
+    "declaration-empty-line-before": null,
+    "custom-property-empty-line-before": null,
+    "comment-empty-line-before": null,
+    "value-keyword-case": null,
+    "media-feature-range-notation": null
+  }
+}

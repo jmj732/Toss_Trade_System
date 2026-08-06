@@ -35,6 +35,7 @@ import {
   createStockForecast,
   loadStockAnalysisExplanation,
   createStockAnalysisExplanation,
+  orderActionKey,
   loadSession,
   loadUnreadCount,
   logout,
@@ -148,49 +149,122 @@ test("reads readiness and probes providers with bearer auth", async () => {
   assert.deepEqual(JSON.parse(calls[1][1].body), { symbol: "AAPL" });
 });
 
-test("approval obtains a preview and step-up token before submitting with bearer auth", async () => {
+test("approve submits only user-confirmed display values and never self-fetches a preview", async () => {
   resetAuthForTest("access-token");
   const calls = [];
   const fetcher = async (url, options) => {
     calls.push([url, options]);
-    if (url.endsWith("/approval-preview")) {
-      return json({
-        displayedQuantity: 1, displayedMaxLoss: 100, displayedCurrency: "USD",
-        proposalVersion: null
-      });
-    }
     if (url.endsWith("/step-up")) {
       return json({ stepUpToken: "step-up-token" });
     }
     return json({ status: "COMPLETED" });
   };
 
-  await actOnProposal("order-1", "approve", "idem-1", fetcher);
-  await actOnProposal("order-2", "cancel", "idem-2", fetcher);
+  await actOnProposal("order-1", "approve", {
+    idempotencyKey: "idem-1",
+    displayed: { quantity: 1, maxLoss: 100, currency: "USD", proposalVersion: null }
+  }, fetcher);
+  await actOnProposal("order-2", "cancel", { idempotencyKey: "idem-2" }, fetcher);
 
-  assert.equal(calls.length, 5);
-  assert.equal(calls[0][0], "/api/v1/paper-orders/order-1");
-  assert.equal(calls[1][0], "/api/v1/paper-orders/order-1/approval-preview");
-  assert.equal(calls[2][0], "/api/v1/paper-orders/order-1/step-up");
-  assert.equal(calls[2][1].headers.Authorization, "Bearer access-token");
+  // 승인 게이트 무력화 방지: preview 나 주문 조회를 서버에 요청하지 않는다.
+  assert.ok(!calls.some(([url]) => url.endsWith("/approval-preview")));
+  assert.ok(!calls.some(([url]) => /\/paper-orders\/order-1$/.test(url)));
 
-  for (const [index, orderId, action] of [[3, "order-1", "approve"], [4, "order-2", "cancel"]]) {
-    const [url, options] = calls[index];
-    assert.equal(url, `/api/v1/paper-orders/${orderId}/${action}`);
-    assert.equal(options.method, "POST");
-    assert.equal(options.credentials, "same-origin");
-    assert.equal(options.headers.Authorization, "Bearer access-token");
-    assert.equal(options.headers["Idempotency-Key"], action === "approve" ? "idem-1" : "idem-2");
-    assert.deepEqual(JSON.parse(options.body), action === "approve"
-      ? {
-        channel: "WEB", displayedQuantity: 1, displayedMaxLoss: 100,
-        displayedCurrency: "USD", proposalVersion: null
-      }
-      : { channel: "WEB" });
-    if (action === "approve") {
-      assert.equal(options.headers["X-Step-Up-Token"], "step-up-token");
+  const stepUp = calls.find(([url]) => url.endsWith("/order-1/step-up"));
+  assert.equal(stepUp[0], "/api/v1/paper-orders/order-1/step-up");
+  assert.equal(stepUp[1].headers.Authorization, "Bearer access-token");
+
+  const approve = calls.find(([url]) => url.endsWith("/order-1/approve"));
+  assert.equal(approve[1].method, "POST");
+  assert.equal(approve[1].credentials, "same-origin");
+  assert.equal(approve[1].headers.Authorization, "Bearer access-token");
+  assert.equal(approve[1].headers["Idempotency-Key"], "idem-1");
+  assert.equal(approve[1].headers["X-Step-Up-Token"], "step-up-token");
+  assert.deepEqual(JSON.parse(approve[1].body), {
+    channel: "WEB", displayedQuantity: 1, displayedMaxLoss: 100,
+    displayedCurrency: "USD", proposalVersion: null
+  });
+
+  const cancel = calls.find(([url]) => url.endsWith("/order-2/cancel"));
+  assert.equal(cancel[1].headers["Idempotency-Key"], "idem-2");
+  assert.deepEqual(JSON.parse(cancel[1].body), { channel: "WEB" });
+});
+
+test("approve refuses to send a request without user-confirmed display values", async () => {
+  resetAuthForTest("access-token");
+  let called = false;
+  const fetcher = async () => {
+    called = true;
+    return json({ status: "COMPLETED" });
+  };
+
+  await assert.rejects(
+    actOnProposal("order-1", "approve", { idempotencyKey: "idem-1" }, fetcher),
+    { message: "APPROVAL_DISPLAY_REQUIRED" });
+  // 과거 시그니처(3번째 인자=키 문자열)로는 승인할 수 없다.
+  await assert.rejects(
+    actOnProposal("order-1", "approve", "idem-legacy", fetcher),
+    { message: "APPROVAL_DISPLAY_REQUIRED" });
+  // 불완전한 display(통화 누락)도 거부한다.
+  await assert.rejects(
+    actOnProposal("order-1", "approve", {
+      displayed: { quantity: 1, maxLoss: 100, currency: "" }
+    }, fetcher),
+    { message: "APPROVAL_DISPLAY_REQUIRED" });
+
+  assert.equal(called, false);
+});
+
+test("order action idempotency key is reused across retries of the same order and action", () => {
+  assert.equal(
+    orderActionKey("order-1", "approve"),
+    orderActionKey("order-1", "approve"));
+  assert.notEqual(
+    orderActionKey("order-1", "approve"),
+    orderActionKey("order-1", "cancel"));
+  assert.notEqual(
+    orderActionKey("order-1", "approve"),
+    orderActionKey("order-2", "approve"));
+});
+
+test("approve without an explicit key falls back to the stable per-order key", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push([url, options]);
+    if (url.endsWith("/step-up")) {
+      return json({ stepUpToken: "t" });
     }
-  }
+    return json({ status: "COMPLETED" });
+  };
+
+  await actOnProposal("order-9", "approve", {
+    displayed: { quantity: 2, maxLoss: 50, currency: "KRW", proposalVersion: 3 }
+  }, fetcher);
+
+  const approve = calls.find(([url]) => url.endsWith("/order-9/approve"));
+  assert.equal(approve[1].headers["Idempotency-Key"], orderActionKey("order-9", "approve"));
+});
+
+test("error body is preserved and step-up is promoted to a distinct failure", async () => {
+  resetAuthForTest("access-token");
+  const mismatch = actOnProposal("order-1", "approve", {
+    displayed: { quantity: 1, maxLoss: 100, currency: "USD", proposalVersion: null }
+  }, async url => url.endsWith("/step-up")
+    ? json({ stepUpToken: "t" })
+    : json({
+      code: "PAPER_ORDER_DISPLAY_MISMATCH",
+      serverQuantity: 2, serverMaxLoss: 250, currency: "USD"
+    }, 409));
+
+  await mismatch.then(
+    () => assert.fail("expected rejection"),
+    error => {
+      assert.equal(error.status, 409);
+      assert.equal(error.body.serverQuantity, 2);
+      assert.equal(error.body.serverMaxLoss, 250);
+      assert.equal(error.body.currency, "USD");
+    });
 });
 
 test("logout posts the refresh-cookie endpoint", async () => {

@@ -2,8 +2,10 @@
 
 import { createElement as h } from "react";
 
-function instant(value) {
-  return value ? new Date(value).toISOString() : null;
+import { formatInstant, localInputToInstant } from "../lib/format.js";
+
+function displayInstant(value) {
+  return value ? formatInstant(value) : "없음";
 }
 
 function lag(value) {
@@ -38,14 +40,14 @@ export function PredictionOperationsView({
     Promise.resolve(onIssue({
       modelVersion: data.get("modelVersion"),
       contractVersion: data.get("contractVersion"),
-      expiresAt: instant(data.get("expiresAt"))
+      expiresAt: localInputToInstant(data.get("expiresAt"))
     })).then(() => form.reset()).catch(() => {});
   }
 
   function rotate(event, id) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    Promise.resolve(onRotate(id, { expiresAt: instant(data.get("expiresAt")) }))
+    Promise.resolve(onRotate(id, { expiresAt: localInputToInstant(data.get("expiresAt")) }))
       .catch(() => {});
   }
 
@@ -80,7 +82,8 @@ export function PredictionOperationsView({
         h("span", { className: "metric-value" }, operations?.longUngradedCount ?? "—")),
       h("div", { className: "metric" },
         h("span", { className: "metric-label" }, "가장 오래된 장기 미채점 예정"),
-        h("span", { className: "metric-value" }, operations?.oldestLongUngradedDueAt ?? "—"))),
+        h("span", { className: "metric-value" },
+          operations?.oldestLongUngradedDueAt ? formatInstant(operations.oldestLongUngradedDueAt) : "—"))),
     issuedKey ? h("div", { className: "issued-api-key", role: "status" },
       h("strong", null, "이 키는 한 번만 표시됩니다"),
       h("code", null, issuedKey.apiKey),
@@ -96,7 +99,9 @@ export function PredictionOperationsView({
     error ? h("p", { className: "error", role: "alert" }, error) : null,
     keys.length === 0
       ? h("p", { className: "empty" }, "예측 수집 API 키가 없습니다")
-      : h("div", { className: "table-wrap" }, h("table", null,
+      : h("div", {
+        className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "예측 수집 API 키 표"
+      }, h("table", null,
         h("thead", null, h("tr", null,
           ...["접두사", "모델", "계약", "상태", "만료", "마지막 사용", "작업"].map(th))),
         h("tbody", null, ...keys.map(key => h("tr", { key: key.id },
@@ -104,14 +109,14 @@ export function PredictionOperationsView({
           h("td", null, key.modelVersion),
           h("td", null, key.contractVersion),
           h("td", null, key.status),
-          h("td", null, key.expiresAt ?? "없음"),
-          h("td", null, key.lastUsedAt ?? "없음"),
+          h("td", null, displayInstant(key.expiresAt)),
+          h("td", null, displayInstant(key.lastUsedAt)),
           h("td", null,
             h("form", { className: "key-rotation-form", onSubmit: event => rotate(event, key.id) },
               h("input", {
                 type: "datetime-local",
                 name: "expiresAt",
-                "aria-label": `New expiry for ${key.prefix}`,
+                "aria-label": `${key.prefix} 키의 새 만료 시각`,
                 title: "비워두면 현재 만료가 유지됩니다",
                 disabled: busy || key.status !== "ACTIVE"
               }),

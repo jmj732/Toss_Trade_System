@@ -63,6 +63,38 @@ test("renders predictions table, per-horizon grades, and version performance sum
   assert.match(html, /DRIFT \/ hit -20\.0% \/ DEGRADED/);
 });
 
+test("treats an ungraded outcome as pending rather than a MISS", () => {
+  const html = renderToStaticMarkup(createElement(AnalysisOutcomeView, {
+    performance: {
+      predictions: [
+        {
+          id: "pred-1",
+          predictedAt: "2026-01-01T00:00:00Z",
+          symbol: "AAPL",
+          currency: "USD",
+          predictedDirection: "UP",
+          modelVersion: "v1",
+          contractVersion: "1",
+          baselinePrice: 100,
+          outcomes: {
+            D1: { actualReturn: 0.02, directionCorrect: null }
+          }
+        }
+      ],
+      byVersion: []
+    },
+    query: QUERY,
+    busy: false,
+    createBusy: false,
+    createError: "",
+    onQuery() {},
+    onCreate() {}
+  }));
+
+  assert.match(html, /채점 대기/);
+  assert.doesNotMatch(html, /MISS/);
+});
+
 test("shows an em dash for horizons that have not matured yet and no performance summary until one has", () => {
   const html = renderToStaticMarkup(createElement(AnalysisOutcomeView, {
     performance: {

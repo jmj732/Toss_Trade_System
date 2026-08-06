@@ -100,3 +100,13 @@ test("scopes affected-symbol state to the current connection", () => {
     source,
     /h\(EventWorkflow, \{\s*key: connectionId\.trim\(\),/);
 });
+
+test("clears the create form only after onCreate resolves", () => {
+  const source = readFileSync(
+    new URL("../app/event-workflow.js", import.meta.url),
+    "utf8");
+
+  // 실패 시 입력값이 보존되도록 reset 은 반드시 onCreate 성공 콜백 안에서만 호출한다.
+  assert.match(source, /Promise\.resolve\(onCreate\(/);
+  assert.match(source, /\}\)\)\.then\(\(\) => \{\s*form\.reset\(\);/);
+});

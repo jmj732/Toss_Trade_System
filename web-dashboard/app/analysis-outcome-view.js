@@ -2,6 +2,8 @@
 
 import { createElement as h } from "react";
 
+import { formatAmount, formatInstant } from "../lib/format.js";
+
 function percent(value) {
   return value == null ? "—" : `${(Number(value) * 100).toFixed(1)}%`;
 }
@@ -59,7 +61,9 @@ function PerformanceTable({ rows }) {
   if (rows.length === 0) {
     return h("p", { className: "empty" }, "채점된 결과가 아직 없습니다");
   }
-  return h("div", { className: "table-wrap" }, h("table", null,
+  return h("div", {
+    className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "버전별 예측 성과 표"
+  }, h("table", null,
     h("thead", null, h("tr", null,
       ...["모델", "계약", "예측 구간", "표본", "적중률", "평균 방향 수익률", "평균 최대 역행 폭"]
         .map(th))),
@@ -77,21 +81,28 @@ function outcomeCell(outcome) {
   if (!outcome) {
     return h("td", { className: "empty" }, "—");
   }
-  return h("td", null, `${percent(outcome.actualReturn)} ${outcome.directionCorrect ? "HIT" : "MISS"}`);
+  // directionCorrect 가 boolean 으로 확정되기 전에는 채점 대기 상태다.
+  // null/undefined 를 MISS 로 단언하면 모델 성과가 실제보다 나쁘게 오인된다.
+  const grade = outcome.directionCorrect == null
+    ? "채점 대기"
+    : outcome.directionCorrect ? "HIT" : "MISS";
+  return h("td", null, `${percent(outcome.actualReturn)} ${grade}`);
 }
 
 function PredictionsTable({ predictions }) {
   if (predictions.length === 0) {
     return h("p", { className: "empty" }, "기록된 예측이 아직 없습니다");
   }
-  return h("div", { className: "table-wrap" }, h("table", null,
+  return h("div", {
+    className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "기록된 예측 표"
+  }, h("table", null,
     h("thead", null, h("tr", null,
       ...["예측 시각", "종목", "방향", "기준선", "모델", "계약", "D1", "D5", "D20"].map(th))),
     h("tbody", null, ...predictions.map(prediction => h("tr", { key: prediction.id },
-      h("td", null, prediction.predictedAt),
+      h("td", null, formatInstant(prediction.predictedAt)),
       h("td", null, prediction.symbol),
       h("td", null, prediction.predictedDirection),
-      h("td", null, `${prediction.baselinePrice} ${prediction.currency}`),
+      h("td", null, formatAmount(prediction.currency, prediction.baselinePrice)),
       h("td", null, prediction.modelVersion),
       h("td", null, prediction.contractVersion),
       outcomeCell(prediction.outcomes?.D1),
@@ -104,7 +115,9 @@ function ForecastQualityTable({ quality }) {
   if (rows.length === 0) {
     return h("p", { className: "empty" }, "예측 품질 데이터가 없습니다");
   }
-  return h("div", { className: "table-wrap" },
+  return h("div", {
+    className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "예측 품질 모니터링 표"
+  },
     h("table", null,
       h("thead", null,
         h("tr", null,
@@ -132,10 +145,12 @@ function RegistryPanel({ versions, busy, error, onRegister, onDeprecate, onDelet
       h("label", null, "계약 버전",
         h("input", { name: "contractVersion", maxLength: 50, required: true })),
       h("button", { type: "submit", disabled: busy }, "버전 등록")),
-    error ? h("p", { className: "error" }, error) : null,
+    error ? h("p", { className: "error", role: "alert" }, error) : null,
     versions.length === 0
       ? h("p", { className: "empty" }, "등록된 모델 버전이 없습니다")
-      : h("div", { className: "table-wrap" }, h("table", null,
+      : h("div", {
+        className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "예측 모델 레지스트리 표"
+      }, h("table", null,
         h("thead", null, h("tr", null, ...["모델", "계약", "상태", "작업"].map(th))),
         h("tbody", null, ...versions.map(version => h("tr", { key: version.id },
           h("td", null, version.modelVersion),
@@ -150,7 +165,13 @@ function RegistryPanel({ versions, busy, error, onRegister, onDeprecate, onDelet
             h("button", {
               type: "button",
               disabled: busy,
-              onClick: () => Promise.resolve(onDelete(version.id)).catch(() => {})
+              onClick: () => {
+                if (typeof window !== "undefined"
+                    && !window.confirm(`모델 버전 ${version.modelVersion} / ${version.contractVersion} 을(를) 삭제할까요? 되돌릴 수 없습니다.`)) {
+                  return;
+                }
+                Promise.resolve(onDelete(version.id)).catch(() => {});
+              }
             }, "삭제"))))))));
 }
 
@@ -245,11 +266,11 @@ export function AnalysisOutcomeView({
       onDelete
     }),
     h(CreateForm, { versions, busy: createBusy, onCreate }),
-    createError ? h("p", { className: "error" }, createError) : null,
+    createError ? h("p", { className: "error", role: "alert" }, createError) : null,
     h("form", { className: "history-filter", onSubmit: submitFilter },
-      h("label", null, "시작일",
+      h("label", null, "시작일 (UTC 자정 기준)",
         h("input", { type: "date", name: "from", defaultValue: fromDate })),
-      h("label", null, "종료일",
+      h("label", null, "종료일 (UTC 자정 기준)",
         h("input", { type: "date", name: "to", defaultValue: toDate })),
       h("label", null, "모델 버전", h("input", { name: "modelVersion", defaultValue: query.modelVersion })),
       h("label", null, "계약 버전",

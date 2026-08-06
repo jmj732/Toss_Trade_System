@@ -11,9 +11,24 @@ async function body(response) {
   const error = new Error(`Request failed (${response.status})`);
   error.status = response.status;
   try {
-    error.message = (await response.json()).code ?? error.message;
+    // D-16: 응답 본문 전체를 보존한다. display mismatch 스냅샷(serverQuantity/serverMaxLoss/currency)
+    // 처럼 복구 판단에 필요한 값을 승인 화면이 다시 쓸 수 있어야 한다.
+    const payload = await response.json();
+    error.body = payload;
+    if (payload?.code) {
+      error.code = payload.code;
+      error.message = payload.code;
+    }
   } catch {
     // An upstream HTML/error response still carries the useful HTTP status.
+  }
+  if (typeof error.code === "string" && /_STEP_UP_REQUIRED$/.test(error.code)) {
+    // D-02: step-up 재인증 요구를 별도 예외로 승격해 승인 화면이 재인증을 유도할 수 있게 한다.
+    error.stepUpRequired = true;
+    error.message = "재인증이 필요합니다. 본인 확인 후 다시 승인해 주세요.";
+  } else if (error.status === 401) {
+    // D-14: 인증 소실은 한국어 재로그인 안내로 노출한다.
+    error.message = "세션이 만료되었습니다. 다시 로그인해 주세요.";
   }
   throw error;
 }
@@ -93,50 +108,70 @@ export function issueOrderStepUp(orderId, fetcher = fetch) {
     `/api/v1/paper-orders/${encodeURIComponent(orderId)}/step-up`, "POST", null, fetcher);
 }
 
-export async function actOnProposal(
-  orderId,
-  action,
-  idempotencyKey,
-  fetcher = fetch
-) {
+// D-13: 같은 주문·동작이면 재시도마다 동일한 키를 재사용해 서버의 중복 감지가 동작하게 한다.
+// 클릭마다 새 UUID 를 만들면 중복 제출이 서버에서 걸러지지 않는다.
+export function orderActionKey(orderId, action) {
+  return `paper-order:${action}:${orderId}`;
+}
+
+function normalizeActOptions(options) {
+  // 하위 호환: 과거 시그니처는 3번째 인자로 idempotencyKey 문자열을 넘겼다.
+  if (typeof options === "string") {
+    return { idempotencyKey: options };
+  }
+  return options ?? {};
+}
+
+function isCompleteDisplay(displayed) {
+  return Boolean(displayed)
+    && displayed.quantity != null
+    && displayed.maxLoss != null
+    && displayed.currency != null
+    && displayed.currency !== "";
+}
+
+// D-01: 승인은 반드시 사용자가 화면에서 확인한 값으로만 전송한다.
+// 이 함수는 preview 를 스스로 조회하지 않으며, `displayed` 가 없으면 요청조차 보내지 않는다.
+//   options = {
+//     idempotencyKey?,                         // 없으면 orderActionKey(orderId, action)
+//     displayed: { quantity, maxLoss, currency, proposalVersion }, // approve 필수
+//     stepUpToken?                             // 없으면 여기서 step-up 을 발급
+//   }
+// 하위 호환: options 가 문자열이면 idempotencyKey 로 해석한다(cancel 경로에서만 유효).
+export async function actOnProposal(orderId, action, options = {}, fetcher = fetch) {
   if (action !== "approve" && action !== "cancel") {
     throw new Error("Unsupported proposal action");
   }
-  let approval = null;
-  if (action === "approve") {
-    const current = await loadPaperOrder(orderId, fetcher);
-    const replay = current.commands?.some(command =>
-      command.action === "APPROVE" && command.idempotencyKey === idempotencyKey);
-    approval = replay
-      ? {
-        displayedQuantity: current.quantity ?? 0, displayedMaxLoss: 0,
-        displayedCurrency: current.currency, proposalVersion: null
-      }
-      : { ...await loadOrderApprovalPreview(orderId, fetcher),
-        ...(await issueOrderStepUp(orderId, fetcher)) };
-  }
+  const opts = normalizeActOptions(options);
+  const idempotencyKey = opts.idempotencyKey ?? orderActionKey(orderId, action);
   const headers = {
     "content-type": "application/json",
     "Idempotency-Key": idempotencyKey
   };
-  if (approval?.stepUpToken) {
-    headers["X-Step-Up-Token"] = approval.stepUpToken;
+  let requestBody = { channel: "WEB" };
+  if (action === "approve") {
+    const displayed = opts.displayed;
+    if (!isCompleteDisplay(displayed)) {
+      // 화면에서 확인한 값이 없으면 승인 게이트를 우회하게 되므로 요청을 보내지 않는다.
+      throw new Error("APPROVAL_DISPLAY_REQUIRED");
+    }
+    const stepUpToken = opts.stepUpToken
+      ?? (await issueOrderStepUp(orderId, fetcher)).stepUpToken;
+    if (stepUpToken) {
+      headers["X-Step-Up-Token"] = stepUpToken;
+    }
+    requestBody = {
+      channel: "WEB",
+      displayedQuantity: displayed.quantity,
+      displayedMaxLoss: displayed.maxLoss,
+      displayedCurrency: displayed.currency,
+      proposalVersion: displayed.proposalVersion ?? null
+    };
   }
   const response = await authorizedFetch(
     `/api/v1/paper-orders/${encodeURIComponent(orderId)}/${action}`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(approval
-        ? {
-          channel: "WEB",
-          displayedQuantity: approval.displayedQuantity,
-          displayedMaxLoss: approval.displayedMaxLoss,
-          displayedCurrency: approval.displayedCurrency,
-          proposalVersion: approval.proposalVersion ?? null
-        }
-        : { channel: "WEB" })
-    }, fetcher);
+    { method: "POST", headers, body: JSON.stringify(requestBody) },
+    fetcher);
   return body(response);
 }
 

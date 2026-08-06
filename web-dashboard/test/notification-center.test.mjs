@@ -33,6 +33,32 @@ test("hides the badge when there is nothing unread", () => {
   assert.doesNotMatch(html, /class="badge"/);
 });
 
+test("marks an undetermined unread count distinctly from zero (D-34)", () => {
+  const unknown = renderToStaticMarkup(createElement(NotificationCenter, {
+    unreadCount: null,
+    notifications: [],
+    open: false,
+    busy: false,
+    onToggle() {},
+    onMarkRead() {}
+  }));
+  // 미확정(null)은 조용히 0으로 접히지 않고 별도 표기가 있어야 한다.
+  assert.match(unknown, /확인 필요/);
+  assert.doesNotMatch(unknown, />0</);
+
+  // 0(없음)은 어떤 배지도 렌더하지 않는다 — 미확정과 시각적으로 구분된다.
+  const none = renderToStaticMarkup(createElement(NotificationCenter, {
+    unreadCount: 0,
+    notifications: [],
+    open: false,
+    busy: false,
+    onToggle() {},
+    onMarkRead() {}
+  }));
+  assert.doesNotMatch(none, /확인 필요/);
+  assert.doesNotMatch(none, /class="badge"/);
+});
+
 test("lists notifications and only offers mark-read for unread ones", () => {
   const html = renderToStaticMarkup(createElement(NotificationCenter, {
     unreadCount: 1,

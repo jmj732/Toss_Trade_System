@@ -63,7 +63,7 @@ function PointsTable({ points }) {
   if (points.length === 0) {
     return h("p", { className: "empty" }, "데이터가 없습니다");
   }
-  return h("div", { className: "table-wrap" }, h("table", null,
+  return h("div", { className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "포트폴리오 평가금액 추이 표" }, h("table", null,
     h("thead", null, h("tr", null,
       ...["시각", "평가금액 KRW", "평가금액 USD", "P/L KRW", "P/L USD"].map(label =>
         h("th", { key: label, scope: "col" }, label)))),

@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --test"
+    "test": "node --import ./test/jsx-loader.mjs --test",
+    "lint:css": "stylelint app/**/*.css",
+    "e2e": "playwright test",
+    "e2e:report": "node e2e/report.mjs",
+    "verify": "npm run lint:css && npm test && npm run build && npm run e2e"
   },
   "dependencies": {
     "next": "16.2.12",
@@ -16,5 +20,13 @@
   "overrides": {
     "postcss": "8.5.23",
     "sharp": "0.35.3"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.62.1",
+    "axe-core": "^4.12.1",
+    "esbuild": "^0.28.1",
+    "stylelint": "^17.14.1",
+    "stylelint-config-standard": "^40.0.0"
   }
 }

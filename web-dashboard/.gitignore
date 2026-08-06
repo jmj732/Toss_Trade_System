@@ -2,3 +2,6 @@
 node_modules/
 .env*.local
 .vercel
+e2e/__screenshots__/
+playwright-report/
+test-results/
