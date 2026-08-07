@@ -49,7 +49,7 @@ public class TossBrokerConfiguration {
         return new TossInvestBrokerAdapter(apiClient, mapper);
     }
 
-    @Bean
+    @Bean(defaultCandidate = false)
     @ConditionalOnProperty(prefix = "real-order", name = "enabled", havingValue = "true")
     BrokerOrderPort tossOrderPort(TossInvestBrokerAdapter adapter) {
         return adapter;
