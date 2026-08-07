@@ -37,9 +37,10 @@ import java.util.function.BooleanSupplier;
  * not an order or auto-trading integration.
  *
  * <p>Not a component-scanned {@code @Service} — like every other {@link BrokerAdapter}
- * consumer in this codebase, it's wired as a {@code @Bean} inside
- * {@code CredentialVaultConfiguration}, which only exists when
- * {@code broker.credentials.enabled=true}. A plain always-on {@code @Service} here would
+ * consumer in this codebase, it's wired as a {@code @Bean} inside its own module's
+ * {@code AnalysisPredictionConfiguration}, which shares the credential vault's activation
+ * condition and so only exists when {@code broker.credentials.enabled=true}. A plain
+ * always-on {@code @Service} here would
  * require a {@link BrokerAdapter} bean even in contexts where credentials aren't
  * configured at all.
  */
