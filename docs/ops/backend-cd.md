@@ -1,9 +1,8 @@
 # Backend CD
 
 The backend CD job lives in `.github/workflows/release-gates.yml`. A push to
-`design/modular-monolith-architecture` deploys only after Spring, analysis, dashboard,
-audit, and mock-stack gates pass. Deployments are serialized and an active deploy is not
-cancelled by a newer push.
+`main` deploys only after Spring, analysis, dashboard, audit, and mock-stack gates pass.
+Deployments are serialized and an active deploy is not cancelled by a newer push.
 
 ## One-time server setup
 

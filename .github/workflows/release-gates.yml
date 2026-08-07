@@ -147,7 +147,7 @@ jobs:
   backend-cd:
     name: Deploy Spring backend
     if: >-
-      github.ref == 'refs/heads/design/modular-monolith-architecture' &&
+      github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs:
       - spring-backend
