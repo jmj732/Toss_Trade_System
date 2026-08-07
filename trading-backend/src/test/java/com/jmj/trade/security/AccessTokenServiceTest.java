@@ -44,7 +44,16 @@ class AccessTokenServiceTest {
         var fixed = new AccessTokenService(
                 "01234567890123456789012345678901", Duration.ofSeconds(1), CLOCK);
         var token = fixed.issue(UUID.randomUUID(), UUID.randomUUID(), NOW).value();
-        var tampered = token.substring(0, token.length() - 1) + "x";
+        // 서명은 32바이트 HMAC -> base64url(43자, 무패딩)이다. 마지막 문자는 실질 4비트만
+        // 담고 인코더가 하위 2비트를 항상 0으로 채우므로, 그 위치를 고정 문자로 바꾸면
+        // 원본의 상위 4비트와 우연히 같을 때(약 1/16 확률) 디코딩된 바이트가 그대로라
+        // 변조가 감지되지 않는 flaky 케이스가 있었다. 끝에서 두 번째 문자는 전체 6비트가
+        // 실제 서명 바이트에 그대로 대응하므로, 그 자리를 원본과 다른 문자로 바꾸면
+        // 디코딩된 바이트가 항상 달라져 결정적으로 검증에 실패한다.
+        var tamperIndex = token.length() - 2;
+        var original = token.charAt(tamperIndex);
+        var replacement = original == 'x' ? 'y' : 'x';
+        var tampered = token.substring(0, tamperIndex) + replacement + token.charAt(token.length() - 1);
         var expired = new AccessTokenService(
                 "01234567890123456789012345678901", Duration.ofSeconds(1), CLOCK)
                 .issue(UUID.randomUUID(), UUID.randomUUID(), NOW).value();
