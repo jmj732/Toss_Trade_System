@@ -48,6 +48,11 @@ public final class PaperOrderWorkflowException extends RuntimeException {
         return new PaperOrderWorkflowException(Code.STEP_UP_REQUIRED);
     }
 
+    /** 제안이 만료 시각을 지나 승인할 수 없음(D-42). 취소·철회는 여전히 허용된다. */
+    static PaperOrderWorkflowException proposalExpired() {
+        return new PaperOrderWorkflowException(Code.PROPOSAL_EXPIRED);
+    }
+
     public Code code() {
         return code;
     }
@@ -62,7 +67,8 @@ public final class PaperOrderWorkflowException extends RuntimeException {
         VALIDATION_FAILED,
         AUTHENTICATED_USER_INVALID,
         DISPLAY_MISMATCH,
-        STEP_UP_REQUIRED
+        STEP_UP_REQUIRED,
+        PROPOSAL_EXPIRED
     }
 
     public record DisplaySnapshot(BigDecimal quantity, BigDecimal maxLoss, Currency currency) {

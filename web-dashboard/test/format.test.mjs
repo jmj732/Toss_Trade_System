@@ -9,6 +9,8 @@ import {
   formatInstant,
   formatRelativeTime,
   formatFreshness,
+  classifyProposalExpiry,
+  proposalExpiryBadge,
   localInputToInstant
 } from "../lib/format.js";
 
@@ -69,6 +71,44 @@ test("formatFreshness는 절대 시각과 상대 시각을 함께 반환한다",
   assert.equal(
     formatFreshness("2026-08-05T11:30:00Z", now),
     "2026-08-05 20:30 KST · 30분 전");
+});
+
+test("classifyProposalExpiry는 expiresAt이 null이면 unknown으로 분류한다", () => {
+  const now = Date.parse("2026-08-05T12:00:00Z");
+  assert.equal(classifyProposalExpiry({ createdAt: "2026-08-05T11:00:00Z", expiresAt: null }, now), "unknown");
+  assert.equal(classifyProposalExpiry({}, now), "unknown");
+});
+
+test("classifyProposalExpiry는 now가 expiresAt 이상이면 expired로 분류한다", () => {
+  const now = Date.parse("2026-08-05T12:00:00Z");
+  assert.equal(classifyProposalExpiry({ expiresAt: "2026-08-05T12:00:00Z" }, now), "expired");
+  assert.equal(classifyProposalExpiry({ expiresAt: "2026-08-05T11:59:59Z" }, now), "expired");
+});
+
+test("classifyProposalExpiry는 남은 시간이 2분 이하이면 expiring으로 분류한다", () => {
+  const now = Date.parse("2026-08-05T12:00:00Z");
+  // createdAt 없음 → 임계값은 2분. 남은 1분 → expiring, 남은 3분 → fresh.
+  assert.equal(classifyProposalExpiry({ expiresAt: "2026-08-05T12:01:00Z" }, now), "expiring");
+  assert.equal(classifyProposalExpiry({ expiresAt: "2026-08-05T12:03:00Z" }, now), "fresh");
+});
+
+test("classifyProposalExpiry는 창의 마지막 20% 이내이면 expiring으로 분류한다", () => {
+  const now = Date.parse("2026-08-05T12:00:00Z");
+  // 창 95분, 20%=19분. 남은 5분 → expiring(2분 초과여도 창 기준).
+  assert.equal(
+    classifyProposalExpiry({ createdAt: "2026-08-05T10:30:00Z", expiresAt: "2026-08-05T12:05:00Z" }, now),
+    "expiring");
+  // 창 110분, 20%=22분. 남은 100분 → fresh.
+  assert.equal(
+    classifyProposalExpiry({ createdAt: "2026-08-05T11:50:00Z", expiresAt: "2026-08-05T13:40:00Z" }, now),
+    "fresh");
+});
+
+test("proposalExpiryBadge는 상태별 한국어 문구를 반환하고 fresh는 배지가 없다", () => {
+  assert.equal(proposalExpiryBadge("expired"), "만료됨");
+  assert.equal(proposalExpiryBadge("expiring"), "곧 만료");
+  assert.equal(proposalExpiryBadge("unknown"), "만료 없음");
+  assert.equal(proposalExpiryBadge("fresh"), null);
 });
 
 test("localInputToInstant는 잘못된 입력에 null을 반환한다", () => {

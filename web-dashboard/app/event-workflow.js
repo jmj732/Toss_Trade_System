@@ -24,8 +24,10 @@ function Comparison({ detail }) {
     return h("p", { className: "empty" }, "비교 결과가 아직 없습니다");
   }
   return h("div", null,
-    h("p", { className: "quality" },
-      h("span", null, comparison.baselineAvailable ? "BASELINE" : "NO BASELINE")),
+    // V-43: 패널 헤더 정렬용 .quality 유틸을 문단에 오용하지 않는다. 상태 배지는 .badge-pill 로.
+    h("p", null,
+      h("span", { className: "badge-pill badge-pill--neutral" },
+        comparison.baselineAvailable ? "기준값 있음" : "기준값 없음")),
     h("h3", null, "영향받은 포지션"),
     comparison.positions.length
       ? h("div", {

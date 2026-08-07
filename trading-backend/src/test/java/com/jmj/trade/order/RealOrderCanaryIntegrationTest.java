@@ -277,7 +277,7 @@ class RealOrderCanaryIntegrationTest extends PostgresIntegrationTest {
         insertAllowlist(owner);
         var live = new LiveOrderActivationService(
                 quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, stepUp,
-                safety, killSwitches, new TransactionTemplate(transactionManager));
+                safety, killSwitches, new TransactionTemplate(transactionManager), Duration.ofMinutes(15));
         var properties = new RealOrderCanaryProperties(true, owner.connectionId(), owner.accountId(),
                 BigDecimal.ONE, new BigDecimal("100000"), new BigDecimal("100"),
                 Duration.ofMinutes(1), "canary");

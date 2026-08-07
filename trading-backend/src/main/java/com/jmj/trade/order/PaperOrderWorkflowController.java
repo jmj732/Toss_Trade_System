@@ -179,6 +179,7 @@ class PaperOrderWorkflowErrorHandler {
             case VALIDATION_FAILED -> error(HttpStatus.UNPROCESSABLE_ENTITY, "PAPER_ORDER_VALIDATION_FAILED");
             case AUTHENTICATED_USER_INVALID -> error(HttpStatus.FORBIDDEN, "AUTHENTICATED_USER_INVALID");
             case STEP_UP_REQUIRED -> error(HttpStatus.UNAUTHORIZED, "PAPER_ORDER_STEP_UP_REQUIRED");
+            case PROPOSAL_EXPIRED -> error(HttpStatus.CONFLICT, "PAPER_ORDER_PROPOSAL_EXPIRED");
             case DISPLAY_MISMATCH -> displayMismatch(exception.serverSnapshot());
         };
     }

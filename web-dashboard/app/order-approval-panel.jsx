@@ -8,6 +8,8 @@ import {
   formatAmount,
   formatQuantity,
   formatFreshness,
+  formatInstant,
+  classifyProposalExpiry,
   UNKNOWN_TEXT
 } from "../lib/format.js";
 
@@ -29,6 +31,24 @@ function maxLossBasisPrice(currency, quantity, maxLoss) {
 
 function isDisplayMismatch(error) {
   return error?.body?.code === "PAPER_ORDER_DISPLAY_MISMATCH";
+}
+
+// D-42: 서버가 만료된 제안 승인을 409 로 거부하면(PAPER_ORDER_PROPOSAL_EXPIRED)
+// 재승인은 성공할 수 없으므로 재시도 경로를 제공하지 않는다.
+function isProposalExpiredError(error) {
+  return error?.code === "PAPER_ORDER_PROPOSAL_EXPIRED"
+    || error?.body?.code === "PAPER_ORDER_PROPOSAL_EXPIRED";
+}
+
+function expiryText(expiresAt) {
+  return expiresAt == null ? "만료 없음" : formatInstant(expiresAt);
+}
+
+// D-03: 상태 필터 확대로 APPROVED/ACTIVE/COMPLETED 등 비-PROPOSED 주문이 열린 패널의
+// 스냅샷으로 남을 수 있으므로, 목록 버튼과 동일하게 status 로 승인 가능 여부를 가둔다.
+// route-workspace 의 {id} 폴백(status 없음)은 현행대로 승인 가능 상태를 유지한다.
+export function isStatusActionable(order) {
+  return order?.status == null || order.status === "PROPOSED";
 }
 
 /**
@@ -85,6 +105,11 @@ export function OrderApprovalPanel({
 
   const stepUpRequired = loadError?.stepUpRequired || error?.stepUpRequired;
   const mismatch = isDisplayMismatch(error);
+  // D-42: 클라이언트 분류(만료)와 서버 거부(409) 둘 중 하나라도 만료면 승인을 막는다.
+  const proposalExpiredError = isProposalExpiredError(error);
+  const expired = classifyProposalExpiry(order) === "expired" || proposalExpiredError;
+  // D-03: PROPOSED(또는 {id} 폴백)일 때만 승인 버튼을 활성화한다.
+  const actionable = isStatusActionable(order);
 
   function confirm() {
     if (!preview) {
@@ -134,6 +159,18 @@ export function OrderApprovalPanel({
         </div>
       ) : null}
 
+      {expired ? (
+        // D-42: 만료되면 승인 재시도 어포던스를 주지 않고, 닫기/거부만 남긴다.
+        <div className="empty" role="alert">
+          <p>
+            {proposalExpiredError
+              ? "이 주문 제안은 만료되어 승인할 수 없습니다. 재시도해도 승인되지 않습니다."
+              : "이 주문 제안은 만료되어 승인할 수 없습니다."}
+          </p>
+          <p>만료 시각: {expiryText(order.expiresAt)}</p>
+        </div>
+      ) : null}
+
       {loadError && !stepUpRequired ? (
         <div className="empty" role="alert">
           <p>{loadError.message ?? "미리보기를 불러오지 못했습니다."}</p>
@@ -167,6 +204,14 @@ export function OrderApprovalPanel({
             <dd>{formatAmount(preview.displayedCurrency, preview.displayedMaxLoss)}</dd>
           </div>
           <div>
+            <dt>생성 시각</dt>
+            <dd>{formatFreshness(order.createdAt)}</dd>
+          </div>
+          <div>
+            <dt>만료 시각</dt>
+            <dd>{expiryText(order.expiresAt)}</dd>
+          </div>
+          <div>
             <dt>미리보기 조회 시각</dt>
             <dd>{formatFreshness(previewedAt)}</dd>
           </div>
@@ -179,7 +224,7 @@ export function OrderApprovalPanel({
         <button
           type="button"
           onClick={confirm}
-          disabled={!preview || busy || !sideKnown || stepUpRequired}
+          disabled={!preview || busy || !sideKnown || stepUpRequired || expired || !actionable}
         >
           확인하고 승인
         </button>

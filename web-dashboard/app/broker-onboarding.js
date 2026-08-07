@@ -46,7 +46,7 @@ export function BrokerOnboarding({
   const active = connection?.status === "ACTIVE";
   const unavailable = busy || !hasConnection;
   return h("section", {
-    className: `onboarding panel ${hasConnection ? "onboarding-connected" : "onboarding-first-run"}`,
+    className: `onboarding panel${hasConnection ? "" : " onboarding-first-run"}`,
     "aria-busy": busy
   },
     h("header", null,

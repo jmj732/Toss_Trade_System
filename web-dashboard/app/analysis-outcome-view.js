@@ -16,18 +16,20 @@ function driftLabel(drift) {
   if (!drift) {
     return "—";
   }
+  // D-41: 한국어 UI 에 맞춰 축약 영문을 한국어 라벨로 바꾼다. 숫자와 정보량은 유지한다.
+  // drift.status 는 서버 계약 enum 이므로 원문을 유지한다(커밋 e6bca8a 방침).
   const deltas = [];
   if (drift.hitRateDelta != null) {
-    deltas.push(`hit ${percent(drift.hitRateDelta)}`);
+    deltas.push(`적중률 변화 ${percent(drift.hitRateDelta)}`);
   }
   if (drift.meanAbsoluteErrorDelta != null) {
-    deltas.push(`MAE ${percent(drift.meanAbsoluteErrorDelta)}`);
+    deltas.push(`평균절대오차 변화 ${percent(drift.meanAbsoluteErrorDelta)}`);
   }
   if (drift.calibrationErrorDelta != null) {
-    deltas.push(`cal ${percent(drift.calibrationErrorDelta)}`);
+    deltas.push(`보정오차 변화 ${percent(drift.calibrationErrorDelta)}`);
   }
   if (drift.degraded) {
-    deltas.push("DEGRADED");
+    deltas.push("성능 저하");
   }
   return [drift.status, ...deltas].join(" / ");
 }

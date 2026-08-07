@@ -158,10 +158,39 @@ textarea {
 }
 .panel > header { align-items: flex-start; display: flex; justify-content: space-between; }
 .quality { align-items: flex-end; display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: flex-end; }
-.quality span,
-.surface-state,
-.risk-policy-panel .customized,
-.risk-policy-panel .default {
+/* Unified status pill (V-36): one shape, semantic colour modifiers via text-only tokens.
+   ok = 확인/정상(accent 텍스트), info = 강조/커스텀(accent 테두리+텍스트),
+   warn = 주의/지연(amber), danger = 실패/불가(red), neutral = 기본/최신(회색). */
+.badge-pill {
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  color: var(--muted);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-black);
+  letter-spacing: .06em;
+  padding: var(--sp-1) var(--sp-2);
+}
+.badge-pill--neutral { border-color: var(--line); color: var(--muted); }
+.badge-pill--ok { border-color: var(--line); color: var(--accent-text); }
+.badge-pill--info { border-color: var(--accent); color: var(--accent-text); }
+.badge-pill--warn { border-color: var(--warning-line); color: var(--warning-text); }
+.badge-pill--danger { border-color: var(--danger-line); color: var(--danger-text); }
+/* V-36: `.list span`(0,1,1) 이 `.badge-pill--*`(0,1,0) 의 색을 눌러 목록 안 배지 텍스트가
+   전부 --muted 로 죽는다. `.list .badge-pill--*`(0,2,0) 로 상태색을 되살린다(.amount 선례와 동일한 충돌). */
+.list .badge-pill--ok { color: var(--accent-text); }
+.list .badge-pill--info { color: var(--accent-text); }
+.list .badge-pill--warn { color: var(--warning-text); }
+.list .badge-pill--danger { color: var(--danger-text); }
+.list .badge-pill--neutral { color: var(--muted); }
+
+/* Legacy quality-badge classes, scoped to the explicit states DashboardView still emits
+   (stale/unknown/unavailable/available/partial). Kept until that view migrates to
+   .badge-pill; the class list avoids leaking onto .badge-pill spans inside .quality. */
+.quality .stale,
+.quality .unknown,
+.quality .unavailable,
+.quality .available,
+.quality .partial {
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
   color: var(--muted);
@@ -302,6 +331,7 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .connection-picker summary { color: var(--text-muted); cursor: pointer; font-size: var(--fs-sm); list-style: none; min-height: var(--sp-12); padding: var(--sp-3) var(--sp-4); text-align: center; }
 .connection-picker summary::-webkit-details-marker { display: none; }
 .connection-picker summary::before { content: "+  "; color: var(--accent-text); }
+.connection-picker[open] summary::before { content: "−  "; }
 .connection-picker[open] summary { margin-bottom: var(--sp-4); }
 .connection-picker .connection-form { margin: 0; padding: var(--sp-5); }
 .event-workflow { display: grid; gap: var(--sp-4); margin-top: var(--sp-4); }
@@ -388,7 +418,6 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   z-index: 10;
 }
 .risk-policy-panel > header { align-items: center; display: flex; justify-content: space-between; }
-.risk-policy-panel .customized { border-color: var(--accent); color: var(--accent-text); }
 .risk-policy-form { display: grid; gap: var(--sp-2); }
 .risk-policy-form label { color: var(--muted); }
 .risk-policy-history li { align-items: flex-start; }
@@ -449,10 +478,6 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .stock-surface-panel { box-shadow: var(--shadow-card); margin: 0; }
 .stock-surface-panel > header { align-items: flex-start; display: flex; justify-content: space-between; gap: var(--sp-3); }
 .panel-actions { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-3); justify-content: flex-end; }
-.surface-state.progress { border-color: var(--warning); color: var(--warning-text); }
-.surface-state.failed { border-color: var(--danger); color: var(--danger-text); }
-.surface-state.degraded { background: #fff4e0; border-color: var(--warning-text); color: var(--warning-text); }
-.surface-state.ready { color: var(--accent-text); }
 .analysis-metrics { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); margin: var(--sp-4) 0; }
 .missing-data, .provenance { border-top: 1px solid var(--line); margin-top: var(--sp-4); padding-top: var(--sp-3); }
 .missing-data h3, .provenance h3 { font-size: var(--fs-sm); }
@@ -531,10 +556,11 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   .login-error { background: #2a1518; }
   .issued-api-key { background: #241d10; }
   .badge { background: var(--danger-text); color: #0f1216; }
+  .badge-pill--warn { border-color: #5a4420; }
+  .badge-pill--danger { border-color: #5a2530; }
   .quality .stale, .quality .unknown { border-color: #5a4420; }
   .quality .unknown { background: #241d10; }
   .quality .unavailable { border-color: #5a2530; }
-  .surface-state.degraded { background: #241d10; }
   .notification-list li.read { background: #20252c; }
   /* stylelint-enable declaration-property-value-disallowed-list */
 }

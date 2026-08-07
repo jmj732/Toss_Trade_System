@@ -1,6 +1,6 @@
 "use client";
 
-import { createElement as h } from "react";
+import { createElement as h, useEffect, useId } from "react";
 
 function HistoryList({ history }) {
   if (history.length === 0) {
@@ -25,6 +25,21 @@ export function RiskPolicyPanel({
   onUpdate,
   onLoadHistory
 }) {
+  const panelId = useId();
+  // V-29: 열려 있을 때만 Escape 로 닫는다. open 상태는 부모 소유이므로 onToggle 로 위임한다.
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        onToggle();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onToggle]);
+
   function submit(event) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -43,14 +58,16 @@ export function RiskPolicyPanel({
       type: "button",
       className: "secondary risk-policy-toggle",
       "aria-expanded": open,
+      "aria-controls": panelId,
       onClick: onToggle
     }, "리스크 정책"),
-    open ? h("div", { className: "risk-policy-panel panel" },
+    open ? h("div", { id: panelId, className: "risk-policy-panel panel" },
       h("header", null,
         h("h2", null, "주문 리스크 한도"),
         policy
-          ? h("span", { className: policy.customized ? "customized" : "default" },
-            policy.customized ? "CUSTOM" : "DEFAULT")
+          ? h("span", {
+            className: `badge-pill ${policy.customized ? "badge-pill--info" : "badge-pill--neutral"}`
+          }, policy.customized ? "CUSTOM" : "DEFAULT")
           : null),
       !policy
         ? h("p", { className: "empty" }, "불러오는 중…")

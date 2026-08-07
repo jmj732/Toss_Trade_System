@@ -9,10 +9,15 @@ import test from "node:test";
 // which bypasses the display-confirmation gate (D-01): it submits an approval the
 // user never saw the figures for. That defect sailed past the whole suite because
 // nothing asserted the WIRING — only lib/api.js's own refusal was covered. These
-// tests pin the surfaces (page.js + route-workspace.js) so the bypass cannot return.
+// tests pin the surface (route-workspace.js) so the bypass cannot return.
+//
+// D-36 consolidated the two SPAs onto RouteWorkspace: app/page.js is now a thin mount
+// of RouteWorkspace with route:"home" and holds no order logic of its own. The 2-step
+// approval wiring therefore lives on a single surface, route-workspace.js, which is the
+// only file that renders the order approval panel for every route (home included).
 
 const root = new URL("../app/", import.meta.url);
-const SURFACES = ["page.js", "route-workspace.js"];
+const SURFACES = ["route-workspace.js"];
 
 for (const file of SURFACES) {
   test(`${file}: approve opens the confirmation panel and never self-submits with a random key`, async () => {

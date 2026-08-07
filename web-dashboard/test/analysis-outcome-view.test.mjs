@@ -60,7 +60,7 @@ test("renders predictions table, per-horizon grades, and version performance sum
   assert.match(html, /10\.0%\s*HIT/);
   assert.match(html, /예측 품질 모니터링/);
   assert.match(html, /DATA_SHORTAGE/);
-  assert.match(html, /DRIFT \/ hit -20\.0% \/ DEGRADED/);
+  assert.match(html, /DRIFT \/ 적중률 변화 -20\.0% \/ 성능 저하/);
 });
 
 test("treats an ungraded outcome as pending rather than a MISS", () => {

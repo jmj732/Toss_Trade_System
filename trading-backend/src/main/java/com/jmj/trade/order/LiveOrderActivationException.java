@@ -19,6 +19,7 @@ public final class LiveOrderActivationException extends RuntimeException {
         VALIDATION,
         STEP_UP_REQUIRED,
         SAFETY_BLOCKED,
-        MANUAL_REVIEW_REQUIRED
+        MANUAL_REVIEW_REQUIRED,
+        PROPOSAL_EXPIRED
     }
 }

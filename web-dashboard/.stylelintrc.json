@@ -16,6 +16,9 @@
       "border-radius": ["/^var\\(--r-/"]
     },
 
+    "selector-class-pattern": ["^[a-z][a-z0-9]*(-[a-z0-9]+)*(--[a-z0-9]+(-[a-z0-9]+)*)?$", {
+      "message": "kebab-case 클래스명, BEM modifier(block--modifier)만 허용합니다."
+    }],
     "color-hex-length": null,
     "color-function-notation": null,
     "color-function-alias-notation": null,

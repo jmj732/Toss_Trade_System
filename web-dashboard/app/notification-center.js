@@ -1,6 +1,6 @@
 "use client";
 
-import { createElement as h } from "react";
+import { createElement as h, useEffect, useId } from "react";
 
 function formatTime(value) {
   const date = new Date(value);
@@ -48,15 +48,31 @@ export function NotificationCenter({
   onToggle,
   onMarkRead
 }) {
+  const panelId = useId();
+  // V-29: 열려 있을 때만 Escape 로 닫는다. open 상태는 부모 소유이므로 onToggle 로 위임한다.
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        onToggle();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [open, onToggle]);
+
   return h("div", { className: "notification-center" },
     h("button", {
       type: "button",
       className: "secondary notification-toggle",
       "aria-expanded": open,
+      "aria-controls": panelId,
       onClick: onToggle
     },
     "알림",
     unreadBadge(unreadCount)),
-    open ? h("div", { className: "notification-panel panel" },
+    open ? h("div", { id: panelId, className: "notification-panel panel" },
       h(NotificationList, { notifications, busy, onMarkRead })) : null);
 }

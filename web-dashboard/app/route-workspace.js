@@ -7,9 +7,11 @@ import { AnalysisOutcomeView } from "./analysis-outcome-view.js";
 import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
+import { NotificationCenter } from "./notification-center.js";
 import { OrderApprovalPanel } from "./order-approval-panel.jsx";
 import { OrdersView } from "./orders-view.js";
 import { OperationsReadinessView } from "./operations-readiness-view.js";
+import { PaperPerformanceView } from "./paper-performance-view.js";
 import { PortfolioHistoryView } from "./portfolio-history-view.js";
 import { PredictionOperationsView } from "./prediction-operations-view.js";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
@@ -30,6 +32,7 @@ import {
   deprecatePredictionModelVersion,
   issuePredictionIngestionApiKey,
   listEvents,
+  listNotifications,
   loadAnalysisPredictions,
   loadDashboard,
   loadEvent,
@@ -40,7 +43,10 @@ import {
   loadPredictionOperations,
   loadOperationalReadiness,
   loadRiskPolicy,
+  loadRiskPolicyHistory,
   loadSession,
+  loadUnreadCount,
+  markNotificationRead,
   loadStockAnalysis,
   loadStockAnalysisExplanation,
   loadStockAnalysisHistory,
@@ -60,6 +66,7 @@ import {
 } from "../lib/api.js";
 
 const HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
+const PAPER_QUERY = { from: "", to: "", maxPoints: 90 };
 const OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "", symbol: "" };
 
 // 백엔드 오류 코드를 한국어 안내 + 다음 행동으로 옮긴다. 미등록 코드만 원문을 그대로 노출한다.
@@ -101,8 +108,10 @@ export function RouteNav({ symbol }) {
 }
 
 export function loginHref(route, symbol = "") {
+  const ticker = symbol.trim().toUpperCase();
   const path = route === "stock"
-    ? `/stocks/${encodeURIComponent(symbol.trim().toUpperCase() || "AAPL")}`
+    // 심볼을 모르면 보유하지 않을 수 있는 종목을 지어내지 않고 항상 유효한 홈으로 보낸다(D-38).
+    ? (ticker ? `/stocks/${encodeURIComponent(ticker)}` : "/")
     : route === "portfolio" ? "/portfolio"
       : route === "events" ? "/events"
         : route === "orders" ? "/orders"
@@ -149,12 +158,26 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [workspaceStatus, setWorkspaceStatus] = useState("idle");
   const [liveMessage, setLiveMessage] = useState("");
   const [riskPolicy, setRiskPolicy] = useState(null);
+  const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
   const [riskOpen, setRiskOpen] = useState(false);
   const [readiness, setReadiness] = useState(null);
   const [readinessError, setReadinessError] = useState("");
+  // 홈 상단 액션(알림). 로드 전/실패는 null(미확정)로 둔다.
+  // 실패를 삼켜 0("읽지 않음 없음")으로 오인시키지 않는다.
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(null);
+  // 발급된 예측 수집 API 키는 상태로만 한 번 노출하고 저장소에 쓰지 않는다(V-49).
+  const [issuedKey, setIssuedKey] = useState(null);
+  const [paperPerformance, setPaperPerformance] = useState(null);
+  const [paperQuery, setPaperQuery] = useState(PAPER_QUERY);
+  const [paperBusy, setPaperBusy] = useState(false);
   const opened = useRef(false);
   const openFlight = useRef();
   openFlight.current ??= createSingleFlight();
+  // 변경 작업을 단일 실행으로 감싸 연타로 인한 중복 제출을 막는다(모든 라우트 공통).
+  const mutationFlight = useRef();
+  mutationFlight.current ??= createSingleFlight();
 
   useEffect(() => {
     loadSession().then(setSession).catch(value => {
@@ -170,6 +193,9 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     opened.current = true;
     loadRiskPolicy().then(setRiskPolicy).catch(value => setError(describeError(value.message)));
+    if (route === "home") {
+      loadUnreadCount().then(result => setUnreadCount(result.count)).catch(() => setUnreadCount(null));
+    }
     if (route === "settings") {
       loadOperationalReadiness().then(setReadiness).catch(value => setReadinessError(describeError(value.message)));
     }
@@ -177,10 +203,14 @@ export function RouteWorkspace({ route, symbol = "" }) {
     if (route === "stock") {
       loadStockSurface();
     }
-    const saved = window.localStorage.getItem("trade.connectionId") ?? "";
-    if (saved) {
-      setConnectionId(saved);
-      openWorkspace(saved);
+    // 홈은 저장된 연결을 자동 복구하지 않는다: 명시적으로 열기 전에는 랜딩을 유지한다(D-36).
+    // 나머지 6개 라우트는 기존대로 자동 복구한다.
+    if (route !== "home") {
+      const saved = window.localStorage.getItem("trade.connectionId") ?? "";
+      if (saved) {
+        setConnectionId(saved);
+        openWorkspace(saved);
+      }
     }
   }, [session]);
 
@@ -289,8 +319,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
     setWorkspaceStatus("loading");
     window.localStorage.setItem("trade.connectionId", id);
     // 이벤트 조회 실패만으로 포트폴리오 전체를 폐기하지 않도록 부분 성공을 반영한다.
+    // 홈은 events 를 화면에 쓰지 않으므로(dashboard.pendingEvents 만 사용) 이벤트 조회
+    // 실패를 페이지 오류 배너로 올리지 않는다.
+    const needsEvents = route !== "home";
     const [dashboardResult, eventsResult] = await Promise.allSettled([
-      loadDashboard(id), listEvents(id)
+      loadDashboard(id), needsEvents ? listEvents(id) : Promise.resolve([])
     ]);
     if (dashboardResult.status === "fulfilled") {
       setDashboard(dashboardResult.value);
@@ -300,10 +333,12 @@ export function RouteWorkspace({ route, symbol = "" }) {
       setError(describeError(dashboardResult.reason.message));
       setWorkspaceStatus("error");
     }
-    if (eventsResult.status === "fulfilled") {
-      setEvents(eventsResult.value);
-    } else {
-      setError(describeError(eventsResult.reason.message));
+    if (needsEvents) {
+      if (eventsResult.status === "fulfilled") {
+        setEvents(eventsResult.value);
+      } else {
+        setError(describeError(eventsResult.reason.message));
+      }
     }
     if (route === "portfolio") {
       try {
@@ -316,12 +351,13 @@ export function RouteWorkspace({ route, symbol = "" }) {
       loadPredictionModelVersions().then(setModels).catch(value => setPredictionError(describeError(value.message)));
     }
     if (route === "predictions") {
-      // 세 조회를 개별 정산해 하나가 실패해도 나머지를 거짓 empty 로 만들지 않는다.
+      // 네 조회를 개별 정산해 하나가 실패해도 나머지를 거짓 empty 로 만들지 않는다.
       Promise.allSettled([
         loadAnalysisPredictions(id, OUTCOME_QUERY),
         loadPredictionIngestionApiKeys(),
-        loadPredictionOperations()
-      ]).then(([outcomeResult, keysResult, operationsResult]) => {
+        loadPredictionOperations(),
+        loadPaperPerformance(id, PAPER_QUERY)
+      ]).then(([outcomeResult, keysResult, operationsResult, paperResult]) => {
         if (outcomeResult.status === "fulfilled") {
           setOutcome(outcomeResult.value);
         } else {
@@ -337,20 +373,29 @@ export function RouteWorkspace({ route, symbol = "" }) {
         } else {
           setPredictionError(describeError(operationsResult.reason.message));
         }
+        if (paperResult.status === "fulfilled") {
+          setPaperPerformance(paperResult.value);
+        } else {
+          setPredictionError(describeError(paperResult.reason.message));
+        }
       });
     }
   }
 
   function mutation(label, task) {
-    setBusy(label);
-    setError("");
-    return Promise.resolve().then(task)
-      .then(() => setLiveMessage(`${label} 작업을 완료했습니다.`))
-      .catch(value => {
-        setError(describeError(value.message));
-        setLiveMessage(`${label} 작업이 실패했습니다.`);
-      })
-      .finally(() => setBusy(""));
+    // 모든 변경 작업을 단일 실행으로 감싼다: 연타 시 두 번째 호출은 첫 요청의 프라미스로
+    // 합쳐져 중복 제출을 막는다(openWorkspace 와는 다른 flight 라 중첩 호출도 안전하다).
+    return mutationFlight.current(() => {
+      setBusy(label);
+      setError("");
+      return Promise.resolve().then(task)
+        .then(() => setLiveMessage(`${label} 작업을 완료했습니다.`))
+        .catch(value => {
+          setError(describeError(value.message));
+          setLiveMessage(`${label} 작업이 실패했습니다.`);
+        })
+        .finally(() => setBusy(""));
+    });
   }
 
   function markOrderBusy(orderId, busyState) {
@@ -494,6 +539,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   function brokerAction(action) {
     const id = connectionId.trim();
+    // 브로커 연결/자격 증명 삭제는 되돌릴 수 없으므로 모든 라우트에서 확인을 받는다.
+    if (action === "delete"
+        && !window.confirm("이 브로커 연결과 자격 증명을 삭제할까요?")) {
+      return;
+    }
     return mutation(action, async () => {
       if (action === "verify") {
         setConnection(await verifyBrokerConnection(id));
@@ -509,6 +559,52 @@ export function RouteWorkspace({ route, symbol = "" }) {
         setConnectionId("");
         window.localStorage.removeItem("trade.connectionId");
       }
+    });
+  }
+
+  // 홈 상단의 알림 센터. 열 때만 최신 목록을 불러온다.
+  function notificationsToggle() {
+    const next = !notificationsOpen;
+    setNotificationsOpen(next);
+    if (next) {
+      listNotifications(false, 50).then(setNotifications)
+        .catch(value => setError(value.message));
+    }
+  }
+
+  function notificationMarkRead(notificationId) {
+    return mutation("notification-read", async () => {
+      await markNotificationRead(notificationId);
+      const [nextNotifications, nextUnreadCount] = await Promise.all([
+        listNotifications(false, 50),
+        loadUnreadCount()
+      ]);
+      setNotifications(nextNotifications);
+      setUnreadCount(nextUnreadCount.count);
+    });
+  }
+
+  // 홈 상단의 리스크 정책 패널(이력 포함). 버전 충돌 시 정책을 다시 불러와
+  // 다음 저장이 최신 버전을 쓰게 하고, 이력이 열려 있으면 갱신한다.
+  function riskPolicyUpdate(input) {
+    return mutation("risk-policy", async () => {
+      try {
+        setRiskPolicy(await updateRiskPolicy(input));
+      } catch (value) {
+        if (value.message === "RISK_POLICY_VERSION_CONFLICT") {
+          setRiskPolicy(await loadRiskPolicy());
+        }
+        throw value;
+      }
+      if (riskPolicyHistory.length > 0) {
+        setRiskPolicyHistory(await loadRiskPolicyHistory(50));
+      }
+    });
+  }
+
+  function riskPolicyLoadHistory() {
+    return mutation("risk-policy-history", async () => {
+      setRiskPolicyHistory(await loadRiskPolicyHistory(50));
     });
   }
 
@@ -640,11 +736,24 @@ export function RouteWorkspace({ route, symbol = "" }) {
             setModels(await loadPredictionModelVersions());
           })
         }),
+        h(PaperPerformanceView, {
+          performance: paperPerformance, query: paperQuery, busy: paperBusy,
+          onQuery: query => {
+            setPaperQuery(query);
+            setPaperBusy(true);
+            loadPaperPerformance(connectionId, query).then(setPaperPerformance)
+              .catch(value => setPredictionError(describeError(value.message)))
+              .finally(() => setPaperBusy(false));
+          }
+        }),
         h(PredictionOperationsView, {
-          operations: predictionOperations, keys: predictionKeys, busy: Boolean(busy),
+          operations: predictionOperations, keys: predictionKeys, issuedKey,
+          busy: Boolean(busy),
           error: predictionError, onIssue: command => mutation("key", async () => {
             const result = await issuePredictionIngestionApiKey(command);
             if (result?.apiKey) {
+              // 발급된 원문 키를 상태로만 한 번 노출한다. 저장소에 쓰지 않아 새로고침 시 사라진다(V-49).
+              setIssuedKey(result);
               setPredictionKeys(await loadPredictionIngestionApiKeys());
             }
           }),
@@ -661,7 +770,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
           ]).then(([keys, operations]) => {
             setPredictionKeys(keys); setPredictionOperations(operations);
           }).catch(value => setPredictionError(describeError(value.message))),
-          onDismissKey() {}
+          onDismissKey: () => setIssuedKey(null)
         }));
     }
     return h("main", { className: "route-stack" },
@@ -682,25 +791,122 @@ export function RouteWorkspace({ route, symbol = "" }) {
       }));
   }
 
+  // 비동기 갱신 결과를 보조기술에 알리는 단일 라이브 영역(홈 포함 모든 라우트 공통).
+  const statusRegion = h("div", {
+    role: "status", "aria-live": "polite", "aria-atomic": "true",
+    style: {
+      position: "absolute", width: "1px", height: "1px", padding: 0, margin: "-1px",
+      overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0
+    }
+  }, liveMessage);
+
   if (session === undefined) {
     return h("main", { className: "center" }, h("p", null, "세션 불러오는 중…"));
   }
   if (session === null) {
+    if (route === "home") {
+      // 홈의 로그인 카드는 기존 랜딩 문구를 그대로 보존한다(D-36).
+      return h("main", { className: "center" },
+        h("div", { className: "login-card" },
+          h("p", { className: "eyebrow" }, "TRADE CONTROL"),
+          h("h1", null, "내 투자, 한눈에"),
+          error ? h("p", { className: "error", role: "alert" }, error) : null,
+          h("p", null, "계속하려면 로그인해 주세요."),
+          h("a", { className: "button-link", href: loginHref("home") }, "로그인")));
+    }
     return h("main", { className: "center" }, h("div", { className: "login-card" },
         h("p", { className: "eyebrow" }, "TRADE CONTROL"),
       h("h1", null, "로그인이 필요합니다"),
       error ? h("p", { className: "error", role: "alert" }, error) : null,
       h("a", { className: "button-link", href: loginHref(route, stockSymbol) }, "로그인")));
   }
+  if (route === "home") {
+    // 홈은 상단 액션(리스크 정책·알림)과 랜딩/워크스페이스 전환을 갖는 별도 레이아웃이지만
+    // 세션·연결·주문·안전 게이트는 위의 공유 상태/핸들러를 그대로 쓴다(D-36).
+    const homeSymbol = dashboard?.portfolio?.data?.positions?.[0]?.symbol;
+    return h("div", null,
+      statusRegion,
+      h("header", { className: "topbar" },
+        h("div", null,
+          h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
+          h("h1", null, workspaceReady ? "내 자산" : "내 투자, 한눈에")),
+        h("div", { className: "topbar-actions" },
+          workspaceReady ? h(RiskPolicyPanel, {
+            policy: riskPolicy,
+            history: riskPolicyHistory,
+            open: riskOpen,
+            busy: Boolean(busy),
+            onToggle: () => setRiskOpen(value => !value),
+            onUpdate: riskPolicyUpdate,
+            onLoadHistory: riskPolicyLoadHistory
+          }) : null,
+          workspaceReady ? h(NotificationCenter, {
+            unreadCount,
+            notifications,
+            open: notificationsOpen,
+            busy: Boolean(busy),
+            onToggle: notificationsToggle,
+            onMarkRead: notificationMarkRead
+          }) : null,
+          h("button", {
+            type: "button", className: "secondary",
+            // 로그아웃이 실패해도 로컬 세션을 반드시 폐기해 탈출구를 보장한다.
+            onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
+          }, "로그아웃"))),
+      workspaceReady ? h(RouteNav, { symbol: homeSymbol }) : null,
+      error ? h("p", { className: "error", role: "alert" }, error) : null,
+      !workspaceReady ? h("main", { className: "onboarding-wrap landing-shell" },
+        h("div", { className: "landing-copy" },
+          h("p", { className: "landing-kicker" }, "미국주식 투자 관리"),
+          h("h2", null, "오늘의 투자를\n더 또렷하게"),
+          h("p", null, "토스증권 계좌를 연결하면 자산, 위험, 분석을 필요한 순간에만 보여드립니다.")),
+        h(BrokerOnboarding, {
+          connection,
+          connectionId: connectionId.trim(),
+          busyAction: busy,
+          onCredentials: credentialsAction,
+          onCommand: brokerAction
+        }),
+        h("details", { className: "connection-picker" },
+          h("summary", null, "기존 연결 불러오기"),
+          h("form", { className: "connection-form", onSubmit: event => {
+            event.preventDefault(); openWorkspace(connectionId);
+          } },
+            h("label", { htmlFor: "connection-id" }, "연결 ID"),
+            h("div", null,
+              h("input", {
+                id: "connection-id",
+                value: connectionId,
+                onChange: event => setConnectionId(event.target.value),
+                placeholder: "연결 ID를 입력하세요",
+                required: true
+              }),
+              h("button", {
+                type: "submit",
+                disabled: workspaceStatus === "loading" || Boolean(busy)
+              }, "불러오기"))))) : null,
+      workspaceReady ? h("div", { className: "workspace-content" },
+        approvalOrder
+          ? h(OrderApprovalPanel, {
+            order: approvalOrder,
+            busy: busyOrderIds.has(approvalOrder.id),
+            error: approvalError,
+            onConfirm: displayed => runOrderCommand(approvalOrder.id, "approve", displayed),
+            onReject: () => runOrderCommand(approvalOrder.id, "cancel"),
+            onClose: () => {
+              setApprovalOrder(null);
+              setApprovalError(null);
+            }
+          })
+          : null,
+        h(DashboardView, {
+          dashboard,
+          busyOrderId: busyOrderIds,
+          onOrderAction: orderAction
+        })) : null);
+  }
   return h("div", null,
-    // 비동기 갱신 결과를 보조기술에 알리는 단일 라이브 영역.
-    h("div", {
-      role: "status", "aria-live": "polite", "aria-atomic": "true",
-      style: {
-        position: "absolute", width: "1px", height: "1px", padding: 0, margin: "-1px",
-        overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0
-      }
-    }, liveMessage),
+    statusRegion,
     h("header", { className: "topbar" },
       h("div", null,
         h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
@@ -711,7 +917,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       h("button", {
         type: "button", className: "secondary",
         // 로그아웃이 실패해도 로컬 세션을 반드시 폐기해 탈출구를 보장한다.
-        onClick: () => Promise.resolve().then(logout).catch(() => {}).finally(() => setSession(null))
+        onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
       }, "로그아웃")),
     h(RouteNav, { symbol: stockSymbol }),
     h("section", { "aria-label": "계좌 연결" },
@@ -724,7 +930,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
             id: "route-connection-id", name: "connectionId", value: connectionId,
             onChange: event => setConnectionId(event.target.value)
           }),
-          h("button", { type: "submit", disabled: Boolean(busy) }, "열기"))),
+          h("button", {
+            type: "submit",
+            // 워크스페이스 로드 중에도 "열기" 를 비활성해 진행 중임을 알린다(D-35).
+            disabled: workspaceStatus === "loading" || Boolean(busy)
+          }, "열기"))),
       ErrorMessage({ value: error })),
     routeContent());
 }

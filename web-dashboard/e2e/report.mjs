@@ -23,20 +23,47 @@ function esc(value) {
   return String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 
+// The colour scheme is encoded in the Playwright project name (`vp-360` vs
+// `vp-360-dark`), so every record carries it without a fixture change. Splitting
+// it back out keeps the report readable and makes a dark-only regression obvious
+// instead of hiding it among twice as many rows.
+function schemeOf(viewport) {
+  return String(viewport ?? "").endsWith("-dark") ? "dark" : "light";
+}
+
 function stateMatrixTable(records) {
   const header =
-    "| route | state | viewport | overflow(px) | consoleErr | pageErr | assertFail | forbidden |\n" +
-    "|---|---|---|---|---|---|---|---|";
+    "| route | state | viewport | scheme | overflow(px) | consoleErr | pageErr | assertFail | forbidden |\n" +
+    "|---|---|---|---|---|---|---|---|---|";
   const rows = records
     .sort((a, b) =>
       (a.route + a.state + a.viewport).localeCompare(b.route + b.state + b.viewport))
     .map(r => {
       const overflow = r.overflow ? Math.max(0, r.overflow.overflow) : "?";
-      return `| ${esc(r.route)} | ${esc(r.state)} | ${esc(r.viewport)} | ${overflow} | ` +
+      return `| ${esc(r.route)} | ${esc(r.state)} | ${esc(r.viewport)} | ` +
+        `${schemeOf(r.viewport)} | ${overflow} | ` +
         `${r.consoleErrors?.length ?? 0} | ${r.pageErrors?.length ?? 0} | ` +
         `${r.failures?.length ?? 0} | ${esc((r.forbiddenHits ?? []).join(",")) || "-"} |`;
     });
   return [header, ...rows].join("\n");
+}
+
+function bySchemeTable(stateRecords, axeRecords) {
+  const rows = ["light", "dark"].map(scheme => {
+    const states = stateRecords.filter(r => schemeOf(r.viewport) === scheme);
+    const axe = axeRecords.filter(r => schemeOf(r.viewport) === scheme);
+    const failures = states.filter(r => (r.failures?.length ?? 0) > 0).length;
+    const overflow = states.filter(
+      r => r.overflow && r.overflow.overflow > 1
+    ).length;
+    const violations = axe.reduce((sum, r) => sum + (r.violationCount ?? 0), 0);
+    return `| ${scheme} | ${states.length} | ${failures} | ${overflow} | ${violations} |`;
+  });
+  return [
+    "| scheme | combos | assertion failures | horizontal overflow | axe violations |",
+    "|---|---|---|---|---|",
+    ...rows
+  ].join("\n");
 }
 
 function failureDetail(records) {
@@ -158,6 +185,10 @@ Generated: ${new Date().toISOString()}
 - Combinations with console errors / page exceptions: **${withConsole}**
 - Total axe violations (all combos): **${totalAxe}**
 - Journeys recorded: **${journeyRecords.length}**
+
+## Light vs dark
+
+${bySchemeTable(stateRecords, axeRecords)}
 
 ## State matrix
 

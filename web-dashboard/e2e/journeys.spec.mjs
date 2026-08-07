@@ -5,6 +5,7 @@ import { expect, test } from "@playwright/test";
 import { collectDiagnostics, SCREENSHOTS_DIR, writeRecord } from "./fixtures/record.mjs";
 import {
   CONNECTION_ID,
+  freezeClock,
   fullDashboard,
   jsonResponse,
   primeAuth,
@@ -160,7 +161,7 @@ test("journey: analysis", async ({ page, context }) => {
       // COMPLETED/READY status to the Korean label "완료" (STATE_LABELS), so assert
       // on the value the user actually sees, not the raw backend code.
       const resultShown = await page
-        .locator('.surface-state.ready', { hasText: "완료" })
+        .locator('.badge-pill.badge-pill--ok', { hasText: "완료" })
         .first()
         .waitFor({ state: "visible", timeout: 6000 })
         .then(() => true)
@@ -203,6 +204,12 @@ test("journey: orders double-submit guard", async ({ page, context }) => {
   };
 
   await primeAuth(context, { withConnection: true });
+  // fullDashboard()'s proposals carry createdAt/expiresAt anchored to FROZEN_NOW_ISO
+  // (see state-matrix.spec.mjs) so their fresh/expiring/expired classification is
+  // deterministic. Without freezing the clock here too, the real wall clock makes
+  // every proposal look expired days after the anchor date, disabling "승인" and
+  // silently no-opping the click below.
+  await freezeClock(context);
 
   await page.route("**/api/v1/**", async route => {
     const req = route.request();

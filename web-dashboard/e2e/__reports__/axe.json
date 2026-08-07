@@ -1,10 +1,30 @@
 [
   {
     "kind": "axe",
+    "key": "events__empty__vp-1280-dark",
+    "route": "events",
+    "state": "empty",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__empty__vp-1280",
     "route": "events",
     "state": "empty",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__empty__vp-1440-dark",
+    "route": "events",
+    "state": "empty",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -21,10 +41,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__empty__vp-360-dark",
+    "route": "events",
+    "state": "empty",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__empty__vp-360",
     "route": "events",
     "state": "empty",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__empty__vp-768-dark",
+    "route": "events",
+    "state": "empty",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -41,10 +81,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__error__vp-1280-dark",
+    "route": "events",
+    "state": "error",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__error__vp-1280",
     "route": "events",
     "state": "error",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__error__vp-1440-dark",
+    "route": "events",
+    "state": "error",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -61,10 +121,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__error__vp-360-dark",
+    "route": "events",
+    "state": "error",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__error__vp-360",
     "route": "events",
     "state": "error",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__error__vp-768-dark",
+    "route": "events",
+    "state": "error",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -81,10 +161,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__loading__vp-1280-dark",
+    "route": "events",
+    "state": "loading",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__loading__vp-1280",
     "route": "events",
     "state": "loading",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__loading__vp-1440-dark",
+    "route": "events",
+    "state": "loading",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -101,10 +201,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__loading__vp-360-dark",
+    "route": "events",
+    "state": "loading",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__loading__vp-360",
     "route": "events",
     "state": "loading",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__loading__vp-768-dark",
+    "route": "events",
+    "state": "loading",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -121,10 +241,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__partial__vp-1280-dark",
+    "route": "events",
+    "state": "partial",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__partial__vp-1280",
     "route": "events",
     "state": "partial",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__partial__vp-1440-dark",
+    "route": "events",
+    "state": "partial",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -141,10 +281,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__partial__vp-360-dark",
+    "route": "events",
+    "state": "partial",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__partial__vp-360",
     "route": "events",
     "state": "partial",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__partial__vp-768-dark",
+    "route": "events",
+    "state": "partial",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -161,10 +321,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__stale__vp-1280-dark",
+    "route": "events",
+    "state": "stale",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__stale__vp-1280",
     "route": "events",
     "state": "stale",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__stale__vp-1440-dark",
+    "route": "events",
+    "state": "stale",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -181,10 +361,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__stale__vp-360-dark",
+    "route": "events",
+    "state": "stale",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__stale__vp-360",
     "route": "events",
     "state": "stale",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__stale__vp-768-dark",
+    "route": "events",
+    "state": "stale",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -201,10 +401,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__unauthorized__vp-1280-dark",
+    "route": "events",
+    "state": "unauthorized",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__unauthorized__vp-1280",
     "route": "events",
     "state": "unauthorized",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__unauthorized__vp-1440-dark",
+    "route": "events",
+    "state": "unauthorized",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -221,10 +441,30 @@
   },
   {
     "kind": "axe",
+    "key": "events__unauthorized__vp-360-dark",
+    "route": "events",
+    "state": "unauthorized",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "events__unauthorized__vp-360",
     "route": "events",
     "state": "unauthorized",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "events__unauthorized__vp-768-dark",
+    "route": "events",
+    "state": "unauthorized",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -241,10 +481,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__empty__vp-1280-dark",
+    "route": "home",
+    "state": "empty",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__empty__vp-1280",
     "route": "home",
     "state": "empty",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__empty__vp-1440-dark",
+    "route": "home",
+    "state": "empty",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -261,10 +521,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__empty__vp-360-dark",
+    "route": "home",
+    "state": "empty",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__empty__vp-360",
     "route": "home",
     "state": "empty",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__empty__vp-768-dark",
+    "route": "home",
+    "state": "empty",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -281,10 +561,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__error__vp-1280-dark",
+    "route": "home",
+    "state": "error",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__error__vp-1280",
     "route": "home",
     "state": "error",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__error__vp-1440-dark",
+    "route": "home",
+    "state": "error",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -301,10 +601,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__error__vp-360-dark",
+    "route": "home",
+    "state": "error",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__error__vp-360",
     "route": "home",
     "state": "error",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__error__vp-768-dark",
+    "route": "home",
+    "state": "error",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -321,10 +641,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__loading__vp-1280-dark",
+    "route": "home",
+    "state": "loading",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__loading__vp-1280",
     "route": "home",
     "state": "loading",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__loading__vp-1440-dark",
+    "route": "home",
+    "state": "loading",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -341,10 +681,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__loading__vp-360-dark",
+    "route": "home",
+    "state": "loading",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__loading__vp-360",
     "route": "home",
     "state": "loading",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__loading__vp-768-dark",
+    "route": "home",
+    "state": "loading",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -361,10 +721,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__partial__vp-1280-dark",
+    "route": "home",
+    "state": "partial",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__partial__vp-1280",
     "route": "home",
     "state": "partial",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__partial__vp-1440-dark",
+    "route": "home",
+    "state": "partial",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -381,10 +761,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__partial__vp-360-dark",
+    "route": "home",
+    "state": "partial",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__partial__vp-360",
     "route": "home",
     "state": "partial",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__partial__vp-768-dark",
+    "route": "home",
+    "state": "partial",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -401,10 +801,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__stale__vp-1280-dark",
+    "route": "home",
+    "state": "stale",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__stale__vp-1280",
     "route": "home",
     "state": "stale",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__stale__vp-1440-dark",
+    "route": "home",
+    "state": "stale",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -421,10 +841,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__stale__vp-360-dark",
+    "route": "home",
+    "state": "stale",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__stale__vp-360",
     "route": "home",
     "state": "stale",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__stale__vp-768-dark",
+    "route": "home",
+    "state": "stale",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -441,10 +881,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__unauthorized__vp-1280-dark",
+    "route": "home",
+    "state": "unauthorized",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__unauthorized__vp-1280",
     "route": "home",
     "state": "unauthorized",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__unauthorized__vp-1440-dark",
+    "route": "home",
+    "state": "unauthorized",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -461,10 +921,30 @@
   },
   {
     "kind": "axe",
+    "key": "home__unauthorized__vp-360-dark",
+    "route": "home",
+    "state": "unauthorized",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "home__unauthorized__vp-360",
     "route": "home",
     "state": "unauthorized",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "home__unauthorized__vp-768-dark",
+    "route": "home",
+    "state": "unauthorized",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -481,10 +961,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__empty__vp-1280-dark",
+    "route": "login",
+    "state": "empty",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__empty__vp-1280",
     "route": "login",
     "state": "empty",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__empty__vp-1440-dark",
+    "route": "login",
+    "state": "empty",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -501,10 +1001,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__empty__vp-360-dark",
+    "route": "login",
+    "state": "empty",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__empty__vp-360",
     "route": "login",
     "state": "empty",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__empty__vp-768-dark",
+    "route": "login",
+    "state": "empty",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -521,10 +1041,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__error__vp-1280-dark",
+    "route": "login",
+    "state": "error",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__error__vp-1280",
     "route": "login",
     "state": "error",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__error__vp-1440-dark",
+    "route": "login",
+    "state": "error",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -541,10 +1081,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__error__vp-360-dark",
+    "route": "login",
+    "state": "error",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__error__vp-360",
     "route": "login",
     "state": "error",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__error__vp-768-dark",
+    "route": "login",
+    "state": "error",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -561,10 +1121,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__loading__vp-1280-dark",
+    "route": "login",
+    "state": "loading",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__loading__vp-1280",
     "route": "login",
     "state": "loading",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__loading__vp-1440-dark",
+    "route": "login",
+    "state": "loading",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -581,10 +1161,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__loading__vp-360-dark",
+    "route": "login",
+    "state": "loading",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__loading__vp-360",
     "route": "login",
     "state": "loading",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__loading__vp-768-dark",
+    "route": "login",
+    "state": "loading",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -601,10 +1201,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__partial__vp-1280-dark",
+    "route": "login",
+    "state": "partial",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__partial__vp-1280",
     "route": "login",
     "state": "partial",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__partial__vp-1440-dark",
+    "route": "login",
+    "state": "partial",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -621,10 +1241,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__partial__vp-360-dark",
+    "route": "login",
+    "state": "partial",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__partial__vp-360",
     "route": "login",
     "state": "partial",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__partial__vp-768-dark",
+    "route": "login",
+    "state": "partial",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -641,10 +1281,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__stale__vp-1280-dark",
+    "route": "login",
+    "state": "stale",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__stale__vp-1280",
     "route": "login",
     "state": "stale",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__stale__vp-1440-dark",
+    "route": "login",
+    "state": "stale",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -661,10 +1321,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__stale__vp-360-dark",
+    "route": "login",
+    "state": "stale",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__stale__vp-360",
     "route": "login",
     "state": "stale",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__stale__vp-768-dark",
+    "route": "login",
+    "state": "stale",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -681,10 +1361,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__unauthorized__vp-1280-dark",
+    "route": "login",
+    "state": "unauthorized",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__unauthorized__vp-1280",
     "route": "login",
     "state": "unauthorized",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__unauthorized__vp-1440-dark",
+    "route": "login",
+    "state": "unauthorized",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -701,10 +1401,30 @@
   },
   {
     "kind": "axe",
+    "key": "login__unauthorized__vp-360-dark",
+    "route": "login",
+    "state": "unauthorized",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "login__unauthorized__vp-360",
     "route": "login",
     "state": "unauthorized",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "login__unauthorized__vp-768-dark",
+    "route": "login",
+    "state": "unauthorized",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -721,10 +1441,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__empty__vp-1280-dark",
+    "route": "orders",
+    "state": "empty",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__empty__vp-1280",
     "route": "orders",
     "state": "empty",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__empty__vp-1440-dark",
+    "route": "orders",
+    "state": "empty",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -741,10 +1481,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__empty__vp-360-dark",
+    "route": "orders",
+    "state": "empty",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__empty__vp-360",
     "route": "orders",
     "state": "empty",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__empty__vp-768-dark",
+    "route": "orders",
+    "state": "empty",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -761,10 +1521,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__error__vp-1280-dark",
+    "route": "orders",
+    "state": "error",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__error__vp-1280",
     "route": "orders",
     "state": "error",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__error__vp-1440-dark",
+    "route": "orders",
+    "state": "error",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -781,10 +1561,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__error__vp-360-dark",
+    "route": "orders",
+    "state": "error",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__error__vp-360",
     "route": "orders",
     "state": "error",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__error__vp-768-dark",
+    "route": "orders",
+    "state": "error",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -801,10 +1601,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__loading__vp-1280-dark",
+    "route": "orders",
+    "state": "loading",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__loading__vp-1280",
     "route": "orders",
     "state": "loading",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__loading__vp-1440-dark",
+    "route": "orders",
+    "state": "loading",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -821,10 +1641,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__loading__vp-360-dark",
+    "route": "orders",
+    "state": "loading",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__loading__vp-360",
     "route": "orders",
     "state": "loading",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__loading__vp-768-dark",
+    "route": "orders",
+    "state": "loading",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -841,10 +1681,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__partial__vp-1280-dark",
+    "route": "orders",
+    "state": "partial",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__partial__vp-1280",
     "route": "orders",
     "state": "partial",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__partial__vp-1440-dark",
+    "route": "orders",
+    "state": "partial",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -861,10 +1721,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__partial__vp-360-dark",
+    "route": "orders",
+    "state": "partial",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__partial__vp-360",
     "route": "orders",
     "state": "partial",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__partial__vp-768-dark",
+    "route": "orders",
+    "state": "partial",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -881,10 +1761,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__stale__vp-1280-dark",
+    "route": "orders",
+    "state": "stale",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__stale__vp-1280",
     "route": "orders",
     "state": "stale",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__stale__vp-1440-dark",
+    "route": "orders",
+    "state": "stale",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -901,10 +1801,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__stale__vp-360-dark",
+    "route": "orders",
+    "state": "stale",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__stale__vp-360",
     "route": "orders",
     "state": "stale",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__stale__vp-768-dark",
+    "route": "orders",
+    "state": "stale",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -921,10 +1841,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__unauthorized__vp-1280-dark",
+    "route": "orders",
+    "state": "unauthorized",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__unauthorized__vp-1280",
     "route": "orders",
     "state": "unauthorized",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__unauthorized__vp-1440-dark",
+    "route": "orders",
+    "state": "unauthorized",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -941,10 +1881,30 @@
   },
   {
     "kind": "axe",
+    "key": "orders__unauthorized__vp-360-dark",
+    "route": "orders",
+    "state": "unauthorized",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "orders__unauthorized__vp-360",
     "route": "orders",
     "state": "unauthorized",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "orders__unauthorized__vp-768-dark",
+    "route": "orders",
+    "state": "unauthorized",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -961,10 +1921,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__empty__vp-1280-dark",
+    "route": "portfolio",
+    "state": "empty",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__empty__vp-1280",
     "route": "portfolio",
     "state": "empty",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__empty__vp-1440-dark",
+    "route": "portfolio",
+    "state": "empty",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -981,10 +1961,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__empty__vp-360-dark",
+    "route": "portfolio",
+    "state": "empty",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__empty__vp-360",
     "route": "portfolio",
     "state": "empty",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__empty__vp-768-dark",
+    "route": "portfolio",
+    "state": "empty",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1001,10 +2001,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__error__vp-1280-dark",
+    "route": "portfolio",
+    "state": "error",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__error__vp-1280",
     "route": "portfolio",
     "state": "error",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__error__vp-1440-dark",
+    "route": "portfolio",
+    "state": "error",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1021,10 +2041,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__error__vp-360-dark",
+    "route": "portfolio",
+    "state": "error",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__error__vp-360",
     "route": "portfolio",
     "state": "error",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__error__vp-768-dark",
+    "route": "portfolio",
+    "state": "error",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1041,10 +2081,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__loading__vp-1280-dark",
+    "route": "portfolio",
+    "state": "loading",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__loading__vp-1280",
     "route": "portfolio",
     "state": "loading",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__loading__vp-1440-dark",
+    "route": "portfolio",
+    "state": "loading",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1061,10 +2121,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__loading__vp-360-dark",
+    "route": "portfolio",
+    "state": "loading",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__loading__vp-360",
     "route": "portfolio",
     "state": "loading",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__loading__vp-768-dark",
+    "route": "portfolio",
+    "state": "loading",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1081,10 +2161,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__partial__vp-1280-dark",
+    "route": "portfolio",
+    "state": "partial",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__partial__vp-1280",
     "route": "portfolio",
     "state": "partial",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__partial__vp-1440-dark",
+    "route": "portfolio",
+    "state": "partial",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1101,10 +2201,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__partial__vp-360-dark",
+    "route": "portfolio",
+    "state": "partial",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__partial__vp-360",
     "route": "portfolio",
     "state": "partial",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__partial__vp-768-dark",
+    "route": "portfolio",
+    "state": "partial",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1121,10 +2241,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__stale__vp-1280-dark",
+    "route": "portfolio",
+    "state": "stale",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__stale__vp-1280",
     "route": "portfolio",
     "state": "stale",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__stale__vp-1440-dark",
+    "route": "portfolio",
+    "state": "stale",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1141,10 +2281,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__stale__vp-360-dark",
+    "route": "portfolio",
+    "state": "stale",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__stale__vp-360",
     "route": "portfolio",
     "state": "stale",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__stale__vp-768-dark",
+    "route": "portfolio",
+    "state": "stale",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1161,10 +2321,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__unauthorized__vp-1280-dark",
+    "route": "portfolio",
+    "state": "unauthorized",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__unauthorized__vp-1280",
     "route": "portfolio",
     "state": "unauthorized",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__unauthorized__vp-1440-dark",
+    "route": "portfolio",
+    "state": "unauthorized",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1181,10 +2361,30 @@
   },
   {
     "kind": "axe",
+    "key": "portfolio__unauthorized__vp-360-dark",
+    "route": "portfolio",
+    "state": "unauthorized",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "portfolio__unauthorized__vp-360",
     "route": "portfolio",
     "state": "unauthorized",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "portfolio__unauthorized__vp-768-dark",
+    "route": "portfolio",
+    "state": "unauthorized",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1201,10 +2401,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__empty__vp-1280-dark",
+    "route": "predictions",
+    "state": "empty",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__empty__vp-1280",
     "route": "predictions",
     "state": "empty",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__empty__vp-1440-dark",
+    "route": "predictions",
+    "state": "empty",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1221,10 +2441,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__empty__vp-360-dark",
+    "route": "predictions",
+    "state": "empty",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__empty__vp-360",
     "route": "predictions",
     "state": "empty",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__empty__vp-768-dark",
+    "route": "predictions",
+    "state": "empty",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1241,10 +2481,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__error__vp-1280-dark",
+    "route": "predictions",
+    "state": "error",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__error__vp-1280",
     "route": "predictions",
     "state": "error",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__error__vp-1440-dark",
+    "route": "predictions",
+    "state": "error",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1261,10 +2521,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__error__vp-360-dark",
+    "route": "predictions",
+    "state": "error",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__error__vp-360",
     "route": "predictions",
     "state": "error",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__error__vp-768-dark",
+    "route": "predictions",
+    "state": "error",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1281,10 +2561,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__loading__vp-1280-dark",
+    "route": "predictions",
+    "state": "loading",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__loading__vp-1280",
     "route": "predictions",
     "state": "loading",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__loading__vp-1440-dark",
+    "route": "predictions",
+    "state": "loading",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1301,10 +2601,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__loading__vp-360-dark",
+    "route": "predictions",
+    "state": "loading",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__loading__vp-360",
     "route": "predictions",
     "state": "loading",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__loading__vp-768-dark",
+    "route": "predictions",
+    "state": "loading",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1321,10 +2641,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__partial__vp-1280-dark",
+    "route": "predictions",
+    "state": "partial",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__partial__vp-1280",
     "route": "predictions",
     "state": "partial",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__partial__vp-1440-dark",
+    "route": "predictions",
+    "state": "partial",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1341,10 +2681,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__partial__vp-360-dark",
+    "route": "predictions",
+    "state": "partial",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__partial__vp-360",
     "route": "predictions",
     "state": "partial",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__partial__vp-768-dark",
+    "route": "predictions",
+    "state": "partial",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1361,10 +2721,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__stale__vp-1280-dark",
+    "route": "predictions",
+    "state": "stale",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__stale__vp-1280",
     "route": "predictions",
     "state": "stale",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__stale__vp-1440-dark",
+    "route": "predictions",
+    "state": "stale",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1381,10 +2761,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__stale__vp-360-dark",
+    "route": "predictions",
+    "state": "stale",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__stale__vp-360",
     "route": "predictions",
     "state": "stale",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__stale__vp-768-dark",
+    "route": "predictions",
+    "state": "stale",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1401,10 +2801,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__unauthorized__vp-1280-dark",
+    "route": "predictions",
+    "state": "unauthorized",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__unauthorized__vp-1280",
     "route": "predictions",
     "state": "unauthorized",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__unauthorized__vp-1440-dark",
+    "route": "predictions",
+    "state": "unauthorized",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1421,10 +2841,30 @@
   },
   {
     "kind": "axe",
+    "key": "predictions__unauthorized__vp-360-dark",
+    "route": "predictions",
+    "state": "unauthorized",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "predictions__unauthorized__vp-360",
     "route": "predictions",
     "state": "unauthorized",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "predictions__unauthorized__vp-768-dark",
+    "route": "predictions",
+    "state": "unauthorized",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1441,10 +2881,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__empty__vp-1280-dark",
+    "route": "settings",
+    "state": "empty",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__empty__vp-1280",
     "route": "settings",
     "state": "empty",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__empty__vp-1440-dark",
+    "route": "settings",
+    "state": "empty",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1461,10 +2921,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__empty__vp-360-dark",
+    "route": "settings",
+    "state": "empty",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__empty__vp-360",
     "route": "settings",
     "state": "empty",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__empty__vp-768-dark",
+    "route": "settings",
+    "state": "empty",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1481,10 +2961,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__error__vp-1280-dark",
+    "route": "settings",
+    "state": "error",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__error__vp-1280",
     "route": "settings",
     "state": "error",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__error__vp-1440-dark",
+    "route": "settings",
+    "state": "error",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1501,10 +3001,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__error__vp-360-dark",
+    "route": "settings",
+    "state": "error",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__error__vp-360",
     "route": "settings",
     "state": "error",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__error__vp-768-dark",
+    "route": "settings",
+    "state": "error",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1521,10 +3041,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__loading__vp-1280-dark",
+    "route": "settings",
+    "state": "loading",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__loading__vp-1280",
     "route": "settings",
     "state": "loading",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__loading__vp-1440-dark",
+    "route": "settings",
+    "state": "loading",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1541,10 +3081,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__loading__vp-360-dark",
+    "route": "settings",
+    "state": "loading",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__loading__vp-360",
     "route": "settings",
     "state": "loading",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__loading__vp-768-dark",
+    "route": "settings",
+    "state": "loading",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1561,10 +3121,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__partial__vp-1280-dark",
+    "route": "settings",
+    "state": "partial",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__partial__vp-1280",
     "route": "settings",
     "state": "partial",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__partial__vp-1440-dark",
+    "route": "settings",
+    "state": "partial",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1581,10 +3161,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__partial__vp-360-dark",
+    "route": "settings",
+    "state": "partial",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__partial__vp-360",
     "route": "settings",
     "state": "partial",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__partial__vp-768-dark",
+    "route": "settings",
+    "state": "partial",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1601,10 +3201,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__stale__vp-1280-dark",
+    "route": "settings",
+    "state": "stale",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__stale__vp-1280",
     "route": "settings",
     "state": "stale",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__stale__vp-1440-dark",
+    "route": "settings",
+    "state": "stale",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1621,10 +3241,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__stale__vp-360-dark",
+    "route": "settings",
+    "state": "stale",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__stale__vp-360",
     "route": "settings",
     "state": "stale",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__stale__vp-768-dark",
+    "route": "settings",
+    "state": "stale",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1641,10 +3281,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__unauthorized__vp-1280-dark",
+    "route": "settings",
+    "state": "unauthorized",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__unauthorized__vp-1280",
     "route": "settings",
     "state": "unauthorized",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__unauthorized__vp-1440-dark",
+    "route": "settings",
+    "state": "unauthorized",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1661,10 +3321,30 @@
   },
   {
     "kind": "axe",
+    "key": "settings__unauthorized__vp-360-dark",
+    "route": "settings",
+    "state": "unauthorized",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "settings__unauthorized__vp-360",
     "route": "settings",
     "state": "unauthorized",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "settings__unauthorized__vp-768-dark",
+    "route": "settings",
+    "state": "unauthorized",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1681,10 +3361,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__empty__vp-1280-dark",
+    "route": "stocks-AAPL",
+    "state": "empty",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__empty__vp-1280",
     "route": "stocks-AAPL",
     "state": "empty",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__empty__vp-1440-dark",
+    "route": "stocks-AAPL",
+    "state": "empty",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1701,10 +3401,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__empty__vp-360-dark",
+    "route": "stocks-AAPL",
+    "state": "empty",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__empty__vp-360",
     "route": "stocks-AAPL",
     "state": "empty",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__empty__vp-768-dark",
+    "route": "stocks-AAPL",
+    "state": "empty",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1721,10 +3441,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__error__vp-1280-dark",
+    "route": "stocks-AAPL",
+    "state": "error",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__error__vp-1280",
     "route": "stocks-AAPL",
     "state": "error",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__error__vp-1440-dark",
+    "route": "stocks-AAPL",
+    "state": "error",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1741,10 +3481,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__error__vp-360-dark",
+    "route": "stocks-AAPL",
+    "state": "error",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__error__vp-360",
     "route": "stocks-AAPL",
     "state": "error",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__error__vp-768-dark",
+    "route": "stocks-AAPL",
+    "state": "error",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1761,10 +3521,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__loading__vp-1280-dark",
+    "route": "stocks-AAPL",
+    "state": "loading",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__loading__vp-1280",
     "route": "stocks-AAPL",
     "state": "loading",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__loading__vp-1440-dark",
+    "route": "stocks-AAPL",
+    "state": "loading",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1781,10 +3561,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__loading__vp-360-dark",
+    "route": "stocks-AAPL",
+    "state": "loading",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__loading__vp-360",
     "route": "stocks-AAPL",
     "state": "loading",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__loading__vp-768-dark",
+    "route": "stocks-AAPL",
+    "state": "loading",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1801,10 +3601,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__partial__vp-1280-dark",
+    "route": "stocks-AAPL",
+    "state": "partial",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__partial__vp-1280",
     "route": "stocks-AAPL",
     "state": "partial",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__partial__vp-1440-dark",
+    "route": "stocks-AAPL",
+    "state": "partial",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1821,10 +3641,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__partial__vp-360-dark",
+    "route": "stocks-AAPL",
+    "state": "partial",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__partial__vp-360",
     "route": "stocks-AAPL",
     "state": "partial",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__partial__vp-768-dark",
+    "route": "stocks-AAPL",
+    "state": "partial",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1841,10 +3681,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__stale__vp-1280-dark",
+    "route": "stocks-AAPL",
+    "state": "stale",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__stale__vp-1280",
     "route": "stocks-AAPL",
     "state": "stale",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__stale__vp-1440-dark",
+    "route": "stocks-AAPL",
+    "state": "stale",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1861,10 +3721,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__stale__vp-360-dark",
+    "route": "stocks-AAPL",
+    "state": "stale",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__stale__vp-360",
     "route": "stocks-AAPL",
     "state": "stale",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__stale__vp-768-dark",
+    "route": "stocks-AAPL",
+    "state": "stale",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1881,10 +3761,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__unauthorized__vp-1280-dark",
+    "route": "stocks-AAPL",
+    "state": "unauthorized",
+    "viewport": "vp-1280-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__unauthorized__vp-1280",
     "route": "stocks-AAPL",
     "state": "unauthorized",
     "viewport": "vp-1280",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__unauthorized__vp-1440-dark",
+    "route": "stocks-AAPL",
+    "state": "unauthorized",
+    "viewport": "vp-1440-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []
@@ -1901,10 +3801,30 @@
   },
   {
     "kind": "axe",
+    "key": "stocks-AAPL__unauthorized__vp-360-dark",
+    "route": "stocks-AAPL",
+    "state": "unauthorized",
+    "viewport": "vp-360-dark",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
     "key": "stocks-AAPL__unauthorized__vp-360",
     "route": "stocks-AAPL",
     "state": "unauthorized",
     "viewport": "vp-360",
+    "axeError": "",
+    "violationCount": 0,
+    "violations": []
+  },
+  {
+    "kind": "axe",
+    "key": "stocks-AAPL__unauthorized__vp-768-dark",
+    "route": "stocks-AAPL",
+    "state": "unauthorized",
+    "viewport": "vp-768-dark",
     "axeError": "",
     "violationCount": 0,
     "violations": []

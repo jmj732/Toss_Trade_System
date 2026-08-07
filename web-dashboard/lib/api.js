@@ -26,6 +26,9 @@ async function body(response) {
     // D-02: step-up 재인증 요구를 별도 예외로 승격해 승인 화면이 재인증을 유도할 수 있게 한다.
     error.stepUpRequired = true;
     error.message = "재인증이 필요합니다. 본인 확인 후 다시 승인해 주세요.";
+  } else if (error.code === "PAPER_ORDER_PROPOSAL_EXPIRED") {
+    // D-42: 만료된 제안 승인은 409 로 거부된다. 재시도해도 성공하지 않는다.
+    error.message = "이 주문 제안은 만료되어 승인할 수 없습니다.";
   } else if (error.status === 401) {
     // D-14: 인증 소실은 한국어 재로그인 안내로 노출한다.
     error.message = "세션이 만료되었습니다. 다시 로그인해 주세요.";

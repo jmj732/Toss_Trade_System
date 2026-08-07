@@ -234,3 +234,95 @@
 ### R-06 콘솔 에러 56 조합
 
 전부 의도된 목 응답(500/401)의 리소스 로드 실패. **페이지 예외(`pageErrors`)는 0건** — 런타임 크래시는 없음.
+
+---
+
+## 4. P2/P3 클로즈아웃
+
+- 브랜치: `chore/ui-ux-p2-p3-closeout` (base: `design/modular-monolith-architecture`, `52b53c8` 이후)
+- 클로즈아웃일: 2026-08-07
+- 범위: 위 감사의 미해결 P2/P3 전량 재검증 + 조치. P0/P1 은 `52b53c8`에서 이미 복구됨(재검증만 수행).
+
+### 재검증 방법
+
+`52b53c8`가 `globals.css`·모든 컴포넌트를 대폭 고쳐 원 감사의 file:line 참조가 대부분 무효화됐다. 각 P2/P3 항목을 현재 코드 기준으로 다시 대조해 **완료 / 부분완료 / 잔존 / 사문화**로 재분류한 뒤, 잔존 항목만 조치했다.
+
+### 1절(시각·접근성) 재검증 결과
+
+`52b53c8`가 이미 해소: V-21~28, V-30~35, V-38, V-39, V-41, V-42, V-44~46, V-50, V-51 (다크 스킴 토큰 세트와 `prefers-reduced-motion` 포함).
+
+이번에 조치한 잔존 7건:
+
+| # | 문제 | 조치 |
+|---|---|---|
+| V-36 | 배지 4계열 중복(`.quality span`/`.surface-state`/`.customized`·`.default`) | 단일 `.badge-pill` + `--ok`/`--info`/`--warn`/`--danger`/`--neutral` modifier 로 통합. 기존 텍스트 전용 토큰만 재사용(신규 hex 없음), light/dark 대비 ≥4.5:1 유지. `DashboardView`가 아직 내보내는 `.quality .stale/.unknown/.unavailable/.available/.partial` 5개 클래스는 특이도 누수 방지를 위해 그 5개로만 스코프해 존치 |
+| V-37 | quality 어휘가 화면마다 영/한 혼용 | `portfolio-history-view.js` 를 `dashboard-view.js` 와 동일한 한국어(지연/확인 필요/불러오기 실패/최신)로 통일 |
+| V-29 | 알림·리스크 정책 드롭다운에 `aria-controls` 없음, Esc 닫기 없음 | 패널에 `useId()` id 부여 + `aria-controls` 연결, 열려 있을 때만 Escape 리스너 부착(정리 포함) |
+| V-40 | `<details>` 열림 상태에 `+`→`−` 전환 없음 | `[open] summary::before` 규칙 추가 |
+| V-43 | 패널 헤더 정렬용 `.quality` 를 `<p>` 오용(BASELINE 배지가 우측 정렬로 밀림) | `.badge-pill--neutral` 로 교체 |
+| V-47 | `onboarding-connected` 클래스가 대응 CSS 규칙 없이 JS 에만 존재 | 규칙 신설 대신 JS 에서 클래스 제거(연결 상태에 필요한 실제 스타일이 없어 신설 시 또 다른 미사용 표면이 생김) |
+| V-48 | `PaperPerformanceView`·`loadPaperPerformance` 완성됐지만 어디서도 마운트 안 됨 | `/predictions` 라우트에 배선, 기존 3개 로드와 동일한 `Promise.allSettled` 부분 성공 패턴 적용 |
+
+### 2절(거래 도메인) 재검증 결과
+
+`52b53c8`가 이미 해소: D-21~34, D-37, D-39, D-40.
+
+이번에 조치한 잔존 6건:
+
+| # | 문제 | 조치 |
+|---|---|---|
+| D-03 | `pendingProposals` 조회가 `WHERE status='PROPOSED'` 로 고정돼 13종 중 12종이 화면에 도달 불가 | 백엔드: `status = ANY(?)` 바운드 배열 필터(SQL 삽입 없음) + `orderStatus` 쿼리 파라미터(미인식 값은 400 `INVALID_ORDER_STATUS`, 기본은 종결 4종을 뺀 OPEN 9종). 프론트: 13종 전부 한국어 라벨 + `badge-pill` 상태 매핑, 미등록 값은 `알 수 없는 상태: X` 노출. **승인·취소 버튼은 `status==="PROPOSED"` 일 때만 활성** — 새로 노출된 상태는 전부 표시 전용(1차 구현에서 이 게이트가 빠져 있던 걸 재검토 중 발견해 직접 수정) |
+| D-42 | 제안 생성·만료 시각이 계약에 없어 화면에 기준 시각을 못 보여줌 | 백엔드: `order_intents` 에 `created_at`/`expires_at` 컬럼 추가(V39, 기존 행은 NULL 유지·조작 없음), 제안 생성 시 `order.proposal.ttl`(기본 `PT15M`)로 스탬프, 승인 시 만료면 409 `PAPER_ORDER_PROPOSAL_EXPIRED` 로 거절(취소는 계속 허용). 프론트: 주문 3개 화면(목록 2곳 + 승인 패널)에 기준/만료 시각과 fresh/expiring/expired/unknown 배지 표시, 만료 시 승인 버튼을 서버 응답 전에 클라이언트에서 먼저 비활성화 |
+| D-36 | `/` 와 나머지 6개 라우트가 서로 다른 두 SPA(`page.js`/`route-workspace.js`)로 구현돼 안전장치가 라우트마다 달랐음 | `RouteWorkspace` 에 `route:"home"` 분기를 추가해 `page.js` 를 9줄 얇은 마운트로 축소. 단일 실행(mutation) 래핑·삭제 확인·`aria-live`·부분 성공 로딩을 전 라우트로 통일. `/` 는 저장된 연결을 자동 복구하지 않는 기존 진입 동작(랜딩 우선)을 그대로 보존 |
+| D-35 | `openWorkspace` 로딩 중에도 "열기" 버튼이 계속 활성 | `workspaceStatus==="loading"` 을 disabled 조건에 포함 |
+| D-38 | 심볼 미상 시 로그인 후 이동 경로가 보유하지 않을 수 있는 `/stocks/AAPL` 로 고정 | 심볼 없으면 `/` 로 이동(종목 네비 항목은 기존대로 비활성 표시 유지) |
+| — | V-49 발급 API 키를 상태로 보관해 한 번 노출 후 저장소에 남기지 않음 | (거래 도메인 절 항목은 아니나 같은 D-36 작업의 연장선) |
+
+### 조치하지 않은 항목
+
+- V-48/D-42 의 백엔드 스키마 변경 외 계약 추가는 없음 — 요청 범위(D-03/D-42) 밖.
+- `.quality` 유틸을 `DashboardView` 자체에서 `.badge-pill` 로 완전히 옮기는 작업은 하지 않음: `DashboardView` 는 다른 작업 스트림 소유였고, V-36 의 요구는 "중복 계열 통합"이지 전체 재작성이 아니었음. 현재 CSS 는 두 표기를 스코프로 분리해 충돌 없이 공존.
+
+### 다크 스킴 e2e 커버리지 신설
+
+`52b53c8` 가 `prefers-color-scheme: dark` 토큰 세트를 이미 출하했지만 e2e 매트릭스는 light 만 검증했다. `playwright.config.mjs` 뷰포트 4종을 `colorScheme: light|dark` 축과 곱해 프로젝트 4→8개로 확장(`vp-360`~`vp-1440` 는 기존 이름 유지해 이미 승인된 192개 light baseline 을 보존, `-dark` 접미사가 새 파일로 분리). `e2e/report.mjs` 에 scheme 별 집계 절을 추가.
+
+### 클로즈아웃 중 발견한 결함 2건 (자체 재검증)
+
+1. **D-03 승인·취소 게이트 누락** — 상태 필터를 넓히면서 1차 구현이 승인·취소 버튼을 `status==="PROPOSED"` 로 되짚어 잠그는 걸 빠뜨렸다. 이 감사 문서(§2 총평)가 지적한 것과 같은 계열의 결함("서버가 검증하는 값을 클라이언트가 스스로 만들어 되돌려보내면 게이트가 무력화된다")이 여기서도 재현될 뻔했다: 화면에 APPROVED/ACTIVE/COMPLETED 등 이미 종결·확정된 주문까지 도달하게 됐는데, 승인·취소 버튼이 상태와 무관하게 활성 상태였다. 재검증 과정에서 발견해 `orders-view.js`/`dashboard-view.js` 양쪽에 `actionable = order.status==="PROPOSED"` 게이트를 추가하고 회귀 테스트를 넣었다.
+2. **`OrderTiming` 표기 붙음** — 기준·만료 두 시각을 별도 `<span>` 두 개로 렌더했는데 `.order-timing` 에 구분 스타일이 없어 "5분 전만료 2026-08-06…" 처럼 텍스트가 그대로 이어졌다. baseline 스크린샷 육안 대조 중 발견. 두 조각을 `" · "` 로 이은 단일 문자열로 합쳐 다른 요약 행과 동일한 구분자 관례를 따르게 했다.
+
+두 건 모두 baseline 재생성·육안 대조 단계에서 잡혔다 — 자동 게이트(단위 테스트·axe·오버플로 어서션)는 통과했지만 실제 화면은 틀렸던 사례로, `claudedocs/ui-review-criteria.md`의 "테스트가 전부 통과했다는 안전의 증거가 아니다" 원칙을 다시 확인시켰다.
+
+### 코드 리뷰 1패스 (병합 전 게이트)
+
+전체 diff에 대해 독립 리뷰를 수행하고, 지적된 특이도 주장은 브라우저에서 `getComputedStyle` 로 실측 대조했다(스크린샷 육안 확인만으로는 border-color 차이에 가려 text-color 결함을 놓쳤다).
+
+**수정함**
+
+| 등급 | 문제 | 조치 |
+|---|---|---|
+| HIGH | `LiveOrderActivationService` 가 propose 시 `expiresAt` 을 찍으면서도 approve 에서 전혀 검증하지 않음 — LIVE 주문 화면은 "만료됨" 배지로 승인을 막지만 서버는 직접 호출 시 그대로 승인. Phase 0 에서 `real-order.enabled=false` 로 도달 불가하나, PAPER 경로(D-42)와 대칭이 깨진 채 방치하면 향후 활성화 시점의 잠재 결함 | PAPER 와 동일한 지점(재조회·락 이후, step-up 소비 이전)에 만료 검증 추가, 새 코드 `PROPOSAL_EXPIRED`→409, NULL 만료는 그대로 승인 가능 유지. 회귀 테스트 3건(만료 후 거절+상태 불변+부작용 없음 / 만료 전 성공 / legacy NULL 승인 가능) |
+| MEDIUM | `.list span{color:var(--muted)}`(0,1,1) 이 `.badge-pill--*{color:...}`(0,1,0) 를 특이도로 눌러, orders/dashboard 목록 안 배지 텍스트가 상태와 무관하게 전부 회색으로 렌더 — V-36 이 만든 색 구분이 이 두 화면에서 무효화됨. 실측: 수정 전 전 상태 `rgb(90,100,114)` 동일값, 수정 후 `--ok/--info`→accent-text, `--warn`→warning-text, `--danger`→danger-text 로 분리 확인 | `.list .badge-pill--*`(0,2,0) 로 상태색 복원. baseline 재생성 |
+| MEDIUM | `OrderApprovalPanel` 확인 버튼이 만료는 막지만 `status==="PROPOSED"` 는 확인하지 않음 — 열려 있던 패널의 스냅샷이 다른 상태로 전이돼도 버튼이 막히지 않는 경로. 서버 재조회 락이 최종 방어선이라 실제 오발주로는 못 이어지지만 명시된 불변식과 불일치 | `isStatusActionable(order)`(`status==null \|\| status==="PROPOSED"`, `{id}` 폴백은 그대로 승인 가능) 추가, 회귀 테스트 2건 |
+| LOW | D-36 통합 과정에서 로그아웃 실패 사유가 조용히 삼켜짐(`page.js` 는 원래 노출) | `.catch(() => {})` → `.catch(value => setError(describeError(value.message)))`, 로컬 세션 폐기 보장은 그대로 |
+| LOW | 홈이 렌더하지 않는 `events` 조회 실패가 홈에도 페이지 오류 배너로 노출 | `route !== "home"` 일 때만 `listEvents` 조회·오류 반영 |
+
+**후속 과제로 남김** (병합 차단 아님, 발견됐지만 이번 범위 밖으로 판단):
+- `orderStatus` 기본 필터 확대 + `LIMIT` 불변 + `created_at DESC NULLS LAST` 조합이 legacy(NULL) 행과 비활성 상태 행에 밀려 실제 PROPOSED 행을 잘라낼 수 있음(정렬에 `status='PROPOSED'` 우선순위 또는 truncation 플래그 필요).
+- `classifyProposalExpiry(null)` 은 구조분해 시 TypeError(현재 모든 호출부가 non-null 이라 잠재적).
+- `RouteWorkspace` 와 `RiskPolicyPanel` 이 Escape 를 각각 처리해 이중 바인딩(현재는 우연히 안전).
+- 여러 개의 서로 다른 mutation 이 동시에 걸리면 단일 실행(single-flight)이 뒤의 것을 조용히 병합(버튼이 `busy` 로 막혀 있어 현재는 도달 어려움).
+
+### 최종 게이트 결과 (2026-08-07)
+
+| 게이트 | 결과 |
+|---|---|
+| `npm run lint:css` | 통과, 위반 0 |
+| `npm test` | **136 / 136** 통과 |
+| `npm run build` | 성공 |
+| `npm run e2e` (a11y, 8 프로젝트 × 8 route × 6 상태 = 384) | **384 / 384**, WCAG 2.2 AA 위반 **0** |
+| `npm run e2e` (state-matrix, 동일 384 조합) | **384 / 384**, 가로 오버플로·금지 토큰(`undefined`/`NaN`/`[object Object]`/`Invalid Date`)·에러 상태 재시도·미인증 재로그인 어서션 전부 통과, baseline 재생성(리뷰 수정 반영본으로 재생성) 완료 |
+| `npm run e2e` (journeys, vp-1280 전용 4종) | **4 / 4** 통과(로그인·분석·주문 승인 중복제출·오류 복구). 다른 7 프로젝트의 28건은 설계상 skip |
+| `npm run verify` (리뷰 수정 반영 후 최종 재실행) | **772 / 772** 통과, 0 실패 |
+| `trading-backend`: `./mvnw clean verify` (리뷰 수정 반영 후 최종) | **662 / 662** 통과 (`queryCountDoesNotGrowWithEventOrProposalRows` 불변식 유지 확인) |

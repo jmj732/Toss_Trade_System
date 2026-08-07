@@ -35,7 +35,7 @@ test("renders the default badge and prefilled limits when open and uncustomized"
     onLoadHistory() {}
   }));
 
-  assert.match(html, /class="default"[^>]*>DEFAULT/);
+  assert.match(html, /badge-pill--neutral[^>]*>DEFAULT/);
   assert.match(html, /value="10000000"/);
   assert.match(html, /value="0\.25"/);
 });
@@ -55,7 +55,7 @@ test("renders the custom badge once the user has saved a policy", () => {
     onLoadHistory() {}
   }));
 
-  assert.match(html, /class="customized"[^>]*>CUSTOM/);
+  assert.match(html, /badge-pill--info[^>]*>CUSTOM/);
 });
 
 test("lists change history entries", () => {

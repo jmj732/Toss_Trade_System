@@ -113,7 +113,7 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                         pendingEventA.toString(), pendingEventB.toString())))
                 .andExpect(jsonPath("$.pendingEvents.unavailable").value(false))
                 .andExpect(jsonPath("$.pendingOrderProposals.data[*].symbol",
-                        containsInAnyOrder("AAPL", "MSFT")))
+                        containsInAnyOrder("AAPL", "MSFT", "NVDA")))
                 .andExpect(jsonPath("$.pendingOrderProposals.unavailable").value(false));
     }
 
@@ -153,6 +153,85 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                         .with(user(OTHER_USER_ID.toString())))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
+    }
+
+    @Test
+    void defaultProposalFilterReturnsOpenStatusesAndExcludesClosedOnes() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertOrderWithStatus(connectionId, USER_ID, "OPEN1", "MANUAL_REVIEW_REQUIRED", TIME);
+        insertOrderWithStatus(connectionId, USER_ID, "OPEN2", "BLOCKED", TIME.plusSeconds(1));
+        insertOrderWithStatus(connectionId, USER_ID, "OPEN3", "ACTIVE", TIME.plusSeconds(2));
+        insertOrderWithStatus(connectionId, USER_ID, "CLOSED1", "COMPLETED", TIME);
+        insertOrderWithStatus(connectionId, USER_ID, "CLOSED2", "CANCELED", TIME);
+        insertOrderWithStatus(connectionId, USER_ID, "CLOSED3", "REJECTED", TIME);
+        insertOrderWithStatus(connectionId, USER_ID, "CLOSED4", "EXPIRED", TIME);
+
+        mockMvc.perform(get(
+                                "/api/v1/broker-connections/{connectionId}/dashboard",
+                                connectionId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pendingOrderProposals.data[*].symbol",
+                        containsInAnyOrder("OPEN1", "OPEN2", "OPEN3")));
+    }
+
+    @Test
+    void explicitOrderStatusFilterReturnsMatchingClosedRows() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertOrderWithStatus(connectionId, USER_ID, "DONE", "COMPLETED", TIME);
+        insertOrderWithStatus(connectionId, USER_ID, "OPEN", "PROPOSED", TIME);
+
+        mockMvc.perform(get(
+                                "/api/v1/broker-connections/{connectionId}/dashboard",
+                                connectionId)
+                        .param("orderStatus", "COMPLETED")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pendingOrderProposals.data[*].symbol",
+                        containsInAnyOrder("DONE")));
+    }
+
+    @Test
+    void unknownOrderStatusIsRejectedAsClientError() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+
+        mockMvc.perform(get(
+                                "/api/v1/broker-connections/{connectionId}/dashboard",
+                                connectionId)
+                        .param("orderStatus", "NOT_A_STATUS")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ORDER_STATUS"));
+    }
+
+    @Test
+    void orderStatusCraftedAsSqlFragmentDoesNotAlterQuery() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertOrderWithStatus(connectionId, USER_ID, "OPEN", "PROPOSED", TIME);
+
+        // 상태 이름이 SQL 로 삽입됐다면 이 조각이 필터를 무력화했을 것이다. 열거형 화이트리스트가
+        // 바인딩 이전에 400 으로 막으므로 쿼리는 결코 바뀌지 않는다.
+        mockMvc.perform(get(
+                                "/api/v1/broker-connections/{connectionId}/dashboard",
+                                connectionId)
+                        .param("orderStatus", "PROPOSED') OR ('1'='1")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ORDER_STATUS"));
+    }
+
+    @Test
+    void pendingProposalSerializesCreatedAtAndExpiresAt() throws Exception {
+        var connectionId = insertConnection(USER_ID);
+        insertOrderWithStatus(connectionId, USER_ID, "SYM", "PROPOSED", TIME);
+
+        mockMvc.perform(get(
+                                "/api/v1/broker-connections/{connectionId}/dashboard",
+                                connectionId)
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pendingOrderProposals.data[0].createdAt").exists())
+                .andExpect(jsonPath("$.pendingOrderProposals.data[0].expiresAt").exists());
     }
 
     @Test
@@ -354,6 +433,42 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                     side, order_type, symbol, limit_price, trading_currency, status, version
                 ) VALUES (?, ?, ?, ?, 1, 'BUY', 'MARKET', ?, NULL, 'USD', ?, 0)
                 """, UUID.randomUUID(), connectionId, userId, connectionId, symbol, status);
+    }
+
+    private void insertOrderWithStatus(
+            UUID connectionId,
+            UUID userId,
+            String symbol,
+            String status,
+            OffsetDateTime createdAt
+    ) {
+        jdbc.update("INSERT INTO broker_accounts (id) VALUES (?) ON CONFLICT DO NOTHING",
+                connectionId);
+        var expiresAt = createdAt == null ? null : createdAt.plusMinutes(15);
+        var terminal = java.util.Set.of(
+                "COMPLETED", "PARTIALLY_COMPLETED", "CANCELED", "REJECTED", "EXPIRED", "BLOCKED");
+        if (!terminal.contains(status)) {
+            jdbc.update("""
+                    INSERT INTO order_intents (
+                        id, broker_account_id, user_id, broker_connection_id, quantity,
+                        side, order_type, symbol, limit_price, trading_currency, status,
+                        created_at, expires_at, version
+                    ) VALUES (?, ?, ?, ?, 1, 'BUY', 'MARKET', ?, NULL, 'USD', ?, ?, ?, 0)
+                    """, UUID.randomUUID(), connectionId, userId, connectionId, symbol, status,
+                    createdAt, expiresAt);
+            return;
+        }
+        var filled = "COMPLETED".equals(status) ? 1 : 0;
+        var remaining = "COMPLETED".equals(status) ? 0 : 1;
+        jdbc.update("""
+                INSERT INTO order_intents (
+                    id, broker_account_id, user_id, broker_connection_id, quantity,
+                    side, order_type, symbol, limit_price, trading_currency, status,
+                    terminal_reason, terminal_at, final_filled_quantity, remaining_quantity,
+                    created_at, expires_at, version
+                ) VALUES (?, ?, ?, ?, 1, 'BUY', 'MARKET', ?, NULL, 'USD', ?, 'TEST', ?, ?, ?, ?, ?, 0)
+                """, UUID.randomUUID(), connectionId, userId, connectionId, symbol, status,
+                createdAt, filled, remaining, createdAt, expiresAt);
     }
 
     private int count(String table) {

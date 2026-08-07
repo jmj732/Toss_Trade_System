@@ -267,6 +267,24 @@ test("error body is preserved and step-up is promoted to a distinct failure", as
     });
 });
 
+test("a 409 PAPER_ORDER_PROPOSAL_EXPIRED carries the code and a Korean message (D-42)", async () => {
+  resetAuthForTest("access-token");
+  const expired = actOnProposal("order-1", "approve", {
+    displayed: { quantity: 1, maxLoss: 100, currency: "USD", proposalVersion: null }
+  }, async url => url.endsWith("/step-up")
+    ? json({ stepUpToken: "t" })
+    : json({ code: "PAPER_ORDER_PROPOSAL_EXPIRED" }, 409));
+
+  await expired.then(
+    () => assert.fail("expected rejection"),
+    error => {
+      assert.equal(error.status, 409);
+      assert.equal(error.code, "PAPER_ORDER_PROPOSAL_EXPIRED");
+      assert.equal(error.body.code, "PAPER_ORDER_PROPOSAL_EXPIRED");
+      assert.match(error.message, /만료되어 승인할 수 없습니다/);
+    });
+});
+
 test("logout posts the refresh-cookie endpoint", async () => {
   resetAuthForTest("access-token");
   let call;

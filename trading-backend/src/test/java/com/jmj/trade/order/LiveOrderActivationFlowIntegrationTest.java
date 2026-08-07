@@ -27,10 +27,12 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -119,6 +121,59 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
         assertThat(attempts.findById(result.attemptId()).orElseThrow().getConfirmedBrokerOrderId()).isNull();
     }
 
+    @Test
+    void approvingAnExpiredProposalIsRejectedAndLeavesItProposedWithoutApproval() {
+        var owner = owner();
+        var f = fixture(owner, BrokerOrderAck.accepted("toss-order-expired", "client-expired"));
+        var intentId = f.service().propose(owner.userId(), proposal(owner));
+        jdbc.update("UPDATE order_intents SET expires_at = ? WHERE id = ?",
+                at(Instant.now().minusSeconds(5)), intentId);
+        f.service().issueStepUp(owner.userId(), intentId, T0);
+
+        assertThatThrownBy(() -> f.service().approve(owner.userId(), intentId, "step-up", "e2e",
+                BigDecimal.ONE, new BigDecimal("180"), Currency.USD))
+                .isInstanceOfSatisfying(LiveOrderActivationException.class, exception ->
+                        assertThat(exception.code())
+                                .isEqualTo(LiveOrderActivationException.Code.PROPOSAL_EXPIRED));
+
+        assertThat(intents.findById(intentId).orElseThrow().getStatus())
+                .isEqualTo(OrderIntentStatus.PROPOSED);
+        verify(f.risk(), never()).approveLive(any());
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM real_order_daily_reservations WHERE order_intent_id = ?",
+                Long.class, intentId)).isEqualTo(0);
+    }
+
+    @Test
+    void approvingBeforeExpiryStillSucceeds() {
+        var owner = owner();
+        var f = fixture(owner, BrokerOrderAck.accepted("toss-order-fresh", "client-fresh"));
+        var intentId = f.service().propose(owner.userId(), proposal(owner));
+        f.service().issueStepUp(owner.userId(), intentId, T0);
+
+        f.service().approve(owner.userId(), intentId, "step-up", "e2e", BigDecimal.ONE,
+                new BigDecimal("180"), Currency.USD);
+
+        assertThat(intents.findById(intentId).orElseThrow().getStatus())
+                .isEqualTo(OrderIntentStatus.APPROVED);
+        verify(f.risk(), times(1)).approveLive(any());
+    }
+
+    @Test
+    void legacyProposalWithNullExpiryRemainsApprovable() {
+        var owner = owner();
+        var f = fixture(owner, BrokerOrderAck.accepted("toss-order-null", "client-null"));
+        var intentId = f.service().propose(owner.userId(), proposal(owner));
+        jdbc.update("UPDATE order_intents SET expires_at = NULL, created_at = NULL WHERE id = ?", intentId);
+        f.service().issueStepUp(owner.userId(), intentId, T0);
+
+        f.service().approve(owner.userId(), intentId, "step-up", "e2e", BigDecimal.ONE,
+                new BigDecimal("180"), Currency.USD);
+
+        assertThat(intents.findById(intentId).orElseThrow().getStatus())
+                .isEqualTo(OrderIntentStatus.APPROVED);
+    }
+
     private Fixture fixture(Owner owner, BrokerOrderAck ack) {
         var quotes = mock(BrokerAdapter.class);
         var orders = mock(BrokerOrderPort.class);
@@ -159,7 +214,8 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
         insertAllowlist(owner);
         return new Fixture(new LiveOrderActivationService(
                 quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, stepUp,
-                safety, killSwitches, new TransactionTemplate(transactionManager)), orders);
+                safety, killSwitches, new TransactionTemplate(transactionManager),
+                java.time.Duration.ofMinutes(15)), orders, risk);
     }
 
     private PreTradeRiskEngine.Decision decision(PreTradeRiskEngine.Phase phase, BigDecimal amount) {
@@ -203,6 +259,6 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
     private record Owner(UUID userId, UUID connectionId, UUID accountId) {
     }
 
-    private record Fixture(LiveOrderActivationService service, BrokerOrderPort orders) {
+    private record Fixture(LiveOrderActivationService service, BrokerOrderPort orders, PreTradeRiskEngine risk) {
     }
 }

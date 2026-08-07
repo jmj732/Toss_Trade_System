@@ -18,6 +18,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HexFormat;
@@ -42,6 +43,7 @@ public final class LiveOrderActivationService {
     private final LiveOrderSafetyLedger safety;
     private final KillSwitchStateReader killSwitches;
     private final TransactionTemplate transactions;
+    private final Duration proposalTtl;
 
     public LiveOrderActivationService(
             BrokerAdapter quotes,
@@ -55,7 +57,8 @@ public final class LiveOrderActivationService {
             OrderApprovalStepUpService stepUp,
             LiveOrderSafetyLedger safety,
             KillSwitchStateReader killSwitches,
-            TransactionTemplate transactions
+            TransactionTemplate transactions,
+            Duration proposalTtl
     ) {
         this.quotes = Objects.requireNonNull(quotes, "quotes");
         this.orders = Objects.requireNonNull(orders, "orders");
@@ -69,6 +72,10 @@ public final class LiveOrderActivationService {
         this.safety = Objects.requireNonNull(safety, "safety");
         this.killSwitches = Objects.requireNonNull(killSwitches, "killSwitches");
         this.transactions = Objects.requireNonNull(transactions, "transactions");
+        this.proposalTtl = Objects.requireNonNull(proposalTtl, "proposalTtl");
+        if (proposalTtl.isNegative() || proposalTtl.isZero()) {
+            throw new IllegalArgumentException("proposalTtl must be positive");
+        }
     }
 
     public UUID propose(UUID userId, Proposal proposal) {
@@ -85,6 +92,8 @@ public final class LiveOrderActivationService {
             var intent = OrderIntent.proposedLive(
                     id, proposal.brokerAccountId(), userId, proposal.connectionId(), proposal.side(), proposal.type(),
                     proposal.symbol(), proposal.quantity(), proposal.limitPrice(), proposal.currency());
+            var createdAt = Instant.now();
+            intent.stampProposal(createdAt, createdAt.plus(proposalTtl));
             intents.saveAndFlush(intent);
             return id;
         }));
@@ -128,6 +137,13 @@ public final class LiveOrderActivationService {
                             LiveOrderActivationException.Code.NOT_FOUND, "live order not found"));
             if (intent.getStatus() != OrderIntentStatus.PROPOSED || intent.getExecutionMode() != OrderExecutionMode.LIVE) {
                 throw conflict();
+            }
+            // 만료 강제(D-42): 만료 시각을 지난 제안은 승인 거절(409). expiresAt 이 NULL 인 legacy
+            // 행은 종전과 동일하게 승인 가능하다. 취소·정정은 ACTIVE 주문에만 적용되므로 만료 검증의
+            // 영향을 받지 않는다(PAPER 경로와 동일한 불변식).
+            if (intent.getExpiresAt() != null && !Instant.now().isBefore(intent.getExpiresAt())) {
+                throw new LiveOrderActivationException(LiveOrderActivationException.Code.PROPOSAL_EXPIRED,
+                        "live order proposal expired");
             }
             consumeStepUp(userId, orderIntentId, stepUpToken);
             var decision = risk.approveLive(new PreTradeRiskEngine.ApprovalCommand(

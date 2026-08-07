@@ -12,6 +12,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Arrays;
@@ -32,6 +33,7 @@ public final class PaperOrderWorkflowService {
     private final OrderApprovalStepUpService stepUp;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final Duration proposalTtl;
 
     public PaperOrderWorkflowService(
             BrokerAdapter broker,
@@ -40,7 +42,8 @@ public final class PaperOrderWorkflowService {
             PreTradeRiskEngine riskEngine,
             OrderApprovalStepUpService stepUp,
             JdbcTemplate jdbc,
-            PlatformTransactionManager transactionManager
+            PlatformTransactionManager transactionManager,
+            Duration proposalTtl
     ) {
         this.broker = Objects.requireNonNull(broker, "broker");
         this.intentRepository = Objects.requireNonNull(intentRepository, "intentRepository");
@@ -49,6 +52,10 @@ public final class PaperOrderWorkflowService {
         this.stepUp = Objects.requireNonNull(stepUp, "stepUp");
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transactions = new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
+        this.proposalTtl = Objects.requireNonNull(proposalTtl, "proposalTtl");
+        if (proposalTtl.isNegative() || proposalTtl.isZero()) {
+            throw new IllegalArgumentException("proposalTtl must be positive");
+        }
     }
 
     public OrderView propose(UUID userId, String idempotencyKey, Channel channel, ProposeCommand command) {
@@ -75,7 +82,7 @@ public final class PaperOrderWorkflowService {
             }
             jdbc.update("INSERT INTO broker_accounts (id) VALUES (?) ON CONFLICT DO NOTHING",
                     command.connectionId());
-            intentRepository.saveAndFlush(OrderIntent.proposed(
+            var intent = OrderIntent.proposed(
                     intendedId,
                     command.connectionId(),
                     userId,
@@ -85,7 +92,10 @@ public final class PaperOrderWorkflowService {
                     command.symbol(),
                     command.quantity(),
                     command.limitPrice(),
-                    command.currency()));
+                    command.currency());
+            var createdAt = Instant.now();
+            intent.stampProposal(createdAt, createdAt.plus(proposalTtl));
+            intentRepository.saveAndFlush(intent);
             return read(userId, intendedId);
         }));
     }
@@ -132,10 +142,15 @@ public final class PaperOrderWorkflowService {
             if (intent.getStatus() != OrderIntentStatus.PROPOSED) {
                 throw PaperOrderWorkflowException.conflict();
             }
+            var now = Instant.now();
+            // 만료 강제(D-42): 만료 시각을 지난 제안은 승인 거절(409). expiresAt 이 NULL 인 legacy
+            // 행은 종전과 동일하게 승인 가능하다. 취소·철회는 별도 경로라 만료 후에도 허용된다.
+            if (intent.getExpiresAt() != null && !now.isBefore(intent.getExpiresAt())) {
+                throw PaperOrderWorkflowException.proposalExpired();
+            }
             // step-up 재인증 확인은 상태 전이 직전, 트랜잭션 안에서 단일 사용 소비. 승인이 롤백되면
             // 토큰 소비도 함께 롤백돼 재시도에서 다시 쓸 수 있다.
             stepUp.consume(userId, orderIntentId, command.stepUpToken());
-            var now = Instant.now();
             var actor = actor(channel, userId);
             var approval = riskEngine.approve(new PreTradeRiskEngine.ApprovalCommand(
                     userId,

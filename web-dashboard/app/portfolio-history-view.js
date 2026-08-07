@@ -2,14 +2,26 @@
 
 import { createElement as h } from "react";
 
+// V-37: DashboardView 와 동일한 한국어 어휘로 통일한다(지연/확인 필요/불러오기 실패/최신).
+// V-36: 상태별 색은 공통 .badge-pill modifier 로만 표현한다.
+const QUALITY_BADGES = {
+  stale: ["warn", "지연"],
+  unknown: ["warn", "확인 필요"],
+  unavailable: ["danger", "불러오기 실패"],
+  available: ["neutral", "최신"]
+};
+
 function Quality({ history }) {
-  const values = [];
-  if (history.stale) values.push("STALE");
-  if (history.unknown) values.push("UNKNOWN");
-  if (history.unavailable) values.push("UNAVAILABLE");
-  if (values.length === 0) values.push("AVAILABLE");
+  const keys = [];
+  if (history.stale) keys.push("stale");
+  if (history.unknown) keys.push("unknown");
+  if (history.unavailable) keys.push("unavailable");
+  if (keys.length === 0) keys.push("available");
   return h("div", { className: "quality" },
-    ...values.map(value => h("span", { className: value.toLowerCase(), key: value }, value)),
+    ...keys.map(key => {
+      const [modifier, label] = QUALITY_BADGES[key];
+      return h("span", { className: `badge-pill badge-pill--${modifier}`, key }, label);
+    }),
     history.unknownFields?.length
       ? h("small", null, history.unknownFields.join(", "))
       : null);

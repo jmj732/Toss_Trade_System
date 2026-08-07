@@ -68,6 +68,12 @@ public class OrderIntent {
     @Column(name = "terminal_at")
     private Instant terminalAt;
 
+    @Column(name = "created_at")
+    private Instant createdAt;
+
+    @Column(name = "expires_at")
+    private Instant expiresAt;
+
     @Column(name = "final_filled_quantity", precision = 28, scale = 10)
     private BigDecimal finalFilledQuantity;
 
@@ -171,6 +177,24 @@ public class OrderIntent {
         intent.userId = userId;
         intent.brokerConnectionId = brokerConnectionId;
         return intent;
+    }
+
+    /**
+     * 제안 생성 시각과 만료 시각을 기록한다(D-42). 제안(PROPOSED) 단계에서만 유효하며, 값은
+     * 생성 경로에서 한 번만 새겨진다. 기존(legacy) 행은 두 값이 NULL 로 남아 만료 강제 대상이 아니다.
+     */
+    public void stampProposal(Instant createdAt, Instant expiresAt) {
+        if (status != OrderIntentStatus.PROPOSED) {
+            throw new IllegalStateException("proposal timestamps can only be stamped on a PROPOSED intent");
+        }
+        if (createdAt == null || expiresAt == null) {
+            throw new IllegalArgumentException("createdAt and expiresAt are required");
+        }
+        if (expiresAt.isBefore(createdAt)) {
+            throw new IllegalArgumentException("expiresAt must not precede createdAt");
+        }
+        this.createdAt = createdAt;
+        this.expiresAt = expiresAt;
     }
 
     public void approve() {
@@ -385,6 +409,14 @@ public class OrderIntent {
 
     public Instant getTerminalAt() {
         return terminalAt;
+    }
+
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+
+    public Instant getExpiresAt() {
+        return expiresAt;
     }
 
     public BigDecimal getFinalFilledQuantity() {

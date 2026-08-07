@@ -47,7 +47,9 @@ test("renders separate KRW/USD trend lines, quality, and the raw points table", 
   }));
 
   assert.match(html, /자산 · P\/L 추세/);
-  assert.match(html, /UNKNOWN/);
+  // V-37: DashboardView 와 동일한 한국어 어휘. V-36: 공통 .badge-pill modifier.
+  assert.match(html, /badge-pill badge-pill--warn[^>]*>확인 필요/);
+  assert.doesNotMatch(html, /UNKNOWN/);
   assert.match(html, /account\.cashBalance/);
   assert.equal((html.match(/class="trend-krw"/g) ?? []).length, 2);
   assert.equal((html.match(/class="trend-usd"/g) ?? []).length, 2);

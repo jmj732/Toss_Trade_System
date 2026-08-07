@@ -145,7 +145,7 @@ class LiveOrderActivationServiceTest {
         when(killSwitches.anyEngaged(any(), any())).thenReturn(false);
         return new Fixture(new LiveOrderActivationService(
                 quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, stepUp, safety,
-                killSwitches, transaction), orders, submissions, safety);
+                killSwitches, transaction, java.time.Duration.ofMinutes(15)), orders, submissions, safety);
     }
 
     @SuppressWarnings("unchecked")

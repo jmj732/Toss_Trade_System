@@ -132,7 +132,7 @@ final class LiveOrderActivationErrorHandler {
             case STEP_UP_REQUIRED -> HttpStatus.UNAUTHORIZED;
             case VALIDATION -> HttpStatus.UNPROCESSABLE_ENTITY;
             case SAFETY_BLOCKED -> HttpStatus.UNPROCESSABLE_ENTITY;
-            case MANUAL_REVIEW_REQUIRED, CONFLICT -> HttpStatus.CONFLICT;
+            case MANUAL_REVIEW_REQUIRED, CONFLICT, PROPOSAL_EXPIRED -> HttpStatus.CONFLICT;
         };
         return ResponseEntity.status(status).body(new ErrorBody("LIVE_ORDER_" + exception.code()));
     }

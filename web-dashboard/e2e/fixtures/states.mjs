@@ -72,6 +72,11 @@ export function fullDashboard() {
       unavailable: true,
       unavailableReason: "EVENTS_UNAVAILABLE"
     }),
+    // Four proposals exercise the widened status vocabulary (D-03) and the
+    // createdAt/expiresAt lifecycle (D-42) the backend now serves: a fresh
+    // PROPOSED, one about to expire, one already expired (approve must be
+    // disabled), and a non-PROPOSED status with null timestamps (legacy row,
+    // display-only — approve/cancel are both disabled regardless of expiry).
     pendingOrderProposals: section([
       {
         id: "order-1",
@@ -81,7 +86,45 @@ export function fullDashboard() {
         quantity: 1,
         limitPrice: null,
         currency: "USD",
-        status: "PROPOSED"
+        status: "PROPOSED",
+        createdAt: "2026-08-05T23:55:00Z",
+        expiresAt: "2026-08-06T00:20:00Z"
+      },
+      {
+        id: "order-2",
+        side: "SELL",
+        type: "LIMIT",
+        symbol: "AAPL",
+        quantity: 3,
+        limitPrice: 210.5,
+        currency: "USD",
+        status: "PROPOSED",
+        createdAt: "2026-08-05T23:46:00Z",
+        expiresAt: "2026-08-06T00:01:00Z"
+      },
+      {
+        id: "order-3",
+        side: "BUY",
+        type: "MARKET",
+        symbol: "MSFT",
+        quantity: 2,
+        limitPrice: null,
+        currency: "USD",
+        status: "PROPOSED",
+        createdAt: "2026-08-05T23:40:00Z",
+        expiresAt: "2026-08-05T23:55:00Z"
+      },
+      {
+        id: "order-4",
+        side: "BUY",
+        type: "MARKET",
+        symbol: "GOOGL",
+        quantity: 1,
+        limitPrice: null,
+        currency: "USD",
+        status: "MANUAL_REVIEW_REQUIRED",
+        createdAt: null,
+        expiresAt: null
       }
     ])
   };

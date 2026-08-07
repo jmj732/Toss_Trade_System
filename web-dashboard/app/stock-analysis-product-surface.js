@@ -22,9 +22,21 @@ function stateLabel(value) {
   return value ? `알 수 없음 (${value})` : STATE_LABELS.UNKNOWN;
 }
 
+// V-36: 상태 배지는 공통 .badge-pill modifier 로만 색을 표현한다. 라벨 텍스트가
+// progress("진행 중")·degraded("부분 저하")를 구분하므로 색에만 의존하지 않는다.
+const STATE_MODIFIER = {
+  IDLE: "neutral",
+  READY: "ok",
+  PROGRESS: "warn",
+  DEGRADED: "warn",
+  FAILED: "danger",
+  UNKNOWN: "neutral"
+};
+
 function State({ value }) {
-  const key = String(value ?? "").toUpperCase().toLowerCase();
-  return h("span", { className: `surface-state ${key || "unknown"}` }, stateLabel(value));
+  const key = String(value ?? "").toUpperCase();
+  const modifier = STATE_MODIFIER[key] ?? "neutral";
+  return h("span", { className: `badge-pill badge-pill--${modifier}` }, stateLabel(value));
 }
 
 function panelEmptyCopy(state, kind) {

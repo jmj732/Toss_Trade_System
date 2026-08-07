@@ -289,7 +289,8 @@ public class CredentialVaultConfiguration {
             PreTradeRiskEngine preTradeRiskEngine,
             OrderApprovalStepUpService orderApprovalStepUpService,
             JdbcTemplate jdbcTemplate,
-            PlatformTransactionManager transactionManager
+            PlatformTransactionManager transactionManager,
+            @Value("${order.proposal.ttl:PT15M}") Duration proposalTtl
     ) {
         return new PaperOrderWorkflowService(
                 brokerAdapter,
@@ -298,7 +299,8 @@ public class CredentialVaultConfiguration {
                 preTradeRiskEngine,
                 orderApprovalStepUpService,
                 jdbcTemplate,
-                transactionManager);
+                transactionManager,
+                proposalTtl);
     }
 
     @Bean
@@ -321,12 +323,14 @@ public class CredentialVaultConfiguration {
             OrderApprovalStepUpService orderApprovalStepUpService,
             com.jmj.trade.order.LiveOrderSafetyLedger safetyLedger,
             com.jmj.trade.order.KillSwitchStateReader killSwitchStateReader,
-            PlatformTransactionManager transactionManager
+            PlatformTransactionManager transactionManager,
+            @Value("${order.proposal.ttl:PT15M}") Duration proposalTtl
     ) {
         return new com.jmj.trade.order.LiveOrderActivationService(
                 brokerAdapter, orderPort, orderIntentRepository, brokerOrderRepository, submissionAttemptRepository,
                 orderSubmissionService, transitionService, preTradeRiskEngine,
                 orderApprovalStepUpService, safetyLedger, killSwitchStateReader,
-                new TransactionTemplate(transactionManager));
+                new TransactionTemplate(transactionManager),
+                proposalTtl);
     }
 }

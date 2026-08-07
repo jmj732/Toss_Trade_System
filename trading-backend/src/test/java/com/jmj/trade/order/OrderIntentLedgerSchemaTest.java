@@ -37,7 +37,46 @@ class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
 
     @Test
     void flywayCreatesOrderLedgerSchema() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("38");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("39");
+    }
+
+    @Test
+    void orderIntentHasNullableProposalTimestampColumns() throws SQLException {
+        assertThat(columnIsNullable("created_at")).isTrue();
+        assertThat(columnIsNullable("expires_at")).isTrue();
+    }
+
+    @Test
+    void legacyIntentRowsWithoutProposalTimestampsAreAccepted() throws SQLException {
+        var accountId = insertAccount();
+        var intentId = insertIntent(accountId, "PROPOSED", new BigDecimal("10"));
+
+        assertThat(queryStatus(intentId)).isEqualTo("PROPOSED");
+        try (Connection connection = POSTGRES.createConnection("");
+             var statement = connection.prepareStatement(
+                     "SELECT created_at, expires_at FROM order_intents WHERE id = ?")) {
+            statement.setObject(1, intentId);
+            try (var result = statement.executeQuery()) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getObject("created_at")).isNull();
+                assertThat(result.getObject("expires_at")).isNull();
+            }
+        }
+    }
+
+    private boolean columnIsNullable(String column) throws SQLException {
+        try (Connection connection = POSTGRES.createConnection("");
+             var statement = connection.prepareStatement("""
+                     SELECT is_nullable
+                       FROM information_schema.columns
+                      WHERE table_name = 'order_intents' AND column_name = ?
+                     """)) {
+            statement.setString(1, column);
+            try (var result = statement.executeQuery()) {
+                assertThat(result.next()).isTrue();
+                return "YES".equals(result.getString("is_nullable"));
+            }
+        }
     }
 
     @Test

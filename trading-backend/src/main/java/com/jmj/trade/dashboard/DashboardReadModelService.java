@@ -10,6 +10,7 @@ import com.jmj.trade.order.OrderIntentStatus;
 import com.jmj.trade.order.OrderSide;
 import com.jmj.trade.order.OrderType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementSetter;
 import org.springframework.stereotype.Service;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -17,6 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -44,8 +46,17 @@ public final class DashboardReadModelService {
     }
 
     DashboardView read(UUID userId, UUID connectionId) {
+        return read(userId, connectionId, OrderIntentStatus.dashboardOpenStatuses());
+    }
+
+    DashboardView read(
+            UUID userId,
+            UUID connectionId,
+            Collection<OrderIntentStatus> proposalStatuses
+    ) {
         Objects.requireNonNull(userId, "userId");
         Objects.requireNonNull(connectionId, "connectionId");
+        Objects.requireNonNull(proposalStatuses, "proposalStatuses");
         requireOwnedConnection(userId, connectionId);
 
         PortfolioReadService.PortfolioView portfolio = null;
@@ -60,7 +71,7 @@ public final class DashboardReadModelService {
                 portfolioSection(portfolio),
                 analysisSection(analysis, portfolio),
                 available(pendingEvents(userId, connectionId), false, List.of()),
-                available(pendingProposals(userId, connectionId), false, List.of()));
+                available(pendingProposals(userId, connectionId, proposalStatuses), false, List.of()));
     }
 
     private void requireOwnedConnection(UUID userId, UUID connectionId) {
@@ -135,26 +146,40 @@ public final class DashboardReadModelService {
         ), userId, connectionId, COLLECTION_LIMIT);
     }
 
-    private List<PendingProposalView> pendingProposals(UUID userId, UUID connectionId) {
+    private List<PendingProposalView> pendingProposals(
+            UUID userId,
+            UUID connectionId,
+            Collection<OrderIntentStatus> statuses
+    ) {
+        // 상태는 바인딩된 배열(= ANY(?))로만 필터한다. 상태 이름을 SQL 문자열에 절대 삽입하지 않는다.
+        var statusNames = statuses.stream().map(Enum::name).toArray(String[]::new);
         return jdbc.query("""
                 SELECT id, side, order_type, symbol, quantity, limit_price,
-                       trading_currency, status
+                       trading_currency, status, created_at, expires_at
                   FROM order_intents
                  WHERE user_id = ?
                    AND broker_connection_id = ?
-                   AND status = 'PROPOSED'
-                 ORDER BY symbol, id
+                   AND status = ANY(?)
+                 ORDER BY created_at DESC NULLS LAST, symbol, id
                  LIMIT ?
-                """, (resultSet, rowNumber) -> new PendingProposalView(
-                resultSet.getObject("id", UUID.class),
-                OrderSide.valueOf(resultSet.getString("side")),
-                OrderType.valueOf(resultSet.getString("order_type")),
-                resultSet.getString("symbol"),
-                resultSet.getBigDecimal("quantity"),
-                resultSet.getBigDecimal("limit_price"),
-                Currency.valueOf(resultSet.getString("trading_currency")),
-                OrderIntentStatus.valueOf(resultSet.getString("status"))
-        ), userId, connectionId, COLLECTION_LIMIT);
+                """,
+                (PreparedStatementSetter) ps -> {
+                    ps.setObject(1, userId);
+                    ps.setObject(2, connectionId);
+                    ps.setArray(3, ps.getConnection().createArrayOf("text", statusNames));
+                    ps.setInt(4, COLLECTION_LIMIT);
+                },
+                (resultSet, rowNumber) -> new PendingProposalView(
+                        resultSet.getObject("id", UUID.class),
+                        OrderSide.valueOf(resultSet.getString("side")),
+                        OrderType.valueOf(resultSet.getString("order_type")),
+                        resultSet.getString("symbol"),
+                        resultSet.getBigDecimal("quantity"),
+                        resultSet.getBigDecimal("limit_price"),
+                        Currency.valueOf(resultSet.getString("trading_currency")),
+                        OrderIntentStatus.valueOf(resultSet.getString("status")),
+                        instantOrNull(resultSet.getObject("created_at", OffsetDateTime.class)),
+                        instantOrNull(resultSet.getObject("expires_at", OffsetDateTime.class))));
     }
 
     private List<String> decodeSymbols(String json) {
@@ -176,6 +201,10 @@ public final class DashboardReadModelService {
 
     private static Instant instant(OffsetDateTime value) {
         return value.toInstant();
+    }
+
+    private static Instant instantOrNull(OffsetDateTime value) {
+        return value == null ? null : value.toInstant();
     }
 
     private static <T> Section<T> available(
@@ -231,7 +260,9 @@ public final class DashboardReadModelService {
             BigDecimal quantity,
             BigDecimal limitPrice,
             Currency currency,
-            OrderIntentStatus status
+            OrderIntentStatus status,
+            Instant createdAt,
+            Instant expiresAt
     ) {
     }
 }

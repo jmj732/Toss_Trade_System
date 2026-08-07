@@ -126,6 +126,53 @@ export function formatFreshness(value, now = Date.now()) {
   return `${absolute} · ${formatRelativeTime(value, now)}`;
 }
 
+// D-42: 주문 제안의 만료 상태를 분류한다. now 를 인자로 주입해 테스트를 결정적으로 만든다.
+// - expired : expiresAt != null && now >= expiresAt
+// - expiring: created→expires 창의 마지막 20% 이내, 또는 남은 시간 2분 이하 (둘 중 더 긴 임계값)
+// - fresh   : 위에 해당하지 않는 유효 만료
+// - unknown : expiresAt == null (만료 미설정 — "만료됨" 이 아니다)
+const PROPOSAL_EXPIRING_MIN_MS = 2 * 60 * 1000;
+const PROPOSAL_EXPIRING_WINDOW_RATIO = 0.2;
+
+function toTimeMs(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  const ms = date.getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+export function classifyProposalExpiry({ createdAt, expiresAt } = {}, now = Date.now()) {
+  const nowMs = now instanceof Date ? now.getTime() : now;
+  const expiresMs = toTimeMs(expiresAt);
+  if (expiresMs === null) {
+    return "unknown";
+  }
+  if (nowMs >= expiresMs) {
+    return "expired";
+  }
+  const remaining = expiresMs - nowMs;
+  let threshold = PROPOSAL_EXPIRING_MIN_MS;
+  const createdMs = toTimeMs(createdAt);
+  if (createdMs !== null && expiresMs > createdMs) {
+    threshold = Math.max(threshold, (expiresMs - createdMs) * PROPOSAL_EXPIRING_WINDOW_RATIO);
+  }
+  return remaining <= threshold ? "expiring" : "fresh";
+}
+
+const PROPOSAL_EXPIRY_LABELS = {
+  expired: "만료됨",
+  expiring: "곧 만료",
+  fresh: null,
+  unknown: "만료 없음"
+};
+
+// fresh 는 배지를 렌더하지 않는다(null). 그 외 상태만 한국어 배지 문구를 반환한다.
+export function proposalExpiryBadge(state) {
+  return PROPOSAL_EXPIRY_LABELS[state] ?? null;
+}
+
 // datetime-local 입력은 타임존이 없는 로컬 시각이다.
 // 라벨과 실제 전송값이 어긋나지 않도록 변환을 한 곳에서만 수행한다.
 export function localInputToInstant(value) {

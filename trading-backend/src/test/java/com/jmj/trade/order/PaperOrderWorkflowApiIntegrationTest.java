@@ -28,6 +28,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -377,6 +378,92 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                  WHERE order_intent_id = ? AND action = 'APPROVE'
                 """, intentId)).isZero();
         assertThat(count("SELECT count(*) FROM submission_attempts")).isZero();
+    }
+
+    @Test
+    void proposalStampsCreatedAtAndExpiryFromConfiguredTtl() {
+        var connectionId = owner(USER_ID);
+        var intentId = workflow.propose(
+                USER_ID,
+                "proposal-ttl",
+                PaperOrderWorkflowService.Channel.WEB,
+                proposal(connectionId, "AAPL")).id();
+
+        var createdAt = instantColumn(intentId, "created_at");
+        var expiresAt = instantColumn(intentId, "expires_at");
+        assertThat(createdAt).isNotNull();
+        assertThat(expiresAt).isNotNull();
+        assertThat(Duration.between(createdAt, expiresAt)).isEqualTo(Duration.ofMinutes(15));
+    }
+
+    @Test
+    void approvingAfterExpiryIsRejectedButCancelStillSucceeds() throws Exception {
+        var connectionId = owner(USER_ID);
+        successfulSnapshot(USER_ID, connectionId);
+        var intentId = workflow.propose(
+                USER_ID,
+                "proposal-expired",
+                PaperOrderWorkflowService.Channel.WEB,
+                proposal(connectionId, "AAPL")).id();
+        jdbc.update("UPDATE order_intents SET expires_at = ? WHERE id = ?",
+                at(Instant.now().minusSeconds(5)), intentId);
+        insertStepUpToken(intentId, "stepup-expired");
+
+        mockMvc.perform(post("/api/v1/paper-orders/{id}/approve", intentId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .header("Idempotency-Key", "approve-expired")
+                        .header("X-Step-Up-Token", "stepup-expired")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(approveJson("WEB", "1", "100")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("PAPER_ORDER_PROPOSAL_EXPIRED"));
+
+        assertThat(workflow.read(USER_ID, intentId).status()).isEqualTo(OrderIntentStatus.PROPOSED);
+        assertThat(count("""
+                SELECT count(*) FROM paper_order_workflow_commands
+                 WHERE order_intent_id = ? AND action = 'APPROVE'
+                """, intentId)).isZero();
+
+        mockMvc.perform(post("/api/v1/paper-orders/{id}/cancel", intentId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .header("Idempotency-Key", "cancel-expired")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"channel\":\"WEB\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELED"));
+    }
+
+    @Test
+    void legacyProposalWithNullExpiryRemainsApprovable() throws Exception {
+        var connectionId = owner(USER_ID);
+        successfulSnapshot(USER_ID, connectionId);
+        var intentId = workflow.propose(
+                USER_ID,
+                "proposal-null-expiry",
+                PaperOrderWorkflowService.Channel.WEB,
+                proposal(connectionId, "AAPL")).id();
+        jdbc.update("UPDATE order_intents SET expires_at = NULL, created_at = NULL WHERE id = ?", intentId);
+        insertStepUpToken(intentId, "stepup-null-expiry");
+
+        mockMvc.perform(post("/api/v1/paper-orders/{id}/approve", intentId)
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .header("Idempotency-Key", "approve-null-expiry")
+                        .header("X-Step-Up-Token", "stepup-null-expiry")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(approveJson("WEB", "1", "100")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"));
+    }
+
+    private Instant instantColumn(UUID intentId, String column) {
+        return jdbc.query(
+                        "SELECT " + column + " AS value FROM order_intents WHERE id = ?",
+                        (resultSet, rowNumber) -> resultSet.getObject("value", OffsetDateTime.class),
+                        intentId)
+                .stream().findFirst().map(OffsetDateTime::toInstant).orElse(null);
     }
 
     private PaperOrderWorkflowService.OrderView approveAfterGate(

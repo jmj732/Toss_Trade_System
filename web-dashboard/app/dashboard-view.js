@@ -6,8 +6,84 @@ import {
   formatQuantity,
   formatRatio,
   formatFreshness,
+  formatInstant,
+  classifyProposalExpiry,
+  proposalExpiryBadge,
   UNKNOWN_TEXT
 } from "../lib/format.js";
+
+// D-03: OrderIntentStatus 13종 전부를 한국어로 매핑한다. 이 맵은 이 파일이 정본이며
+// orders-view.js 가 import 해 재사용한다(리터럴 중복 금지).
+export const ORDER_STATUS_LABELS = {
+  PROPOSED: "승인 대기",
+  APPROVED: "승인됨",
+  REVALIDATING: "재검증 중",
+  SUBMISSION_PENDING: "전송 대기",
+  RECONCILIATION_REQUIRED: "대사 필요",
+  MANUAL_REVIEW_REQUIRED: "수동 검토 필요",
+  ACTIVE: "체결 진행 중",
+  PARTIALLY_COMPLETED: "부분 체결",
+  COMPLETED: "체결 완료",
+  CANCELED: "취소됨",
+  REJECTED: "거부됨",
+  EXPIRED: "만료됨",
+  BLOCKED: "차단됨"
+};
+
+// D-03: 배지 색 상태. badge-pill--<state> 로 렌더한다(ok|warn|danger|info|neutral).
+const ORDER_STATUS_BADGE_STATES = {
+  PROPOSED: "info",
+  APPROVED: "info",
+  ACTIVE: "info",
+  SUBMISSION_PENDING: "info",
+  REVALIDATING: "info",
+  PARTIALLY_COMPLETED: "warn",
+  COMPLETED: "ok",
+  MANUAL_REVIEW_REQUIRED: "warn",
+  RECONCILIATION_REQUIRED: "warn",
+  BLOCKED: "warn",
+  CANCELED: "danger",
+  REJECTED: "danger",
+  EXPIRED: "danger"
+};
+
+// D-03: 미등록 상태도 은폐하지 않고 원문을 노출한다.
+export function orderStatusLabel(status) {
+  if (!status) {
+    return null;
+  }
+  return ORDER_STATUS_LABELS[status] ?? `알 수 없는 상태: ${status}`;
+}
+
+export function orderStatusBadgeState(status) {
+  return ORDER_STATUS_BADGE_STATES[status] ?? "neutral";
+}
+
+// D-42: 만료 상태 배지의 색 상태.
+const EXPIRY_BADGE_STATES = { expired: "danger", expiring: "warn", unknown: "neutral" };
+
+// D-03/D-42: 주문 행에 공통으로 붙는 상태 배지와 만료 배지를 렌더한다.
+export function OrderStatusBadge({ status }) {
+  const label = orderStatusLabel(status);
+  return label
+    ? h("span", { className: `badge-pill badge-pill--${orderStatusBadgeState(status)}` }, label)
+    : null;
+}
+
+export function OrderExpiryBadge({ state }) {
+  const label = proposalExpiryBadge(state);
+  return label
+    ? h("span", { className: `badge-pill badge-pill--${EXPIRY_BADGE_STATES[state] ?? "neutral"}` }, label)
+    : null;
+}
+
+// D-42: 주문 제안의 생성/만료 시각을 한국어로 렌더한다. createdAt null → UNKNOWN_TEXT,
+// expiresAt null → "만료 없음"(만료됨이 아니다).
+export function OrderTiming({ order }) {
+  const expiryText = order.expiresAt == null ? "만료 없음" : formatInstant(order.expiresAt);
+  return h("span", { className: "order-timing" },
+    `기준 ${formatFreshness(order.createdAt)} · 만료 ${expiryText}`);
+}
 
 // D-30: 미지 값이 조용히 "매도" 로 접히지 않도록 명시적으로만 매핑한다.
 const SIDE_LABELS = { BUY: "매수", SELL: "매도" };
@@ -230,26 +306,34 @@ function Proposals({ section, busyOrderId, onOrderAction }) {
         const priceText = order.limitPrice == null
           ? ""
           : ` @ ${formatAmount(order.currency, order.limitPrice)}`;
+        // D-42: 만료된 제안은 승인을 막는다. 서버 409 는 최후 방어선이지 유일한 방어선이 아니다.
+        const expiryState = classifyProposalExpiry(order);
+        const expired = expiryState === "expired";
+        // D-03: PROPOSED 외 상태는 표시 전용이다. 승인/취소 모두 PROPOSED 에서만 허용한다 —
+        // 상태 필터가 넓어지며 화면에 APPROVED/ACTIVE/COMPLETED 등도 도달하게 됐다고 해서
+        // 이미 확정·종결된 주문에 승인·취소 버튼이 눌리게 두면 안 된다.
+        const actionable = order.status === "PROPOSED";
         return h("li", { key: order.id },
           h("div", null,
             h("strong", null, `${sideLabel} ${order.symbol ?? UNKNOWN_TEXT}`),
             h("span", null,
               `${order.type ?? UNKNOWN_TEXT} · ${formatQuantity(order.quantity)}`
               + ` · ${order.currency ?? UNKNOWN_TEXT}${priceText}`),
-            order.status
-              ? h("span", { className: "status-badge" },
-                order.status === "PROPOSED" ? "승인 대기" : `상태: ${order.status}`)
-              : null),
+            // D-03: 상태 배지. 미지 상태도 그대로 드러낸다.
+            h(OrderStatusBadge, { status: order.status }),
+            // D-42: 만료 배지와 생성/만료 시각.
+            h(OrderExpiryBadge, { state: expiryState }),
+            h(OrderTiming, { order })),
           h("div", { className: "actions" },
             h("button", {
               type: "button",
-              disabled: busy || !sideKnown,
+              disabled: busy || !sideKnown || !actionable || expired,
               onClick: () => onOrderAction(order.id, "approve")
             }, "승인"),
             h("button", {
               type: "button",
               className: "secondary",
-              disabled: busy || !sideKnown,
+              disabled: busy || !sideKnown || !actionable,
               onClick: () => onOrderAction(order.id, "cancel")
             }, "취소")));
       }))
