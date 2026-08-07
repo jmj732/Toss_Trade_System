@@ -1,7 +1,5 @@
 package com.jmj.trade.broker.connection;
 
-import com.jmj.trade.account.AccountSyncService;
-import com.jmj.trade.account.AccountSyncTransactions;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerOrderPort;
@@ -82,28 +80,6 @@ public class CredentialVaultConfiguration {
             BrokerAdapter brokerAdapter
     ) {
         return new BrokerConnectionValidationService(transactions, brokerAdapter);
-    }
-
-    @Bean
-    AccountSyncTransactions accountSyncTransactions(
-            JdbcTemplate jdbcTemplate,
-            PlatformTransactionManager transactionManager,
-            @Value("${portfolio.sync.stale-after:PT15M}") Duration staleAfter,
-            NotificationOutboxWriter notificationOutboxWriter
-    ) {
-        return new AccountSyncTransactions(
-                jdbcTemplate,
-                new TransactionTemplate(transactionManager),
-                staleAfter,
-                notificationOutboxWriter);
-    }
-
-    @Bean
-    AccountSyncService accountSyncService(
-            AccountSyncTransactions transactions,
-            BrokerAdapter brokerAdapter
-    ) {
-        return new AccountSyncService(transactions, brokerAdapter);
     }
 
     @Bean
