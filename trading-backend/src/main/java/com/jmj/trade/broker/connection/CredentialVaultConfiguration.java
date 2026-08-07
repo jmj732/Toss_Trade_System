@@ -48,11 +48,6 @@ import java.time.Duration;
 public class CredentialVaultConfiguration {
 
     @Bean
-    SecureRandom credentialSecureRandom() {
-        return new SecureRandom();
-    }
-
-    @Bean
     CredentialKeyring credentialKeyring(CredentialVaultProperties properties) {
         return new CredentialKeyring(properties);
     }
