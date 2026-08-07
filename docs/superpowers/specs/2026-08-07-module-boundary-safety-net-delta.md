@@ -31,6 +31,10 @@
   주입받는 `paperOrderWorkflowService`에서 모호성으로 부팅이 실패한다(프로덕션 선재 결함;
   `src/main` 불가침). 따라서 credentialed 골든은 real-order 게이트 빈 2개
   (`liveOrderSafetyLedger`, `liveOrderActivationService`)를 뺀 최대 부팅 가능 집합이다.
+  — **후속(`fix/broker-adapter-ambiguity`)**: `tossOrderPort`에 `@Bean(defaultCandidate = false)`를
+  붙여 이 선재 결함을 해소했고(`@Primary`는 통합 테스트의 `BrokerAdapter` 목 배선을 뒤집어 폐기),
+  credentialed 골든을 real-order 활성 상태까지 확장했다(105→109빈). 근거는
+  `2026-08-07-broker-adapter-ambiguity-delta.md` 참고.
 - **`tossOrderPort` 이름 결합 고정.** `@Qualifier("tossOrderPort")` 문자열이
   `CredentialVaultConfiguration`(2곳)·`RealOrderCanaryConfiguration`(1곳)에 하드코딩돼 있고
   정의처는 `TossBrokerConfiguration`다. 컴파일러도 ArchUnit도 못 잡는 결합이라, 부팅 가능한
