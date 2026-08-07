@@ -1,179 +1,44 @@
-name: Release Gates
+name: CD
 
 on:
-  push:
-    branches: ["**"]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: backend-production
   cancel-in-progress: false
 
 jobs:
-  spring-backend:
-    name: Spring backend
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: trading-backend
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: mvnw clean verify
-        run: ./mvnw --no-transfer-progress clean verify
-      - name: Upload surefire reports
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: spring-backend-surefire-reports
-          path: trading-backend/target/surefire-reports/
-          if-no-files-found: ignore
-          retention-days: 14
-
-  fastapi-analysis:
-    name: FastAPI analysis
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: analysis-service
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: analysis-service/pyproject.toml
-      - name: Install dependencies
-        run: pip install -e ".[test]"
-      - name: pytest
-        run: pytest -q --junitxml=pytest-results.xml
-      - name: Upload pytest results
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: fastapi-analysis-pytest-results
-          path: analysis-service/pytest-results.xml
-          if-no-files-found: ignore
-          retention-days: 14
-
-  nextjs-dashboard:
-    name: Next.js dashboard
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: web-dashboard
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web-dashboard/package-lock.json
-      - name: npm ci
-        run: npm ci
-      - name: npm test
-        run: |
-          set -o pipefail
-          npm test 2>&1 | tee test-output.log
-      - name: npm run build
-        run: |
-          set -o pipefail
-          npm run build 2>&1 | tee build-output.log
-      - name: Upload test and build logs
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: nextjs-dashboard-logs
-          path: |
-            web-dashboard/test-output.log
-            web-dashboard/build-output.log
-          if-no-files-found: ignore
-          retention-days: 14
-
-  npm-audit:
-    name: npm audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: web-dashboard
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web-dashboard/package-lock.json
-      - name: npm ci
-        run: npm ci
-      - name: npm audit
-        run: npm audit --omit=dev
-
-  compose-smoke:
-    name: Compose mock-stack smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v5
-      - name: local-stack contract
-        run: |
-          set -o pipefail
-          ./scripts/test-local-stack.sh 2>&1 | tee contract-output.log
-      - name: local-stack smoke
-        run: |
-          set -o pipefail
-          ./scripts/smoke-local-stack.sh 2>&1 | tee smoke-output.log
-      - name: Upload compose smoke logs
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: compose-smoke-logs
-          path: |
-            contract-output.log
-            smoke-output.log
-          if-no-files-found: ignore
-          retention-days: 14
-
-  backend-cd:
+  deploy:
     name: Deploy Spring backend
     if: >-
-      github.ref == 'refs/heads/design/modular-monolith-architecture' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    needs:
-      - spring-backend
-      - fastapi-analysis
-      - nextjs-dashboard
-      - npm-audit
-      - compose-smoke
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    concurrency:
-      group: backend-production
-      cancel-in-progress: false
-    permissions:
-      contents: read
+    env:
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Build backend image
         env:
-          IMAGE_TAG: trade-backend:${{ github.sha }}
+          IMAGE_TAG: trade-backend:${{ env.DEPLOY_SHA }}
         run: docker build --pull --tag "$IMAGE_TAG" trading-backend
 
       - name: Build analysis and dashboard images
         env:
-          ANALYSIS_IMAGE: trade-analysis:${{ github.sha }}
-          DASHBOARD_IMAGE: trade-dashboard:${{ github.sha }}
+          ANALYSIS_IMAGE: trade-analysis:${{ env.DEPLOY_SHA }}
+          DASHBOARD_IMAGE: trade-dashboard:${{ env.DEPLOY_SHA }}
         run: |
           docker build --pull --tag "$ANALYSIS_IMAGE" analysis-service
           docker build --pull --tag "$DASHBOARD_IMAGE" \
@@ -181,9 +46,9 @@ jobs:
 
       - name: Stream image and deploy over pinned SSH
         env:
-          IMAGE_TAG: trade-backend:${{ github.sha }}
-          ANALYSIS_IMAGE: trade-analysis:${{ github.sha }}
-          DASHBOARD_IMAGE: trade-dashboard:${{ github.sha }}
+          IMAGE_TAG: trade-backend:${{ env.DEPLOY_SHA }}
+          ANALYSIS_IMAGE: trade-analysis:${{ env.DEPLOY_SHA }}
+          DASHBOARD_IMAGE: trade-dashboard:${{ env.DEPLOY_SHA }}
           BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
           BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
           BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
@@ -257,7 +122,7 @@ jobs:
             local remote_archive
 
             archive_dir="$(mktemp -d)"
-            remote_archive="$(printf '%q' "$BACKEND_DEPLOY_PATH/.${GITHUB_SHA}-${image_name}.tar.gz")"
+            remote_archive="$(printf '%q' "$BACKEND_DEPLOY_PATH/.${DEPLOY_SHA}-${image_name}.tar.gz")"
             printf 'streaming %s\n' "$image"
             docker save "$image" | gzip -1 -c >"$archive_dir/image.tar.gz"
             split -b 32m -d --additional-suffix=.part \

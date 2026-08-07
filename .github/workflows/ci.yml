@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      analysis: ${{ steps.filter.outputs.analysis }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
+      stack: ${{ steps.filter.outputs.stack }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: filter
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+
+          all_true() {
+            {
+              echo "backend=true"
+              echo "analysis=true"
+              echo "dashboard=true"
+              echo "stack=true"
+            } >>"$GITHUB_OUTPUT"
+          }
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "workflow_dispatch: running all jobs"
+            all_true
+            exit 0
+          fi
+
+          base="$BASE_SHA"
+          if [ -z "$base" ] \
+            || [ "$base" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "base commit unavailable ('$base'): running all jobs (fail-open)"
+            all_true
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "$base" "$GITHUB_SHA")"
+          echo "changed files:"
+          echo "$changed"
+
+          backend=false
+          analysis=false
+          dashboard=false
+          stack=false
+
+          if echo "$changed" | grep -Eq '^\.github/workflows/'; then
+            echo "workflow files changed: running all jobs"
+            all_true
+            exit 0
+          fi
+
+          if echo "$changed" | grep -Eq '^(trading-backend/|contracts/)'; then
+            backend=true
+          fi
+          if echo "$changed" | grep -Eq '^(analysis-service/|contracts/)'; then
+            analysis=true
+          fi
+          if echo "$changed" | grep -Eq '^web-dashboard/'; then
+            dashboard=true
+          fi
+
+          if [ "$backend" = "true" ] || [ "$analysis" = "true" ] || [ "$dashboard" = "true" ]; then
+            stack=true
+          fi
+          if echo "$changed" | grep -Eq '^(compose[^/]*\.ya?ml|scripts/|mocks/)'; then
+            stack=true
+          fi
+
+          {
+            echo "backend=$backend"
+            echo "analysis=$analysis"
+            echo "dashboard=$dashboard"
+            echo "stack=$stack"
+          } >>"$GITHUB_OUTPUT"
+
+  backend:
+    name: Backend
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    uses: ./.github/workflows/ci-backend.yml
+
+  analysis:
+    name: Analysis
+    needs: changes
+    if: needs.changes.outputs.analysis == 'true'
+    uses: ./.github/workflows/ci-analysis.yml
+
+  dashboard:
+    name: Dashboard
+    needs: changes
+    if: needs.changes.outputs.dashboard == 'true'
+    uses: ./.github/workflows/ci-dashboard.yml
+
+  stack:
+    name: Stack
+    needs: changes
+    if: needs.changes.outputs.stack == 'true'
+    uses: ./.github/workflows/ci-stack.yml
+
+  ci-gate:
+    name: CI gate
+    needs:
+      - changes
+      - backend
+      - analysis
+      - dashboard
+      - stack
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate gate results
+        shell: bash
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "needs results: $RESULTS"
+          status=0
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "gate failing on result: $result"
+                status=1
+                ;;
+            esac
+          done
+          exit "$status"

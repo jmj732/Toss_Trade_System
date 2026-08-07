@@ -1,0 +1,33 @@
+name: CI Backend
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  spring-backend:
+    name: Spring backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: trading-backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: mvnw clean verify
+        run: ./mvnw --no-transfer-progress clean verify
+      - name: Upload surefire reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: spring-backend-surefire-reports
+          path: trading-backend/target/surefire-reports/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,33 @@
+name: CI Stack
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  compose-smoke:
+    name: Compose mock-stack smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: local-stack contract
+        run: |
+          set -o pipefail
+          ./scripts/test-local-stack.sh 2>&1 | tee contract-output.log
+      - name: local-stack smoke
+        run: |
+          set -o pipefail
+          ./scripts/smoke-local-stack.sh 2>&1 | tee smoke-output.log
+      - name: Upload compose smoke logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: compose-smoke-logs
+          path: |
+            contract-output.log
+            smoke-output.log
+          if-no-files-found: ignore
+          retention-days: 14
