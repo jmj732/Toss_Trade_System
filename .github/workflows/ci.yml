@@ -98,156 +98,38 @@ jobs:
             echo "stack=$stack"
           } >>"$GITHUB_OUTPUT"
 
-  spring-backend:
-    name: Spring backend
+  backend:
+    name: Backend
     needs: changes
     if: needs.changes.outputs.backend == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: trading-backend
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-      - name: mvnw clean verify
-        run: ./mvnw --no-transfer-progress clean verify
-      - name: Upload surefire reports
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: spring-backend-surefire-reports
-          path: trading-backend/target/surefire-reports/
-          if-no-files-found: ignore
-          retention-days: 14
+    uses: ./.github/workflows/ci-backend.yml
 
-  fastapi-analysis:
-    name: FastAPI analysis
+  analysis:
+    name: Analysis
     needs: changes
     if: needs.changes.outputs.analysis == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: analysis-service
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: analysis-service/pyproject.toml
-      - name: Install dependencies
-        run: pip install -e ".[test]"
-      - name: pytest
-        run: pytest -q --junitxml=pytest-results.xml
-      - name: Upload pytest results
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: fastapi-analysis-pytest-results
-          path: analysis-service/pytest-results.xml
-          if-no-files-found: ignore
-          retention-days: 14
+    uses: ./.github/workflows/ci-analysis.yml
 
-  nextjs-dashboard:
-    name: Next.js dashboard
+  dashboard:
+    name: Dashboard
     needs: changes
     if: needs.changes.outputs.dashboard == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: web-dashboard
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web-dashboard/package-lock.json
-      - name: npm ci
-        run: npm ci
-      - name: npm test
-        run: |
-          set -o pipefail
-          npm test 2>&1 | tee test-output.log
-      - name: npm run build
-        run: |
-          set -o pipefail
-          npm run build 2>&1 | tee build-output.log
-      - name: Upload test and build logs
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: nextjs-dashboard-logs
-          path: |
-            web-dashboard/test-output.log
-            web-dashboard/build-output.log
-          if-no-files-found: ignore
-          retention-days: 14
+    uses: ./.github/workflows/ci-dashboard.yml
 
-  npm-audit:
-    name: npm audit
-    needs: changes
-    if: needs.changes.outputs.dashboard == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: web-dashboard
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web-dashboard/package-lock.json
-      - name: npm ci
-        run: npm ci
-      - name: npm audit
-        run: npm audit --omit=dev
-
-  compose-smoke:
-    name: Compose mock-stack smoke
+  stack:
+    name: Stack
     needs: changes
     if: needs.changes.outputs.stack == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v5
-      - name: local-stack contract
-        run: |
-          set -o pipefail
-          ./scripts/test-local-stack.sh 2>&1 | tee contract-output.log
-      - name: local-stack smoke
-        run: |
-          set -o pipefail
-          ./scripts/smoke-local-stack.sh 2>&1 | tee smoke-output.log
-      - name: Upload compose smoke logs
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: compose-smoke-logs
-          path: |
-            contract-output.log
-            smoke-output.log
-          if-no-files-found: ignore
-          retention-days: 14
+    uses: ./.github/workflows/ci-stack.yml
 
   ci-gate:
     name: CI gate
     needs:
       - changes
-      - spring-backend
-      - fastapi-analysis
-      - nextjs-dashboard
-      - npm-audit
-      - compose-smoke
+      - backend
+      - analysis
+      - dashboard
+      - stack
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

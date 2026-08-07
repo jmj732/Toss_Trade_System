@@ -1,0 +1,62 @@
+name: CI Dashboard
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  nextjs-dashboard:
+    name: Next.js dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web-dashboard
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-dashboard/package-lock.json
+      - name: npm ci
+        run: npm ci
+      - name: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+      - name: npm run build
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee build-output.log
+      - name: Upload test and build logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: nextjs-dashboard-logs
+          path: |
+            web-dashboard/test-output.log
+            web-dashboard/build-output.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web-dashboard
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-dashboard/package-lock.json
+      - name: npm ci
+        run: npm ci
+      - name: npm audit
+        run: npm audit --omit=dev
