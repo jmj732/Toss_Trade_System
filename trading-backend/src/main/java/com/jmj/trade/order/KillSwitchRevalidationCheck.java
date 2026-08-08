@@ -12,7 +12,7 @@ import java.util.Optional;
  * <p>fail-closed: 상태를 읽지 못하면(조회 예외) 통과가 아니라 차단한다. kill switch 는 안전 장치이므로
  * "확인할 수 없으면 보내지 않는다".
  */
-public final class KillSwitchRevalidationCheck implements PreSubmitRevalidationCheck {
+final class KillSwitchRevalidationCheck implements PreSubmitRevalidationCheck {
 
     private final KillSwitchStateReader ledger;
 
