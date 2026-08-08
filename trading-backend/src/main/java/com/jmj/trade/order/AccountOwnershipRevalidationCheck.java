@@ -8,7 +8,7 @@ import java.util.Optional;
  * <p>제출 직전에 intent 가 담고 있는 소유자·연결이 제출 요청의 소유자·연결과 여전히 일치하는지
  * 다시 확인한다(defense-in-depth). 불일치하면 브로커로 보내지 않고 차단한다.
  */
-public final class AccountOwnershipRevalidationCheck implements PreSubmitRevalidationCheck {
+final class AccountOwnershipRevalidationCheck implements PreSubmitRevalidationCheck {
 
     @Override
     public Optional<PreTradeRiskEngine.Reason> evaluate(PreSubmitContext context) {

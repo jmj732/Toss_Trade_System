@@ -10,7 +10,7 @@ import java.util.Optional;
  * (보유 포지션이 없거나 브로커가 값을 제공하지 않음)이면 0 으로 간주하지 않고 차단한다 — 확인할
  * 수 없으면 보내지 않는다. 확정된 매도 가능 수량이 주문 수량보다 적으면 차단한다.
  */
-public final class SellableQuantityRevalidationCheck implements PreSubmitRevalidationCheck {
+final class SellableQuantityRevalidationCheck implements PreSubmitRevalidationCheck {
 
     @Override
     public Optional<PreTradeRiskEngine.Reason> evaluate(PreSubmitContext context) {
