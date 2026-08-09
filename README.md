@@ -41,7 +41,7 @@ docs/
   superpowers/
     specs/           기능별 delta 스펙 — 구현 전 여기에 먼저 쓴다
     plans/           구현 플랜
-claudedocs/          감사·분석 리포트
+claudedocs/          E2E 실행 시 생성되는 감사·분석 리포트
 
 DESIGN.md            제품·UX·디자인 원본
 AGENTS.md            AI 에이전트 작업 지침 (디렉터리마다 하나씩 더 있음)

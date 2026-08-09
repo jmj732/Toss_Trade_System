@@ -34,15 +34,6 @@ export function BuyingPowerBanner({ buyingPower }) {
         usd != null ? `$${Number(usd.cashBuyingPower ?? usd).toLocaleString()}` : UNKNOWN_TEXT)));
 }
 
-// ---------------------------------------------------------------------------
-// 매도 가능 수량 정보 — loadSellableQuantity()
-// ---------------------------------------------------------------------------
-export function SellableQuantityInfo({ sellableQuantity }) {
-  if (!sellableQuantity) return null;
-  return h("div", { className: "sellable-qty-info", style: { display: "inline-block", background: "rgba(240, 68, 82, 0.05)", padding: "4px 8px", borderRadius: "var(--r-sm)", fontSize: "var(--fs-xs)", marginLeft: "8px" } },
-    h("span", { style: { color: "var(--danger-text)" } }, `매도 가능: ${sellableQuantity.quantity ?? UNKNOWN_TEXT}주`));
-}
-
 export function OrdersView({ section, busyOrderId, onOrderAction, onModifyPrice, buyingPower }) {
 const SIDE_LABELS = { BUY: "매수", SELL: "매도" };
 

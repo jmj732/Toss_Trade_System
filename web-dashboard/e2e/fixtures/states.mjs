@@ -522,9 +522,6 @@ function matchEndpoint(pathname, method) {
       }), kind: "surface"
     };
   }
-  if (is(/\/sellable-quantity$/)) {
-    return { body: surface({ symbol: "AAPL", availability: "KNOWN", quantity: 1 }), kind: "surface" };
-  }
   if (is(/\/(orderbook|candles|exchange-rate|market-calendar|rankings|commissions)(\/|$)/)
       || is(/\/stocks\/[^/]+\/(warnings|investor-trading)$/)) {
     return { body: surface(null, "UNAVAILABLE"), kind: "surface" };
