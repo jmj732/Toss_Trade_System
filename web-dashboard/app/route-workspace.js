@@ -7,6 +7,7 @@ import { AnalysisOutcomeView } from "./analysis-outcome-view.js";
 import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
+import { MarketOverviewView } from "./market-overview-view.js";
 import { NotificationCenter } from "./notification-center.js";
 import { OrderApprovalPanel } from "./order-approval-panel.jsx";
 import { OrdersView } from "./orders-view.js";
@@ -62,7 +63,19 @@ import {
   syncPortfolio,
   updateRiskPolicy,
   verifyBrokerConnection,
-  runProviderReadinessCheck
+  runProviderReadinessCheck,
+  loadOrderbook,
+  loadCandles,
+  loadExchangeRate,
+  loadMarketCalendar,
+  loadStockWarnings,
+  loadInvestorTrading,
+  loadRankings,
+  loadCommissions,
+  loadRealtimePrices,
+  loadAccountBuyingPower,
+  issueLiveOrderStepUp,
+  modifyLiveOrder
 } from "../lib/api.js";
 
 const HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
@@ -172,6 +185,20 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [paperPerformance, setPaperPerformance] = useState(null);
   const [paperQuery, setPaperQuery] = useState(PAPER_QUERY);
   const [paperBusy, setPaperBusy] = useState(false);
+
+  // 신규 API 연동용 State
+  const [exchangeRate, setExchangeRate] = useState(null);
+  const [marketCalendar, setMarketCalendar] = useState(null);
+  const [rankings, setRankings] = useState(null);
+  const [realtimePrices, setRealtimePrices] = useState([]);
+  const [buyingPower, setBuyingPower] = useState(null);
+  const [orderbook, setOrderbook] = useState(null);
+  const [candles, setCandles] = useState(null);
+  const [candleTimeframe, setCandleTimeframe] = useState("1d");
+  const [investorTrading, setInvestorTrading] = useState(null);
+  const [stockWarnings, setStockWarnings] = useState(null);
+  const [commissions, setCommissions] = useState(null);
+
   const opened = useRef(false);
   const openFlight = useRef();
   openFlight.current ??= createSingleFlight();
@@ -198,10 +225,6 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     if (route === "settings") {
       loadOperationalReadiness().then(setReadiness).catch(value => setReadinessError(describeError(value.message)));
-    }
-    // 종목 데이터는 워크스페이스(계좌 연결) 로드 성공 여부와 무관하게 항상 조회한다.
-    if (route === "stock") {
-      loadStockSurface();
     }
     // 홈은 저장된 연결을 자동 복구하지 않는다: 명시적으로 열기 전에는 랜딩을 유지한다(D-36).
     // 나머지 6개 라우트는 기존대로 자동 복구한다.
@@ -242,10 +265,15 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
   }
 
-  async function loadStockSurface(selectedRunId = "") {
+  async function loadStockSurface(selectedConnectionId = connectionId, selectedRunId = "") {
     if (!stockSymbol) {
       return;
     }
+    setOrderbook(null);
+    setCandles(null);
+    setInvestorTrading(null);
+    setStockWarnings(null);
+    setCommissions(null);
     setStockStatus({ analysis: "PROGRESS", forecast: "PROGRESS", explanation: "PROGRESS" });
     setStockErrors({});
     const historyTask = loadStockAnalysisHistory(stockSymbol).then(setStockHistory).catch(value => {
@@ -271,6 +299,16 @@ export function RouteWorkspace({ route, symbol = "" }) {
     setStockStatus(current => ({ ...current, analysis: statusFrom(analysisResult) }));
     setStockErrors(current => ({ ...current, analysis: analysisResult.errorCode ?? "" }));
     await historyTask;
+
+    if (selectedConnectionId) {
+      const surfaceFailure = value => ({ status: "ERROR", unavailableReason: value.code ?? value.message });
+      loadOrderbook(selectedConnectionId, stockSymbol).then(setOrderbook).catch(value => setOrderbook(surfaceFailure(value)));
+      loadCandles(selectedConnectionId, stockSymbol, candleTimeframe).then(setCandles).catch(value => setCandles(surfaceFailure(value)));
+      loadInvestorTrading(selectedConnectionId, stockSymbol).then(setInvestorTrading).catch(value => setInvestorTrading(surfaceFailure(value)));
+      loadStockWarnings(selectedConnectionId, stockSymbol).then(setStockWarnings).catch(value => setStockWarnings(surfaceFailure(value)));
+      loadCommissions(selectedConnectionId, stockSymbol, "BUY").then(setCommissions).catch(value => setCommissions(surfaceFailure(value)));
+    }
+
     if (!analysisResult.result) {
       setStockForecast(null);
       setStockExplanation(null);
@@ -318,26 +356,23 @@ export function RouteWorkspace({ route, symbol = "" }) {
     setConnectionId(id);
     setWorkspaceStatus("loading");
     window.localStorage.setItem("trade.connectionId", id);
-    // 이벤트 조회 실패만으로 포트폴리오 전체를 폐기하지 않도록 부분 성공을 반영한다.
-    // 홈은 events 를 화면에 쓰지 않으므로(dashboard.pendingEvents 만 사용) 이벤트 조회
-    // 실패를 페이지 오류 배너로 올리지 않는다.
-    const needsEvents = route !== "home";
-    const [dashboardResult, eventsResult] = await Promise.allSettled([
-      loadDashboard(id), needsEvents ? listEvents(id) : Promise.resolve([])
-    ]);
-    if (dashboardResult.status === "fulfilled") {
-      setDashboard(dashboardResult.value);
+    // connectionId 를 받는 나머지 API는 소유 연결 dashboard 가 준비된 뒤에만 호출한다.
+    try {
+      const dashboard = await loadDashboard(id);
+      setDashboard(dashboard);
       setConnection({ id, status: "ACTIVE" });
       setWorkspaceStatus("ready");
-    } else {
-      setError(describeError(dashboardResult.reason.message));
+    } catch (value) {
+      setError(describeError(value.message));
       setWorkspaceStatus("error");
+      return;
     }
+    const needsEvents = route !== "home";
     if (needsEvents) {
-      if (eventsResult.status === "fulfilled") {
-        setEvents(eventsResult.value);
-      } else {
-        setError(describeError(eventsResult.reason.message));
+      try {
+        setEvents(await listEvents(id));
+      } catch (value) {
+        setError(describeError(value.message));
       }
     }
     if (route === "portfolio") {
@@ -379,6 +414,23 @@ export function RouteWorkspace({ route, symbol = "" }) {
           setPredictionError(describeError(paperResult.reason.message));
         }
       });
+    }
+
+    if (route === "home") {
+      const surfaceFailure = value => ({ status: "ERROR", unavailableReason: value.code ?? value.message });
+      loadExchangeRate(id).then(setExchangeRate).catch(value => setExchangeRate(surfaceFailure(value)));
+      loadMarketCalendar(id, "US").then(setMarketCalendar).catch(value => setMarketCalendar(surfaceFailure(value)));
+      loadRankings(id, "VOLUME").then(setRankings).catch(value => setRankings(surfaceFailure(value)));
+      loadRealtimePrices(id, "AAPL,MSFT,NVDA,GOOGL,AMZN,TSLA").then(setRealtimePrices)
+        .catch(value => setRealtimePrices({ status: "ERROR", unavailableReason: value.code ?? value.message }));
+    }
+    if (route === "orders") {
+      setBuyingPower({ status: "LOADING" });
+      loadAccountBuyingPower(id, "USD").then(setBuyingPower)
+        .catch(value => setBuyingPower({ status: "ERROR", unavailableReason: value.code ?? value.message }));
+    }
+    if (route === "stock") {
+      await loadStockSurface(id);
     }
   }
 
@@ -447,6 +499,14 @@ export function RouteWorkspace({ route, symbol = "" }) {
       .finally(() => markOrderBusy(orderId, false));
   }
 
+  function modifyLiveOrderAction(orderId, newLimitPrice) {
+    return mutation("live-order-modify", async () => {
+      const issued = await issueLiveOrderStepUp(orderId);
+      await modifyLiveOrder(orderId, newLimitPrice, issued?.stepUpToken);
+      await loadWorkspace(connectionId.trim());
+    });
+  }
+
   function createAnalysis() {
     return mutation("analysis", async () => {
       await createStockAnalysis(stockSymbol, {});
@@ -482,7 +542,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   }
 
   function selectSnapshot(runId) {
-    return mutation("snapshot", () => loadStockSurface(runId));
+    return mutation("snapshot", () => loadStockSurface(connectionId, runId));
   }
 
   function eventSelect(id) {
@@ -632,7 +692,13 @@ export function RouteWorkspace({ route, symbol = "" }) {
         affected => affected.toUpperCase() === stockSymbol)),
       history: stockHistory, status: stockStatus, errors: describedErrors, busy: Boolean(busy),
       onCreateAnalysis: createAnalysis, onCreateForecast: createForecast,
-      onCreateExplanation: createExplanation, onSelectSnapshot: selectSnapshot
+      onCreateExplanation: createExplanation, onSelectSnapshot: selectSnapshot,
+      orderbook, candles, candleTimeframe, investorTrading, stockWarnings, commissions,
+      onCandleTimeframeChange: tf => {
+        setCandleTimeframe(tf);
+        setCandles(null); // Optimistic clear
+        loadCandles(connectionId, stockSymbol, tf).then(setCandles).catch(value => setCandles({ status: "ERROR", unavailableReason: value.code ?? value.message }));
+      }
     });
   }
 
@@ -658,7 +724,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
     if (route === "portfolio") {
       return workspaceReady
         ? h("div", null,
-          h(DashboardView, { dashboard, includeOrders: false }),
+          h(DashboardView, { dashboard, includeOrders: false, realtimePrices }),
           h(PortfolioHistoryView, {
             history: portfolioHistory, query: HISTORY_QUERY, busy: historyBusy,
             onQuery: query => {
@@ -690,7 +756,9 @@ export function RouteWorkspace({ route, symbol = "" }) {
             h(OrdersView, {
               section: dashboard?.pendingOrderProposals,
               busyOrderId: busyOrderIds,
-              onOrderAction: orderAction
+              onOrderAction: orderAction,
+              onModifyPrice: modifyLiveOrderAction,
+              buyingPower,
             }))
           : connectionNotice("계좌를 연결하면 대기 중인 주문을 확인할 수 있습니다."));
     }
@@ -899,10 +967,19 @@ export function RouteWorkspace({ route, symbol = "" }) {
             }
           })
           : null,
+        h(MarketOverviewView, {
+          exchangeRate, calendar: marketCalendar, rankings,
+          onRankingCategory: category => {
+            setRankings({ status: "LOADING" });
+            loadRankings(connectionId, category).then(setRankings)
+              .catch(value => setRankings({ status: "ERROR", unavailableReason: value.code ?? value.message }));
+          }
+        }),
         h(DashboardView, {
           dashboard,
           busyOrderId: busyOrderIds,
-          onOrderAction: orderAction
+          onOrderAction: orderAction,
+          realtimePrices
         })) : null);
   }
   return h("div", null,

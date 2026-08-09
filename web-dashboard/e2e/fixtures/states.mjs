@@ -38,6 +38,19 @@ function section(data, extra = {}) {
   };
 }
 
+function surface(data = null, status = "AVAILABLE", extra = {}) {
+  return {
+    status,
+    stale: false,
+    unknown: false,
+    unknownFields: [],
+    unavailable: status === "UNAVAILABLE",
+    unavailableReason: status === "UNAVAILABLE" ? "PROVIDER_UNSUPPORTED" : null,
+    data,
+    ...extra
+  };
+}
+
 export function fullDashboard() {
   return {
     portfolio: section(
@@ -498,13 +511,31 @@ function matchEndpoint(pathname, method) {
   if (is(/\/stock-forecasts\/[^/]+/)) return { body: STOCK_FORECAST_FULL };
   if (is(/\/stock-analysis-explanations\/[^/]+/)) return { body: STOCK_EXPLANATION_FULL };
 
+  // Provider-backed market surfaces. Unsupported endpoints are explicit envelopes.
+  if (is(/\/buying-power$/)) {
+    return { body: surface({ USD: { cashBuyingPower: 1000 } }), kind: "surface" };
+  }
+  if (is(/\/prices$/)) {
+    return {
+      body: surface([{ symbol: "AAPL", lastPrice: 210, currency: "USD" }], "DEGRADED", {
+        unknown: true, unknownFields: ["AAPL.bidPrice", "AAPL.askPrice"], unavailableReason: "PRICE_PARTIAL"
+      }), kind: "surface"
+    };
+  }
+  if (is(/\/sellable-quantity$/)) {
+    return { body: surface({ symbol: "AAPL", availability: "KNOWN", quantity: 1 }), kind: "surface" };
+  }
+  if (is(/\/(orderbook|candles|exchange-rate|market-calendar|rankings|commissions)(\/|$)/)
+      || is(/\/stocks\/[^/]+\/(warnings|investor-trading)$/)) {
+    return { body: surface(null, "UNAVAILABLE"), kind: "surface" };
+  }
+
   // Broker command endpoints (verify/sync/analysis/connection lifecycle).
   if (is(/\/broker-connections\/[^/]+\/verify/)) return { body: { id: "conn-1", status: "ACTIVE" } };
   if (is(/\/broker-connections\/toss/)) return { body: { id: "conn-1", status: "ACTIVE" } };
   if (is(/\/paper-orders\//)) return { body: { status: "COMPLETED" }, kind: "order" };
 
-  // Default: empty object keeps the fetch resolving without inventing shape.
-  return { body: {} };
+  throw new Error(`Unregistered frontend API ${method} ${pathname}`);
 }
 
 // State-specific transforms applied to the healthy payload.
@@ -520,6 +551,7 @@ function shapeForState(match, state) {
       case "events": return [];
       case "list": return [];
       case "stock-analysis": return { symbol: "AAPL", runId: null, result: null };
+      case "surface": return body.status === "UNAVAILABLE" ? body : { ...body, data: null };
       default: return Array.isArray(body) ? [] : body;
     }
   }
@@ -529,6 +561,9 @@ function shapeForState(match, state) {
       case "portfolio-history": return PORTFOLIO_HISTORY_EMPTY;
       case "analysis-predictions":
         return { ...ANALYSIS_PREDICTIONS_FULL, forecastQuality: null };
+      case "surface": return body.status === "UNAVAILABLE"
+        ? body
+        : { ...body, status: "DEGRADED", unknown: true, unknownFields: ["provider.partial"] };
       default: return body;
     }
   }
@@ -544,6 +579,9 @@ function shapeForState(match, state) {
           ...STOCK_ANALYSIS_FULL,
           result: { ...STOCK_ANALYSIS_FULL.result, stale: true, asOf: STALE_AS_OF }
         };
+      case "surface": return body.status === "UNAVAILABLE"
+        ? body
+        : { ...body, status: "DEGRADED", stale: true, unavailableReason: "STALE_PROVIDER_DATA" };
       default: return body;
     }
   }

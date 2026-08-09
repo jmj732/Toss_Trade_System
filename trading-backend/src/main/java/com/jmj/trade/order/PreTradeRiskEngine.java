@@ -70,6 +70,35 @@ public class PreTradeRiskEngine {
         return approve(command, OrderExecutionMode.LIVE, syncedPortfolio);
     }
 
+    @Transactional
+    public Decision reviewLiveModification(UUID userId, UUID connectionId, UUID orderIntentId,
+                                           BigDecimal referencePrice, Instant evaluatedAt, String actor) {
+        requireId(userId, "userId");
+        requireId(connectionId, "connectionId");
+        requireId(orderIntentId, "orderIntentId");
+        Objects.requireNonNull(referencePrice, "referencePrice");
+        Objects.requireNonNull(evaluatedAt, "evaluatedAt");
+        if (actor == null || actor.isBlank()) {
+            throw new IllegalArgumentException("actor is required");
+        }
+        lockConnection(userId, connectionId);
+        var intent = lockedIntent(orderIntentId, userId, connectionId);
+        requireCompleteIntent(intent, OrderExecutionMode.LIVE);
+        if (intent.getStatus() != OrderIntentStatus.ACTIVE) {
+            throw new IllegalStateException("live modification risk review requires ACTIVE intent");
+        }
+        var decision = evaluate(
+                Phase.FINAL,
+                userId,
+                connectionId,
+                intent,
+                referencePrice,
+                evaluatedAt,
+                freshPortfolioReadService.read(userId, connectionId));
+        store(decision, userId, connectionId, orderIntentId);
+        return decision;
+    }
+
     private Decision approve(
             ApprovalCommand command,
             OrderExecutionMode expectedMode,
