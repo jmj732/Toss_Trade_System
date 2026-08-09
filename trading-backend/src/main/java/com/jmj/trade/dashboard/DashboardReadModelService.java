@@ -1,5 +1,6 @@
 package com.jmj.trade.dashboard;
 
+import com.jmj.trade.account.FreshPortfolioReadService;
 import com.jmj.trade.account.PortfolioReadException;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.analysis.PortfolioAnalysisWorkflowService;
@@ -7,6 +8,7 @@ import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
 import com.jmj.trade.intelligence.EventIntelligenceService;
 import com.jmj.trade.order.OrderIntentStatus;
+import com.jmj.trade.order.OrderExecutionMode;
 import com.jmj.trade.order.OrderSide;
 import com.jmj.trade.order.OrderType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -30,13 +32,13 @@ public final class DashboardReadModelService {
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
-    private final PortfolioReadService portfolios;
+    private final FreshPortfolioReadService portfolios;
     private final PortfolioAnalysisWorkflowService analyses;
 
     DashboardReadModelService(
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
-            PortfolioReadService portfolios,
+            FreshPortfolioReadService portfolios,
             PortfolioAnalysisWorkflowService analyses
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
@@ -154,7 +156,7 @@ public final class DashboardReadModelService {
         // 상태는 바인딩된 배열(= ANY(?))로만 필터한다. 상태 이름을 SQL 문자열에 절대 삽입하지 않는다.
         var statusNames = statuses.stream().map(Enum::name).toArray(String[]::new);
         return jdbc.query("""
-                SELECT id, side, order_type, symbol, quantity, limit_price,
+                SELECT id, execution_mode, side, order_type, symbol, quantity, limit_price,
                        trading_currency, status, created_at, expires_at
                   FROM order_intents
                  WHERE user_id = ?
@@ -171,6 +173,7 @@ public final class DashboardReadModelService {
                 },
                 (resultSet, rowNumber) -> new PendingProposalView(
                         resultSet.getObject("id", UUID.class),
+                        OrderExecutionMode.valueOf(resultSet.getString("execution_mode")),
                         OrderSide.valueOf(resultSet.getString("side")),
                         OrderType.valueOf(resultSet.getString("order_type")),
                         resultSet.getString("symbol"),
@@ -254,6 +257,7 @@ public final class DashboardReadModelService {
 
     public record PendingProposalView(
             UUID id,
+            OrderExecutionMode executionMode,
             OrderSide side,
             OrderType type,
             String symbol,

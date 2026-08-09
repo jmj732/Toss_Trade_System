@@ -1,5 +1,7 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.account.FreshPortfolioReadService;
+import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerCallMetadata;
@@ -20,9 +22,12 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -48,6 +53,9 @@ class LiveOrderActivationServiceTest {
         verify(f.submissions(), org.mockito.Mockito.never())
                 .confirmBrokerOrder(any(), any(), any());
         verify(f.orders()).placeOrder(any(), any(), eq(CLIENT));
+        var order = inOrder(f.portfolios(), f.intents());
+        order.verify(f.portfolios()).read(USER, CONNECTION);
+        order.verify(f.intents()).findOwnedByIdForUpdate(INTENT_ID, USER, CONNECTION);
     }
 
     @Test
@@ -83,6 +91,44 @@ class LiveOrderActivationServiceTest {
         verify(f.orders(), never()).placeOrder(any(), any(), any());
     }
 
+    @Test
+    void liveModifyReplaysTerminalIdempotencyResultWithoutCallingBroker() {
+        var f = fixture(BrokerOrderAck.accepted("operation-1", null), true);
+        when(f.submissions().beginLiveOperation(any(), eq(INTENT_ID), eq("MODIFY"), eq("modify-key"), any(),
+                eq("test"), any()))
+                .thenReturn(new OrderSubmissionService.LiveOperationReplay(
+                        "request-hash", "ACCEPTED", "replace-2", true));
+
+        var result = f.service().modify(USER, INTENT_ID, new BigDecimal("179"), "step-up", "test", "modify-key");
+
+        assertThat(result.status()).isEqualTo(com.jmj.trade.broker.BrokerOrderDispatchStatus.ACCEPTED);
+        assertThat(result.brokerOrderId()).isEqualTo("replace-2");
+        verify(f.orders(), never()).modifyOrder(any(), any());
+    }
+
+    @Test
+    void ledgerFailureAfterProviderCallDoesNotRewriteAcceptedAsRejected() {
+        var f = fixture(BrokerOrderAck.accepted("operation-1", null), true);
+        when(f.submissions().beginLiveOperation(any(), eq(INTENT_ID), eq("MODIFY"), eq("modify-key"), any(),
+                eq("test"), any()))
+                .thenReturn(new OrderSubmissionService.LiveOperationReplay(
+                        "request-hash", "IN_FLIGHT", null, false));
+        when(f.risk().reviewLiveModification(eq(USER), eq(CONNECTION), eq(INTENT_ID), any(), any(), eq("test")))
+                .thenReturn(new PreTradeRiskEngine.Decision(UUID.randomUUID(), PreTradeRiskEngine.Phase.FINAL,
+                        true, List.of(), UUID.randomUUID(), new BigDecimal("180"), Currency.USD, 1, Instant.now()));
+        when(f.orders().modifyOrder(any(), any())).thenReturn(new BrokerResponse<>(
+                BrokerOrderAck.accepted("operation-1", null), BrokerOrderPort.localMetadata()));
+        doThrow(new RuntimeException("audit unavailable")).when(f.submissions()).completeLiveOperation(
+                any(), eq(INTENT_ID), eq("MODIFY"), eq("modify-key"), eq("ACCEPTED"), eq("operation-1"), eq("test"), any());
+
+        assertThatThrownBy(() ->
+                f.service().modify(USER, INTENT_ID, new BigDecimal("179"), "step-up", "test", "modify-key"))
+                .hasMessage("audit unavailable");
+        verify(f.orders()).modifyOrder(any(), any());
+        verify(f.submissions(), never()).completeLiveOperation(
+                any(), eq(INTENT_ID), eq("MODIFY"), eq("modify-key"), eq("REJECTED"), any(), eq("test"), any());
+    }
+
     private Fixture fixture(BrokerOrderAck ack) {
         return fixture(ack, false);
     }
@@ -96,6 +142,7 @@ class LiveOrderActivationServiceTest {
         var submissions = mock(OrderSubmissionService.class);
         var transitions = mock(OrderIntentTransitionService.class);
         var risk = mock(PreTradeRiskEngine.class);
+        var portfolios = mock(FreshPortfolioReadService.class);
         var stepUp = mock(OrderApprovalStepUpService.class);
         var safety = mock(LiveOrderSafetyLedger.class);
         var transaction = transactionTemplate();
@@ -124,7 +171,8 @@ class LiveOrderActivationServiceTest {
                 new com.jmj.trade.broker.Quote(new BrokerConnectionRef(CONNECTION), "AAPL", Currency.USD,
                         new BigDecimal("180"), new BigDecimal("179.9"), new BigDecimal("180.1"), null, Instant.now()),
                 BrokerOrderPort.localMetadata()));
-        when(risk.submitLive(eq(USER), eq(CONNECTION), eq(INTENT_ID), any(), any(), eq("test")))
+        when(portfolios.read(USER, CONNECTION)).thenReturn(mock(PortfolioReadService.PortfolioView.class));
+        when(risk.submitLive(eq(USER), eq(CONNECTION), eq(INTENT_ID), any(), any(), eq("test"), any()))
                 .thenReturn(new PreTradeRiskEngine.LiveSubmission(
                         new PreTradeRiskEngine.Decision(UUID.randomUUID(), PreTradeRiskEngine.Phase.FINAL,
                                 true, List.of(), UUID.randomUUID(), new BigDecimal("180"), Currency.USD, 1, Instant.now()),
@@ -144,8 +192,8 @@ class LiveOrderActivationServiceTest {
         var killSwitches = mock(KillSwitchStateReader.class);
         when(killSwitches.anyEngaged(any(), any())).thenReturn(false);
         return new Fixture(new LiveOrderActivationService(
-                quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, stepUp, safety,
-                killSwitches, transaction, java.time.Duration.ofMinutes(15)), orders, submissions, safety);
+                quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, portfolios, stepUp, safety,
+                killSwitches, transaction, java.time.Duration.ofMinutes(15)), orders, submissions, safety, portfolios, intents, risk);
     }
 
     @SuppressWarnings("unchecked")
@@ -157,6 +205,8 @@ class LiveOrderActivationServiceTest {
     }
 
     private record Fixture(LiveOrderActivationService service, BrokerOrderPort orders,
-                           OrderSubmissionService submissions, LiveOrderSafetyLedger safety) {
+                           OrderSubmissionService submissions, LiveOrderSafetyLedger safety,
+                           FreshPortfolioReadService portfolios, OrderIntentRepository intents,
+                           PreTradeRiskEngine risk) {
     }
 }

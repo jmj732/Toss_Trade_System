@@ -24,6 +24,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -52,7 +53,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import(PreTradeRiskEngineIntegrationTest.NoBrokerCallsConfiguration.class)
 class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
 
-    private static final Instant T0 = Instant.parse("2026-07-28T03:00:00Z");
+    // 스냅샷 신선도(portfolio.snapshot.max-age, 기본 PT15M)가 실제 시각 기준으로 판정되므로,
+    // 성공 스냅샷이 나이만으로 SNAPSHOT_TOO_OLD 처리되지 않도록 픽스처 기준 시각을 현재 기준
+    // 상대값으로 고정한다. 나이 기반 stale 자체는 별도 테스트에서 명시적으로 검증한다.
+    private static final Instant T0 = Instant.now().minusSeconds(30);
 
     @Autowired
     private PreTradeRiskEngine riskEngine;
@@ -136,6 +140,17 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
         var unknownOwner = owner();
         successfulSnapshot(unknownOwner, "UNKNOWN", true, "1000", "1000", "MSFT", "100");
         assertBlocked(unknownOwner, "CASH_UNKNOWN");
+    }
+
+    @Test
+    void snapshotOlderThanMaxAgeIsBlockedAsStaleEvenWithoutANewerRun() {
+        var owner = owner();
+        // 더 새로운 RUNNING/FAILED run 이 없어도, 선택된 성공 스냅샷의 completed_at 이
+        // portfolio.snapshot.max-age(기본 PT15M)를 넘기면 나이만으로 SNAPSHOT_TOO_OLD 가 되어
+        // 리스크 엔진이 주문을 차단한다.
+        successfulSnapshot(owner, "KNOWN", true, "1000", "1000", "MSFT", "100",
+                Instant.now().minus(Duration.ofMinutes(30)));
+        assertBlocked(owner, "STALE_SNAPSHOT");
     }
 
     @Test
@@ -577,13 +592,28 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
             String positionSymbol,
             String positionValue
     ) {
+        return successfulSnapshot(owner, cashStatus, includeUsd, usdBuyingPower,
+                totalUsdValue, positionSymbol, positionValue, T0);
+    }
+
+    private UUID successfulSnapshot(
+            Owner owner,
+            String cashStatus,
+            boolean includeUsd,
+            String usdBuyingPower,
+            String totalUsdValue,
+            String positionSymbol,
+            String positionValue,
+            Instant syncBase
+    ) {
         var runId = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO account_sync_runs (
                     id, user_id, broker_connection_id, credential_revision,
                     status, started_at, completed_at
                 ) VALUES (?, ?, ?, 1, 'SUCCEEDED', ?, ?)
-                """, runId, owner.userId(), owner.connectionId(), at(T0), at(T0.plusSeconds(1)));
+                """, runId, owner.userId(), owner.connectionId(),
+                at(syncBase), at(syncBase.plusSeconds(1)));
         jdbc.update("""
                 INSERT INTO account_snapshots (
                     id, sync_run_id, user_id, broker_connection_id, account_type,

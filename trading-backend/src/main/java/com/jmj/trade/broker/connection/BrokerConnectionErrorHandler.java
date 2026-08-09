@@ -24,6 +24,7 @@ public class BrokerConnectionErrorHandler {
             case NOT_FOUND -> error(HttpStatus.NOT_FOUND, exception.code().publicCode());
             case ALREADY_EXISTS -> error(HttpStatus.CONFLICT, exception.code().publicCode());
             case CONFLICT -> error(HttpStatus.CONFLICT, exception.code().publicCode());
+            case NOT_READY -> error(HttpStatus.CONFLICT, exception.code().publicCode());
             case VALIDATION_FAILED -> error(HttpStatus.UNPROCESSABLE_ENTITY, exception.code().publicCode());
         };
     }

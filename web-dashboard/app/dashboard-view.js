@@ -92,7 +92,9 @@ const CASH_STATUS_LABELS = { KNOWN: "확인됨", UNKNOWN: "확인 필요" };
 // D-05: stale 근거 코드를 한국어 보조 문구로 매핑한다.
 const STALE_REASON_LABELS = {
   SYNC_IN_PROGRESS: "최신 동기화 진행 중",
-  LATEST_SYNC_FAILED: "최근 동기화 실패"
+  LATEST_SYNC_FAILED: "최근 동기화 실패",
+  SNAPSHOT_TOO_OLD: "기준 시각 만료",
+  LIVE_SYNC_FAILED: "실시간 동기화 실패"
 };
 // D-26/D-06: 백엔드 내부 필드·섹션 경로를 한국어 라벨로 매핑한다. 미등록 키는 노출하지 않는다.
 const FIELD_LABELS = {
@@ -340,8 +342,33 @@ function Proposals({ section, busyOrderId, onOrderAction }) {
       : h("p", { className: "empty" }, "승인 대기 중인 주문이 없습니다."));
 }
 
-export function DashboardView({ dashboard, busyOrderId, onOrderAction, includeOrders = true }) {
+// ---------------------------------------------------------------------------
+// 실시간 시세 보드 — loadRealtimePrices()
+// ---------------------------------------------------------------------------
+export function RealtimePriceTicker({ prices }) {
+  const envelope = Array.isArray(prices) ? null : prices;
+  const data = envelope?.data ?? prices;
+  const degraded = envelope?.status === "DEGRADED" || envelope?.stale || envelope?.unknown;
+  if (!Array.isArray(data) || (data.length === 0 && !degraded)) return null;
+  return h("section", { className: "panel signal-panel realtime-ticker", style: { padding: "16px", marginBottom: "16px" } },
+    h("header", null, h("h2", { style: { fontSize: "var(--fs-sm)", color: "var(--muted)", margin: "0 0 12px" } }, "실시간 시세")),
+    degraded ? h("p", { className: "disclaimer" }, "일부 시세 필드는 제공되지 않거나 오래됐습니다.") : null,
+    h("div", { style: { display: "flex", gap: "16px", overflowX: "auto", paddingBottom: "4px" } },
+      ...data.map(p => {
+        const changePercent = p.changePercent ?? p.changeRate;
+        const positive = (changePercent ?? 0) >= 0;
+        return h("div", { key: p.symbol, style: { display: "flex", flexDirection: "column", minWidth: "120px", background: "var(--panel-raised)", padding: "12px", borderRadius: "var(--r-md)" } },
+          h("strong", null, p.symbol ?? UNKNOWN_TEXT),
+          h("span", { style: { fontSize: "var(--fs-lg)", fontWeight: "var(--fw-bold)", marginTop: "4px" } },
+          (p.price ?? p.lastPrice) != null ? formatAmount(p.currency ?? "USD", p.price ?? p.lastPrice) : UNKNOWN_TEXT),
+          h("span", { className: positive ? "change-positive" : "change-negative", style: { fontSize: "var(--fs-xs)", marginTop: "2px" } },
+            changePercent != null ? `${positive ? "+" : ""}${(changePercent * 100).toFixed(2)}%` : UNKNOWN_TEXT));
+      })));
+}
+
+export function DashboardView({ dashboard, busyOrderId, onOrderAction, includeOrders = true, realtimePrices = [] }) {
   return h("main", { className: "grid dashboard-surface" },
+    h(RealtimePriceTicker, { prices: realtimePrices }),
     h(Portfolio, { section: dashboard.portfolio }),
     h(Analysis, { section: dashboard.analysis }),
     h(Events, { section: dashboard.pendingEvents }),

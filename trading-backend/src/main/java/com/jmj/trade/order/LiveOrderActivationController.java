@@ -84,6 +84,7 @@ public final class LiveOrderActivationController {
     LiveOrderActivationService.OperationResult modify(
             Principal principal,
             @PathVariable UUID id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestHeader(value = "X-Step-Up-Token", required = false) String stepUpToken,
             @RequestBody ModifyRequest request
     ) {
@@ -91,7 +92,7 @@ public final class LiveOrderActivationController {
             throw validation();
         }
         return activation.modify(userId(principal), id, request.newLimitPrice(), stepUpToken,
-                "WEB:" + principal.getName());
+                "WEB:" + principal.getName(), idempotencyKey);
     }
 
     private static UUID userId(Principal principal) {

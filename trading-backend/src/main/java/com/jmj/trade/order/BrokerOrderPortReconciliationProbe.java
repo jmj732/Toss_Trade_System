@@ -23,7 +23,7 @@ import java.util.Objects;
  * <p>실패 사유에는 그룹 이름 같은 비식별 값만 담고 브로커 원문 식별자·자격증명은 담지 않는다
  * (SPEC:1151).
  */
-public final class BrokerOrderPortReconciliationProbe implements ReconciliationBrokerProbe {
+final class BrokerOrderPortReconciliationProbe implements ReconciliationBrokerProbe {
 
     private final BrokerOrderPort brokerOrderPort;
 

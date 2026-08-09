@@ -11,7 +11,7 @@ import java.util.Optional;
  *
  * <p>fail-closed: 확인할 수 없으면(예: 매도 가능 수량 UNKNOWN) 통과가 아니라 차단 사유를 반환한다.
  */
-public interface PreSubmitRevalidationCheck {
+interface PreSubmitRevalidationCheck {
 
     /** 통과면 {@link Optional#empty()}, 차단이면 구체적 사유를 담아 반환한다. */
     Optional<PreTradeRiskEngine.Reason> evaluate(PreSubmitContext context);

@@ -86,6 +86,14 @@ final class TossApiDtos {
     record BuyingPower(String currency, String cashBuyingPower) {
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record SellableQuantityEnvelope(SellableQuantity result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record SellableQuantity(String sellableQuantity) {
+    }
+
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record OrderCreateRequest(
             String clientOrderId,

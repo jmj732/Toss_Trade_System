@@ -89,7 +89,8 @@ class PaperOrderApprovalHardeningApiIntegrationTest extends PostgresIntegrationT
                          order_intent_audit_logs,
                          execution_snapshots,
                          broker_orders,
-                         real_order_daily_reservations, real_order_account_allowlist, order_intents,
+                         real_order_daily_reservations, real_order_account_allowlist,
+                         live_order_operation_idempotency, order_intents,
                          broker_accounts,
                          account_capacity_snapshots,
                          position_snapshots,
@@ -460,13 +461,14 @@ class PaperOrderApprovalHardeningApiIntegrationTest extends PostgresIntegrationT
     }
 
     private void successfulSnapshot(UUID userId, UUID connectionId) {
+        var observedAt = Instant.now();
         var runId = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO account_sync_runs (
                     id, user_id, broker_connection_id, credential_revision,
                     status, started_at, completed_at
                 ) VALUES (?, ?, ?, 1, 'SUCCEEDED', ?, ?)
-                """, runId, userId, connectionId, at(T0), at(T0.plusSeconds(1)));
+                """, runId, userId, connectionId, at(observedAt), at(observedAt.plusSeconds(1)));
         jdbc.update("""
                 INSERT INTO account_snapshots (
                     id, sync_run_id, user_id, broker_connection_id, account_type,
@@ -481,14 +483,15 @@ class PaperOrderApprovalHardeningApiIntegrationTest extends PostgresIntegrationT
                     '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
                     0, 0, 0, 'KNOWN', ?, ?
                 )
-                """, UUID.randomUUID(), runId, userId, connectionId, at(T0), at(T0));
+                """, UUID.randomUUID(), runId, userId, connectionId, at(observedAt), at(observedAt));
         for (var currency : List.of("KRW", "USD")) {
             jdbc.update("""
                     INSERT INTO account_capacity_snapshots (
                         id, sync_run_id, user_id, broker_connection_id, currency,
                         cash_buying_power, observed_at, created_at
                     ) VALUES (?, ?, ?, ?, ?, 1000, ?, ?)
-                    """, UUID.randomUUID(), runId, userId, connectionId, currency, at(T0), at(T0));
+                    """, UUID.randomUUID(), runId, userId, connectionId, currency,
+                    at(observedAt), at(observedAt));
         }
     }
 

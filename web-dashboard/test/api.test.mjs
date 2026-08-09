@@ -12,6 +12,9 @@ import {
   createSingleFlight,
   deletePredictionModelVersion,
   issuePredictionIngestionApiKey,
+  issueLiveOrderStepUp,
+  liveOrderActionKey,
+  modifyLiveOrder,
   deleteBrokerConnection,
   deprecatePredictionModelVersion,
   listEvents,
@@ -244,6 +247,24 @@ test("approve without an explicit key falls back to the stable per-order key", a
 
   const approve = calls.find(([url]) => url.endsWith("/order-9/approve"));
   assert.equal(approve[1].headers["Idempotency-Key"], orderActionKey("order-9", "approve"));
+});
+
+test("live modify uses the live contract, step-up header, and stable idempotency key", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json(url.endsWith("/step-up") ? { stepUpToken: "live-step-up" } : { status: "ACCEPTED" });
+  };
+
+  const issued = await issueLiveOrderStepUp("order-1", fetcher);
+  await modifyLiveOrder("order-1", 179.5, issued.stepUpToken, fetcher);
+
+  assert.equal(calls[0][0], "/api/v1/live-orders/order-1/step-up");
+  assert.equal(calls[1][0], "/api/v1/live-orders/order-1/modify");
+  assert.equal(calls[1][1].headers["Idempotency-Key"], liveOrderActionKey("order-1", "modify", 179.5));
+  assert.equal(calls[1][1].headers["X-Step-Up-Token"], "live-step-up");
+  assert.deepEqual(JSON.parse(calls[1][1].body), { newLimitPrice: 179.5 });
 });
 
 test("error body is preserved and step-up is promoted to a distinct failure", async () => {

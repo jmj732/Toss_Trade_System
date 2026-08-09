@@ -4,6 +4,20 @@ import { createElement as h } from "react";
 
 import { formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
 
+function surfaceData(value) {
+  return value?.data ?? value;
+}
+
+function surfaceMessage(value, loadingText) {
+  if (!value) return loadingText;
+  if (value.status === "UNAVAILABLE" || value.unavailable) {
+    return `지원되지 않음 (${value.unavailableReason ?? "PROVIDER_UNSUPPORTED"})`;
+  }
+  if (value.status === "DEGRADED") return "부분 데이터만 확인할 수 있습니다";
+  if (value.status === "ERROR") return `조회 실패 (${value.unavailableReason ?? "ERROR"})`;
+  return null;
+}
+
 // 상태 코드는 화이트리스트로만 한국어 라벨에 매핑한다. 미등록 값은 원문을 함께 노출한다.
 const STATE_LABELS = {
   IDLE: "조회 전",
@@ -198,6 +212,151 @@ function SnapshotHistory({ history = [], onSelectSnapshot }) {
       : h("p", { className: "empty" }, "스냅샷이 아직 없습니다"));
 }
 
+function OrderbookPanel({ orderbook }) {
+  const message = surfaceMessage(orderbook, "호가 데이터를 불러오는 중…");
+  const data = surfaceData(orderbook);
+  const asks = data?.asks ?? [];
+  const bids = data?.bids ?? [];
+  const hasData = asks.length > 0 || bids.length > 0;
+  return h("section", { className: "panel stock-surface-panel" },
+    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 10호가"), h("h2", null, "호가 잔량"))),
+    hasData
+      ? h("div", { className: "orderbook-widget", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "12px" } },
+        h("div", { className: "asks", style: { background: "rgba(240, 68, 82, 0.05)", padding: "12px", borderRadius: "var(--r-md)" } },
+          h("h4", { style: { color: "var(--danger-text)", margin: "0 0 8px" } }, "매도 호가 (Asks)"),
+          h("ul", { className: "list", style: { fontSize: "var(--fs-xs)" } },
+            ...asks.slice(0, 10).map((level, i) =>
+              h("li", { key: `ask-${i}` },
+                h("span", null, `호가 ${i + 1}`),
+                h("strong", null, `$${Number(level.price).toLocaleString()} (${Number(level.quantity).toLocaleString()}주)`))))),
+        h("div", { className: "bids", style: { background: "rgba(49, 130, 246, 0.05)", padding: "12px", borderRadius: "var(--r-md)" } },
+          h("h4", { style: { color: "var(--accent-text)", margin: "0 0 8px" } }, "매수 호가 (Bids)"),
+          h("ul", { className: "list", style: { fontSize: "var(--fs-xs)" } },
+            ...bids.slice(0, 10).map((level, i) =>
+              h("li", { key: `bid-${i}` },
+                h("span", null, `호가 ${i + 1}`),
+                h("strong", null, `$${Number(level.price).toLocaleString()} (${Number(level.quantity).toLocaleString()}주)`))))))
+      : h("p", { className: "empty" }, message ?? "호가 데이터가 없습니다"));
+}
+
+// ---------------------------------------------------------------------------
+// 캔들 차트 패널 — loadCandles()
+// ---------------------------------------------------------------------------
+const TIMEFRAMES = [
+  { key: "1d", label: "일봉" },
+  { key: "1w", label: "주봉" },
+  { key: "1M", label: "월봉" }
+];
+
+function CandleChartPanel({ candles, timeframe, onTimeframeChange }) {
+  const message = surfaceMessage(candles, "차트 데이터를 불러오는 중…");
+  const data = surfaceData(candles);
+  const items = data?.candles ?? data?.data ?? [];
+  return h("section", { className: "panel stock-surface-panel" },
+    h("header", null,
+      h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 캔들"), h("h2", null, "시세 차트")),
+      h("div", { className: "panel-actions", style: { display: "flex", gap: "4px" } },
+        ...TIMEFRAMES.map(tf =>
+          h("button", {
+            key: tf.key, type: "button",
+            className: (timeframe ?? "1d") === tf.key ? "primary" : "secondary",
+            style: { minHeight: "32px", padding: "4px 12px", fontSize: "var(--fs-xs)" },
+            onClick: () => onTimeframeChange && onTimeframeChange(tf.key)
+          }, tf.label)))),
+    items.length
+      ? h("div", { className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "캔들 차트 표" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            ...["일자", "시가", "고가", "저가", "종가", "거래량"].map(label =>
+              h("th", { key: label, scope: "col" }, label)))),
+          h("tbody", null, ...items.slice(-10).reverse().map((c, i) => {
+            const bullish = (c.close ?? 0) >= (c.open ?? 0);
+            return h("tr", { key: `candle-${i}` },
+              h("td", null, c.date ?? c.time ?? UNKNOWN_TEXT),
+              h("td", null, c.open != null ? `$${Number(c.open).toLocaleString()}` : UNKNOWN_TEXT),
+              h("td", { style: { color: "var(--danger-text)" } }, c.high != null ? `$${Number(c.high).toLocaleString()}` : UNKNOWN_TEXT),
+              h("td", { style: { color: "var(--accent-text)" } }, c.low != null ? `$${Number(c.low).toLocaleString()}` : UNKNOWN_TEXT),
+              h("td", { style: { fontWeight: "var(--fw-bold)", color: bullish ? "var(--danger-text)" : "var(--accent-text)" } },
+                c.close != null ? `$${Number(c.close).toLocaleString()}` : UNKNOWN_TEXT),
+              h("td", null, c.volume != null ? Number(c.volume).toLocaleString() : UNKNOWN_TEXT));
+          }))))
+      : h("p", { className: "empty" }, message ?? "차트 데이터가 없습니다"));
+}
+
+// ---------------------------------------------------------------------------
+// 투자자별 매매동향 — loadInvestorTrading()
+// ---------------------------------------------------------------------------
+function InvestorTradingPanel({ investorTrading }) {
+  const message = surfaceMessage(investorTrading, "매매동향 데이터를 불러오는 중…");
+  const data = surfaceData(investorTrading);
+  const items = Array.isArray(data) ? data : data?.data ?? data?.investors ?? [];
+  return h("section", { className: "panel stock-surface-panel" },
+    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 매매동향"), h("h2", null, "투자자별 매매동향"))),
+    items.length
+      ? h("div", { className: "investor-trading-grid", style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "12px", marginTop: "12px" } },
+        ...items.map((item, i) => {
+          const hasVolumes = item.buyVolume != null && item.sellVolume != null;
+          const net = hasVolumes ? item.buyVolume - item.sellVolume : null;
+          const positive = (net ?? 0) >= 0;
+          return h("div", { key: `inv-${i}`, style: { background: "var(--panel-raised)", padding: "16px", borderRadius: "var(--r-md)" } },
+            h("strong", { style: { fontSize: "var(--fs-sm)" } }, item.investorType ?? item.name ?? UNKNOWN_TEXT),
+            h("div", { style: { marginTop: "8px", display: "flex", justifyContent: "space-between" } },
+              h("span", { style: { color: "var(--danger-text)", fontSize: "var(--fs-xs)" } },
+                `매수 ${item.buyVolume != null ? Number(item.buyVolume).toLocaleString() : UNKNOWN_TEXT}`),
+              h("span", { style: { color: "var(--accent-text)", fontSize: "var(--fs-xs)" } },
+                `매도 ${item.sellVolume != null ? Number(item.sellVolume).toLocaleString() : UNKNOWN_TEXT}`)),
+            h("div", { style: { marginTop: "6px", fontWeight: "var(--fw-bold)", color: positive ? "var(--danger-text)" : "var(--accent-text)" } },
+              `순매수 ${net == null ? UNKNOWN_TEXT : `${positive ? "+" : ""}${net.toLocaleString()}`}`));
+        }))
+      : h("p", { className: "empty" }, message ?? "매매동향 데이터가 없습니다"));
+}
+
+// ---------------------------------------------------------------------------
+// 투자유의/경고 — loadStockWarnings()
+// ---------------------------------------------------------------------------
+const WARNING_SEVERITY = { INFO: "neutral", CAUTION: "warn", WARNING: "warn", DANGER: "danger" };
+
+function StockWarningsPanel({ warnings }) {
+  const message = surfaceMessage(warnings, "투자 경고 데이터를 불러오는 중…");
+  const data = surfaceData(warnings);
+  const items = data?.warnings ?? data?.data ?? [];
+  return h("section", { className: "panel stock-surface-panel" },
+    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 경고"), h("h2", null, "투자 경고"))),
+    items.length
+      ? h("ul", { className: "list" }, ...items.map((w, i) =>
+        h("li", { key: `warn-${i}`, style: { alignItems: "center" } },
+          h("span", { className: `badge-pill badge-pill--${WARNING_SEVERITY[w.severity] ?? "warn"}` },
+            w.severity ?? "경고"),
+          h("span", null, w.message ?? w.description ?? UNKNOWN_TEXT),
+          w.effectiveDate ? h("small", { style: { color: "var(--muted)" } }, `발효일 ${w.effectiveDate}`) : null)))
+      : h("p", { className: "empty" }, message ?? "투자 경고가 없습니다"));
+}
+
+// ---------------------------------------------------------------------------
+// 수수료 조회 — loadCommissions()
+// ---------------------------------------------------------------------------
+function CommissionsPanel({ commissions }) {
+  const message = surfaceMessage(commissions, "수수료 정보를 불러오는 중…");
+  const data = surfaceData(commissions);
+  const buy = data?.buy ?? data?.buyCommission;
+  const sell = data?.sell ?? data?.sellCommission;
+  const hasBuy = buy != null;
+  const hasSell = sell != null;
+  return h("section", { className: "panel stock-surface-panel" },
+    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 수수료"), h("h2", null, "거래 수수료"))),
+    (hasBuy || hasSell)
+      ? h("div", { className: "commissions-grid", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "12px" } },
+        h("div", { style: { background: "rgba(240, 68, 82, 0.05)", padding: "16px", borderRadius: "var(--r-md)", textAlign: "center" } },
+          h("span", { style: { fontSize: "var(--fs-sm)", color: "var(--muted)" } }, "매수 수수료"),
+          h("strong", { style: { display: "block", fontSize: "var(--fs-lg)", marginTop: "4px" } },
+            hasBuy ? `${(Number(buy.rate ?? buy) * 100).toFixed(4)}%` : UNKNOWN_TEXT)),
+        h("div", { style: { background: "rgba(49, 130, 246, 0.05)", padding: "16px", borderRadius: "var(--r-md)", textAlign: "center" } },
+          h("span", { style: { fontSize: "var(--fs-sm)", color: "var(--muted)" } }, "매도 수수료"),
+          h("strong", { style: { display: "block", fontSize: "var(--fs-lg)", marginTop: "4px" } },
+            hasSell ? `${(Number(sell.rate ?? sell) * 100).toFixed(4)}%` : UNKNOWN_TEXT)))
+      : h("p", { className: "empty" }, message ?? "수수료 정보가 없습니다"));
+}
+
 export function StockAnalysisProductSurface({
   symbol,
   analysis,
@@ -211,12 +370,24 @@ export function StockAnalysisProductSurface({
   onCreateAnalysis,
   onCreateForecast,
   onCreateExplanation,
-  onSelectSnapshot
+  onSelectSnapshot,
+  orderbook,
+  candles,
+  candleTimeframe,
+  onCandleTimeframeChange,
+  investorTrading,
+  stockWarnings,
+  commissions
 }) {
   return h("main", { className: "stock-surface" },
     h("header", { className: "stock-surface-heading" },
-      h("p", { className: "eyebrow" }, "종목 분석"), h("h2", null, symbol)),
+      h("p", { className: "eyebrow" }, "종목 분석 · Toss Invest OpenAPI"), h("h2", null, symbol)),
     h("div", { className: "stock-surface-grid" },
+      h(StockWarningsPanel, { warnings: stockWarnings }),
+      h(OrderbookPanel, { orderbook }),
+      h(CandleChartPanel, { candles, timeframe: candleTimeframe, onTimeframeChange: onCandleTimeframeChange }),
+      h(InvestorTradingPanel, { investorTrading }),
+      h(CommissionsPanel, { commissions }),
       h(AnalysisPanel, {
         analysis, state: status.analysis ?? "IDLE", error: errors.analysis, busy, onCreate: onCreateAnalysis
       }),

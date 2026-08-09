@@ -1,5 +1,7 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.account.FreshPortfolioReadService;
+import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerConnectionRef;
@@ -30,6 +32,7 @@ import java.util.regex.Pattern;
 public final class LiveOrderActivationService {
 
     private static final Pattern CLIENT_ORDER_ID = Pattern.compile("[A-Za-z0-9_-]{1,36}");
+    private static final Pattern OPERATION_IDEMPOTENCY_KEY = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
 
     private final BrokerAdapter quotes;
     private final BrokerOrderPort orders;
@@ -39,6 +42,7 @@ public final class LiveOrderActivationService {
     private final OrderSubmissionService submissions;
     private final OrderIntentTransitionService transitions;
     private final PreTradeRiskEngine risk;
+    private final FreshPortfolioReadService portfolios;
     private final OrderApprovalStepUpService stepUp;
     private final LiveOrderSafetyLedger safety;
     private final KillSwitchStateReader killSwitches;
@@ -54,6 +58,7 @@ public final class LiveOrderActivationService {
             OrderSubmissionService submissions,
             OrderIntentTransitionService transitions,
             PreTradeRiskEngine risk,
+            FreshPortfolioReadService portfolios,
             OrderApprovalStepUpService stepUp,
             LiveOrderSafetyLedger safety,
             KillSwitchStateReader killSwitches,
@@ -68,6 +73,7 @@ public final class LiveOrderActivationService {
         this.submissions = Objects.requireNonNull(submissions, "submissions");
         this.transitions = Objects.requireNonNull(transitions, "transitions");
         this.risk = Objects.requireNonNull(risk, "risk");
+        this.portfolios = Objects.requireNonNull(portfolios, "portfolios");
         this.stepUp = Objects.requireNonNull(stepUp, "stepUp");
         this.safety = Objects.requireNonNull(safety, "safety");
         this.killSwitches = Objects.requireNonNull(killSwitches, "killSwitches");
@@ -124,6 +130,7 @@ public final class LiveOrderActivationService {
             throw conflict();
         }
         var price = currentPrice(target, quoteMaxAge);
+        var syncedPortfolio = portfolios.read(userId, target.getBrokerConnectionId());
         if (displayedQuantity == null || displayedMaxLoss == null || displayedCurrency != target.getTradingCurrency()
                 || displayedQuantity.compareTo(target.getQuantity()) != 0
                 || scaled(displayedMaxLoss, target.getTradingCurrency())
@@ -147,7 +154,8 @@ public final class LiveOrderActivationService {
             }
             consumeStepUp(userId, orderIntentId, stepUpToken);
             var decision = risk.approveLive(new PreTradeRiskEngine.ApprovalCommand(
-                    userId, target.getBrokerConnectionId(), orderIntentId, price, Instant.now(), actor));
+                    userId, target.getBrokerConnectionId(), orderIntentId, price, Instant.now(), actor),
+                    syncedPortfolio);
             if (!decision.approved()) {
                 throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
                         decision.reasons().getFirst().name());
@@ -171,8 +179,9 @@ public final class LiveOrderActivationService {
             throw conflict();
         }
         var price = currentPrice(intent, quoteMaxAge);
+        var syncedPortfolio = portfolios.read(userId, intent.getBrokerConnectionId());
         var prepared = Objects.requireNonNull(transactions.execute(status -> prepare(
-                userId, orderIntentId, clientOrderId, stepUpToken, actor, price)));
+                userId, orderIntentId, clientOrderId, stepUpToken, actor, price, syncedPortfolio)));
         if (!prepared.callBroker()) {
             return result(prepared.attemptId());
         }
@@ -226,13 +235,7 @@ public final class LiveOrderActivationService {
     public OperationResult modify(UUID userId, UUID orderIntentId, BigDecimal newLimitPrice,
                                  String stepUpToken, String actor) {
         var target = liveBrokerOrder(userId, orderIntentId);
-        if (target.intent().getType() != OrderType.LIMIT
-                || newLimitPrice == null || newLimitPrice.signum() <= 0
-                || target.intent().getLimitPrice() == null
-                || newLimitPrice.compareTo(target.intent().getLimitPrice()) > 0) {
-            throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
-                    "live price modification exceeds the approved order limit");
-        }
+        validateModification(target, newLimitPrice);
         if (killSwitches.anyEngaged(userId, target.intent().getBrokerConnectionId())) {
             throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
                     "live order kill switch is engaged");
@@ -243,6 +246,87 @@ public final class LiveOrderActivationService {
         return invokeOperation(target.order().getBrokerOrderId(),
                 () -> orders.modifyOrder(account, BrokerOrderModification.reprice(
                         target.order().getBrokerOrderId(), newLimitPrice)));
+    }
+
+    public OperationResult modify(UUID userId, UUID orderIntentId, BigDecimal newLimitPrice,
+                                  String stepUpToken, String actor, String idempotencyKey) {
+        var target = liveBrokerOrder(userId, orderIntentId);
+        validateModification(target, newLimitPrice);
+        return modify(userId, orderIntentId, newLimitPrice, stepUpToken, actor, idempotencyKey, target);
+    }
+
+    private OperationResult modify(UUID userId, UUID orderIntentId, BigDecimal newLimitPrice,
+                                   String stepUpToken, String actor, String idempotencyKey,
+                                   LiveBrokerOrder target) {
+        requireOperationIdempotencyKey(idempotencyKey);
+        var requestHash = sha256(String.join("|", "MODIFY", target.order().getBrokerOrderId(),
+                newLimitPrice.stripTrailingZeros().toPlainString()));
+        final OrderSubmissionService.LiveOperationReplay replay;
+        final BrokerAccountRef account;
+        try {
+            replay = Objects.requireNonNull(transactions.execute(status -> submissions.beginLiveOperation(
+                    userId, orderIntentId, "MODIFY", idempotencyKey, requestHash, actor, Instant.now())));
+        } catch (IllegalStateException exception) {
+            if (exception.getMessage() != null && exception.getMessage().contains("idempotency key conflicts")) {
+                throw conflict();
+            }
+            throw exception;
+        }
+        if (replay.replayed()) {
+            if ("IN_FLIGHT".equals(replay.status())) {
+                return new OperationResult(BrokerOrderDispatchStatus.UNKNOWN, replay.brokerOrderId());
+            }
+            return new OperationResult(BrokerOrderDispatchStatus.valueOf(replay.status()), replay.brokerOrderId());
+        }
+
+        try {
+            if (killSwitches.anyEngaged(userId, target.intent().getBrokerConnectionId())) {
+                throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
+                        "live order kill switch is engaged");
+            }
+            var referencePrice = currentPrice(target.intent());
+            var decision = risk.reviewLiveModification(userId, target.intent().getBrokerConnectionId(),
+                    orderIntentId, referencePrice, Instant.now(), actor);
+            if (!decision.approved()) {
+                throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
+                        decision.reasons().getFirst().name());
+            }
+            account = allowlistedAccount(userId, target.intent());
+            consumeStepUp(userId, orderIntentId, stepUpToken);
+        } catch (RuntimeException exception) {
+            transactions.execute(status -> {
+                submissions.completeLiveOperation(userId, orderIntentId, "MODIFY", idempotencyKey,
+                        BrokerOrderDispatchStatus.REJECTED.name(), null, actor, Instant.now());
+                return null;
+            });
+            throw exception;
+        }
+        // Provider invocation is the recovery boundary: transport failure is UNKNOWN and must not
+        // be rewritten as REJECTED by a later local ledger/audit failure.
+        var result = invokeOperation(target.order().getBrokerOrderId(),
+                () -> orders.modifyOrder(account, BrokerOrderModification.reprice(
+                        target.order().getBrokerOrderId(), newLimitPrice)));
+        completeLiveOperation(userId, orderIntentId, idempotencyKey, result, actor);
+        return result;
+    }
+
+    private void completeLiveOperation(UUID userId, UUID orderIntentId, String idempotencyKey,
+                                       OperationResult result, String actor) {
+        transactions.execute(status -> {
+            submissions.completeLiveOperation(userId, orderIntentId, "MODIFY", idempotencyKey,
+                    result.status().name(), result.brokerOrderId(), actor, Instant.now());
+            return null;
+        });
+    }
+
+    private static void validateModification(LiveBrokerOrder target, BigDecimal newLimitPrice) {
+        if (target.intent().getType() != OrderType.LIMIT
+                || newLimitPrice == null || newLimitPrice.signum() <= 0
+                || target.intent().getLimitPrice() == null
+                || newLimitPrice.compareTo(target.intent().getLimitPrice()) > 0) {
+            throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
+                    "live price modification exceeds the approved order limit");
+        }
     }
 
     private OperationResult invokeOperation(String originalBrokerOrderId,
@@ -292,7 +376,8 @@ public final class LiveOrderActivationService {
     }
 
     private Prepared prepare(UUID userId, UUID orderIntentId, String clientOrderId, String stepUpToken,
-                             String actor, BigDecimal price) {
+                             String actor, BigDecimal price,
+                             PortfolioReadService.PortfolioView syncedPortfolio) {
         var intent = intents.findOwnedByIdForUpdate(orderIntentId, userId,
                         ownedIntent(userId, orderIntentId).getBrokerConnectionId())
                 .orElseThrow(() -> new LiveOrderActivationException(
@@ -311,7 +396,7 @@ public final class LiveOrderActivationService {
         }
         consumeStepUp(userId, orderIntentId, stepUpToken);
         var submission = risk.submitLive(userId, intent.getBrokerConnectionId(), orderIntentId,
-                price, Instant.now(), actor);
+                price, Instant.now(), actor, syncedPortfolio);
         if (!submission.decision().approved()) {
             throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
                     submission.decision().reasons().getFirst().name());
@@ -447,6 +532,12 @@ public final class LiveOrderActivationService {
 
     private static void requireClientOrderId(String value) {
         if (value == null || !CLIENT_ORDER_ID.matcher(value).matches()) {
+            throw validation();
+        }
+    }
+
+    private static void requireOperationIdempotencyKey(String value) {
+        if (value == null || !OPERATION_IDEMPOTENCY_KEY.matcher(value).matches()) {
             throw validation();
         }
     }

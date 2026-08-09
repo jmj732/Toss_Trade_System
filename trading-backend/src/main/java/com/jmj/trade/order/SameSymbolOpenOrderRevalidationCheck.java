@@ -9,7 +9,7 @@ import java.util.Optional;
  * 제출 직전에 차단한다. OPEN 여부 판정은 {@link PreTradeRiskEngine} 가 주문 원장을 다시 읽어
  * 컨텍스트에 채운다.
  */
-public final class SameSymbolOpenOrderRevalidationCheck implements PreSubmitRevalidationCheck {
+final class SameSymbolOpenOrderRevalidationCheck implements PreSubmitRevalidationCheck {
 
     @Override
     public Optional<PreTradeRiskEngine.Reason> evaluate(PreSubmitContext context) {

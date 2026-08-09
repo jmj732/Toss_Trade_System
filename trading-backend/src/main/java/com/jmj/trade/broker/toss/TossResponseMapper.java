@@ -17,6 +17,7 @@ import com.jmj.trade.broker.BrokerOrderLifecycle;
 import com.jmj.trade.broker.BrokerOrderSide;
 import com.jmj.trade.broker.BrokerOrderType;
 import com.jmj.trade.broker.BrokerOrderView;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -108,6 +109,23 @@ final class TossResponseMapper {
                 account,
                 requested,
                 nonNegativeDecimal(buyingPower.cashBuyingPower()),
+                metadata.observedAt());
+    }
+
+    SellableQuantitySnapshot sellableQuantity(
+            BrokerAccountRef account,
+            String symbol,
+            TossApiDtos.SellableQuantity sellable,
+            BrokerCallMetadata metadata) {
+        Objects.requireNonNull(account, "account");
+        Objects.requireNonNull(metadata, "metadata");
+        if (sellable == null) {
+            throw contract();
+        }
+        return SellableQuantitySnapshot.known(
+                account,
+                symbol,
+                nonNegativeDecimal(sellable.sellableQuantity()),
                 metadata.observedAt());
     }
 

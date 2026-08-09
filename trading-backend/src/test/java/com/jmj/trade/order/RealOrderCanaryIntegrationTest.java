@@ -2,6 +2,8 @@ package com.jmj.trade.order;
 
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
+import com.jmj.trade.account.FreshPortfolioReadService;
+import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerConnectionRef;
@@ -216,6 +218,7 @@ class RealOrderCanaryIntegrationTest extends PostgresIntegrationTest {
         var quotes = mock(BrokerAdapter.class);
         var orders = mock(BrokerOrderPort.class);
         var risk = mock(PreTradeRiskEngine.class);
+        var portfolios = mock(FreshPortfolioReadService.class);
         var stepUp = mock(OrderApprovalStepUpService.class);
         var killSwitches = mock(KillSwitchStateReader.class);
         var credentials = mock(TossCredentialProvider.class);
@@ -239,7 +242,7 @@ class RealOrderCanaryIntegrationTest extends PostgresIntegrationTest {
             var command = invocation.getArgument(0, PreTradeRiskEngine.ApprovalCommand.class);
             transitions.approve(command.orderIntentId(), command.actor());
             return decision(PreTradeRiskEngine.Phase.APPROVAL, new BigDecimal("10"));
-        }).when(risk).approveLive(any());
+        }).when(risk).approveLive(any(), any());
         doAnswer(invocation -> {
             var orderIntentId = invocation.getArgument(2, UUID.class);
             var actor = invocation.getArgument(5, String.class);
@@ -249,7 +252,8 @@ class RealOrderCanaryIntegrationTest extends PostgresIntegrationTest {
                     decision(PreTradeRiskEngine.Phase.FINAL, new BigDecimal("10")),
                     orderIntentId, owner.accountId(), OrderSide.BUY, OrderType.LIMIT,
                     "AAPL", BigDecimal.ONE, new BigDecimal("10"), Currency.USD);
-        }).when(risk).submitLive(any(), any(), any(), any(), any(), any());
+        }).when(risk).submitLive(any(), any(), any(), any(), any(), any(), any());
+        when(portfolios.read(any(), any())).thenReturn(mock(PortfolioReadService.PortfolioView.class));
         when(orders.placeOrder(any(), any(), any())).thenAnswer(invocation ->
                 BrokerOrderPort.ack(BrokerOrderAck.accepted(BROKER_ORDER_ID,
                         fault == Fault.CLIENT_ID_MISMATCH ? "different-client" : invocation.getArgument(2))));
@@ -276,7 +280,7 @@ class RealOrderCanaryIntegrationTest extends PostgresIntegrationTest {
 
         insertAllowlist(owner);
         var live = new LiveOrderActivationService(
-                quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, stepUp,
+                quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, portfolios, stepUp,
                 safety, killSwitches, new TransactionTemplate(transactionManager), Duration.ofMinutes(15));
         var properties = new RealOrderCanaryProperties(true, owner.connectionId(), owner.accountId(),
                 BigDecimal.ONE, new BigDecimal("100000"), new BigDecimal("100"),

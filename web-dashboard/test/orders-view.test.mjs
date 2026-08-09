@@ -140,3 +140,18 @@ test("disables 승인 and 취소 for a non-PROPOSED proposal but leaves a fresh 
   // 만료 문제가 없는 PROPOSED 는 두 버튼 모두 활성 상태다.
   assert.equal((proposed.match(/disabled/g) ?? []).length, 0);
 });
+
+test("offers modification only for an active live limit order", () => {
+  const html = render({
+    onModifyPrice() {},
+    section: {
+      data: [
+        { id: "live", executionMode: "LIVE", side: "BUY", type: "LIMIT", symbol: "AAPL",
+          quantity: 1, limitPrice: 180, currency: "USD", status: "ACTIVE" },
+        { id: "paper", executionMode: "PAPER", side: "BUY", type: "LIMIT", symbol: "MSFT",
+          quantity: 1, limitPrice: 180, currency: "USD", status: "ACTIVE" }
+      ]
+    }
+  });
+  assert.equal((html.match(/>정정</g) ?? []).length, 1);
+});

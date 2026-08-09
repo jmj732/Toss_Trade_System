@@ -14,7 +14,7 @@ import java.util.UUID;
  * 가 이 컨텍스트만 보고 판정하므로, 미구현 항목(2=E1, 4=B1, 10=E4, 11=F1, 12=C6)은 필요한
  * 필드를 추가하고 체크 하나를 목록에 더 끼우는 것으로 확장한다 — 구조를 다시 뒤집지 않는다.
  */
-public record PreSubmitContext(
+record PreSubmitContext(
         UUID userId,
         UUID connectionId,
         UUID intentUserId,
