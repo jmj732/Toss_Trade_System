@@ -302,22 +302,23 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     @Test
     void readsLatestSuccessfulPortfolioWithSeparatedBuyingPowerAndExplicitUnknowns() throws Exception {
         var connectionId = insertActiveConnection(UUID.fromString(USER_ID));
-        var runId = insertSuccessfulPortfolio(connectionId, UUID.fromString(USER_ID), true);
+        var previousRunId = insertSuccessfulPortfolio(connectionId, UUID.fromString(USER_ID), true);
 
         mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", connectionId)
                         .with(user(USER_ID)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.syncRunId").value(runId.toString()))
+                .andExpect(jsonPath("$.syncRunId").value(org.hamcrest.Matchers.not(previousRunId.toString())))
                 .andExpect(jsonPath("$.stale").value(false))
                 .andExpect(jsonPath("$.staleReason").doesNotExist())
                 .andExpect(jsonPath("$.partial").value(false))
                 .andExpect(jsonPath("$.missingSections").isEmpty())
                 .andExpect(jsonPath("$.account.displayAccountNumber").value("****5678"))
                 .andExpect(jsonPath("$.account.cashBalanceStatus").value("UNKNOWN"))
-                .andExpect(jsonPath("$.positions[0].symbol").value("NVDA"))
-                .andExpect(jsonPath("$.buyingPower.KRW.cashBuyingPower").value(1000000))
+                .andExpect(jsonPath("$.positions").isEmpty())
+                .andExpect(jsonPath("$.buyingPower.KRW.cashBuyingPower").value(1000))
                 .andExpect(jsonPath("$.buyingPower.USD.cashBuyingPower").value(1000))
                 .andExpect(jsonPath("$.unknownFields[0]").value("account.cashBalance"));
+        assertThat(brokerAdapter.connectionRefs()).containsExactly(new BrokerConnectionRef(connectionId));
     }
 
     @Test
@@ -333,6 +334,14 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 "BROKER_TEMPORARY",
                 SNAPSHOT_TIME.plusMinutes(1),
                 SNAPSHOT_TIME.plusMinutes(2));
+        brokerAdapter.respondWithBrokerException(new BrokerException(
+                BrokerErrorCategory.TEMPORARY,
+                503,
+                "temporary failure",
+                "portfolio-fallback",
+                Duration.ZERO,
+                true,
+                "temporary broker failure"));
 
         mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", connectionId)
                         .with(user(USER_ID)))
@@ -348,10 +357,20 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
         var userId = UUID.fromString(USER_ID);
         var connectionId = insertActiveConnection(userId);
         insertSuccessfulPortfolio(connectionId, userId, false);
+        brokerAdapter.respondWithBrokerException(new BrokerException(
+                BrokerErrorCategory.TEMPORARY,
+                503,
+                "temporary failure",
+                "portfolio-partial",
+                Duration.ZERO,
+                true,
+                "temporary broker failure"));
 
         mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", connectionId)
                         .with(user(USER_ID)))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stale").value(true))
+                .andExpect(jsonPath("$.staleReason").value("LATEST_SYNC_FAILED"))
                 .andExpect(jsonPath("$.partial").value(true))
                 .andExpect(jsonPath("$.missingSections[0]").value("BUYING_POWER_USD"))
                 .andExpect(jsonPath("$.buyingPower.KRW").exists())
@@ -370,6 +389,14 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 .andExpect(jsonPath("$.code").value("BROKER_CONNECTION_NOT_FOUND"));
 
         var emptyConnectionId = insertActiveConnection(UUID.fromString(OTHER_USER_ID));
+        brokerAdapter.respondWithBrokerException(new BrokerException(
+                BrokerErrorCategory.TEMPORARY,
+                503,
+                "temporary failure",
+                "portfolio-empty",
+                Duration.ZERO,
+                true,
+                "temporary broker failure"));
         mockMvc.perform(get("/api/v1/broker-connections/{id}/portfolio", emptyConnectionId)
                         .with(user(OTHER_USER_ID)))
                 .andExpect(status().isNotFound())

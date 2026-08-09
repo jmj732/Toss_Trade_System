@@ -158,7 +158,7 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
 
         assertThat(intents.findById(intentId).orElseThrow().getStatus())
                 .isEqualTo(OrderIntentStatus.APPROVED);
-        verify(f.risk(), times(1)).approveLive(any());
+        verify(f.risk(), times(1)).approveLive(any(), any());
     }
 
     @Test
