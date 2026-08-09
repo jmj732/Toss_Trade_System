@@ -30,11 +30,11 @@ public final class BrokerSurfaceService {
     public BrokerSurfaceService(
             JdbcTemplate jdbc,
             FreshPortfolioReadService portfolios,
-            BrokerAdapter broker
+            BrokerAdapter brokerAdapter
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.portfolios = Objects.requireNonNull(portfolios, "portfolios");
-        this.broker = Objects.requireNonNull(broker, "broker");
+        this.broker = Objects.requireNonNull(brokerAdapter, "brokerAdapter");
     }
 
     public BrokerSurfaceResponse<Map<String, PortfolioReadService.BuyingPowerView>> buyingPower(

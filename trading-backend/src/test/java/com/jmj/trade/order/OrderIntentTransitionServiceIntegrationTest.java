@@ -67,7 +67,8 @@ class OrderIntentTransitionServiceIntegrationTest extends PostgresIntegrationTes
                          order_intent_audit_logs,
                          execution_snapshots,
                          broker_orders,
-                         real_order_daily_reservations, real_order_account_allowlist, order_intents,
+                         real_order_daily_reservations, real_order_account_allowlist,
+                         live_order_operation_idempotency, order_intents,
                          broker_accounts
                 """);
     }

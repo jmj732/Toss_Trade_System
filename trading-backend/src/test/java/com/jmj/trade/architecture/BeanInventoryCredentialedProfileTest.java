@@ -80,6 +80,8 @@ class BeanInventoryCredentialedProfileTest extends PostgresIntegrationTest {
             "brokerConnectionTransactions : com.jmj.trade.broker.connection.BrokerConnectionTransactions",
             "brokerConnectionValidationService : com.jmj.trade.broker.connection.BrokerConnectionValidationService",
             "brokerOrderRepository : com.jmj.trade.order.BrokerOrderRepository",
+            "brokerSurfaceController : com.jmj.trade.account.BrokerSurfaceController",
+            "brokerSurfaceService : com.jmj.trade.account.BrokerSurfaceService",
             "cookieAuthorizationRequestRepository : com.jmj.trade.security.CookieAuthorizationRequestRepository",
             "correlationIdFilter : com.jmj.trade.observability.CorrelationIdFilter",
             "credentialCipher : com.jmj.trade.broker.connection.CredentialCipher",
