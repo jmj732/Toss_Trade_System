@@ -236,9 +236,6 @@ test("journey: orders double-submit guard", async ({ page, context }) => {
       await new Promise(r => setTimeout(r, 1500)); // keep the button busy
       return jsonResponse(route, 200, { status: "COMPLETED" });
     }
-    if (/\/paper-orders\/[^/]+$/.test(pathname)) {
-      return jsonResponse(route, 200, { commands: [], quantity: 1, currency: "USD" });
-    }
     return jsonResponse(route, 200, {});
   });
 

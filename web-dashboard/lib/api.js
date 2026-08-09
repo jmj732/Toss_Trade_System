@@ -102,10 +102,6 @@ export function loadOrderApprovalPreview(orderId, fetcher = fetch) {
     `/api/v1/paper-orders/${encodeURIComponent(orderId)}/approval-preview`, fetcher);
 }
 
-export function loadPaperOrder(orderId, fetcher = fetch) {
-  return readEvent(`/api/v1/paper-orders/${encodeURIComponent(orderId)}`, fetcher);
-}
-
 export function issueOrderStepUp(orderId, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/paper-orders/${encodeURIComponent(orderId)}/step-up`, "POST", null, fetcher);
@@ -543,19 +539,6 @@ export async function modifyLiveOrder(orderId, newLimitPrice, stepUpToken, fetch
   return body(response);
 }
 
-export function cancelPaperOrder(orderId, fetcher = fetch) {
-  return brokerCommand(
-    `/api/v1/paper-orders/${encodeURIComponent(orderId)}/cancel`,
-    "POST",
-    { channel: "WEB" },
-    fetcher
-  );
-}
-
-export function loadOrderDetail(orderId, fetcher = fetch) {
-  return readEvent(`/api/v1/paper-orders/${encodeURIComponent(orderId)}`, fetcher);
-}
-
 export function loadAccountBuyingPower(connectionId, currency = "USD", fetcher = fetch) {
   return readEvent(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/buying-power?currency=${encodeURIComponent(currency)}`,
@@ -615,13 +598,6 @@ export function loadInvestorTrading(connectionId, symbol, fetcher = fetch) {
 export function loadRankings(connectionId, category = "VOLUME", fetcher = fetch) {
   return readEvent(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/rankings?category=${encodeURIComponent(category)}`,
-    fetcher
-  );
-}
-
-export function loadSellableQuantity(connectionId, symbol, fetcher = fetch) {
-  return readEvent(
-    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/sellable-quantity?symbol=${encodeURIComponent(symbol)}`,
     fetcher
   );
 }
