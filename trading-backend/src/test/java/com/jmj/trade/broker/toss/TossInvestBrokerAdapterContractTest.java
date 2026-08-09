@@ -7,6 +7,7 @@ import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.CashBalanceStatus;
 import com.jmj.trade.broker.Currency;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,6 +23,7 @@ import java.util.UUID;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
@@ -152,6 +154,61 @@ class TossInvestBrokerAdapterContractTest {
 
         assertThat(response.value().cashBuyingPower()).isEqualByComparingTo("250.25");
         assertThat(response.value().currency()).isEqualTo(Currency.USD);
+    }
+
+    @Test
+    void mapsFractionalUsSellableQuantityFromOfficialEndpoint() {
+        server.stubFor(get(urlEqualTo("/api/v1/sellable-quantity?symbol=AAPL"))
+                .withHeader("Authorization", equalTo("Bearer access-token"))
+                .withHeader("X-Tossinvest-Account", equalTo("9876543210"))
+                .willReturn(json("""
+                        {"result":{"sellableQuantity":"1.5"}}
+                        """)));
+
+        var response = adapter().getSellableQuantity(ACCOUNT, "aapl");
+
+        assertThat(response.value().availability()).isEqualTo(SellableQuantitySnapshot.Availability.KNOWN);
+        assertThat(response.value().symbol()).isEqualTo("AAPL");
+        assertThat(response.value().quantity()).isEqualByComparingTo("1.5");
+        assertThat(response.metadata().requestId()).isEqualTo("req-success");
+    }
+
+    @Test
+    void sellableQuantityReturnsUnknownWhenRouteIsUnsupported() {
+        server.stubFor(get(urlEqualTo("/api/v1/sellable-quantity?symbol=AAPL"))
+                .willReturn(aResponse().withStatus(404).withHeader("Content-Type", "application/json")
+                        .withBody("{\"error\":{\"code\":\"not-found\"}}")));
+
+        var response = adapter().getSellableQuantity(ACCOUNT, "aapl");
+
+        assertThat(response.value().availability()).isEqualTo(SellableQuantitySnapshot.Availability.UNKNOWN);
+        assertThat(response.value().quantity()).isNull();
+        assertThat(response.value().symbol()).isEqualTo("AAPL");
+    }
+
+    @Test
+    void sellableQuantityReturnsUnknownWhenReadTimesOut() {
+        server.stubFor(get(urlEqualTo("/api/v1/sellable-quantity?symbol=AAPL"))
+                .willReturn(aResponse().withFixedDelay(1_500).withHeader("Content-Type", "application/json")
+                        .withBody("{\"result\":{\"sellableQuantity\":\"1\"}}")));
+
+        var response = adapter().getSellableQuantity(ACCOUNT, "aapl");
+
+        assertThat(response.value().availability()).isEqualTo(SellableQuantitySnapshot.Availability.UNKNOWN);
+        assertThat(response.value().quantity()).isNull();
+    }
+
+    @Test
+    void sellableQuantityReturnsUnknownWhenPayloadIsMalformed() {
+        server.stubFor(get(urlEqualTo("/api/v1/sellable-quantity?symbol=AAPL"))
+                .willReturn(json("""
+                        {"result":{"sellableQuantity":"not-a-number"}}
+                        """)));
+
+        var response = adapter().getSellableQuantity(ACCOUNT, "aapl");
+
+        assertThat(response.value().availability()).isEqualTo(SellableQuantitySnapshot.Availability.UNKNOWN);
+        assertThat(response.value().quantity()).isNull();
     }
 
     @Test

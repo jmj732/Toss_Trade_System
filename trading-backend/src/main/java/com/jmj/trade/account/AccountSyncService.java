@@ -107,6 +107,11 @@ public final class AccountSyncService {
             if (sellable == null || result.putIfAbsent(position.symbol(), sellable) != null) {
                 throw new AccountSyncException(AccountSyncException.Code.BROKER_CONTRACT_MISMATCH);
             }
+            if (sellable.availability() == SellableQuantitySnapshot.Availability.KNOWN
+                    && sellable.quantity().compareTo(position.quantity()) > 0) {
+                result.put(position.symbol(), SellableQuantitySnapshot.unknown(
+                        account, position.symbol(), sellable.observedAt()));
+            }
         }
         return Map.copyOf(result);
     }
