@@ -5,6 +5,7 @@ import com.jmj.trade.broker.AccountSnapshot;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.MoneyByCurrency;
 import com.jmj.trade.broker.Position;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 import com.jmj.trade.notification.NotificationEventType;
 import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -94,6 +95,7 @@ public final class AccountSyncTransactions {
             BrokerAccountRef account,
             AccountSnapshot snapshot,
             List<Position> positions,
+            Map<String, SellableQuantitySnapshot> sellableQuantities,
             List<AccountCapacitySnapshot> capacities
     ) {
         return transaction.execute(status -> {
@@ -119,7 +121,8 @@ public final class AccountSyncTransactions {
             }
 
             insertAccount(target, account, snapshot, completedAt);
-            positions.forEach(position -> insertPosition(target, position, completedAt));
+            positions.forEach(position -> insertPosition(
+                    target, position, sellableQuantities.get(position.symbol()), completedAt));
             capacities.forEach(capacity -> insertCapacity(target, capacity, completedAt));
             notifications.emit(target.userId(), NotificationEventType.SYNC_SUCCEEDED, target.runId(),
                     Map.of("connectionId", target.connectionId(), "syncRunId", target.runId()),
@@ -212,7 +215,12 @@ public final class AccountSyncTransactions {
                 createdAt);
     }
 
-    private void insertPosition(SyncTarget target, Position position, OffsetDateTime createdAt) {
+    private void insertPosition(
+            SyncTarget target,
+            Position position,
+            SellableQuantitySnapshot sellable,
+            OffsetDateTime createdAt
+    ) {
         jdbc.update("""
                 INSERT INTO position_snapshots (
                     id, sync_run_id, user_id, broker_connection_id, symbol, name,
@@ -220,9 +228,10 @@ public final class AccountSyncTransactions {
                     purchase_amount, market_value_amount, market_value_after_cost,
                     profit_loss_amount, profit_loss_after_cost, profit_loss_rate,
                     profit_loss_rate_after_cost, daily_profit_loss_amount,
-                    daily_profit_loss_rate, commission, tax, observed_at, created_at
+                    daily_profit_loss_rate, commission, tax, sellable_quantity,
+                    observed_at, created_at
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 UUID.randomUUID(), target.runId(), target.userId(), target.connectionId(),
@@ -233,6 +242,8 @@ public final class AccountSyncTransactions {
                 position.profitLossAmountAfterCost(), position.profitLossRate(),
                 position.profitLossRateAfterCost(), position.dailyProfitLossAmount(),
                 position.dailyProfitLossRate(), position.commission(), position.tax(),
+                sellable.availability() == SellableQuantitySnapshot.Availability.KNOWN
+                        ? sellable.quantity() : null,
                 offset(position.observedAt()), createdAt);
     }
 

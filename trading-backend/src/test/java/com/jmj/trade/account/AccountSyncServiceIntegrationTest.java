@@ -82,7 +82,7 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
         var result = service.sync(owner.userId(), owner.connectionId());
 
         assertThat(broker.calls).containsExactly(
-                "accounts", "account", "positions", "capacity:KRW", "capacity:USD");
+                "accounts", "account", "positions", "sellable:NVDA", "capacity:KRW", "capacity:USD");
         assertThat(broker.transactionStates).containsOnly(false);
         assertThat(count("account_snapshots")).isEqualTo(1);
         assertThat(count("position_snapshots")).isEqualTo(1);
@@ -93,6 +93,20 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
         assertThat(runStatus(result.runId())).isEqualTo("SUCCEEDED");
         assertThat(service.latestSuccessful(owner.userId(), owner.connectionId()))
                 .contains(result);
+    }
+
+    @Test
+    void persistsSellableQuantityReturnedByBrokerAlongsidePosition() {
+        var owner = insertOwnerAndConnection();
+        broker.account = account(owner.connectionId());
+        broker.sellableQuantity = SellableQuantitySnapshot.known(
+                broker.account, "NVDA", new BigDecimal("0.5"), OBSERVED_AT);
+
+        service.sync(owner.userId(), owner.connectionId());
+
+        assertThat(jdbc.queryForObject(
+                "SELECT sellable_quantity FROM position_snapshots",
+                BigDecimal.class)).isEqualByComparingTo("0.5");
     }
 
     @Test
@@ -337,6 +351,7 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
         private final List<Boolean> transactionStates = new ArrayList<>();
         private List<BrokerAccountView> accounts;
         private BrokerAccountRef account;
+        private SellableQuantitySnapshot sellableQuantity;
         private String failOn;
         private java.util.function.Consumer<String> afterCall = ignored -> {
         };
@@ -380,9 +395,11 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
 
         @Override
         public BrokerResponse<SellableQuantitySnapshot> getSellableQuantity(BrokerAccountRef account, String symbol) {
-            return new BrokerResponse<>(
-                    SellableQuantitySnapshot.unknown(account, symbol, OBSERVED_AT),
-                    metadata());
+            record("sellable:" + symbol);
+            var value = sellableQuantity == null
+                    ? SellableQuantitySnapshot.unknown(account, symbol, OBSERVED_AT)
+                    : sellableQuantity;
+            return new BrokerResponse<>(value, metadata());
         }
 
         private void record(String call) {

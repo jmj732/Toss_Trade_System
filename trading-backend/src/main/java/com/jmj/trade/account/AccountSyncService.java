@@ -8,8 +8,11 @@ import com.jmj.trade.broker.BrokerConnectionRef;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.Position;
+import com.jmj.trade.broker.SellableQuantitySnapshot;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -36,15 +39,18 @@ public final class AccountSyncService {
             requireSameConnection(account, target.connectionId());
             var snapshot = broker.getAccount(account).value();
             var positions = List.copyOf(broker.getPositions(account).value());
+            var sellableQuantities = readSellableQuantities(account, positions);
             var krwCapacity = broker.getAccountCapacity(account, Currency.KRW).value();
             var usdCapacity = broker.getAccountCapacity(account, Currency.USD).value();
-            requireSameAccount(account, snapshot, positions, krwCapacity, usdCapacity);
+            requireSameAccount(
+                    account, snapshot, positions, sellableQuantities, krwCapacity, usdCapacity);
 
             return transactions.complete(
                     target,
                     account,
                     snapshot,
                     positions,
+                    sellableQuantities,
                     List.of(krwCapacity, usdCapacity));
         } catch (RuntimeException exception) {
             try {
@@ -70,17 +76,39 @@ public final class AccountSyncService {
             BrokerAccountRef account,
             AccountSnapshot snapshot,
             List<Position> positions,
+            Map<String, SellableQuantitySnapshot> sellableQuantities,
             AccountCapacitySnapshot krwCapacity,
             AccountCapacitySnapshot usdCapacity
     ) {
         if (!snapshot.account().equals(account)
                 || positions.stream().anyMatch(position -> !position.account().equals(account))
+                || sellableQuantities.size() != positions.size()
+                || positions.stream().anyMatch(position -> {
+                    var sellable = sellableQuantities.get(position.symbol());
+                    return sellable == null
+                            || !sellable.account().equals(account)
+                            || !sellable.symbol().equals(position.symbol());
+                })
                 || !krwCapacity.account().equals(account)
                 || krwCapacity.currency() != Currency.KRW
                 || !usdCapacity.account().equals(account)
                 || usdCapacity.currency() != Currency.USD) {
             throw new AccountSyncException(AccountSyncException.Code.BROKER_CONTRACT_MISMATCH);
         }
+    }
+
+    private Map<String, SellableQuantitySnapshot> readSellableQuantities(
+            BrokerAccountRef account,
+            List<Position> positions
+    ) {
+        var result = new LinkedHashMap<String, SellableQuantitySnapshot>();
+        for (var position : positions) {
+            var sellable = broker.getSellableQuantity(account, position.symbol()).value();
+            if (sellable == null || result.putIfAbsent(position.symbol(), sellable) != null) {
+                throw new AccountSyncException(AccountSyncException.Code.BROKER_CONTRACT_MISMATCH);
+            }
+        }
+        return Map.copyOf(result);
     }
 
     private static String errorCode(RuntimeException exception) {
