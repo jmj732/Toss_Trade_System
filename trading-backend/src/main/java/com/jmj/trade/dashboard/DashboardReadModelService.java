@@ -1,5 +1,6 @@
 package com.jmj.trade.dashboard;
 
+import com.jmj.trade.account.FreshPortfolioReadService;
 import com.jmj.trade.account.PortfolioReadException;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.analysis.PortfolioAnalysisWorkflowService;
@@ -30,13 +31,13 @@ public final class DashboardReadModelService {
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
-    private final PortfolioReadService portfolios;
+    private final FreshPortfolioReadService portfolios;
     private final PortfolioAnalysisWorkflowService analyses;
 
     DashboardReadModelService(
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
-            PortfolioReadService portfolios,
+            FreshPortfolioReadService portfolios,
             PortfolioAnalysisWorkflowService analyses
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");

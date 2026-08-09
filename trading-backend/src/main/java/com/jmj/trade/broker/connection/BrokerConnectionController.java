@@ -1,6 +1,7 @@
 package com.jmj.trade.broker.connection;
 
 import com.jmj.trade.account.PortfolioReadService;
+import com.jmj.trade.account.FreshPortfolioReadService;
 import com.jmj.trade.account.AccountSyncResult;
 import com.jmj.trade.account.AccountSyncService;
 import com.jmj.trade.security.AuthenticationClaims;
@@ -26,13 +27,13 @@ public class BrokerConnectionController {
 
     private final BrokerConnectionService connectionService;
     private final BrokerConnectionValidationService validationService;
-    private final PortfolioReadService portfolioReadService;
+    private final FreshPortfolioReadService portfolioReadService;
     private final AccountSyncService accountSyncService;
 
     BrokerConnectionController(
             BrokerConnectionService connectionService,
             BrokerConnectionValidationService validationService,
-            PortfolioReadService portfolioReadService,
+            FreshPortfolioReadService portfolioReadService,
             AccountSyncService accountSyncService
     ) {
         this.connectionService = connectionService;

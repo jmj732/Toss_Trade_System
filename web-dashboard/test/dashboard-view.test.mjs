@@ -133,6 +133,26 @@ test("does not assert 최신 when a section is partial and labels missing sectio
   assert.ok(!portfolioHeader.includes("최신"));
 });
 
+test("renders a live-read failure as stale with its explicit reason", () => {
+  const dashboard = {
+    portfolio: section({
+      staleReason: "LIVE_SYNC_FAILED",
+      account: {}, positions: [], buyingPower: {}
+    }, { stale: true }),
+    analysis: section({ result: { currencyTotals: [], positions: [] } }),
+    pendingEvents: section([]),
+    pendingOrderProposals: section([])
+  };
+
+  const html = renderToStaticMarkup(createElement(DashboardView, {
+    dashboard,
+    busyOrderId: null,
+    onOrderAction() {}
+  }));
+
+  assert.match(html, /지연 · 실시간 동기화 실패/);
+});
+
 test("never leaks raw undefined/null/NaN/Invalid Date for missing optional fields", () => {
   const dashboard = {
     portfolio: section({

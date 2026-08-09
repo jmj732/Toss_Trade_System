@@ -1,6 +1,7 @@
 package com.jmj.trade.order;
 
 import com.jmj.trade.account.PortfolioReadService;
+import com.jmj.trade.account.FreshPortfolioReadService;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerOrderPort;
 import com.jmj.trade.notification.NotificationOutboxWriter;
@@ -82,6 +83,7 @@ public class CredentialedOrderStackConfiguration {
     @Bean
     PreTradeRiskEngine preTradeRiskEngine(
             PortfolioReadService portfolioReadService,
+            FreshPortfolioReadService freshPortfolioReadService,
             PaperTradingBroker paperTradingBroker,
             OrderIntentRepository orderIntentRepository,
             OrderIntentTransitionService transitionService,
@@ -98,6 +100,7 @@ public class CredentialedOrderStackConfiguration {
                 new KillSwitchRevalidationCheck(killSwitchLedger));
         return new PreTradeRiskEngine(
                 portfolioReadService,
+                freshPortfolioReadService,
                 paperTradingBroker,
                 orderIntentRepository,
                 transitionService,
@@ -156,6 +159,7 @@ public class CredentialedOrderStackConfiguration {
             OrderSubmissionService orderSubmissionService,
             OrderIntentTransitionService transitionService,
             PreTradeRiskEngine preTradeRiskEngine,
+            FreshPortfolioReadService freshPortfolioReadService,
             OrderApprovalStepUpService orderApprovalStepUpService,
             LiveOrderSafetyLedger safetyLedger,
             KillSwitchStateReader killSwitchStateReader,
@@ -165,6 +169,7 @@ public class CredentialedOrderStackConfiguration {
         return new LiveOrderActivationService(
                 brokerAdapter, orderPort, orderIntentRepository, brokerOrderRepository, submissionAttemptRepository,
                 orderSubmissionService, transitionService, preTradeRiskEngine,
+                freshPortfolioReadService,
                 orderApprovalStepUpService, safetyLedger, killSwitchStateReader,
                 new TransactionTemplate(transactionManager),
                 proposalTtl);

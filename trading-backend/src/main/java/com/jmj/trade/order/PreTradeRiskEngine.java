@@ -1,5 +1,6 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.account.FreshPortfolioReadService;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
@@ -20,6 +21,7 @@ import java.util.UUID;
 public class PreTradeRiskEngine {
 
     private final PortfolioReadService portfolioReadService;
+    private final FreshPortfolioReadService freshPortfolioReadService;
     private final PaperTradingBroker paperTradingBroker;
     private final OrderIntentRepository intentRepository;
     private final OrderIntentTransitionService transitionService;
@@ -29,6 +31,7 @@ public class PreTradeRiskEngine {
 
     public PreTradeRiskEngine(
             PortfolioReadService portfolioReadService,
+            FreshPortfolioReadService freshPortfolioReadService,
             PaperTradingBroker paperTradingBroker,
             OrderIntentRepository intentRepository,
             OrderIntentTransitionService transitionService,
@@ -37,6 +40,8 @@ public class PreTradeRiskEngine {
             List<PreSubmitRevalidationCheck> preSubmitChecks
     ) {
         this.portfolioReadService = Objects.requireNonNull(portfolioReadService, "portfolioReadService");
+        this.freshPortfolioReadService = Objects.requireNonNull(
+                freshPortfolioReadService, "freshPortfolioReadService");
         this.paperTradingBroker = Objects.requireNonNull(paperTradingBroker, "paperTradingBroker");
         this.intentRepository = Objects.requireNonNull(intentRepository, "intentRepository");
         this.transitionService = Objects.requireNonNull(transitionService, "transitionService");
@@ -47,15 +52,29 @@ public class PreTradeRiskEngine {
 
     @Transactional
     public Decision approve(ApprovalCommand command) {
-        return approve(command, OrderExecutionMode.PAPER);
+        return approve(command, OrderExecutionMode.PAPER, null);
     }
 
     @Transactional
     public Decision approveLive(ApprovalCommand command) {
-        return approve(command, OrderExecutionMode.LIVE);
+        requireApprovalCommand(command);
+        return approveLive(command, freshPortfolioReadService.read(command.userId(), command.connectionId()));
     }
 
-    private Decision approve(ApprovalCommand command, OrderExecutionMode expectedMode) {
+    @Transactional
+    public Decision approveLive(
+            ApprovalCommand command,
+            PortfolioReadService.PortfolioView syncedPortfolio
+    ) {
+        requireApprovalCommand(command);
+        return approve(command, OrderExecutionMode.LIVE, syncedPortfolio);
+    }
+
+    private Decision approve(
+            ApprovalCommand command,
+            OrderExecutionMode expectedMode,
+            PortfolioReadService.PortfolioView syncedPortfolio
+    ) {
         requireApprovalCommand(command);
         lockConnection(command.userId(), command.connectionId());
         var intent = lockedIntent(command.orderIntentId(), command.userId(), command.connectionId());
@@ -63,7 +82,7 @@ public class PreTradeRiskEngine {
         if (intent.getStatus() != OrderIntentStatus.PROPOSED) {
             throw new IllegalStateException("risk approval requires PROPOSED intent");
         }
-        var portfolio = portfolioReadService.read(command.userId(), command.connectionId());
+        var portfolio = currentPortfolio(command.userId(), command.connectionId(), syncedPortfolio);
         var decision = evaluate(
                 Phase.APPROVAL,
                 command.userId(),
@@ -129,14 +148,22 @@ public class PreTradeRiskEngine {
     @Transactional
     public LiveSubmission submitLive(UUID userId, UUID connectionId, UUID orderIntentId,
                                      BigDecimal referencePrice, Instant occurredAt, String actor) {
-        requireId(userId, "userId");
-        requireId(connectionId, "connectionId");
-        requireId(orderIntentId, "orderIntentId");
-        positive(referencePrice, "referencePrice");
-        Objects.requireNonNull(occurredAt, "occurredAt");
-        if (actor == null || actor.isBlank()) {
-            throw new IllegalArgumentException("actor is required");
-        }
+        validateLiveSubmission(userId, connectionId, orderIntentId, referencePrice, occurredAt, actor);
+        return submitLive(
+                userId,
+                connectionId,
+                orderIntentId,
+                referencePrice,
+                occurredAt,
+                actor,
+                freshPortfolioReadService.read(userId, connectionId));
+    }
+
+    @Transactional
+    public LiveSubmission submitLive(UUID userId, UUID connectionId, UUID orderIntentId,
+                                     BigDecimal referencePrice, Instant occurredAt, String actor,
+                                     PortfolioReadService.PortfolioView syncedPortfolio) {
+        validateLiveSubmission(userId, connectionId, orderIntentId, referencePrice, occurredAt, actor);
         lockConnection(userId, connectionId);
         var intent = lockedIntent(orderIntentId, userId, connectionId);
         requireCompleteIntent(intent, OrderExecutionMode.LIVE);
@@ -147,7 +174,7 @@ public class PreTradeRiskEngine {
             throw new IllegalStateException("approved pre-trade risk decision is required");
         }
         transitionService.startRevalidation(intent.getId(), actor);
-        var portfolio = portfolioReadService.read(userId, connectionId);
+        var portfolio = currentPortfolio(userId, connectionId, syncedPortfolio);
         var decision = evaluate(Phase.FINAL, userId, connectionId, intent, referencePrice, occurredAt, portfolio);
         store(decision, userId, connectionId, intent.getId());
         if (!decision.approved()) {
@@ -166,6 +193,38 @@ public class PreTradeRiskEngine {
                 intent.getQuantity(),
                 intent.getLimitPrice(),
                 intent.getTradingCurrency());
+    }
+
+    private static void validateLiveSubmission(
+            UUID userId,
+            UUID connectionId,
+            UUID orderIntentId,
+            BigDecimal referencePrice,
+            Instant occurredAt,
+            String actor
+    ) {
+        requireId(userId, "userId");
+        requireId(connectionId, "connectionId");
+        requireId(orderIntentId, "orderIntentId");
+        positive(referencePrice, "referencePrice");
+        Objects.requireNonNull(occurredAt, "occurredAt");
+        if (actor == null || actor.isBlank()) {
+            throw new IllegalArgumentException("actor is required");
+        }
+    }
+
+    private PortfolioReadService.PortfolioView currentPortfolio(
+            UUID userId,
+            UUID connectionId,
+            PortfolioReadService.PortfolioView syncedPortfolio
+    ) {
+        var latest = portfolioReadService.read(userId, connectionId);
+        if (syncedPortfolio != null
+                && syncedPortfolio.stale()
+                && Objects.equals(syncedPortfolio.syncRunId(), latest.syncRunId())) {
+            return syncedPortfolio;
+        }
+        return latest;
     }
 
     private Decision evaluate(

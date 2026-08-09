@@ -1,6 +1,8 @@
 package com.jmj.trade.account;
 
 import com.jmj.trade.broker.connection.BrokerConnectionException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.core.JacksonException;
@@ -8,6 +10,8 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -22,10 +26,39 @@ public final class PortfolioReadService {
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
+    private final Duration snapshotMaxAge;
+    private final Clock clock;
 
-    public PortfolioReadService(JdbcTemplate jdbc, ObjectMapper objectMapper) {
+    @Autowired
+    public PortfolioReadService(
+            JdbcTemplate jdbc,
+            ObjectMapper objectMapper,
+            @Value("${portfolio.snapshot.max-age:PT15M}") Duration snapshotMaxAge
+    ) {
+        this(jdbc, objectMapper, snapshotMaxAge, Clock.systemUTC());
+    }
+
+    PortfolioReadService(
+            JdbcTemplate jdbc,
+            ObjectMapper objectMapper,
+            Duration snapshotMaxAge,
+            Clock clock
+    ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.snapshotMaxAge = Objects.requireNonNull(snapshotMaxAge, "snapshotMaxAge");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        if (!snapshotMaxAge.isPositive()) {
+            throw new IllegalArgumentException("snapshotMaxAge must be positive");
+        }
+    }
+
+    /**
+     * The age past which a persisted snapshot is classified as stale when it is served as a
+     * fallback. A live read does not use this value to skip broker synchronization.
+     */
+    public Duration snapshotMaxAge() {
+        return snapshotMaxAge;
     }
 
     public PortfolioView read(UUID userId, UUID connectionId) {
@@ -207,7 +240,20 @@ public final class PortfolioReadService {
         }
     }
 
-    private static String staleReason(RunSelection selection) {
+    /**
+     * A newer run that is still running or has failed keeps its own reason; otherwise the selected
+     * success is stale once it is older than {@code portfolio.snapshot.max-age}, because the values
+     * it holds (market value, buying power, sellable quantity) move continuously.
+     */
+    private String staleReason(RunSelection selection) {
+        var runReason = runStatusStaleReason(selection);
+        if (runReason != null) {
+            return runReason;
+        }
+        return tooOld(selection.completedAt()) ? "SNAPSHOT_TOO_OLD" : null;
+    }
+
+    private static String runStatusStaleReason(RunSelection selection) {
         if (selection.successRunId().equals(selection.latestRunId())) {
             return null;
         }
@@ -216,6 +262,10 @@ public final class PortfolioReadService {
             case "FAILED" -> "LATEST_SYNC_FAILED";
             default -> null;
         };
+    }
+
+    private boolean tooOld(OffsetDateTime completedAt) {
+        return completedAt.toInstant().isBefore(clock.instant().minus(snapshotMaxAge));
     }
 
     private static Instant instant(OffsetDateTime value) {

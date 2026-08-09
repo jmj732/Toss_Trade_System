@@ -22,3 +22,5 @@
 ## Excluded
 
 - Portfolio aggregation, automatic sync, FX conversion, and order submission.
+
+See also: [Portfolio Snapshot Live-Read Freshness Delta](2026-08-09-portfolio-snapshot-live-read-delta.md).

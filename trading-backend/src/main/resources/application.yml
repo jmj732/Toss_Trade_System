@@ -43,6 +43,9 @@ stock-analysis:
 production:
   readiness:
     max-data-age: ${PRODUCTION_READINESS_MAX_DATA_AGE:PT15M}
+portfolio:
+  snapshot:
+    max-age: ${PORTFOLIO_SNAPSHOT_MAX_AGE:PT15M}
 market-events:
   scheduler:
     enabled: ${MARKET_EVENTS_SCHEDULER_ENABLED:false}
