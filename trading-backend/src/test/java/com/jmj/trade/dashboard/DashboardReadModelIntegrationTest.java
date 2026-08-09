@@ -2,11 +2,13 @@ package com.jmj.trade.dashboard;
 
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
+import com.jmj.trade.account.FreshPortfolioReadService;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.analysis.PortfolioAnalysisWorkflowService;
 import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -27,6 +29,8 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -242,10 +246,17 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
         insertEvent(connectionId, USER_ID, "event-0", TIME);
         insertOrder(connectionId, USER_ID, "SYM0", "PROPOSED");
         var countingJdbc = new CountingJdbcTemplate(dataSource);
+        var noSync = mock(ObjectProvider.class);
+        when(noSync.getIfAvailable()).thenReturn(null);
         var service = new DashboardReadModelService(
                 countingJdbc,
                 objectMapper,
-                new PortfolioReadService(countingJdbc, objectMapper),
+                new FreshPortfolioReadService(
+                        new PortfolioReadService(
+                                countingJdbc,
+                                objectMapper,
+                                Duration.ofMinutes(15)),
+                        noSync),
                 new PortfolioAnalysisWorkflowService(
                         countingJdbc,
                         transactionManager,

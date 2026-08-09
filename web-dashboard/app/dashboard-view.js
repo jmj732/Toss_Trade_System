@@ -92,7 +92,9 @@ const CASH_STATUS_LABELS = { KNOWN: "확인됨", UNKNOWN: "확인 필요" };
 // D-05: stale 근거 코드를 한국어 보조 문구로 매핑한다.
 const STALE_REASON_LABELS = {
   SYNC_IN_PROGRESS: "최신 동기화 진행 중",
-  LATEST_SYNC_FAILED: "최근 동기화 실패"
+  LATEST_SYNC_FAILED: "최근 동기화 실패",
+  SNAPSHOT_TOO_OLD: "기준 시각 만료",
+  LIVE_SYNC_FAILED: "실시간 동기화 실패"
 };
 // D-26/D-06: 백엔드 내부 필드·섹션 경로를 한국어 라벨로 매핑한다. 미등록 키는 노출하지 않는다.
 const FIELD_LABELS = {

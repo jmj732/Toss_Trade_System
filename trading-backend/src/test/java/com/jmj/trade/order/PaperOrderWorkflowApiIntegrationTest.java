@@ -67,7 +67,10 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
 
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID OTHER_USER_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
-    private static final Instant T0 = Instant.parse("2026-07-28T06:00:00Z");
+    // 스냅샷 신선도(portfolio.snapshot.max-age, 기본 PT15M)가 실제 시각 기준으로 판정되므로,
+    // 성공 스냅샷이 나이만으로 STALE_SNAPSHOT 처리되지 않도록 픽스처 기준 시각을 현재 기준
+    // 상대값으로 고정한다.
+    private static final Instant T0 = Instant.now().minusSeconds(30);
 
     private MockMvc mockMvc;
 

@@ -2,6 +2,8 @@ package com.jmj.trade.order;
 
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.TradingBackendApplication;
+import com.jmj.trade.account.FreshPortfolioReadService;
+import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerConnectionRef;
@@ -156,7 +158,7 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
 
         assertThat(intents.findById(intentId).orElseThrow().getStatus())
                 .isEqualTo(OrderIntentStatus.APPROVED);
-        verify(f.risk(), times(1)).approveLive(any());
+        verify(f.risk(), times(1)).approveLive(any(), any());
     }
 
     @Test
@@ -178,6 +180,7 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
         var quotes = mock(BrokerAdapter.class);
         var orders = mock(BrokerOrderPort.class);
         var risk = mock(PreTradeRiskEngine.class);
+        var portfolios = mock(FreshPortfolioReadService.class);
         var stepUp = mock(OrderApprovalStepUpService.class);
         var killSwitches = mock(KillSwitchStateReader.class);
         var safety = new LiveOrderSafetyLedger(jdbc, ZoneId.of("Asia/Seoul"));
@@ -193,7 +196,7 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
             var command = invocation.getArgument(0, PreTradeRiskEngine.ApprovalCommand.class);
             transitions.approve(command.orderIntentId(), command.actor());
             return decision(PreTradeRiskEngine.Phase.APPROVAL, new BigDecimal("180"));
-        }).when(risk).approveLive(any());
+        }).when(risk).approveLive(any(), any());
         doAnswer(invocation -> {
             var orderIntentId = invocation.getArgument(2, UUID.class);
             var actor = invocation.getArgument(5, String.class);
@@ -203,7 +206,8 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
                     decision(PreTradeRiskEngine.Phase.FINAL, new BigDecimal("180")),
                     orderIntentId, owner.accountId(), OrderSide.BUY, OrderType.LIMIT,
                     "AAPL", BigDecimal.ONE, new BigDecimal("180"), Currency.USD);
-        }).when(risk).submitLive(any(), any(), any(), any(), any(), any());
+        }).when(risk).submitLive(any(), any(), any(), any(), any(), any(), any());
+        when(portfolios.read(any(), any())).thenReturn(mock(PortfolioReadService.PortfolioView.class));
         if (ack == null) {
             when(orders.placeOrder(any(), any(), eq("client-timeout")))
                     .thenThrow(new IllegalStateException("injected timeout"));
@@ -213,7 +217,7 @@ class LiveOrderActivationFlowIntegrationTest extends PostgresIntegrationTest {
         }
         insertAllowlist(owner);
         return new Fixture(new LiveOrderActivationService(
-                quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, stepUp,
+                quotes, orders, intents, brokerOrders, attempts, submissions, transitions, risk, portfolios, stepUp,
                 safety, killSwitches, new TransactionTemplate(transactionManager),
                 java.time.Duration.ofMinutes(15)), orders, risk);
     }

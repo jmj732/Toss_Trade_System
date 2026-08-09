@@ -1,5 +1,7 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.account.FreshPortfolioReadService;
+import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerConnectionRef;
@@ -39,6 +41,7 @@ public final class LiveOrderActivationService {
     private final OrderSubmissionService submissions;
     private final OrderIntentTransitionService transitions;
     private final PreTradeRiskEngine risk;
+    private final FreshPortfolioReadService portfolios;
     private final OrderApprovalStepUpService stepUp;
     private final LiveOrderSafetyLedger safety;
     private final KillSwitchStateReader killSwitches;
@@ -54,6 +57,7 @@ public final class LiveOrderActivationService {
             OrderSubmissionService submissions,
             OrderIntentTransitionService transitions,
             PreTradeRiskEngine risk,
+            FreshPortfolioReadService portfolios,
             OrderApprovalStepUpService stepUp,
             LiveOrderSafetyLedger safety,
             KillSwitchStateReader killSwitches,
@@ -68,6 +72,7 @@ public final class LiveOrderActivationService {
         this.submissions = Objects.requireNonNull(submissions, "submissions");
         this.transitions = Objects.requireNonNull(transitions, "transitions");
         this.risk = Objects.requireNonNull(risk, "risk");
+        this.portfolios = Objects.requireNonNull(portfolios, "portfolios");
         this.stepUp = Objects.requireNonNull(stepUp, "stepUp");
         this.safety = Objects.requireNonNull(safety, "safety");
         this.killSwitches = Objects.requireNonNull(killSwitches, "killSwitches");
@@ -124,6 +129,7 @@ public final class LiveOrderActivationService {
             throw conflict();
         }
         var price = currentPrice(target, quoteMaxAge);
+        var syncedPortfolio = portfolios.read(userId, target.getBrokerConnectionId());
         if (displayedQuantity == null || displayedMaxLoss == null || displayedCurrency != target.getTradingCurrency()
                 || displayedQuantity.compareTo(target.getQuantity()) != 0
                 || scaled(displayedMaxLoss, target.getTradingCurrency())
@@ -147,7 +153,8 @@ public final class LiveOrderActivationService {
             }
             consumeStepUp(userId, orderIntentId, stepUpToken);
             var decision = risk.approveLive(new PreTradeRiskEngine.ApprovalCommand(
-                    userId, target.getBrokerConnectionId(), orderIntentId, price, Instant.now(), actor));
+                    userId, target.getBrokerConnectionId(), orderIntentId, price, Instant.now(), actor),
+                    syncedPortfolio);
             if (!decision.approved()) {
                 throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
                         decision.reasons().getFirst().name());
@@ -171,8 +178,9 @@ public final class LiveOrderActivationService {
             throw conflict();
         }
         var price = currentPrice(intent, quoteMaxAge);
+        var syncedPortfolio = portfolios.read(userId, intent.getBrokerConnectionId());
         var prepared = Objects.requireNonNull(transactions.execute(status -> prepare(
-                userId, orderIntentId, clientOrderId, stepUpToken, actor, price)));
+                userId, orderIntentId, clientOrderId, stepUpToken, actor, price, syncedPortfolio)));
         if (!prepared.callBroker()) {
             return result(prepared.attemptId());
         }
@@ -292,7 +300,8 @@ public final class LiveOrderActivationService {
     }
 
     private Prepared prepare(UUID userId, UUID orderIntentId, String clientOrderId, String stepUpToken,
-                             String actor, BigDecimal price) {
+                             String actor, BigDecimal price,
+                             PortfolioReadService.PortfolioView syncedPortfolio) {
         var intent = intents.findOwnedByIdForUpdate(orderIntentId, userId,
                         ownedIntent(userId, orderIntentId).getBrokerConnectionId())
                 .orElseThrow(() -> new LiveOrderActivationException(
@@ -311,7 +320,7 @@ public final class LiveOrderActivationService {
         }
         consumeStepUp(userId, orderIntentId, stepUpToken);
         var submission = risk.submitLive(userId, intent.getBrokerConnectionId(), orderIntentId,
-                price, Instant.now(), actor);
+                price, Instant.now(), actor, syncedPortfolio);
         if (!submission.decision().approved()) {
             throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
                     submission.decision().reasons().getFirst().name());
