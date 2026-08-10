@@ -31,6 +31,23 @@ test("renders Korean side, formatted quantity, limit price, and a status badge",
   assert.match(html, /취소/);
 });
 
+test("keeps side, symbol, quantity, price, currency, status, and timing together in each order row", () => {
+  const html = render({
+    section: {
+      data: [{
+        id: "order-1", side: "SELL", type: "LIMIT", symbol: "NVDA",
+        quantity: 12, limitPrice: 100, currency: "USD", status: "ACTIVE",
+        createdAt: "2026-08-05T00:00:00Z", expiresAt: "2026-08-06T00:00:00Z"
+      }]
+    }
+  });
+
+  assert.match(html, /data-order-row="order-1"[\s\S]*SELL[\s\S]*NVDA/);
+  assert.match(html, /data-order-row="order-1"[\s\S]*12[\s\S]*USD 100.00/);
+  assert.match(html, /data-order-row="order-1"[\s\S]*체결 진행 중/);
+  assert.match(html, /data-order-row="order-1"[\s\S]*기준 2026-08-05 09:00 KST[\s\S]*만료 2026-08-06 09:00 KST/);
+});
+
 test("exposes an unknown status instead of hiding it (D-03)", () => {
   const html = render({
     section: { data: [{ id: "o", side: "SELL", symbol: "AAPL", currency: "USD", status: "QUEUED" }] }

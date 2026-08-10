@@ -16,6 +16,15 @@ test("publishes independent App Router surfaces", async () => {
   assert.match(stock, /symbol/);
 });
 
+test("shared workspace exposes explicit route title, nav, and connection regions", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /data-route-region:\s*"title"/);
+  assert.match(source, /data-route-region:\s*"nav"/);
+  assert.match(source, /data-route-region:\s*"connection"/);
+  assert.match(source, /aria-label":\s*"계좌 연결"/);
+});
+
 test("does not assert an empty orders list until the workspace has loaded", async () => {
   const source = await readFile(new URL("route-workspace.js", root), "utf8");
 
