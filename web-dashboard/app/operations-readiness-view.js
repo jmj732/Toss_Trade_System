@@ -73,7 +73,7 @@ function readinessReasons(readiness) {
       const missingData = Array.isArray(provider.missingData) ? provider.missingData.filter(Boolean) : [];
       return `${provider.provider}: ${provider.status}${missingData.length ? ` (${missingData.join(", ")})` : ""}`;
     });
-  return [...new Set([...alerts, ...blockers, ...providerReasons])].filter(Boolean).slice(0, 3);
+  return [...new Set([...alerts, ...blockers, ...providerReasons])].filter(Boolean);
 }
 
 export function OperationsReadinessView({

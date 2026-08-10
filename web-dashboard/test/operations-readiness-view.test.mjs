@@ -72,6 +72,33 @@ test("shows blocked and credential reasons from readiness payload fields", () =>
   assert.match(html, /quote\.price/);
 });
 
+test("keeps safety reasons visible when readiness has more than three reasons", () => {
+  const html = renderToStaticMarkup(OperationsReadinessView({
+    readiness: {
+      status: "BLOCKED",
+      canary: { status: "BLOCKED", blockers: ["BROKER_CREDENTIAL_MISSING"] },
+      alerts: [
+        "PROVIDER_FMP_STALE",
+        "PROVIDER_IEX_STALE",
+        "PROVIDER_POLYGON_STALE",
+        "KILL_SWITCH_ENGAGED"
+      ],
+      providers: [{
+        provider: "FMP",
+        status: "SECRET_MISSING",
+        credentialConfigured: false,
+        missingData: []
+      }]
+    },
+    onRefresh() {},
+    onProbe() {}
+  }));
+
+  assert.match(html, /KILL_SWITCH_ENGAGED/);
+  assert.match(html, /BROKER_CREDENTIAL_MISSING/);
+  assert.match(html, /FMP: SECRET_MISSING/);
+});
+
 test("distinguishes readiness loading, refreshing, empty, and degraded states", () => {
   const loading = renderToStaticMarkup(OperationsReadinessView({
     readiness: null,
