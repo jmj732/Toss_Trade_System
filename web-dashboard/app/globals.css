@@ -536,7 +536,7 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 }
 
 @media (max-width: 360px) {
-  button, .button-link { width: 100%; }
+  .topbar-actions button, .connection-form button { width: 100%; }
   .topbar-actions, .connection-form > div { width: 100%; }
   .route-nav { gap: var(--sp-1); }
   .route-nav a, .route-nav span { padding-inline: var(--sp-3); }
@@ -544,14 +544,11 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 
 @media (min-width: 768px) {
   .topbar { padding-bottom: var(--sp-4); }
-  .route-stack { gap: var(--sp-5); }
   section[data-route-region="connection"] .connection-form { margin-bottom: var(--sp-5); }
 }
 
 @media (min-width: 1280px) {
-  .topbar { padding-top: var(--sp-8); }
   .route-nav { margin-bottom: var(--sp-5); }
-  .grid, .route-stack { padding-bottom: var(--sp-12); }
 }
 
 @media (min-width: 1440px) {
