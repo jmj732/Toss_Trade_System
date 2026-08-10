@@ -96,13 +96,12 @@ function RankingsWidget({ rankings, onCategoryChange }) {
   return h("section", { className: "panel market-widget rankings-widget" },
     h("header", null,
       h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 랭킹"), h("h2", null, "종목 랭킹"))),
-    h("div", { className: "ranking-tabs", style: { display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "12px" } },
+    h("div", { className: "ranking-tabs" },
       ...RANKING_CATEGORIES.map(cat =>
         h("button", {
           key: cat.key,
           type: "button",
           className: category === cat.key ? "primary" : "secondary",
-          style: { minHeight: "36px", padding: "6px 14px", fontSize: "var(--fs-sm)" },
           onClick: () => {
             setCategory(cat.key);
             if (onCategoryChange) onCategoryChange(cat.key);
@@ -120,7 +119,7 @@ function RankingsWidget({ rankings, onCategoryChange }) {
             return h("tr", { key: `${item.symbol}-${i}` },
               h("td", null, `${i + 1}`),
               h("td", null, h("strong", null, item.symbol ?? UNKNOWN_TEXT),
-                item.name ? h("small", { style: { marginLeft: "4px", color: "var(--muted)" } }, item.name) : null),
+                item.name ? h("small", { className: "ranking-name" }, item.name) : null),
               h("td", null, item.price != null ? formatAmount(item.currency ?? "USD", item.price) : UNKNOWN_TEXT),
               h("td", { className: positive ? "change-positive" : "change-negative" },
                 changePercent != null ? `${positive ? "+" : ""}${(changePercent * 100).toFixed(2)}%` : UNKNOWN_TEXT));

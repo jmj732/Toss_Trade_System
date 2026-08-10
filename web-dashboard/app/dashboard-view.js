@@ -165,7 +165,7 @@ function missingSectionKeys(section) {
   return data?.missingSections ?? [];
 }
 
-function Quality({ section }) {
+function Quality({ section, region }) {
   const values = [];
   if (section.stale) {
     const reasonCode = sectionData(section)?.staleReason;
@@ -183,16 +183,19 @@ function Quality({ section }) {
     ...(section.unknownFields ?? []),
     ...missingSectionKeys(section)
   ]);
-  return h("div", { className: "quality" },
+  return h("div", {
+    className: "quality",
+    "data-dashboard-region": region
+  },
     ...values.map(([className, label]) => h("span", { className, key: className }, label)),
     fieldLabels.length
       ? h("small", null, fieldLabels.join(", "))
       : null);
 }
 
-function Section({ title, section, className = "", children }) {
+function Section({ title, section, className = "", qualityRegion, children }) {
   return h("section", { className: `panel signal-panel ${className}`.trim() },
-    h("header", null, h("h2", null, title), h(Quality, { section })),
+    h("header", null, h("h2", null, title), h(Quality, { section, region: qualityRegion })),
     section.unavailable
       ? h("p", { className: "empty" }, section.unavailableReason ?? "불러오기 실패")
       : children);
@@ -212,15 +215,19 @@ function Portfolio({ section }) {
   const portfolio = section.data;
   const account = portfolio?.account;
   const positions = portfolio?.positions ?? [];
-  return h(Section, { title: "포트폴리오", section, className: "portfolio-panel" },
+  return h(Section, {
+    title: "포트폴리오", section, className: "portfolio-panel",
+    qualityRegion: "portfolio-quality"
+  },
     h("div", { className: "portfolio-hero" },
       h("div", null,
+        h("div", { "data-dashboard-region": "portfolio-lead" },
         h("span", { className: "metric-label" }, "총 평가금액"),
         h("strong", { className: "metric-value metric-value-large" },
           h(Amounts, { values: account?.marketValueAmounts })),
         // D-05: 총 평가금액이 언제 기준 데이터인지 함께 노출한다.
         h("small", { className: "metric-freshness" },
-          `기준 ${formatFreshness(portfolio?.completedAt)}`)),
+          `기준 ${formatFreshness(portfolio?.completedAt)}`))),
       h("div", { className: "portfolio-hero-secondary" },
         h("span", null, "총 손익"),
         h("strong", null, h(Amounts, { values: account?.profitLossAmounts, signed: true })))),
@@ -350,18 +357,18 @@ export function RealtimePriceTicker({ prices }) {
   const data = envelope?.data ?? prices;
   const degraded = envelope?.status === "DEGRADED" || envelope?.stale || envelope?.unknown;
   if (!Array.isArray(data) || (data.length === 0 && !degraded)) return null;
-  return h("section", { className: "panel signal-panel realtime-ticker", style: { padding: "16px", marginBottom: "16px" } },
-    h("header", null, h("h2", { style: { fontSize: "var(--fs-sm)", color: "var(--muted)", margin: "0 0 12px" } }, "실시간 시세")),
+  return h("section", { className: "panel signal-panel realtime-ticker" },
+    h("header", null, h("h2", null, "실시간 시세")),
     degraded ? h("p", { className: "disclaimer" }, "일부 시세 필드는 제공되지 않거나 오래됐습니다.") : null,
-    h("div", { style: { display: "flex", gap: "16px", overflowX: "auto", paddingBottom: "4px" } },
+    h("div", { className: "realtime-ticker-list" },
       ...data.map(p => {
         const changePercent = p.changePercent ?? p.changeRate;
         const positive = (changePercent ?? 0) >= 0;
-        return h("div", { key: p.symbol, style: { display: "flex", flexDirection: "column", minWidth: "120px", background: "var(--panel-raised)", padding: "12px", borderRadius: "var(--r-md)" } },
+        return h("div", { key: p.symbol, className: "realtime-ticker-item" },
           h("strong", null, p.symbol ?? UNKNOWN_TEXT),
-          h("span", { style: { fontSize: "var(--fs-lg)", fontWeight: "var(--fw-bold)", marginTop: "4px" } },
+          h("span", { className: "realtime-ticker-price" },
           (p.price ?? p.lastPrice) != null ? formatAmount(p.currency ?? "USD", p.price ?? p.lastPrice) : UNKNOWN_TEXT),
-          h("span", { className: positive ? "change-positive" : "change-negative", style: { fontSize: "var(--fs-xs)", marginTop: "2px" } },
+          h("span", { className: positive ? "change-positive realtime-ticker-change" : "change-negative realtime-ticker-change" },
             changePercent != null ? `${positive ? "+" : ""}${(changePercent * 100).toFixed(2)}%` : UNKNOWN_TEXT));
       })));
 }
