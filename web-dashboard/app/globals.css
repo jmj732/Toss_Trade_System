@@ -672,6 +672,7 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   .portfolio-hero { align-items: flex-start; flex-direction: column; gap: var(--sp-6); }
   .portfolio-hero-secondary { border-left: 0; border-top: 1px solid var(--line); min-width: 0; padding: var(--sp-4) 0 0; width: 100%; }
   .route-nav { flex-wrap: nowrap; margin-inline: 0; overflow-x: auto; padding-inline: var(--sp-5); white-space: nowrap; }
+  .orders-surface > header { flex-direction: column; gap: var(--sp-3); }
   .stock-surface-grid { grid-template-columns: minmax(0, 1fr); }
   .stock-surface-summary { grid-template-columns: minmax(0, 1fr); }
   .credential-grid, .event-layout { grid-template-columns: minmax(0, 1fr); }

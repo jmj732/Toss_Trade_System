@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { OrdersView } from "../app/orders-view.js";
+
+const stylesUrl = new URL("../app/globals.css", import.meta.url);
 
 function render(props) {
   return renderToStaticMarkup(createElement(OrdersView, {
@@ -46,6 +49,15 @@ test("keeps side, symbol, quantity, price, currency, status, and timing together
   assert.match(html, /data-order-row="order-1"[\s\S]*12[\s\S]*USD 100.00/);
   assert.match(html, /data-order-row="order-1"[\s\S]*체결 진행 중/);
   assert.match(html, /data-order-row="order-1"[\s\S]*기준 2026-08-05 09:00 KST[\s\S]*만료 2026-08-06 09:00 KST/);
+});
+
+test("stacks the orders header before mobile rows at the <=900px breakpoint", async () => {
+  const css = await readFile(stylesUrl, "utf8");
+
+  assert.match(
+    css,
+    /@media \(max-width: 900px\) \{[\s\S]*\.orders-surface > header \{[\s\S]*flex-direction: column;[\s\S]*\}/
+  );
 });
 
 test("exposes an unknown status instead of hiding it (D-03)", () => {
