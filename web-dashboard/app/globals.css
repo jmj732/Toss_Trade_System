@@ -106,7 +106,7 @@ button.danger { background: #fff0f1; color: var(--danger-text); }
   flex-wrap: wrap;
   justify-content: space-between;
   max-width: 1280px;
-  padding: var(--sp-10) var(--sp-8) var(--sp-8);
+  padding: var(--sp-8) var(--sp-8) var(--sp-5);
   row-gap: var(--sp-4);
 }
 h1, h2, h3, p { margin-top: 0; }
@@ -449,27 +449,37 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .route-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-1);
-  margin: 0 auto var(--sp-6);
+  gap: var(--sp-2);
+  margin: 0 auto var(--sp-4);
   max-width: 1280px;
   padding-inline: var(--sp-8);
 }
-.route-nav a {
+.route-nav a,
+.route-nav span {
+  align-items: center;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
   color: var(--muted);
-  padding: var(--sp-3) var(--sp-4);
+  display: inline-flex;
+  min-height: var(--sp-12);
+  padding: var(--sp-2) var(--sp-4);
   text-decoration: none;
   transition: background 160ms ease-out, color 160ms ease-out;
 }
 .route-nav a:hover { background: rgba(49, 130, 246, .08); border-color: transparent; color: var(--accent-text); transform: none; }
+.route-nav a[aria-current="page"] { background: var(--panel-raised); color: var(--text); }
+.route-nav span[aria-disabled="true"] { opacity: .72; }
+.topbar [data-route-region="title"] { min-width: min(24rem, 100%); }
+.topbar [data-route-region="title"] h1 { letter-spacing: 0; overflow-wrap: anywhere; }
+section[data-route-region="connection"] { padding-inline: var(--sp-8); }
+section[data-route-region="connection"] .connection-form { margin-bottom: var(--sp-4); padding: var(--sp-5); }
 .route-stack {
   display: grid;
-  gap: var(--sp-6);
+  gap: var(--sp-5);
   grid-template-columns: minmax(0, 1fr);
   margin-inline: auto;
   max-width: 1280px;
-  padding: 0 var(--sp-8) var(--sp-16);
+  padding: 0 var(--sp-8) var(--sp-12);
 }
 .orders-surface { margin-top: var(--sp-4); }
 .stock-surface { margin-top: 0; }
@@ -523,6 +533,29 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 @media (max-width: 480px) {
   .topbar { padding: var(--sp-5) var(--sp-4) var(--sp-3); }
   .grid, .route-stack { padding-inline: var(--sp-4); }
+}
+
+@media (max-width: 360px) {
+  button, .button-link { width: 100%; }
+  .topbar-actions, .connection-form > div { width: 100%; }
+  .route-nav { gap: var(--sp-1); }
+  .route-nav a, .route-nav span { padding-inline: var(--sp-3); }
+}
+
+@media (min-width: 768px) {
+  .topbar { padding-bottom: var(--sp-4); }
+  .route-stack { gap: var(--sp-5); }
+  section[data-route-region="connection"] .connection-form { margin-bottom: var(--sp-5); }
+}
+
+@media (min-width: 1280px) {
+  .topbar { padding-top: var(--sp-8); }
+  .route-nav { margin-bottom: var(--sp-5); }
+  .grid, .route-stack { padding-bottom: var(--sp-12); }
+}
+
+@media (min-width: 1440px) {
+  .topbar, .connection-form, .grid, .route-nav, .route-stack, .error { max-width: 1360px; }
 }
 
 @media (prefers-color-scheme: dark) {

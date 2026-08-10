@@ -110,7 +110,7 @@ export function RouteNav({ symbol }) {
     ["/events", "이벤트"], ["/orders", "주문"], ["/predictions", "예측"],
     ["/settings", "설정"]
   ];
-  return h("nav", { className: "route-nav", "aria-label": "주요 메뉴" },
+  return h("nav", { className: "route-nav", "data-route-region": "nav", "aria-label": "주요 메뉴" },
     ...links.map(([href, label]) => href
       // 보유 종목이 없으면 종목 링크는 이동 대상이 없으므로 비활성으로 노출한다.
       ? h("a", {
@@ -895,7 +895,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
     return h("div", null,
       statusRegion,
       h("header", { className: "topbar" },
-        h("div", null,
+        h("div", { "data-route-region": "title" },
           h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
           h("h1", null, workspaceReady ? "내 자산" : "내 투자, 한눈에")),
         h("div", { className: "topbar-actions" },
@@ -935,7 +935,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
           onCredentials: credentialsAction,
           onCommand: brokerAction
         }),
-        h("details", { className: "connection-picker" },
+        h("details", { className: "connection-picker", "data-route-region": "connection" },
           h("summary", null, "기존 연결 불러오기"),
           h("form", { className: "connection-form", onSubmit: event => {
             event.preventDefault(); openWorkspace(connectionId);
@@ -985,7 +985,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   return h("div", null,
     statusRegion,
     h("header", { className: "topbar" },
-      h("div", null,
+      h("div", { "data-route-region": "title" },
         h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
         h("h1", null, {
           portfolio: "포트폴리오", stock: stockSymbol || "종목 분석", events: "이벤트",
@@ -997,7 +997,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
         onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
       }, "로그아웃")),
     h(RouteNav, { symbol: stockSymbol }),
-    h("section", { "aria-label": "계좌 연결" },
+    h("section", { "data-route-region": "connection", "aria-label": "계좌 연결" },
       h("form", { className: "connection-form", onSubmit: event => {
         event.preventDefault(); openWorkspace(event.currentTarget.elements.connectionId.value);
       } },
