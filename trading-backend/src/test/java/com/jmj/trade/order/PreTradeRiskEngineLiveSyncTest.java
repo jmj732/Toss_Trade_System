@@ -76,7 +76,6 @@ class PreTradeRiskEngineLiveSyncTest {
         order.verify(snapshotReads).read(USER, CONNECTION);
         verify(transitions).approve(INTENT, "test");
     }
-
     @Test
     void liveSubmissionUsesLatestSyncedSellableQuantityForFinalRevalidation() {
         var freshReads = mock(FreshPortfolioReadService.class);

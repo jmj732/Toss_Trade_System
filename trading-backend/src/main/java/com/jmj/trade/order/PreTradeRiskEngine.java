@@ -98,7 +98,6 @@ public class PreTradeRiskEngine {
         store(decision, userId, connectionId, orderIntentId);
         return decision;
     }
-
     private Decision approve(
             ApprovalCommand command,
             OrderExecutionMode expectedMode,
