@@ -17,7 +17,29 @@ test("shows the toggle without the panel when closed", () => {
   }));
 
   assert.match(html, /리스크 정책/);
+  assert.match(html, /현재 정책/);
   assert.doesNotMatch(html, /risk-policy-panel/);
+});
+
+test("shows risk policy status before opening the editor", () => {
+  const html = renderToStaticMarkup(createElement(RiskPolicyPanel, {
+    policy: {
+      version: 3, customized: true,
+      maxOrderAmountKrw: 500000, maxOrderAmountUsd: 500,
+      maxQuantity: 2, maxConcentration: 0.3
+    },
+    history: [],
+    open: false,
+    busy: false,
+    onToggle() {},
+    onUpdate() {},
+    onLoadHistory() {}
+  }));
+
+  assert.match(html, /현재 정책/);
+  assert.match(html, /badge-pill--info[^>]*>CUSTOM/);
+  assert.match(html, /v3/);
+  assert.match(html, /KRW 500000/);
 });
 
 test("renders the default badge and prefilled limits when open and uncustomized", () => {
