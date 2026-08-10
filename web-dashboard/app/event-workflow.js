@@ -49,7 +49,8 @@ function comparisonState(event) {
 }
 
 function EventSignal({ event, compact = false }) {
-  return h("p", { className: compact ? "event-signal event-signal--compact" : "event-signal" },
+  const tag = compact ? "span" : "p";
+  return h(tag, { className: compact ? "event-signal event-signal--compact" : "event-signal" },
     h("span", { className: "badge-pill badge-pill--warn" }, eventStatus(event)),
     h("span", null, "영향 ", affectedSymbols(event)),
     h("span", null, "시각 ", formatInstant(event?.occurredAt)),
@@ -216,7 +217,9 @@ export function EventWorkflow({
       h("header", null,
         h("div", null,
           h("h3", null, selectedEvent?.summary ?? "이벤트를 선택하세요"),
-          h(EventSignal, { event: selectedEvent })),
+          selectedEvent
+            ? h(EventSignal, { event: selectedEvent })
+            : h("p", { className: "empty" }, "이벤트를 선택하면 상태와 영향 범위를 확인합니다")),
         h("div", { className: "event-review-actions" },
           h("button", {
             type: "button",

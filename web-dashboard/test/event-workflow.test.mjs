@@ -112,6 +112,7 @@ test("leads event review with status, symbols, time, and next action", () => {
   assert.match(html, /2026.*07.*28/);
   assert.match(html, /다음 작업: 검토 결정/);
   assert.match(html, /비교 대기/);
+  assert.match(html, /<button[^>]*class="event-select"[^>]*>[\s\S]*<span class="event-signal event-signal--compact"/);
   assert.doesNotMatch(html, /지원하지 않음/);
 });
 
@@ -129,7 +130,10 @@ test("disables all event mutations while one is running", () => {
   }));
 
   assert.equal((html.match(/disabled=""/g) ?? []).length, 5);
-  assert.match(html, /event-create…/);
+  assert.match(html, /등록 중…/);
+  assert.match(html, /title="event-create…"/);
+  assert.match(html, /이벤트를 선택하면 상태와 영향 범위를 확인합니다/);
+  assert.doesNotMatch(html, /UNKNOWN · v확인 필요/);
 });
 
 test("scopes affected-symbol state to the current connection", () => {

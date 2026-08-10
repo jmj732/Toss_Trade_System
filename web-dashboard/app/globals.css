@@ -445,7 +445,7 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   flex-wrap: wrap;
   font-size: var(--fs-sm);
   gap: var(--sp-2);
-  line-height: var(--lh-normal);
+  line-height: var(--lh-snug);
   margin: var(--sp-2) 0 0;
   overflow-wrap: anywhere;
 }
