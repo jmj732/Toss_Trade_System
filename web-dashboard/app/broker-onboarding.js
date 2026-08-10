@@ -45,6 +45,7 @@ export function BrokerOnboarding({
   const hasConnection = Boolean(connectionId);
   const active = connection?.status === "ACTIVE";
   const unavailable = busy || !hasConnection;
+  const accountStatus = hasConnection ? (connection?.status ?? "UNKNOWN") : "NOT_CONNECTED";
   return h("section", {
     className: `onboarding panel${hasConnection ? "" : " onboarding-first-run"}`,
     "aria-busy": busy
@@ -56,29 +57,44 @@ export function BrokerOnboarding({
       busyAction ? h("span", { className: "busy" }, `${busyAction}…`) : null),
     !hasConnection ? h("p", { className: "onboarding-lead" },
       "계좌를 연결하고 시작하세요. 키는 암호화되어 저장되며 화면에 다시 표시되지 않습니다.") : null,
-    connection ? h("dl", { className: "connection-meta" },
-      h("div", null, h("dt", null, "상태"), h("dd", null, connection.status)),
-      h("div", null, h("dt", null, "버전"), h("dd", null, connection.credentialRevision)),
-      h("div", null, h("dt", null, "최근 확인"), h("dd", null,
-        connection.lastValidatedAt ?? "아직 확인 전"))) : null,
-    h("div", { className: "credential-grid" },
-      h(CredentialForm, {
-        title: hasConnection ? "연결 정보 변경" : "앱 키 입력",
-        action: hasConnection ? "replace" : "create",
-        disabled: hasConnection ? unavailable : busy,
-        onCredentials
-      })),
-    hasConnection ? h("div", { className: "onboarding-actions" },
-      [
-        ["verify", "연결 확인"],
-        ["sync", "포트폴리오 동기화"],
-        ["analysis", "분석 실행"],
-        ["delete", "연결 삭제"]
-      ].map(([action, label]) => h("button", {
-        key: action,
-        type: "button",
-        className: action === "delete" ? "danger" : "secondary",
-        disabled: unavailable || ((action === "sync" || action === "analysis") && !active),
-        onClick: () => onCommand(action)
-      }, label))) : null);
+    h("section", { className: "account-readiness" },
+      h("h3", null, "계좌 준비 상태"),
+      h("dl", { className: "connection-meta" },
+        h("div", null, h("dt", null, "상태"), h("dd", null, accountStatus)),
+        hasConnection ? h("div", null, h("dt", null, "버전"), h("dd", null,
+          connection?.credentialRevision ?? "—")) : null,
+        hasConnection ? h("div", null, h("dt", null, "최근 확인"), h("dd", null,
+          connection?.lastValidatedAt ?? "아직 확인 전")) : null)),
+    hasConnection ? h("section", { className: "onboarding-command-section" },
+      h("h3", null, "계좌 작업"),
+      h("div", { className: "onboarding-actions" },
+        [
+          ["verify", "연결 확인"],
+          ["sync", "포트폴리오 동기화"],
+          ["analysis", "분석 실행"]
+        ].map(([action, label]) => h("button", {
+          key: action,
+          type: "button",
+          className: "secondary",
+          disabled: unavailable || ((action === "sync" || action === "analysis") && !active),
+          onClick: () => onCommand(action)
+        }, label)))) : null,
+    h("section", { className: "credential-section" },
+      h("h3", null, "보안 자격 증명"),
+      h("div", { className: "credential-grid" },
+        h(CredentialForm, {
+          title: hasConnection ? "연결 정보 변경" : "앱 키 입력",
+          action: hasConnection ? "replace" : "create",
+          disabled: hasConnection ? unavailable : busy,
+          onCredentials
+        }))),
+    hasConnection ? h("section", { className: "onboarding-command-section" },
+      h("h3", null, "위험 작업"),
+      h("div", { className: "onboarding-actions" },
+        h("button", {
+          type: "button",
+          className: "danger",
+          disabled: unavailable,
+          onClick: () => onCommand("delete")
+        }, "연결 삭제"))) : null);
 }

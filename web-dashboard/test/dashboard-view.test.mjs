@@ -92,6 +92,34 @@ test("renders all dashboard sections and explicit data quality", () => {
   }
 });
 
+test("keeps portfolio lead freshness and quality text in the lead signal region", () => {
+  const dashboard = {
+    portfolio: section({
+      completedAt: "2026-08-05T00:00:00Z",
+      account: {
+        marketValueAmounts: { USD: 120 },
+        profitLossAmounts: { USD: 20 },
+        cashBalanceStatus: "UNKNOWN"
+      },
+      positions: [],
+      buyingPower: {}
+    }, { stale: true, unknown: true }),
+    analysis: section({ result: { currencyTotals: [], positions: [] } }),
+    pendingEvents: section([]),
+    pendingOrderProposals: section([])
+  };
+
+  const html = renderToStaticMarkup(createElement(DashboardView, {
+    dashboard,
+    busyOrderId: null,
+    onOrderAction() {}
+  }));
+
+  assert.match(html, /data-dashboard-region="portfolio-lead"[\s\S]*총 평가금액/);
+  assert.match(html, /data-dashboard-region="portfolio-lead"[\s\S]*기준 2026-08-05 09:00 KST/);
+  assert.match(html, /data-dashboard-region="portfolio-quality"[\s\S]*지연[\s\S]*확인 필요/);
+});
+
 function section(data, quality = {}) {
   return {
     stale: false,

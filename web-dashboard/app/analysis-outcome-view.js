@@ -12,6 +12,38 @@ function decimal(value) {
   return value == null ? "—" : Number(value).toFixed(4);
 }
 
+function statusPills({ value, busy, hasData, partial }) {
+  const pills = [];
+  if (busy) {
+    pills.push(["info", value ? "새로고침 중" : "불러오는 중"]);
+  }
+  if (value?.status === "UNAUTHORIZED" || value?.unavailableReason === "UNAUTHORIZED") {
+    pills.push(["danger", "권한 확인 필요"]);
+  } else if (value?.status === "ERROR") {
+    pills.push(["danger", "오류"]);
+  } else if (value?.status === "UNAVAILABLE") {
+    pills.push(["neutral", `지원되지 않음 (${value.unavailableReason ?? "UNAVAILABLE"})`]);
+  } else if (value?.status === "DEGRADED") {
+    pills.push(["warn", hasData ? "부분 데이터" : "저하"]);
+  }
+  if (value?.stale) {
+    pills.push(["warn", "지연 데이터"]);
+  }
+  if (partial) {
+    pills.push(["warn", "일부 누락"]);
+  }
+  if (pills.length === 0) {
+    pills.push(["neutral", hasData ? "최신" : "데이터 없음"]);
+  }
+  return pills;
+}
+
+function StatusPills(props) {
+  return h("div", { className: "prediction-state-pills" },
+    ...statusPills(props).map(([modifier, label]) =>
+      h("span", { className: `badge-pill badge-pill--${modifier}`, key: label }, label)));
+}
+
 function driftLabel(drift) {
   if (!drift) {
     return "—";
@@ -126,6 +158,31 @@ function ForecastQualityTable({ quality }) {
           ["종목", "모델", "계약", "예측 구간", "상태", "표본", "대기",
             "적중률", "오차 / MAE", "캘리브레이션 / Brier", "드리프트"].map(th))),
       h("tbody", null, ...rows.map(qualityRow))));
+}
+
+function OutcomeLead({ performance, busy }) {
+  const predictions = performance?.predictions ?? [];
+  const byVersion = performance?.byVersion ?? [];
+  const qualityRows = performance?.forecastQuality?.rows ?? [];
+  const hasData = predictions.length > 0 || byVersion.length > 0 || qualityRows.length > 0;
+  const partial = performance && !performance.forecastQuality && hasData;
+  return h("div", { className: "prediction-lead" },
+    h("div", null,
+      h("h3", null, "예측 품질"),
+      h(StatusPills, { value: performance, busy, hasData, partial }),
+      performance?.asOf
+        ? h("small", { className: "metric-freshness" }, `기준 ${formatInstant(performance.asOf)}`)
+        : null),
+    h("div", { className: "metrics-grid" },
+      h("div", { className: "metric" },
+        h("span", { className: "metric-label" }, "예측 기록"),
+        h("span", { className: "metric-value" }, predictions.length)),
+      h("div", { className: "metric" },
+        h("span", { className: "metric-label" }, "성과 요약"),
+        h("span", { className: "metric-value" }, byVersion.length)),
+      h("div", { className: "metric" },
+        h("span", { className: "metric-label" }, "품질 행"),
+        h("span", { className: "metric-value" }, qualityRows.length))));
 }
 
 function RegistryPanel({ versions, busy, error, onRegister, onDeprecate, onDelete }) {
@@ -259,16 +316,13 @@ export function AnalysisOutcomeView({
         h("h2", null, "예측 성과"))),
     h("p", { className: "disclaimer" },
       "예측 기록 및 채점 전용 기능입니다 — 주문이나 자동매매와 연동되지 않습니다."),
-    h(RegistryPanel, {
-      versions,
-      busy: registryBusy,
-      error: registryError,
-      onRegister,
-      onDeprecate,
-      onDelete
-    }),
-    h(CreateForm, { versions, busy: createBusy, onCreate }),
-    createError ? h("p", { className: "error", role: "alert" }, createError) : null,
+    h(OutcomeLead, { performance, busy }),
+    h(PerformanceTable, { rows: byVersion }),
+    h("h3", null, "예측 품질 모니터링"),
+    h("p", { className: "disclaimer" },
+      "D1/D5/D20는 기존 outcome 채점과 연결됩니다. 표본 부족 상태에서는 성능과 drift를 결론내리지 않습니다."),
+    h(ForecastQualityTable, { quality: performance?.forecastQuality }),
+    h(PredictionsTable, { predictions }),
     h("form", { className: "history-filter", onSubmit: submitFilter },
       h("label", null, "시작일 (UTC 자정 기준)",
         h("input", { type: "date", name: "from", defaultValue: fromDate })),
@@ -279,10 +333,14 @@ export function AnalysisOutcomeView({
         h("input", { name: "contractVersion", defaultValue: query.contractVersion })),
       h("label", null, "종목", h("input", { name: "symbol", defaultValue: query.symbol })),
       h("button", { type: "submit", disabled: busy }, "적용")),
-    h(PerformanceTable, { rows: byVersion }),
-    h("h3", null, "예측 품질 모니터링"),
-    h("p", { className: "disclaimer" },
-      "D1/D5/D20는 기존 outcome 채점과 연결됩니다. 표본 부족 상태에서는 성능과 drift를 결론내리지 않습니다."),
-    h(ForecastQualityTable, { quality: performance?.forecastQuality }),
-    h(PredictionsTable, { predictions }));
+    h(CreateForm, { versions, busy: createBusy, onCreate }),
+    createError ? h("p", { className: "error", role: "alert" }, createError) : null,
+    h(RegistryPanel, {
+      versions,
+      busy: registryBusy,
+      error: registryError,
+      onRegister,
+      onDeprecate,
+      onDelete
+    }));
 }

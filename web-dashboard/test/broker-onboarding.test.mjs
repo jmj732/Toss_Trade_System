@@ -32,6 +32,26 @@ test("renders secret-free credential and lifecycle controls", () => {
   assert.doesNotMatch(html, /client-secret-canary|client-id-canary/);
 });
 
+test("leads with account status and keeps credentials and destructive actions secondary", () => {
+  const html = renderToStaticMarkup(createElement(BrokerOnboarding, {
+    connection: {
+      id: "connection-1",
+      brokerType: "TOSS_INVEST",
+      status: "ACTIVE",
+      credentialRevision: 2,
+      lastValidatedAt: "2026-07-28T00:00:00Z"
+    },
+    connectionId: "connection-1",
+    busyAction: null,
+    onCredentials() {},
+    onCommand() {}
+  }));
+
+  assert.ok(html.indexOf("계좌 준비 상태") < html.indexOf("보안 자격 증명"));
+  assert.ok(html.indexOf("보안 자격 증명") < html.indexOf("위험 작업"));
+  assert.ok(html.indexOf("위험 작업") < html.indexOf("연결 삭제"));
+});
+
 test("first visit shows one connection action only", () => {
   const html = renderToStaticMarkup(createElement(BrokerOnboarding, {
     connection: null,
