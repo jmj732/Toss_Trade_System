@@ -523,6 +523,18 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .key-rotation-form input { min-width: 12rem; }
 .trend-pnl { fill: none; stroke: var(--accent); stroke-width: 2; }
 .analysis-outcome { margin-top: var(--sp-4); }
+.prediction-lead {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: var(--sp-4);
+}
+.prediction-lead h3 { margin-top: 0; overflow-wrap: anywhere; }
+.prediction-state-pills { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.prediction-state-pills .badge-pill { overflow-wrap: anywhere; white-space: normal; }
+.analysis-outcome .metric-value,
+.paper-performance .metric-value,
+.prediction-operations .metric-value { overflow-wrap: anywhere; }
 .prediction-model-registry {
   border-top: 1px solid var(--line); margin-top: var(--sp-4); padding-top: var(--sp-4);
 }
@@ -533,6 +545,8 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   color: var(--muted); display: flex; flex-direction: column; gap: var(--sp-1);
 }
 .prediction-registry-form input, .prediction-create-form input, .prediction-create-form select {
+  max-width: 100%;
+  min-width: 0;
   width: auto;
 }
 .prediction-model-registry td button + button { margin-left: var(--sp-2); }

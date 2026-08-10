@@ -66,3 +66,53 @@ test("renders owned evaluation operations and safe API key management", () => {
   assert.doesNotMatch(html, /key_hash|payload/i);
   assert.equal((html.match(/disabled=""/g) ?? []).length, 3);
 });
+
+test("leads with run status before API key operations and keeps raw uncertain statuses visible", () => {
+  const html = renderToStaticMarkup(createElement(PredictionOperationsView, {
+    operations: {
+      status: "DEGRADED",
+      evaluationEnabled: false,
+      backlog: 0,
+      maxLagMs: 0,
+      longUngradedCount: 0,
+      oldestLongUngradedDueAt: null,
+      measuredAt: "2026-07-31T00:00:00Z"
+    },
+    keys: [{
+      id: "unknown-key",
+      modelVersion: "long-model-version-value-that-wraps",
+      contractVersion: "long-contract-version-value-that-wraps",
+      prefix: "tpik_unknown",
+      status: "UNKNOWN",
+      createdAt: "2026-07-31T00:00:00Z",
+      lastUsedAt: null,
+      revokedAt: null,
+      expiresAt: null
+    }, {
+      id: "manual-key",
+      modelVersion: "manual-model",
+      contractVersion: "manual-contract",
+      prefix: "tpik_manual",
+      status: "MANUAL_REVIEW_REQUIRED",
+      createdAt: "2026-07-31T00:00:00Z",
+      lastUsedAt: null,
+      revokedAt: null,
+      expiresAt: null
+    }],
+    issuedKey: null,
+    busy: true,
+    error: "",
+    onIssue() {},
+    onRotate() {},
+    onRevoke() {},
+    onRefresh() {},
+    onDismissKey() {}
+  }));
+
+  assert.ok(html.indexOf("운영 상태") < html.indexOf("API 키 발급"));
+  assert.match(html, /부분 데이터/);
+  assert.match(html, /새로고침 중/);
+  assert.match(html, /기준 2026-07-31 09:00 KST/);
+  assert.match(html, /UNKNOWN/);
+  assert.match(html, /MANUAL_REVIEW_REQUIRED/);
+});

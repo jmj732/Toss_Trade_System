@@ -2,6 +2,8 @@
 
 import { createElement as h } from "react";
 
+import { formatInstant } from "../lib/format.js";
+
 function equityPath(points, width, height) {
   if (points.length < 2) {
     return "";
@@ -26,6 +28,31 @@ function Metric({ label, value }) {
 
 function percent(value) {
   return value == null ? null : `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function statusPills({ performance, busy, hasData }) {
+  const pills = [];
+  if (busy) {
+    pills.push(["info", performance ? "새로고침 중" : "불러오는 중"]);
+  }
+  if (performance?.status === "UNAUTHORIZED" || performance?.unavailableReason === "UNAUTHORIZED") {
+    pills.push(["danger", "권한 확인 필요"]);
+  } else if (performance?.status === "ERROR") {
+    pills.push(["danger", "오류"]);
+  } else if (performance?.status === "UNAVAILABLE") {
+    pills.push(["neutral", `지원되지 않음 (${performance.unavailableReason ?? "UNAVAILABLE"})`]);
+  } else if (performance?.status === "DEGRADED") {
+    pills.push(["warn", hasData ? "부분 데이터" : "저하"]);
+  }
+  if (performance?.stale) {
+    pills.push(["warn", "지연 데이터"]);
+  }
+  if (pills.length === 0) {
+    pills.push(["neutral", hasData ? "최신" : "데이터 없음"]);
+  }
+  return h("div", { className: "prediction-state-pills" },
+    ...pills.map(([modifier, label]) =>
+      h("span", { className: `badge-pill badge-pill--${modifier}`, key: label }, label)));
 }
 
 function CurrencyCard({ currency, breakdown }) {
@@ -74,6 +101,15 @@ export function PaperPerformanceView({ performance, query, busy, onQuery }) {
   const toDate = query.to ? query.to.slice(0, 10) : "";
   const byCurrency = performance?.data?.byCurrency ?? {};
   const currencies = Object.keys(byCurrency);
+  const hasData = currencies.length > 0;
+  const unavailableMessage = performance?.status === "UNAUTHORIZED"
+      || performance?.unavailableReason === "UNAUTHORIZED"
+    ? "권한 확인 필요"
+    : performance?.status === "UNAVAILABLE"
+      ? `지원되지 않음 (${performance.unavailableReason ?? "UNAVAILABLE"})`
+      : performance?.unavailable
+        ? performance.unavailableReason ?? "모의 거래가 아직 없습니다"
+        : "모의 거래가 아직 없습니다";
 
   return h("section", { className: "paper-performance panel", "aria-busy": busy },
     h("header", null,
@@ -83,6 +119,13 @@ export function PaperPerformanceView({ performance, query, busy, onQuery }) {
     h("p", { className: "disclaimer" },
       "모의(Paper) 매매 시뮬레이션 결과이며 "
       + "실제 주문 체결이나 수익을 보장하지 않습니다."),
+    h("div", { className: "prediction-lead" },
+      h("div", null,
+        h("h3", null, "성과 상태"),
+        statusPills({ performance, busy, hasData }),
+        performance?.asOf
+          ? h("small", { className: "metric-freshness" }, `기준 ${formatInstant(performance.asOf)}`)
+          : null)),
     h("form", { className: "history-filter", onSubmit: submit },
       h("label", null, "시작일",
         h("input", { type: "date", name: "from", defaultValue: fromDate })),
@@ -93,8 +136,8 @@ export function PaperPerformanceView({ performance, query, busy, onQuery }) {
           type: "number", name: "maxPoints", min: 2, max: 500, defaultValue: query.maxPoints
         })),
       h("button", { type: "submit", disabled: busy }, "적용")),
-    !performance || performance.unavailable
-      ? h("p", { className: "empty" }, performance?.unavailableReason ?? "모의 거래가 아직 없습니다")
+    !performance || performance.unavailable || performance.status === "UNAUTHORIZED" || performance.status === "UNAVAILABLE"
+      ? h("p", { className: "empty" }, unavailableMessage)
       : currencies.length === 0
         ? h("p", { className: "empty" }, "이 기간에 모의 거래가 없습니다")
         : h("div", null, ...currencies.map(currency =>
