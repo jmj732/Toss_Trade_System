@@ -3,7 +3,7 @@
 import { createElement as h, useState } from "react";
 
 import {
-  formatAmount, formatRatio, formatSignedAmount, localInputToInstant
+  UNKNOWN_TEXT, formatAmount, formatInstant, formatRatio, formatSignedAmount, localInputToInstant
 } from "../lib/format.js";
 
 function amount(currency, number) {
@@ -16,6 +16,45 @@ function signed(currency, number) {
 
 function ratio(number) {
   return formatRatio(number);
+}
+
+const BUSY_LABELS = {
+  "event-create": "등록 중…",
+  "event-reanalyze": "재분석 중…",
+  "event-review": "검토 반영 중…"
+};
+
+function busyLabel(action) {
+  return BUSY_LABELS[action] ?? (action ? `${action}…` : null);
+}
+
+function eventStatus(event) {
+  return `${event?.reviewStatus ?? "UNKNOWN"} · v${event?.reviewVersion ?? UNKNOWN_TEXT}`;
+}
+
+function affectedSymbols(event) {
+  return event?.affectedSymbols?.length ? event.affectedSymbols.join(", ") : UNKNOWN_TEXT;
+}
+
+function nextAction(event) {
+  if (!event) return "이벤트 선택";
+  if (event.reviewStatus === "CONFIRMED" || event.reviewStatus === "HELD" || event.reviewStatus === "IGNORED") {
+    return event.comparisonAvailable ? "재분석 또는 검토 변경" : "재분석";
+  }
+  return "검토 결정";
+}
+
+function comparisonState(event) {
+  return event?.comparisonAvailable ? "비교 완료" : "비교 대기";
+}
+
+function EventSignal({ event, compact = false }) {
+  return h("p", { className: compact ? "event-signal event-signal--compact" : "event-signal" },
+    h("span", { className: "badge-pill badge-pill--warn" }, eventStatus(event)),
+    h("span", null, "영향 ", affectedSymbols(event)),
+    h("span", null, "시각 ", formatInstant(event?.occurredAt)),
+    h("span", null, "다음 작업: ", nextAction(event)),
+    event ? h("span", null, comparisonState(event)) : null);
 }
 
 function Comparison({ detail }) {
@@ -95,9 +134,7 @@ function EventList({ events, onSelect }) {
         onClick: () => onSelect(item.id)
       },
       h("strong", null, item.summary),
-      h("span", null,
-        `${item.reviewStatus} · v${item.reviewVersion}`
-        + (item.comparisonAvailable ? " · COMPARED" : ""))))));
+      h(EventSignal, { event: item, compact: true })))));
 }
 
 export function EventWorkflow({
@@ -146,7 +183,7 @@ export function EventWorkflow({
       h("div", null,
         h("p", { className: "eyebrow" }, "이벤트 인텔리전스"),
         h("h2", null, "수동 이벤트")),
-      busyAction ? h("span", { className: "busy" }, `${busyAction}…`) : null),
+      busyAction ? h("span", { className: "busy", title: `${busyAction}…` }, busyLabel(busyAction)) : null),
     h("div", { className: "event-layout" },
       h("form", { className: "event-form", onSubmit: submit },
         h("label", null, "출처 이벤트 ID",
@@ -179,10 +216,7 @@ export function EventWorkflow({
       h("header", null,
         h("div", null,
           h("h3", null, selectedEvent?.summary ?? "이벤트를 선택하세요"),
-          selectedEvent
-            ? h("p", null,
-              `${selectedEvent.reviewStatus} · v${selectedEvent.reviewVersion}`)
-            : null),
+          h(EventSignal, { event: selectedEvent })),
         h("div", { className: "event-review-actions" },
           h("button", {
             type: "button",

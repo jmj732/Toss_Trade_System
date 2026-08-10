@@ -438,7 +438,19 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   text-align: left;
   width: 100%;
 }
-.event-list button.event-select span { display: block; }
+.event-signal {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: var(--sp-2);
+  line-height: var(--lh-normal);
+  margin: var(--sp-2) 0 0;
+  overflow-wrap: anywhere;
+}
+.event-signal--compact { gap: var(--sp-1) var(--sp-2); }
+.event-signal > span { display: inline-flex; max-width: 100%; }
 .event-detail { border-top: 1px solid var(--line); padding-top: var(--sp-4); }
 .event-detail > header {
   align-items: flex-start;
