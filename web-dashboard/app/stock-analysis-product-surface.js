@@ -13,6 +13,9 @@ function surfaceMessage(value, loadingText) {
   if (value.status === "UNAVAILABLE" || value.unavailable) {
     return `지원되지 않음 (${value.unavailableReason ?? "PROVIDER_UNSUPPORTED"})`;
   }
+  if (value.status === "UNAUTHORIZED" || value.unavailableReason === "UNAUTHORIZED") {
+    return "권한 확인 필요 (UNAUTHORIZED)";
+  }
   if (value.status === "DEGRADED") return "부분 데이터만 확인할 수 있습니다";
   if (value.status === "ERROR") return `조회 실패 (${value.unavailableReason ?? "ERROR"})`;
   return null;
@@ -67,6 +70,74 @@ function instantCell(value) {
   return value ? formatInstant(value) : UNKNOWN_TEXT;
 }
 
+function formatUsd(value) {
+  if (value == null || Number.isNaN(Number(value))) return UNKNOWN_TEXT;
+  return `$${Number(value).toLocaleString()}`;
+}
+
+function candleItems(candles) {
+  const data = surfaceData(candles);
+  return data?.candles ?? data?.data ?? [];
+}
+
+function latestQuote(candles) {
+  const items = candleItems(candles);
+  const latest = items.at(-1);
+  const previous = items.at(-2);
+  const close = latest?.close;
+  const previousClose = previous?.close;
+  const changeRate = close != null && previousClose
+    ? ((Number(close) - Number(previousClose)) / Number(previousClose)) * 100
+    : null;
+  return {
+    price: formatUsd(close),
+    change: changeRate == null || Number.isNaN(changeRate)
+      ? UNKNOWN_TEXT
+      : `${changeRate >= 0 ? "+" : ""}${changeRate.toFixed(2)}%`,
+    referenceTime: instantCell(latest?.asOf ?? latest?.date ?? latest?.time)
+  };
+}
+
+function providerStatus(value, hasData) {
+  if (!value) return "loading";
+  if (value.status === "UNAVAILABLE" || value.unavailable) return "unsupported";
+  if (value.status === "UNAUTHORIZED" || value.unavailableReason === "UNAUTHORIZED") return "unauthorized";
+  if (value.status === "ERROR") return "error";
+  if (value.status === "DEGRADED") return hasData ? "partial" : "degraded";
+  if (value.stale || surfaceData(value)?.stale) return "stale";
+  return hasData ? "available" : "empty";
+}
+
+function qualitySummary({ analysis, candles, orderbook, investorTrading, stockWarnings, commissions }) {
+  const statuses = [
+    providerStatus(candles, candleItems(candles).length > 0),
+    providerStatus(orderbook, Boolean(surfaceData(orderbook)?.asks?.length || surfaceData(orderbook)?.bids?.length)),
+    providerStatus(investorTrading, (Array.isArray(surfaceData(investorTrading))
+      ? surfaceData(investorTrading)
+      : surfaceData(investorTrading)?.data ?? surfaceData(investorTrading)?.investors ?? []).length > 0),
+    providerStatus(stockWarnings, (surfaceData(stockWarnings)?.warnings ?? surfaceData(stockWarnings)?.data ?? []).length > 0),
+    providerStatus(commissions, surfaceData(commissions)?.buy != null || surfaceData(commissions)?.sell != null)
+  ];
+  if (statuses.includes("unauthorized")) return ["권한 확인", "danger"];
+  if (statuses.includes("error")) return ["오류", "danger"];
+  if (statuses.includes("degraded") || statuses.includes("partial") || analysis?.result?.status === "DEGRADED") {
+    return ["부분 데이터", "warn"];
+  }
+  if (statuses.includes("unsupported")) return ["부분 데이터", "warn"];
+  if (statuses.includes("stale")) return ["지연 데이터", "warn"];
+  if (statuses.every(status => status === "loading")) return ["불러오는 중", "neutral"];
+  if (statuses.every(status => status === "empty" || status === "loading")) return ["데이터 없음", "neutral"];
+  return ["정상", "ok"];
+}
+
+function riskSummary(analysis, stockWarnings) {
+  const warnings = surfaceData(stockWarnings)?.warnings ?? surfaceData(stockWarnings)?.data ?? [];
+  if (warnings.some(item => item.severity === "DANGER" || item.severity === "WARNING")) return ["높음", "danger"];
+  if (warnings.length || analysis?.result?.status === "DEGRADED" || analysis?.result?.missingData?.length) return ["주의", "warn"];
+  if (analysis?.result) return ["보통", "ok"];
+  return [UNKNOWN_TEXT, "neutral"];
+}
+
 function MissingData({ values = [] }) {
   return h("div", { className: "missing-data" },
     h("h3", null, "누락 데이터"),
@@ -103,12 +174,34 @@ function analysisParts(analysis) {
 }
 
 function Panel({ title, state, error, action, children }) {
-  return h("section", { className: "panel stock-surface-panel" },
+  return h("section", { className: "panel stock-surface-panel", "aria-busy": state === "PROGRESS" ? "true" : undefined },
     h("header", null,
       h("div", null, h("p", { className: "eyebrow" }, "종목 화면"), h("h2", null, title)),
       h("div", { className: "panel-actions" }, h(State, { value: state }), action)),
     error ? h("p", { className: "error", role: "alert" }, error) : null,
     children);
+}
+
+function StockSummary({ symbol, analysis, candles, orderbook, investorTrading, stockWarnings, commissions }) {
+  const quote = latestQuote(candles);
+  const [quality, qualityModifier] = qualitySummary({
+    analysis, candles, orderbook, investorTrading, stockWarnings, commissions
+  });
+  const [risk, riskModifier] = riskSummary(analysis, stockWarnings);
+  return h("section", { className: "panel stock-surface-panel stock-surface-summary" },
+    h("div", { className: "stock-surface-summary-main" },
+      h("p", { className: "eyebrow" }, "종목 분석"),
+      h("h2", null, symbol),
+      h("span", { className: "metric-label" }, "현재가"),
+      h("span", { className: "metric-value-large" }, quote.price),
+      h("span", { className: `stock-surface-change ${quote.change.startsWith("-") ? "negative" : "positive"}` },
+        quote.change)),
+    h("dl", { className: "stock-surface-summary-meta" },
+      h("div", null, h("dt", null, "기준 시각"), h("dd", null, quote.referenceTime)),
+      h("div", null, h("dt", null, "데이터 품질"), h("dd", null,
+        h("span", { className: `badge-pill badge-pill--${qualityModifier}` }, quality))),
+      h("div", null, h("dt", null, "리스크"), h("dd", null,
+        h("span", { className: `badge-pill badge-pill--${riskModifier}` }, risk)))));
 }
 
 function AnalysisPanel({ analysis, state, error, busy, onCreate }) {
@@ -380,14 +473,8 @@ export function StockAnalysisProductSurface({
   commissions
 }) {
   return h("main", { className: "stock-surface" },
-    h("header", { className: "stock-surface-heading" },
-      h("p", { className: "eyebrow" }, "종목 분석 · Toss Invest OpenAPI"), h("h2", null, symbol)),
     h("div", { className: "stock-surface-grid" },
-      h(StockWarningsPanel, { warnings: stockWarnings }),
-      h(OrderbookPanel, { orderbook }),
-      h(CandleChartPanel, { candles, timeframe: candleTimeframe, onTimeframeChange: onCandleTimeframeChange }),
-      h(InvestorTradingPanel, { investorTrading }),
-      h(CommissionsPanel, { commissions }),
+      h(StockSummary, { symbol, analysis, candles, orderbook, investorTrading, stockWarnings, commissions }),
       h(AnalysisPanel, {
         analysis, state: status.analysis ?? "IDLE", error: errors.analysis, busy, onCreate: onCreateAnalysis
       }),
@@ -397,6 +484,11 @@ export function StockAnalysisProductSurface({
       h(ExplanationPanel, {
         explanation, state: status.explanation ?? "IDLE", error: errors.explanation, busy, onCreate: onCreateExplanation
       }),
+      h(StockWarningsPanel, { warnings: stockWarnings }),
+      h(CandleChartPanel, { candles, timeframe: candleTimeframe, onTimeframeChange: onCandleTimeframeChange }),
+      h(OrderbookPanel, { orderbook }),
+      h(InvestorTradingPanel, { investorTrading }),
+      h(CommissionsPanel, { commissions }),
       h(RelatedEvents, { events: relatedEvents }),
       h(SnapshotHistory, { history, onSelectSnapshot })));
 }

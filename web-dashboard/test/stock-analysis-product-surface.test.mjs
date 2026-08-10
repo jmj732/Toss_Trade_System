@@ -123,3 +123,43 @@ test("distinguishes progress and failed analysis states", () => {
   assert.match(html, /FAILED/);
   assert.match(html, /UPSTREAM/);
 });
+
+test("puts stock analysis summary before provider panels", () => {
+  const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
+    symbol: "VERY-LONG-US-EQUITY-SYMBOL",
+    analysis,
+    forecast: null,
+    explanation: null,
+    relatedEvents: [],
+    history: [],
+    status: { analysis: "DEGRADED", forecast: "IDLE", explanation: "IDLE" },
+    candles: {
+      status: "DEGRADED",
+      data: {
+        candles: [
+          { date: "2026-08-01", close: 99, open: 100 },
+          { date: "2026-08-02", close: 105, open: 101 }
+        ]
+      }
+    },
+    stockWarnings: {
+      data: {
+        warnings: [{ severity: "CAUTION", message: "단기 변동성 확대" }]
+      }
+    },
+    orderbook: { status: "UNAVAILABLE", unavailableReason: "PROVIDER_UNSUPPORTED" },
+    onCreateAnalysis() {},
+    onCreateForecast() {},
+    onCreateExplanation() {},
+    onSelectSnapshot() {}
+  }));
+
+  assert.match(html, /현재가/);
+  assert.match(html, /\$105/);
+  assert.match(html, /\+6\.06%/);
+  assert.match(html, /기준 시각/);
+  assert.match(html, /부분 데이터/);
+  assert.match(html, /리스크/);
+  assert.ok(html.indexOf("현재가") < html.indexOf("호가 잔량"));
+  assert.match(html, /지원되지 않음 \(PROVIDER_UNSUPPORTED\)/);
+});
