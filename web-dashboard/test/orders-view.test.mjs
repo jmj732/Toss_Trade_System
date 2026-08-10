@@ -42,7 +42,7 @@ test("keeps side, symbol, quantity, price, currency, status, and timing together
     }
   });
 
-  assert.match(html, /data-order-row="order-1"[\s\S]*SELL[\s\S]*NVDA/);
+  assert.match(html, /data-order-row="order-1"[\s\S]*매도[\s\S]*NVDA/);
   assert.match(html, /data-order-row="order-1"[\s\S]*12[\s\S]*USD 100.00/);
   assert.match(html, /data-order-row="order-1"[\s\S]*체결 진행 중/);
   assert.match(html, /data-order-row="order-1"[\s\S]*기준 2026-08-05 09:00 KST[\s\S]*만료 2026-08-06 09:00 KST/);
