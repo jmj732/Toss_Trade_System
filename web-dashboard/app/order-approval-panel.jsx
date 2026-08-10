@@ -228,8 +228,8 @@ export function OrderApprovalPanel({
         >
           확인하고 승인
         </button>
-        <button type="button" className="secondary" onClick={onReject} disabled={busy}>
-          거부
+        <button type="button" className="danger" onClick={onReject} disabled={busy}>
+          주문 거부
         </button>
         <button type="button" className="secondary" onClick={onClose} disabled={busy}>
           닫기

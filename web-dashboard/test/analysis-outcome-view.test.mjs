@@ -190,6 +190,59 @@ test("renders the model registry and offers only ACTIVE versions for prediction 
   assert.match(html, /삭제/);
 });
 
+test("leads with outcome quality and freshness before prediction controls", () => {
+  const html = renderToStaticMarkup(createElement(AnalysisOutcomeView, {
+    performance: {
+      status: "DEGRADED",
+      stale: true,
+      asOf: "2026-05-01T00:00:00Z",
+      predictions: [{
+        id: "pred-unknown",
+        predictedAt: "2026-01-01T00:00:00Z",
+        symbol: "A-VERY-LONG-SYMBOL-NAME-THAT-MUST-WRAP",
+        currency: "USD",
+        predictedDirection: "UNKNOWN",
+        modelVersion: "model-version-with-a-very-long-value",
+        contractVersion: "contract-version-with-a-very-long-value",
+        baselinePrice: 100,
+        outcomes: {}
+      }],
+      byVersion: [],
+      forecastQuality: null
+    },
+    versions: [{
+      id: "active-1",
+      modelVersion: "model-version-with-a-very-long-value",
+      contractVersion: "contract-version-with-a-very-long-value",
+      status: "ACTIVE"
+    }, {
+      id: "manual-review",
+      modelVersion: "manual-model",
+      contractVersion: "manual-contract",
+      status: "MANUAL_REVIEW_REQUIRED"
+    }],
+    query: QUERY,
+    busy: true,
+    createBusy: false,
+    createError: "",
+    registryBusy: false,
+    registryError: "",
+    onQuery() {},
+    onCreate() {},
+    onRegister() {},
+    onDeprecate() {},
+    onDelete() {}
+  }));
+
+  assert.ok(html.indexOf("예측 품질") < html.indexOf("예측 모델 레지스트리"));
+  assert.match(html, /부분 데이터/);
+  assert.match(html, /지연 데이터/);
+  assert.match(html, /기준 2026-05-01 09:00 KST/);
+  assert.match(html, /새로고침 중/);
+  assert.match(html, /UNKNOWN/);
+  assert.match(html, /MANUAL_REVIEW_REQUIRED/);
+});
+
 test("disables prediction creation when no ACTIVE version exists", () => {
   const html = renderToStaticMarkup(createElement(AnalysisOutcomeView, {
     performance: { predictions: [], byVersion: [] },

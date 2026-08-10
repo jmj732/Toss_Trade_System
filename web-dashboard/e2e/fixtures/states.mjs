@@ -183,6 +183,18 @@ function staleDashboard() {
   return dash;
 }
 
+function degradedDashboard() {
+  const dash = fullDashboard();
+  dash.analysis = section({
+    result: {
+      ...dash.analysis.data.result,
+      status: "DEGRADED",
+      missingData: ["provider.partial"]
+    }
+  }, { unknown: true, unknownFields: ["analysis.provider"] });
+  return dash;
+}
+
 const EVENTS_FULL = [
   {
     id: "event-1",
@@ -582,6 +594,21 @@ function shapeForState(match, state) {
       default: return body;
     }
   }
+  if (state === "degraded") {
+    switch (kind) {
+      case "dashboard": return degradedDashboard();
+      case "portfolio-history":
+        return { ...PORTFOLIO_HISTORY_FULL, unknown: true, unknownFields: ["account.cashBalance"] };
+      case "analysis-predictions":
+        return { ...ANALYSIS_PREDICTIONS_FULL, forecastQuality: null };
+      case "readiness": return READINESS_FULL;
+      case "stock-analysis": return STOCK_ANALYSIS_FULL;
+      case "surface": return body.status === "UNAVAILABLE"
+        ? body
+        : { ...body, status: "DEGRADED", unknown: true, unknownFields: ["provider.partial"] };
+      default: return body;
+    }
+  }
   return body;
 }
 
@@ -600,11 +627,12 @@ function delay(ms) {
 
 /**
  * Build a Playwright route handler that pins every /api/v1/** request to `state`.
- * @param {"loading"|"empty"|"partial"|"stale"|"error"|"unauthorized"} state
+ * @param {"loading"|"refreshing"|"empty"|"partial"|"degraded"|"stale"|"error"|"unauthorized"|"unsupported"} state
  * @param {{ delayMs?: number, onRequest?: (info) => void }} [opts]
  */
 export function stateRoute(state, opts = {}) {
   const delayMs = opts.delayMs ?? 3000;
+  const seen = new Map();
   return async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -644,11 +672,34 @@ export function stateRoute(state, opts = {}) {
       return jsonResponse(route, 200, shapeForState(match, "loading"));
     }
 
+    if (state === "refreshing") {
+      const key = `${method} ${url.pathname}`;
+      const count = seen.get(key) ?? 0;
+      seen.set(key, count + 1);
+      if (count > 0) {
+        await delay(delayMs);
+      }
+      return jsonResponse(route, 200, shapeForState(match, "degraded"));
+    }
+
     return jsonResponse(route, 200, shapeForState(match, state));
   };
 }
 
-export const STATES = ["loading", "empty", "partial", "stale", "error", "unauthorized"];
+export const STATES = [
+  "loading",
+  "refreshing",
+  "empty",
+  "partial",
+  "degraded",
+  "stale",
+  "error",
+  "unauthorized"
+];
+
+export function routeStates(routeDef) {
+  return [...STATES, ...(routeDef.extraStates ?? [])];
+}
 
 export const ROUTES = [
   { path: "/", name: "home" },
@@ -658,7 +709,7 @@ export const ROUTES = [
   { path: "/events", name: "events" },
   { path: "/predictions", name: "predictions" },
   { path: "/settings", name: "settings" },
-  { path: "/stocks/AAPL", name: "stocks-AAPL" }
+  { path: "/stocks/AAPL", name: "stocks-AAPL", extraStates: ["unsupported"] }
 ];
 
 export const CONNECTION_ID = "audit-connection";

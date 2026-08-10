@@ -110,7 +110,7 @@ export function RouteNav({ symbol }) {
     ["/events", "이벤트"], ["/orders", "주문"], ["/predictions", "예측"],
     ["/settings", "설정"]
   ];
-  return h("nav", { className: "route-nav", "aria-label": "주요 메뉴" },
+  return h("nav", { className: "route-nav", "data-route-region": "nav", "aria-label": "주요 메뉴" },
     ...links.map(([href, label]) => href
       // 보유 종목이 없으면 종목 링크는 이동 대상이 없으므로 비활성으로 노출한다.
       ? h("a", {
@@ -160,6 +160,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [outcomeQuery, setOutcomeQuery] = useState(OUTCOME_QUERY);
   const [predictionError, setPredictionError] = useState("");
   const [busy, setBusy] = useState("");
+  const [predictionLoading, setPredictionLoading] = useState(false);
+  const [operationsBusy, setOperationsBusy] = useState(false);
   const [outcomeBusy, setOutcomeBusy] = useState(false);
   // 주문별 진행 상태를 Set 으로 둔다. 스칼라면 두 주문 동시 실행 시
   // 먼저 끝난 쪽이 진행 중인 다른 버튼을 재활성화한다(D-13).
@@ -175,6 +177,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [riskOpen, setRiskOpen] = useState(false);
   const [readiness, setReadiness] = useState(null);
   const [readinessError, setReadinessError] = useState("");
+  const [readinessBusy, setReadinessBusy] = useState(route === "settings");
   // 홈 상단 액션(알림). 로드 전/실패는 null(미확정)로 둔다.
   // 실패를 삼켜 0("읽지 않음 없음")으로 오인시키지 않는다.
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -224,7 +227,10 @@ export function RouteWorkspace({ route, symbol = "" }) {
       loadUnreadCount().then(result => setUnreadCount(result.count)).catch(() => setUnreadCount(null));
     }
     if (route === "settings") {
-      loadOperationalReadiness().then(setReadiness).catch(value => setReadinessError(describeError(value.message)));
+      setReadinessBusy(true);
+      loadOperationalReadiness().then(setReadiness)
+        .catch(value => setReadinessError(describeError(value.message)))
+        .finally(() => setReadinessBusy(false));
     }
     // 홈은 저장된 연결을 자동 복구하지 않는다: 명시적으로 열기 전에는 랜딩을 유지한다(D-36).
     // 나머지 6개 라우트는 기존대로 자동 복구한다.
@@ -387,6 +393,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     if (route === "predictions") {
       // 네 조회를 개별 정산해 하나가 실패해도 나머지를 거짓 empty 로 만들지 않는다.
+      setPredictionLoading(true);
+      setOperationsBusy(true);
       Promise.allSettled([
         loadAnalysisPredictions(id, OUTCOME_QUERY),
         loadPredictionIngestionApiKeys(),
@@ -413,6 +421,9 @@ export function RouteWorkspace({ route, symbol = "" }) {
         } else {
           setPredictionError(describeError(paperResult.reason.message));
         }
+      }).finally(() => {
+        setPredictionLoading(false);
+        setOperationsBusy(false);
       });
     }
 
@@ -472,7 +483,15 @@ export function RouteWorkspace({ route, symbol = "" }) {
       setApprovalOrder(order ?? { id: orderId });
       return Promise.resolve();
     }
-    return runOrderCommand(orderId, "cancel");
+    return confirmOrderCancel(orderId);
+  }
+
+  function confirmOrderCancel(orderId) {
+    if (typeof window === "undefined") {
+      return Promise.resolve();
+    }
+    const confirmed = window.confirm("이 주문을 취소/거부하시겠습니까? 이 작업은 주문 취소 또는 승인 거부로 기록됩니다.");
+    return confirmed ? runOrderCommand(orderId, "cancel") : Promise.resolve();
   }
 
   function runOrderCommand(orderId, action, displayed) {
@@ -670,10 +689,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   function refreshReadiness() {
     setReadinessError("");
+    setReadinessBusy(true);
     return loadOperationalReadiness().then(setReadiness).catch(value => {
       setReadinessError(value.message);
       throw value;
-    });
+    }).finally(() => setReadinessBusy(false));
   }
 
   function probeReadiness(symbol) {
@@ -746,7 +766,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
                 error: approvalError,
                 onConfirm: displayed =>
                   runOrderCommand(approvalOrder.id, "approve", displayed),
-                onReject: () => runOrderCommand(approvalOrder.id, "cancel"),
+                onReject: () => confirmOrderCancel(approvalOrder.id),
                 onClose: () => {
                   setApprovalOrder(null);
                   setApprovalError(null);
@@ -778,7 +798,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       return h("main", { className: "route-stack" },
         h(AnalysisOutcomeView, {
           performance: outcome, versions: models, query: outcomeQuery,
-          busy: outcomeBusy, createBusy: Boolean(busy), createError: predictionError,
+          busy: predictionLoading || outcomeBusy, createBusy: Boolean(busy), createError: predictionError,
           onQuery: query => {
             setOutcomeQuery(query);
             setOutcomeBusy(true);
@@ -805,7 +825,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
           })
         }),
         h(PaperPerformanceView, {
-          performance: paperPerformance, query: paperQuery, busy: paperBusy,
+          performance: paperPerformance, query: paperQuery, busy: predictionLoading || paperBusy,
           onQuery: query => {
             setPaperQuery(query);
             setPaperBusy(true);
@@ -816,7 +836,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
         }),
         h(PredictionOperationsView, {
           operations: predictionOperations, keys: predictionKeys, issuedKey,
-          busy: Boolean(busy),
+          busy: operationsBusy,
+          actionBusy: Boolean(busy),
           error: predictionError, onIssue: command => mutation("key", async () => {
             const result = await issuePredictionIngestionApiKey(command);
             if (result?.apiKey) {
@@ -833,29 +854,33 @@ export function RouteWorkspace({ route, symbol = "" }) {
             await revokePredictionIngestionApiKey(id);
             setPredictionKeys(await loadPredictionIngestionApiKeys());
           }),
-          onRefresh: () => Promise.all([
-            loadPredictionIngestionApiKeys(), loadPredictionOperations()
-          ]).then(([keys, operations]) => {
-            setPredictionKeys(keys); setPredictionOperations(operations);
-          }).catch(value => setPredictionError(describeError(value.message))),
+          onRefresh: () => {
+            setOperationsBusy(true);
+            return Promise.all([
+              loadPredictionIngestionApiKeys(), loadPredictionOperations()
+            ]).then(([keys, operations]) => {
+              setPredictionKeys(keys); setPredictionOperations(operations);
+            }).catch(value => setPredictionError(describeError(value.message)))
+              .finally(() => setOperationsBusy(false));
+          },
           onDismissKey: () => setIssuedKey(null)
         }));
     }
     return h("main", { className: "route-stack" },
       route === "settings" ? h(OperationsReadinessView, {
-        readiness, busy: busy === "readiness", error: readinessError,
+        readiness, busy: readinessBusy || busy === "readiness", error: readinessError,
         onRefresh: () => refreshReadiness().catch(() => {}),
         onProbe: probeReadiness
       }) : null,
-      h(BrokerOnboarding, {
-        connection, connectionId, busyAction: busy,
-        onCredentials: credentialsAction, onCommand: brokerAction
-      }),
       h(RiskPolicyPanel, {
         policy: riskPolicy, history: [], open: riskOpen, busy: Boolean(busy),
         onToggle: () => setRiskOpen(value => !value),
         onUpdate: input => mutation("risk-policy", async () => setRiskPolicy(await updateRiskPolicy(input))),
         onLoadHistory() {}
+      }),
+      h(BrokerOnboarding, {
+        connection, connectionId, busyAction: busy,
+        onCredentials: credentialsAction, onCommand: brokerAction
       }));
   }
 
@@ -895,7 +920,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
     return h("div", null,
       statusRegion,
       h("header", { className: "topbar" },
-        h("div", null,
+        h("div", { "data-route-region": "title" },
           h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
           h("h1", null, workspaceReady ? "내 자산" : "내 투자, 한눈에")),
         h("div", { className: "topbar-actions" },
@@ -935,7 +960,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
           onCredentials: credentialsAction,
           onCommand: brokerAction
         }),
-        h("details", { className: "connection-picker" },
+        h("details", { className: "connection-picker", "data-route-region": "connection" },
           h("summary", null, "기존 연결 불러오기"),
           h("form", { className: "connection-form", onSubmit: event => {
             event.preventDefault(); openWorkspace(connectionId);
@@ -960,7 +985,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
             busy: busyOrderIds.has(approvalOrder.id),
             error: approvalError,
             onConfirm: displayed => runOrderCommand(approvalOrder.id, "approve", displayed),
-            onReject: () => runOrderCommand(approvalOrder.id, "cancel"),
+            onReject: () => confirmOrderCancel(approvalOrder.id),
             onClose: () => {
               setApprovalOrder(null);
               setApprovalError(null);
@@ -985,7 +1010,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   return h("div", null,
     statusRegion,
     h("header", { className: "topbar" },
-      h("div", null,
+      h("div", { "data-route-region": "title" },
         h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
         h("h1", null, {
           portfolio: "포트폴리오", stock: stockSymbol || "종목 분석", events: "이벤트",
@@ -997,7 +1022,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
         onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
       }, "로그아웃")),
     h(RouteNav, { symbol: stockSymbol }),
-    h("section", { "aria-label": "계좌 연결" },
+    h("section", { "data-route-region": "connection", "aria-label": "계좌 연결" },
       h("form", { className: "connection-form", onSubmit: event => {
         event.preventDefault(); openWorkspace(event.currentTarget.elements.connectionId.value);
       } },

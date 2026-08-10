@@ -5,7 +5,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
 import { REPORTS_DIR, writeRecord } from "./fixtures/record.mjs";
-import { primeAuth, ROUTES, STATES, stateRoute } from "./fixtures/states.mjs";
+import { primeAuth, ROUTES, routeStates, stateRoute } from "./fixtures/states.mjs";
 
 // Accessibility gate. Every route is swept under every state for WCAG 2.2 AA
 // violations. Records are still written for the aggregate report, but the sweep
@@ -14,7 +14,7 @@ import { primeAuth, ROUTES, STATES, stateRoute } from "./fixtures/states.mjs";
 const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 
 for (const routeDef of ROUTES) {
-  for (const state of STATES) {
+  for (const state of routeStates(routeDef)) {
     test(`a11y ${routeDef.name} :: ${state}`, async ({ page, context }, testInfo) => {
       const viewport = testInfo.project.name;
       const key = `${routeDef.name}__${state}__${viewport}`;
