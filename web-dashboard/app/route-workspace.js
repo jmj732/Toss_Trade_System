@@ -177,6 +177,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [riskOpen, setRiskOpen] = useState(false);
   const [readiness, setReadiness] = useState(null);
   const [readinessError, setReadinessError] = useState("");
+  const [readinessBusy, setReadinessBusy] = useState(route === "settings");
   // 홈 상단 액션(알림). 로드 전/실패는 null(미확정)로 둔다.
   // 실패를 삼켜 0("읽지 않음 없음")으로 오인시키지 않는다.
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -226,7 +227,10 @@ export function RouteWorkspace({ route, symbol = "" }) {
       loadUnreadCount().then(result => setUnreadCount(result.count)).catch(() => setUnreadCount(null));
     }
     if (route === "settings") {
-      loadOperationalReadiness().then(setReadiness).catch(value => setReadinessError(describeError(value.message)));
+      setReadinessBusy(true);
+      loadOperationalReadiness().then(setReadiness)
+        .catch(value => setReadinessError(describeError(value.message)))
+        .finally(() => setReadinessBusy(false));
     }
     // 홈은 저장된 연결을 자동 복구하지 않는다: 명시적으로 열기 전에는 랜딩을 유지한다(D-36).
     // 나머지 6개 라우트는 기존대로 자동 복구한다.
@@ -685,10 +689,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   function refreshReadiness() {
     setReadinessError("");
+    setReadinessBusy(true);
     return loadOperationalReadiness().then(setReadiness).catch(value => {
       setReadinessError(value.message);
       throw value;
-    });
+    }).finally(() => setReadinessBusy(false));
   }
 
   function probeReadiness(symbol) {
@@ -863,19 +868,19 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     return h("main", { className: "route-stack" },
       route === "settings" ? h(OperationsReadinessView, {
-        readiness, busy: busy === "readiness", error: readinessError,
+        readiness, busy: readinessBusy || busy === "readiness", error: readinessError,
         onRefresh: () => refreshReadiness().catch(() => {}),
         onProbe: probeReadiness
       }) : null,
-      h(BrokerOnboarding, {
-        connection, connectionId, busyAction: busy,
-        onCredentials: credentialsAction, onCommand: brokerAction
-      }),
       h(RiskPolicyPanel, {
         policy: riskPolicy, history: [], open: riskOpen, busy: Boolean(busy),
         onToggle: () => setRiskOpen(value => !value),
         onUpdate: input => mutation("risk-policy", async () => setRiskPolicy(await updateRiskPolicy(input))),
         onLoadHistory() {}
+      }),
+      h(BrokerOnboarding, {
+        connection, connectionId, busyAction: busy,
+        onCredentials: credentialsAction, onCommand: brokerAction
       }));
   }
 

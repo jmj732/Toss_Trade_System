@@ -128,3 +128,21 @@ test("predictions route separates initial loading from operations refresh", asyn
   assert.match(refresh[0], /setOperationsBusy\(true\)/);
   assert.doesNotMatch(refresh[0], /setPredictionLoading/);
 });
+
+test("settings route keeps readiness loading distinct and orders readiness risk broker panels", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /const \[readinessBusy, setReadinessBusy\] = useState\(route === "settings"\)/);
+  assert.match(source, /setReadinessBusy\(true\);\s*loadOperationalReadiness\(\)[\s\S]*?\.finally\(\(\) => setReadinessBusy\(false\)\)/);
+
+  const refresh = source.match(/function refreshReadiness\(\) \{[\s\S]*?\n  \}/);
+  assert.ok(refresh);
+  assert.match(refresh[0], /setReadinessBusy\(true\)/);
+  assert.match(refresh[0], /\.finally\(\(\) => setReadinessBusy\(false\)\)/);
+  assert.match(source, /h\(OperationsReadinessView,[\s\S]*?busy: readinessBusy \|\| busy === "readiness"/);
+
+  const settings = source.match(/route === "settings" \? h\(OperationsReadinessView,[\s\S]*?h\(BrokerOnboarding,/);
+  assert.ok(settings);
+  assert.ok(settings[0].indexOf("OperationsReadinessView") < settings[0].indexOf("RiskPolicyPanel"));
+  assert.ok(settings[0].indexOf("RiskPolicyPanel") < settings[0].indexOf("BrokerOnboarding"));
+});
