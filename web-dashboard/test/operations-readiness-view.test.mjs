@@ -27,6 +27,51 @@ test("renders safe provider and safety readiness without secrets or values", () 
   assert.doesNotMatch(html, /provider-secret|189\.40|raw-response/);
 });
 
+test("maps backend readiness statuses to visible semantic states", () => {
+  const cases = [
+    ["HEALTHY", "ok", "제공자 준비 상태를 확인했습니다"],
+    ["BLOCKED", "danger", "운영 준비가 차단되었습니다"],
+    ["SECRET_MISSING", "danger", "자격 증명이 필요합니다"],
+    ["NOT_CHECKED", "warn", "제공자 점검 전입니다"],
+    ["NOT_CONFIGURED", "warn", "제공자가 설정되지 않았습니다"]
+  ];
+
+  for (const [status, tone, copy] of cases) {
+    const html = renderToStaticMarkup(OperationsReadinessView({
+      readiness: { status, providers: [], alerts: [] },
+      onRefresh() {},
+      onProbe() {}
+    }));
+
+    assert.match(html, new RegExp(`badge-pill--${tone}`));
+    assert.match(html, new RegExp(copy));
+  }
+});
+
+test("shows blocked and credential reasons from readiness payload fields", () => {
+  const html = renderToStaticMarkup(OperationsReadinessView({
+    readiness: {
+      status: "BLOCKED",
+      canary: { status: "BLOCKED", blockers: ["BROKER_CREDENTIAL_MISSING"] },
+      alerts: ["KILL_SWITCH_ENGAGED"],
+      providers: [{
+        provider: "FMP",
+        status: "SECRET_MISSING",
+        credentialConfigured: false,
+        missingData: ["quote.price"]
+      }]
+    },
+    onRefresh() {},
+    onProbe() {}
+  }));
+
+  assert.match(html, /badge-pill--danger/);
+  assert.match(html, /KILL_SWITCH_ENGAGED/);
+  assert.match(html, /BROKER_CREDENTIAL_MISSING/);
+  assert.match(html, /FMP: SECRET_MISSING/);
+  assert.match(html, /quote\.price/);
+});
+
 test("distinguishes readiness loading, refreshing, empty, and degraded states", () => {
   const loading = renderToStaticMarkup(OperationsReadinessView({
     readiness: null,
