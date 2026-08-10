@@ -155,11 +155,34 @@ test("puts stock analysis summary before provider panels", () => {
   }));
 
   assert.match(html, /현재가/);
-  assert.match(html, /\$105/);
+  assert.match(html, /USD 105\.00/);
   assert.match(html, /\+6\.06%/);
   assert.match(html, /기준 시각/);
+  const summaryHtml = html.slice(0, html.indexOf("데이터 품질"));
+  assert.match(summaryHtml, /2026-08-02/);
+  assert.doesNotMatch(summaryHtml, /2026-08-02 09:00 KST/);
   assert.match(html, /부분 데이터/);
   assert.match(html, /리스크/);
   assert.ok(html.indexOf("현재가") < html.indexOf("호가 잔량"));
   assert.match(html, /지원되지 않음 \(PROVIDER_UNSUPPORTED\)/);
+});
+
+test("unauthorized provider envelope takes precedence over unsupported", () => {
+  const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
+    symbol: "AAPL",
+    analysis: null,
+    forecast: null,
+    explanation: null,
+    relatedEvents: [],
+    history: [],
+    status: { analysis: "IDLE", forecast: "IDLE", explanation: "IDLE" },
+    orderbook: { status: "UNAVAILABLE", unavailableReason: "UNAUTHORIZED" },
+    onCreateAnalysis() {},
+    onCreateForecast() {},
+    onCreateExplanation() {},
+    onSelectSnapshot() {}
+  }));
+
+  assert.match(html, /권한 확인/);
+  assert.doesNotMatch(html, /지원되지 않음 \(UNAUTHORIZED\)/);
 });

@@ -2,7 +2,7 @@
 
 import { createElement as h } from "react";
 
-import { formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
+import { formatAmount, formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
 
 function surfaceData(value) {
   return value?.data ?? value;
@@ -10,11 +10,11 @@ function surfaceData(value) {
 
 function surfaceMessage(value, loadingText) {
   if (!value) return loadingText;
-  if (value.status === "UNAVAILABLE" || value.unavailable) {
-    return `지원되지 않음 (${value.unavailableReason ?? "PROVIDER_UNSUPPORTED"})`;
-  }
   if (value.status === "UNAUTHORIZED" || value.unavailableReason === "UNAUTHORIZED") {
     return "권한 확인 필요 (UNAUTHORIZED)";
+  }
+  if (value.status === "UNAVAILABLE" || value.unavailable) {
+    return `지원되지 않음 (${value.unavailableReason ?? "PROVIDER_UNSUPPORTED"})`;
   }
   if (value.status === "DEGRADED") return "부분 데이터만 확인할 수 있습니다";
   if (value.status === "ERROR") return `조회 실패 (${value.unavailableReason ?? "ERROR"})`;
@@ -70,14 +70,15 @@ function instantCell(value) {
   return value ? formatInstant(value) : UNKNOWN_TEXT;
 }
 
-function formatUsd(value) {
-  if (value == null || Number.isNaN(Number(value))) return UNKNOWN_TEXT;
-  return `$${Number(value).toLocaleString()}`;
-}
-
 function candleItems(candles) {
   const data = surfaceData(candles);
   return data?.candles ?? data?.data ?? [];
+}
+
+function referenceLabel(candle) {
+  if (candle?.asOf) return instantCell(candle.asOf);
+  if (candle?.timestamp) return instantCell(candle.timestamp);
+  return candle?.date ?? candle?.time ?? UNKNOWN_TEXT;
 }
 
 function latestQuote(candles) {
@@ -90,18 +91,18 @@ function latestQuote(candles) {
     ? ((Number(close) - Number(previousClose)) / Number(previousClose)) * 100
     : null;
   return {
-    price: formatUsd(close),
+    price: formatAmount("USD", close),
     change: changeRate == null || Number.isNaN(changeRate)
       ? UNKNOWN_TEXT
       : `${changeRate >= 0 ? "+" : ""}${changeRate.toFixed(2)}%`,
-    referenceTime: instantCell(latest?.asOf ?? latest?.date ?? latest?.time)
+    referenceTime: referenceLabel(latest)
   };
 }
 
 function providerStatus(value, hasData) {
   if (!value) return "loading";
-  if (value.status === "UNAVAILABLE" || value.unavailable) return "unsupported";
   if (value.status === "UNAUTHORIZED" || value.unavailableReason === "UNAUTHORIZED") return "unauthorized";
+  if (value.status === "UNAVAILABLE" || value.unavailable) return "unsupported";
   if (value.status === "ERROR") return "error";
   if (value.status === "DEGRADED") return hasData ? "partial" : "degraded";
   if (value.stale || surfaceData(value)?.stale) return "stale";
