@@ -236,6 +236,41 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 }
 .list li > span, .list li > div > span { display: block; }
 .actions { display: flex; gap: var(--sp-2); }
+.order-row {
+  align-items: stretch;
+  gap: var(--sp-4);
+}
+.order-row-main {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-4);
+  justify-content: space-between;
+  min-width: 0;
+  width: 100%;
+}
+.order-row-copy {
+  display: grid;
+  flex: 1;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.order-row-copy strong,
+.order-summary,
+.order-timing {
+  overflow-wrap: anywhere;
+}
+.order-title {
+  color: var(--text) !important;
+  font-size: inherit !important;
+}
+.order-row--buy .order-title { color: var(--accent-text) !important; }
+.order-row--sell .order-title { color: var(--danger-text) !important; }
+.order-row-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: max-content;
+}
 .empty, .unknown-text { color: var(--muted); margin-top: var(--sp-4); }
 .error { color: var(--danger-text); margin: 0 auto var(--sp-4); max-width: 1280px; padding-inline: var(--sp-8); }
 
@@ -585,6 +620,8 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   .summary, .buying-power { grid-template-columns: minmax(0, 1fr); }
   .event-detail > header { display: block; }
   .connection-form > div, .list li { align-items: stretch; flex-direction: column; }
+  .order-row-main { align-items: stretch; flex-direction: column; }
+  .order-row-actions { justify-content: flex-start; min-width: 0; }
   .notification-panel, .risk-policy-panel {
     left: var(--sp-4);
     max-height: calc(100dvh - 92px);
@@ -606,6 +643,7 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 @media (max-width: 360px) {
   .topbar-actions button, .connection-form button { width: 100%; }
   .topbar-actions, .connection-form > div { width: 100%; }
+  .order-row-actions button { width: 100%; }
   .route-nav { gap: var(--sp-1); }
   .route-nav a, .route-nav span { padding-inline: var(--sp-3); }
   .stock-surface-summary-meta { grid-template-columns: minmax(0, 1fr); }

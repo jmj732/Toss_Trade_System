@@ -322,10 +322,14 @@ function Proposals({ section, busyOrderId, onOrderAction }) {
         // 상태 필터가 넓어지며 화면에 APPROVED/ACTIVE/COMPLETED 등도 도달하게 됐다고 해서
         // 이미 확정·종결된 주문에 승인·취소 버튼이 눌리게 두면 안 된다.
         const actionable = order.status === "PROPOSED";
-        return h("li", { key: order.id },
-          h("div", null,
-            h("strong", null, `${sideLabel} ${order.symbol ?? UNKNOWN_TEXT}`),
-            h("span", null,
+        return h("li", {
+          key: order.id,
+          className: `order-row order-row--${sideKnown ? order.side.toLowerCase() : "unknown"}`,
+          "data-order-row": order.id
+        },
+          h("div", { className: "order-row-copy" },
+            h("strong", { className: "order-title" }, `${sideLabel} ${order.symbol ?? UNKNOWN_TEXT}`),
+            h("span", { className: "order-summary" },
               `${order.type ?? UNKNOWN_TEXT} · ${formatQuantity(order.quantity)}`
               + ` · ${order.currency ?? UNKNOWN_TEXT}${priceText}`),
             // D-03: 상태 배지. 미지 상태도 그대로 드러낸다.
@@ -333,18 +337,18 @@ function Proposals({ section, busyOrderId, onOrderAction }) {
             // D-42: 만료 배지와 생성/만료 시각.
             h(OrderExpiryBadge, { state: expiryState }),
             h(OrderTiming, { order })),
-          h("div", { className: "actions" },
+          h("div", { className: "actions order-row-actions" },
             h("button", {
               type: "button",
               disabled: busy || !sideKnown || !actionable || expired,
               onClick: () => onOrderAction(order.id, "approve")
-            }, "승인"),
+            }, "승인 검토"),
             h("button", {
               type: "button",
-              className: "secondary",
+              className: "danger",
               disabled: busy || !sideKnown || !actionable,
               onClick: () => onOrderAction(order.id, "cancel")
-            }, "취소")));
+            }, "주문 취소")));
       }))
       : h("p", { className: "empty" }, "승인 대기 중인 주문이 없습니다."));
 }

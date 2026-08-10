@@ -129,11 +129,15 @@ function isOrderBusy(busy, id) {
             && order.type === "LIMIT";
           const isModifying = modifyingId === order.id;
 
-          return h("li", { key: order.id, style: { flexDirection: "column", alignItems: "stretch" } },
-            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" } },
-              h("div", null,
-                h("strong", null, `${sideText} ${order.symbol ?? UNKNOWN_TEXT}`),
-                h("span", { style: { marginLeft: "8px" } },
+          return h("li", {
+            key: order.id,
+            className: `order-row order-row--${sideKnown ? order.side.toLowerCase() : "unknown"}`,
+            "data-order-row": order.id
+          },
+            h("div", { className: "order-row-main" },
+              h("div", { className: "order-row-copy" },
+                h("strong", { className: "order-title" }, `${sideText} ${order.symbol ?? UNKNOWN_TEXT}`),
+                h("span", { className: "order-summary" },
                   `${order.type ?? UNKNOWN_TEXT} · ${formatQuantity(order.quantity)}`
                   + ` · ${order.currency ?? UNKNOWN_TEXT}${priceText}`),
                 // D-03: 상태 배지. 미지 상태도 그대로 드러낸다.
@@ -141,13 +145,13 @@ function isOrderBusy(busy, id) {
                 // D-42: 만료 배지와 생성/만료 시각.
                 h(OrderExpiryBadge, { state: expiryState }),
                 h(OrderTiming, { order })),
-              h("div", { className: "actions" },
+              h("div", { className: "actions order-row-actions" },
                 h("button", {
                   type: "button",
                   // D-30: 미지 side, D-42: 만료 제안은 오발주 방지를 위해 승인을 비활성화한다.
                   disabled: busy || !sideKnown || !actionable || expired,
                   onClick: () => onOrderAction(order.id, "approve")
-                }, "승인"),
+                }, "승인 검토"),
                 modifiable && order.limitPrice != null && onModifyPrice
                   ? h("button", {
                     type: "button", className: "secondary",
@@ -159,10 +163,10 @@ function isOrderBusy(busy, id) {
                   }, "정정")
                   : null,
                 h("button", {
-                  type: "button", className: "secondary",
+                  type: "button", className: "danger",
                   disabled: busy || !sideKnown || !actionable,
                   onClick: () => onOrderAction(order.id, "cancel")
-                }, "취소"))
+                }, "주문 취소"))
             ),
             isModifying
               ? h("div", { className: "modify-panel", style: { marginTop: "12px", padding: "12px", background: "var(--panel-raised)", borderRadius: "var(--r-md)", display: "flex", gap: "12px", alignItems: "center" } },
