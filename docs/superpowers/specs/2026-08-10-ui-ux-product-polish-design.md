@@ -65,15 +65,21 @@ The shared shell owns only layout primitives and status presentation. Route view
 - Use a stronger destructive-action hierarchy for reject/cancel while keeping it visually and textually distinct from approve.
 - Keep status, loading, refreshing, partial, stale, degraded, and error states distinct; never imply that an unavailable order list is empty.
 
-### Events, analysis, and settings
+### Secondary production routes
 
-- Apply the same route header, connection strip, spacing, badge, table, alert, and state treatment.
-- Keep operational/readiness and risk controls available without competing with their route's primary read or review task.
-- Do not remove or add feature areas; only improve grouping, emphasis, and state explanation.
+The current route names and component owners are explicit so the implementation plan does not infer a new `/analysis-history` route:
+
+| Route | Current surface | Lead signal | Existing primary action | Required emphasis |
+|---|---|---|---|---|
+| `/events` | `EventWorkflow` | event review status and affected symbols | create/review/reanalyze event | review state, event time, next allowed action |
+| `/predictions` | `AnalysisOutcomeView`, `PaperPerformanceView`, `PredictionOperationsView` | analysis outcome/quality and run status | existing query/create action | result freshness, run state, API-key controls as secondary |
+| `/settings` | `OperationsReadinessView`, `BrokerOnboarding`, `RiskPolicyPanel` | provider/account readiness and risk policy status | refresh/probe or existing save action | blocked reason, readiness timestamp, destructive credential controls |
+
+Apply the same route header, connection strip, spacing, badge, table, alert, and state treatment. Keep operational/readiness and risk controls available without competing with their route's primary read or review task. Do not remove or add feature areas; only improve grouping, emphasis, and state explanation.
 
 ## State language
 
-Use existing status vocabulary and tokens, with these visual distinctions:
+Use existing status vocabulary and tokens, with these visual distinctions. The route/component coverage below makes each state testable without inventing backend responses:
 
 | State | Visual meaning | Required content |
 |---|---|---|
@@ -88,6 +94,22 @@ Use existing status vocabulary and tokens, with these visual distinctions:
 | Unsupported | Provider/field is not supported | Explicit unsupported label; no fake value |
 
 Status must be conveyed by text and structure, not color alone. `UNKNOWN` and `MANUAL_REVIEW` remain explicit values, not replacements with optimistic language.
+
+### State coverage map
+
+| State | Visual review / E2E fixture target |
+|---|---|
+| Loading | `/login`, `/`, `/stocks/[symbol]`, `/portfolio`, `/orders`, `/events`, `/predictions`, `/settings` initial session/connection load |
+| Refreshing | Home market/rankings refresh, stock candle timeframe refresh, portfolio history query, prediction/performance query, settings readiness refresh |
+| Empty | Home/portfolio/orders/events/predictions/settings valid empty collections; stock history with no run |
+| Partial | Home dashboard, portfolio positions, orders, stock analysis, events, and prediction results with partial payloads |
+| Stale | Dashboard/portfolio freshness badge, stock analysis snapshot, event/prediction result reference time |
+| Degraded | Market widgets and stock provider surfaces returning reduced data; analysis/forecast panels with usable partial result |
+| Error | Route connection failure, stock panel failure, order list/approval failure, event/prediction/settings action failure |
+| Unauthorized | Login route and every protected route/session-expiry fixture |
+| Unsupported | Stock provider fields/widgets and market data surfaces returning `UNAVAILABLE`/provider unsupported |
+
+`UNKNOWN` and `MANUAL_REVIEW` are content variants exercised in stock/order fixtures, not additional availability states. Extend the existing state-matrix fixtures and assertions for `refreshing`, `degraded`, and `unsupported` rather than changing backend contracts.
 
 ## Responsive rules
 
@@ -116,5 +138,5 @@ Status must be conveyed by text and structure, not color alone. `UNKNOWN` and `M
 - Prices, portfolio values, risk/availability, order status, currency, quantity, and reference time remain visible and correctly qualified.
 - All nine requested UI states are distinguishable in copy and structure.
 - 360/768/1280/1440 visual review shows no clipping, accidental overflow, unreadable tables, or wrapped controls.
-- axe, unit tests, E2E state journeys, build, and route screenshot checks pass.
+- axe, unit tests, E2E state journeys (including the three currently under-pinned states above), build, and route screenshot checks pass.
 - Independent review finds no behavior or contract regression.
