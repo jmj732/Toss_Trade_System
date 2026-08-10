@@ -110,7 +110,7 @@ public final class AccountSyncService {
             if (sellable.availability() == SellableQuantitySnapshot.Availability.KNOWN
                     && sellable.quantity().compareTo(position.quantity()) > 0) {
                 result.put(position.symbol(), SellableQuantitySnapshot.unknown(
-                        account, position.symbol(), sellable.observedAt()));
+                    account, position.symbol(), sellable.observedAt()));
             }
         }
         return Map.copyOf(result);
