@@ -21,6 +21,10 @@ public class BrokerConnectionException extends RuntimeException {
         return new BrokerConnectionException(Code.CONFLICT);
     }
 
+    public static BrokerConnectionException notReady() {
+        return new BrokerConnectionException(Code.NOT_READY);
+    }
+
     public static BrokerConnectionException validationFailed() {
         return new BrokerConnectionException(Code.VALIDATION_FAILED);
     }
@@ -33,6 +37,7 @@ public class BrokerConnectionException extends RuntimeException {
         NOT_FOUND("BROKER_CONNECTION_NOT_FOUND"),
         ALREADY_EXISTS("BROKER_CONNECTION_ALREADY_EXISTS"),
         CONFLICT("BROKER_CONNECTION_CONFLICT"),
+        NOT_READY("BROKER_CONNECTION_NOT_READY"),
         VALIDATION_FAILED("BROKER_CONNECTION_VALIDATION_FAILED");
 
         private final String publicCode;

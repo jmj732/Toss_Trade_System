@@ -92,14 +92,23 @@ class TossApiClientContractTest {
                 .willReturn(json("""
                         {"result":{"currency":"USD","cashBuyingPower":"250.25"}}
                         """)));
+        server.stubFor(get(urlEqualTo("/api/v1/sellable-quantity?symbol=AAPL"))
+                .withHeader("Authorization", equalTo("Bearer " + OLD_TOKEN))
+                .withHeader("X-Tossinvest-Account", equalTo(ACCOUNT_SEQ))
+                .willReturn(json("""
+                        {"result":{"sellableQuantity":"0.125"}}
+                        """)));
 
         assertThat(client().getHoldings(CONNECTION_ID, ACCOUNT_SEQ).value().items()).isEmpty();
         assertThat(client().getPrices(CONNECTION_ID, "AAPL").value()).hasSize(1);
         assertThat(client().getBuyingPower(CONNECTION_ID, ACCOUNT_SEQ, "USD").value().cashBuyingPower()).isEqualTo("250.25");
+        assertThat(client().getSellableQuantity(CONNECTION_ID, ACCOUNT_SEQ, "AAPL")
+                .value().sellableQuantity()).isEqualTo("0.125");
 
         server.verify(getRequestedFor(urlEqualTo("/api/v1/holdings")));
         server.verify(getRequestedFor(urlEqualTo("/api/v1/prices?symbols=AAPL")));
         server.verify(getRequestedFor(urlEqualTo("/api/v1/buying-power?currency=USD")));
+        server.verify(getRequestedFor(urlEqualTo("/api/v1/sellable-quantity?symbol=AAPL")));
     }
 
     @Test

@@ -53,3 +53,18 @@ test("neither surface passes a bare idempotency string to the approve path", asy
       `${file} should submit through the shared options object`);
   }
 });
+
+test("cancel and reject paths require browser confirmation before submit", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /function confirmOrderCancel\(/);
+  assert.match(source, /window\.confirm\(/);
+  assert.match(source, /return confirmOrderCancel\(orderId\)/);
+  assert.equal(
+    (source.match(/onReject: \(\) => confirmOrderCancel\(approvalOrder\.id\)/g) ?? []).length,
+    2,
+    "both home and orders approval panels should reject through confirmOrderCancel");
+  assert.doesNotMatch(
+    source,
+    /onReject: \(\) => runOrderCommand\(approvalOrder\.id, "cancel"\)/);
+});

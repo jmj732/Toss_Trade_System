@@ -16,6 +16,23 @@ function HistoryList({ history }) {
         + `수량 ${entry.maxQuantity} · 집중도 ${entry.maxConcentration}`))));
 }
 
+function PolicyStatus({ policy }) {
+  return h("div", { className: "risk-policy-status" },
+    h("span", { className: "metric-label" }, "현재 정책"),
+    policy
+      ? [
+        h("span", {
+          key: "badge",
+          className: `badge-pill ${policy.customized ? "badge-pill--info" : "badge-pill--neutral"}`
+        }, policy.customized ? "CUSTOM" : "DEFAULT"),
+        h("strong", { key: "version" }, `v${policy.version}`),
+        h("span", { key: "limits" },
+          `KRW ${policy.maxOrderAmountKrw} · USD ${policy.maxOrderAmountUsd} · `
+          + `수량 ${policy.maxQuantity}`)
+      ]
+      : h("strong", null, "불러오는 중"));
+}
+
 export function RiskPolicyPanel({
   policy,
   history,
@@ -54,6 +71,7 @@ export function RiskPolicyPanel({
   }
 
   return h("div", { className: "risk-policy" },
+    h(PolicyStatus, { policy }),
     h("button", {
       type: "button",
       className: "secondary risk-policy-toggle",

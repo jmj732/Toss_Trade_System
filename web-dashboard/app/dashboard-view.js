@@ -165,7 +165,7 @@ function missingSectionKeys(section) {
   return data?.missingSections ?? [];
 }
 
-function Quality({ section }) {
+function Quality({ section, region }) {
   const values = [];
   if (section.stale) {
     const reasonCode = sectionData(section)?.staleReason;
@@ -183,16 +183,19 @@ function Quality({ section }) {
     ...(section.unknownFields ?? []),
     ...missingSectionKeys(section)
   ]);
-  return h("div", { className: "quality" },
+  return h("div", {
+    className: "quality",
+    "data-dashboard-region": region
+  },
     ...values.map(([className, label]) => h("span", { className, key: className }, label)),
     fieldLabels.length
       ? h("small", null, fieldLabels.join(", "))
       : null);
 }
 
-function Section({ title, section, className = "", children }) {
+function Section({ title, section, className = "", qualityRegion, children }) {
   return h("section", { className: `panel signal-panel ${className}`.trim() },
-    h("header", null, h("h2", null, title), h(Quality, { section })),
+    h("header", null, h("h2", null, title), h(Quality, { section, region: qualityRegion })),
     section.unavailable
       ? h("p", { className: "empty" }, section.unavailableReason ?? "불러오기 실패")
       : children);
@@ -212,15 +215,19 @@ function Portfolio({ section }) {
   const portfolio = section.data;
   const account = portfolio?.account;
   const positions = portfolio?.positions ?? [];
-  return h(Section, { title: "포트폴리오", section, className: "portfolio-panel" },
+  return h(Section, {
+    title: "포트폴리오", section, className: "portfolio-panel",
+    qualityRegion: "portfolio-quality"
+  },
     h("div", { className: "portfolio-hero" },
       h("div", null,
+        h("div", { "data-dashboard-region": "portfolio-lead" },
         h("span", { className: "metric-label" }, "총 평가금액"),
         h("strong", { className: "metric-value metric-value-large" },
           h(Amounts, { values: account?.marketValueAmounts })),
         // D-05: 총 평가금액이 언제 기준 데이터인지 함께 노출한다.
         h("small", { className: "metric-freshness" },
-          `기준 ${formatFreshness(portfolio?.completedAt)}`)),
+          `기준 ${formatFreshness(portfolio?.completedAt)}`))),
       h("div", { className: "portfolio-hero-secondary" },
         h("span", null, "총 손익"),
         h("strong", null, h(Amounts, { values: account?.profitLossAmounts, signed: true })))),
@@ -315,10 +322,14 @@ function Proposals({ section, busyOrderId, onOrderAction }) {
         // 상태 필터가 넓어지며 화면에 APPROVED/ACTIVE/COMPLETED 등도 도달하게 됐다고 해서
         // 이미 확정·종결된 주문에 승인·취소 버튼이 눌리게 두면 안 된다.
         const actionable = order.status === "PROPOSED";
-        return h("li", { key: order.id },
-          h("div", null,
-            h("strong", null, `${sideLabel} ${order.symbol ?? UNKNOWN_TEXT}`),
-            h("span", null,
+        return h("li", {
+          key: order.id,
+          className: `order-row order-row--${sideKnown ? order.side.toLowerCase() : "unknown"}`,
+          "data-order-row": order.id
+        },
+          h("div", { className: "order-row-copy" },
+            h("strong", { className: "order-title" }, `${sideLabel} ${order.symbol ?? UNKNOWN_TEXT}`),
+            h("span", { className: "order-summary" },
               `${order.type ?? UNKNOWN_TEXT} · ${formatQuantity(order.quantity)}`
               + ` · ${order.currency ?? UNKNOWN_TEXT}${priceText}`),
             // D-03: 상태 배지. 미지 상태도 그대로 드러낸다.
@@ -326,24 +337,49 @@ function Proposals({ section, busyOrderId, onOrderAction }) {
             // D-42: 만료 배지와 생성/만료 시각.
             h(OrderExpiryBadge, { state: expiryState }),
             h(OrderTiming, { order })),
-          h("div", { className: "actions" },
+          h("div", { className: "actions order-row-actions" },
             h("button", {
               type: "button",
               disabled: busy || !sideKnown || !actionable || expired,
               onClick: () => onOrderAction(order.id, "approve")
-            }, "승인"),
+            }, "승인 검토"),
             h("button", {
               type: "button",
-              className: "secondary",
+              className: "danger",
               disabled: busy || !sideKnown || !actionable,
               onClick: () => onOrderAction(order.id, "cancel")
-            }, "취소")));
+            }, "주문 취소")));
       }))
       : h("p", { className: "empty" }, "승인 대기 중인 주문이 없습니다."));
 }
 
-export function DashboardView({ dashboard, busyOrderId, onOrderAction, includeOrders = true }) {
+// ---------------------------------------------------------------------------
+// 실시간 시세 보드 — loadRealtimePrices()
+// ---------------------------------------------------------------------------
+export function RealtimePriceTicker({ prices }) {
+  const envelope = Array.isArray(prices) ? null : prices;
+  const data = envelope?.data ?? prices;
+  const degraded = envelope?.status === "DEGRADED" || envelope?.stale || envelope?.unknown;
+  if (!Array.isArray(data) || (data.length === 0 && !degraded)) return null;
+  return h("section", { className: "panel signal-panel realtime-ticker" },
+    h("header", null, h("h2", null, "실시간 시세")),
+    degraded ? h("p", { className: "disclaimer" }, "일부 시세 필드는 제공되지 않거나 오래됐습니다.") : null,
+    h("div", { className: "realtime-ticker-list" },
+      ...data.map(p => {
+        const changePercent = p.changePercent ?? p.changeRate;
+        const positive = (changePercent ?? 0) >= 0;
+        return h("div", { key: p.symbol, className: "realtime-ticker-item" },
+          h("strong", null, p.symbol ?? UNKNOWN_TEXT),
+          h("span", { className: "realtime-ticker-price" },
+          (p.price ?? p.lastPrice) != null ? formatAmount(p.currency ?? "USD", p.price ?? p.lastPrice) : UNKNOWN_TEXT),
+          h("span", { className: positive ? "change-positive realtime-ticker-change" : "change-negative realtime-ticker-change" },
+            changePercent != null ? `${positive ? "+" : ""}${(changePercent * 100).toFixed(2)}%` : UNKNOWN_TEXT));
+      })));
+}
+
+export function DashboardView({ dashboard, busyOrderId, onOrderAction, includeOrders = true, realtimePrices = [] }) {
   return h("main", { className: "grid dashboard-surface" },
+    h(RealtimePriceTicker, { prices: realtimePrices }),
     h(Portfolio, { section: dashboard.portfolio }),
     h(Analysis, { section: dashboard.analysis }),
     h(Events, { section: dashboard.pendingEvents }),

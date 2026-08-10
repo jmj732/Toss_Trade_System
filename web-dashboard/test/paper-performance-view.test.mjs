@@ -138,3 +138,46 @@ test("disables the apply button while a query is in flight", () => {
 
   assert.match(html, /disabled=""/);
 });
+
+test("distinguishes initial loading, refresh, stale, unauthorized, and unsupported envelopes", () => {
+  const loading = renderToStaticMarkup(createElement(PaperPerformanceView, {
+    performance: null,
+    query: QUERY,
+    busy: true,
+    onQuery() {}
+  }));
+  assert.match(loading, /불러오는 중/);
+
+  const refreshing = renderToStaticMarkup(createElement(PaperPerformanceView, {
+    performance: {
+      stale: true,
+      asOf: "2026-05-01T00:00:00Z",
+      unavailable: false,
+      data: { byCurrency: {} }
+    },
+    query: QUERY,
+    busy: true,
+    onQuery() {}
+  }));
+  assert.match(refreshing, /새로고침 중/);
+  assert.match(refreshing, /지연 데이터/);
+  assert.match(refreshing, /기준 2026-05-01 09:00 KST/);
+
+  const unauthorized = renderToStaticMarkup(createElement(PaperPerformanceView, {
+    performance: { status: "UNAUTHORIZED", unavailableReason: "UNAUTHORIZED", data: null },
+    query: QUERY,
+    busy: false,
+    onQuery() {}
+  }));
+  assert.match(unauthorized, /권한 확인 필요/);
+  assert.doesNotMatch(unauthorized, /지원되지 않음/);
+
+  const unsupported = renderToStaticMarkup(createElement(PaperPerformanceView, {
+    performance: { status: "UNAVAILABLE", unavailable: true, unavailableReason: "PROVIDER_UNSUPPORTED", data: null },
+    query: QUERY,
+    busy: false,
+    onQuery() {}
+  }));
+  assert.match(unsupported, /지원되지 않음/);
+  assert.match(unsupported, /PROVIDER_UNSUPPORTED/);
+});

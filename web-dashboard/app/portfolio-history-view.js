@@ -124,8 +124,10 @@ export function PortfolioHistoryView({ history, query, busy, onQuery }) {
         })),
       h("button", { type: "submit", disabled: busy }, "적용")),
     !history || history.unavailable
-      ? h("p", { className: "empty" }, history?.unavailableReason ?? "이력이 아직 없습니다")
+      ? h("p", { className: busy ? "busy" : "empty" },
+        busy ? "이력을 불러오는 중…" : history?.unavailableReason ?? "이력이 아직 없습니다")
       : h("div", null,
+        busy ? h("p", { className: "busy" }, "이력을 새로고침 중…") : null,
         history.data.partial
           ? h("p", { className: "busy" },
             `${history.data.totalMatched}개 중 ${history.data.returnedPoints}개 표시`)

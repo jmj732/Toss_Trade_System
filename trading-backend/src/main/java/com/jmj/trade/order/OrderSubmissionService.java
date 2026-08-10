@@ -206,6 +206,64 @@ public class OrderSubmissionService {
     }
 
     @Transactional
+    public LiveOperationReplay beginLiveOperation(
+            UUID userId,
+            UUID orderIntentId,
+            String operation,
+            String idempotencyKey,
+            String requestHash,
+            String actor,
+            Instant now
+    ) {
+        requireActor(actor);
+        var existing = findLiveOperation(userId, orderIntentId, operation, idempotencyKey);
+        if (existing != null && !existing.requestHash().equals(requestHash)) {
+            throw new IllegalStateException("live operation idempotency key conflicts with request");
+        }
+        var inserted = jdbcTemplate.update("""
+                INSERT INTO live_order_operation_idempotency (
+                    user_id, order_intent_id, operation, idempotency_key, request_hash,
+                    status, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'IN_FLIGHT', ?)
+                ON CONFLICT (user_id, order_intent_id, operation, idempotency_key) DO NOTHING
+                """, userId, orderIntentId, operation, idempotencyKey, requestHash, at(now)) == 1;
+        var replay = findLiveOperation(userId, orderIntentId, operation, idempotencyKey);
+        if (replay == null || !replay.requestHash().equals(requestHash)) {
+            throw new IllegalStateException("live operation idempotency key conflicts with request");
+        }
+        auditLiveOperation(orderIntentId, operation + (inserted ? ":REQUEST" : ":REPLAY"), actor,
+                "{\"idempotencyKey\":\"%s\",\"requestHash\":\"%s\",\"status\":\"%s\"}"
+                        .formatted(idempotencyKey, requestHash, replay.status()), now);
+        return new LiveOperationReplay(replay.requestHash(), replay.status(), replay.brokerOrderId(), !inserted);
+    }
+
+    @Transactional
+    public void completeLiveOperation(
+            UUID userId,
+            UUID orderIntentId,
+            String operation,
+            String idempotencyKey,
+            String status,
+            String brokerOrderId,
+            String actor,
+            Instant now
+    ) {
+        requireActor(actor);
+        var updated = jdbcTemplate.update("""
+                UPDATE live_order_operation_idempotency
+                   SET status = ?, broker_order_id = ?, completed_at = ?
+                 WHERE user_id = ? AND order_intent_id = ? AND operation = ?
+                   AND idempotency_key = ? AND status = 'IN_FLIGHT'
+                """, status, brokerOrderId, at(now), userId, orderIntentId, operation, idempotencyKey);
+        if (updated != 1) {
+            throw new IllegalStateException("live operation is not in flight");
+        }
+        auditLiveOperation(orderIntentId, operation + ":RESULT", actor,
+                "{\"idempotencyKey\":\"%s\",\"status\":\"%s\",\"brokerOrderId\":%s}"
+                        .formatted(idempotencyKey, status, jsonStringOrNull(brokerOrderId)), now);
+    }
+
+    @Transactional
     public void recordReconciliation(UUID attemptId, ReconciliationResult result, String actor) {
         requireActor(actor);
         var attempt = attempt(attemptId);
@@ -526,6 +584,32 @@ public class OrderSubmissionService {
                 UUID.randomUUID(), orderIntentId, aggregateType, aggregateId, eventType, actor, payload, occurredAt));
     }
 
+    private LiveOperationRow findLiveOperation(UUID userId, UUID orderIntentId, String operation,
+                                               String idempotencyKey) {
+        return jdbcTemplate.query("""
+                SELECT request_hash, status, broker_order_id
+                  FROM live_order_operation_idempotency
+                 WHERE user_id = ? AND order_intent_id = ? AND operation = ? AND idempotency_key = ?
+                """, (resultSet, rowNum) -> new LiveOperationRow(
+                resultSet.getString("request_hash"),
+                resultSet.getString("status"),
+                resultSet.getString("broker_order_id")),
+                userId, orderIntentId, operation, idempotencyKey).stream().findFirst().orElse(null);
+    }
+
+    private void auditLiveOperation(UUID orderIntentId, String action, String actor, String payload, Instant now) {
+        submissionAuditLogRepository.save(new OrderSubmissionAuditLog(
+                UUID.randomUUID(), orderIntentId, "OrderIntent", orderIntentId, action, actor, payload, now));
+    }
+
+    private static String jsonStringOrNull(String value) {
+        return value == null ? "null" : "\"%s\"".formatted(value.replace("\\", "\\\\").replace("\"", "\\\""));
+    }
+
+    private static OffsetDateTime at(Instant instant) {
+        return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
+    }
+
     private OrderIntent intent(UUID orderIntentId) {
         return orderIntentRepository.findById(orderIntentId)
                 .orElseThrow(() -> new IllegalArgumentException("order intent not found: " + orderIntentId));
@@ -540,6 +624,12 @@ public class OrderSubmissionService {
         if (actor == null || actor.isBlank()) {
             throw new IllegalArgumentException("actor is required");
         }
+    }
+
+    private record LiveOperationRow(String requestHash, String status, String brokerOrderId) {
+    }
+
+    public record LiveOperationReplay(String requestHash, String status, String brokerOrderId, boolean replayed) {
     }
 
     @FunctionalInterface

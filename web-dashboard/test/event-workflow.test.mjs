@@ -74,6 +74,48 @@ test("renders manual ingestion, affected symbols, review, and comparison", () =>
   assert.doesNotMatch(html, /News collection|LLM|Automatic order/);
 });
 
+test("leads event review with status, symbols, time, and next action", () => {
+  const html = renderToStaticMarkup(createElement(EventWorkflow, {
+    positions: [{ symbol: "NVDA" }],
+    events: [{
+      id: "event-1",
+      summary: "Rate decision",
+      type: "MACRO",
+      source: "FED",
+      affectedSymbols: ["NVDA", "AAPL"],
+      reviewStatus: "MANUAL_REVIEW",
+      reviewVersion: 3,
+      comparisonAvailable: false,
+      occurredAt: "2026-07-28T00:00:00.000Z"
+    }],
+    selectedEvent: {
+      id: "event-1",
+      summary: "Rate decision",
+      type: "MACRO",
+      source: "FED",
+      affectedSymbols: ["NVDA", "AAPL"],
+      reviewStatus: "MANUAL_REVIEW",
+      reviewVersion: 3,
+      comparisonAvailable: false,
+      occurredAt: "2026-07-28T00:00:00.000Z"
+    },
+    connectionId: "connection-1",
+    busyAction: null,
+    onCreate() {},
+    onSelect() {},
+    onReanalyze() {},
+    onReview() {}
+  }));
+
+  assert.match(html, /MANUAL_REVIEW · v3/);
+  assert.match(html, /영향 NVDA, AAPL/);
+  assert.match(html, /2026.*07.*28/);
+  assert.match(html, /다음 작업: 검토 결정/);
+  assert.match(html, /비교 대기/);
+  assert.match(html, /<button[^>]*class="event-select"[^>]*>[\s\S]*<span class="event-signal event-signal--compact"/);
+  assert.doesNotMatch(html, /지원하지 않음/);
+});
+
 test("disables all event mutations while one is running", () => {
   const html = renderToStaticMarkup(createElement(EventWorkflow, {
     positions: [{ symbol: "NVDA" }],
@@ -88,7 +130,10 @@ test("disables all event mutations while one is running", () => {
   }));
 
   assert.equal((html.match(/disabled=""/g) ?? []).length, 5);
-  assert.match(html, /event-create…/);
+  assert.match(html, /등록 중…/);
+  assert.match(html, /title="event-create…"/);
+  assert.match(html, /이벤트를 선택하면 상태와 영향 범위를 확인합니다/);
+  assert.doesNotMatch(html, /UNKNOWN · v확인 필요/);
 });
 
 test("scopes affected-symbol state to the current connection", () => {

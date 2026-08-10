@@ -102,10 +102,6 @@ export function loadOrderApprovalPreview(orderId, fetcher = fetch) {
     `/api/v1/paper-orders/${encodeURIComponent(orderId)}/approval-preview`, fetcher);
 }
 
-export function loadPaperOrder(orderId, fetcher = fetch) {
-  return readEvent(`/api/v1/paper-orders/${encodeURIComponent(orderId)}`, fetcher);
-}
-
 export function issueOrderStepUp(orderId, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/paper-orders/${encodeURIComponent(orderId)}/step-up`, "POST", null, fetcher);
@@ -517,4 +513,98 @@ export function loadRiskPolicyHistory(limit, fetcher = fetch) {
 
 export function updateRiskPolicy(input, fetcher = fetch) {
   return brokerCommand(riskPolicyPath(), "PUT", input, fetcher);
+}
+
+export function issueLiveOrderStepUp(orderId, fetcher = fetch) {
+  return brokerCommand(
+    `/api/v1/live-orders/${encodeURIComponent(orderId)}/step-up`, "POST", null, fetcher);
+}
+
+export function liveOrderActionKey(orderId, action, value = "") {
+  return `live-order:${action}:${orderId}:${value}`;
+}
+
+export async function modifyLiveOrder(orderId, newLimitPrice, stepUpToken, fetcher = fetch) {
+  const headers = {
+    "content-type": "application/json",
+    "Idempotency-Key": liveOrderActionKey(orderId, "modify", newLimitPrice)
+  };
+  if (stepUpToken) {
+    headers["X-Step-Up-Token"] = stepUpToken;
+  }
+  const response = await authorizedFetch(
+    `/api/v1/live-orders/${encodeURIComponent(orderId)}/modify`,
+    { method: "POST", headers, body: JSON.stringify({ newLimitPrice }) },
+    fetcher);
+  return body(response);
+}
+
+export function loadAccountBuyingPower(connectionId, currency = "USD", fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/buying-power?currency=${encodeURIComponent(currency)}`,
+    fetcher
+  );
+}
+
+export function loadRealtimePrices(connectionId, symbols = "AAPL,MSFT,NVDA,GOOGL,AMZN,TSLA", fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/prices?symbols=${encodeURIComponent(symbols)}`,
+    fetcher
+  );
+}
+
+export function loadOrderbook(connectionId, symbol, fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/orderbook?symbol=${encodeURIComponent(symbol)}`,
+    fetcher
+  );
+}
+
+export function loadCandles(connectionId, symbol, timeframe = "1d", fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`,
+    fetcher
+  );
+}
+
+export function loadExchangeRate(connectionId, fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/exchange-rate`,
+    fetcher
+  );
+}
+
+export function loadMarketCalendar(connectionId, market = "US", fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/market-calendar/${encodeURIComponent(market)}`,
+    fetcher
+  );
+}
+
+export function loadStockWarnings(connectionId, symbol, fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/stocks/${encodeURIComponent(symbol)}/warnings`,
+    fetcher
+  );
+}
+
+export function loadInvestorTrading(connectionId, symbol, fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/stocks/${encodeURIComponent(symbol)}/investor-trading`,
+    fetcher
+  );
+}
+
+export function loadRankings(connectionId, category = "VOLUME", fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/rankings?category=${encodeURIComponent(category)}`,
+    fetcher
+  );
+}
+
+export function loadCommissions(connectionId, symbol, side = "BUY", fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/commissions?symbol=${encodeURIComponent(symbol)}&side=${encodeURIComponent(side)}`,
+    fetcher
+  );
 }

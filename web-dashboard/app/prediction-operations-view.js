@@ -21,11 +21,38 @@ function th(label) {
   return h("th", { key: label, scope: "col" }, label);
 }
 
+function statusPills({ operations, busy }) {
+  const hasData = Boolean(operations);
+  const pills = [];
+  if (busy) {
+    pills.push(["info", hasData ? "새로고침 중" : "불러오는 중"]);
+  }
+  if (operations?.status === "UNAUTHORIZED" || operations?.unavailableReason === "UNAUTHORIZED") {
+    pills.push(["danger", "권한 확인 필요"]);
+  } else if (operations?.status === "ERROR") {
+    pills.push(["danger", "오류"]);
+  } else if (operations?.status === "UNAVAILABLE") {
+    pills.push(["neutral", `지원되지 않음 (${operations.unavailableReason ?? "UNAVAILABLE"})`]);
+  } else if (operations?.status === "DEGRADED") {
+    pills.push(["warn", "부분 데이터"]);
+  }
+  if (operations?.stale) {
+    pills.push(["warn", "지연 데이터"]);
+  }
+  if (pills.length === 0) {
+    pills.push(["neutral", hasData ? "최신" : "데이터 없음"]);
+  }
+  return h("div", { className: "prediction-state-pills" },
+    ...pills.map(([modifier, label]) =>
+      h("span", { className: `badge-pill badge-pill--${modifier}`, key: label }, label)));
+}
+
 export function PredictionOperationsView({
   operations,
   keys = [],
   issuedKey,
   busy,
+  actionBusy = busy,
   error,
   onIssue,
   onRotate,
@@ -65,6 +92,13 @@ export function PredictionOperationsView({
         "새로고침")),
     h("p", { className: "disclaimer" },
       "사용자 소유 API key와 평가 backlog만 표시합니다. 자동 예측이나 주문 실행 기능은 없습니다."),
+    h("div", { className: "prediction-lead" },
+      h("div", null,
+        h("h3", null, "운영 상태"),
+        statusPills({ operations, busy }),
+        operations?.measuredAt
+          ? h("small", { className: "metric-freshness" }, `기준 ${formatInstant(operations.measuredAt)}`)
+          : null)),
     h("div", { className: "metrics-grid" },
       h("div", { className: "metric" },
         h("span", { className: "metric-label" }, "평가"),
@@ -95,7 +129,7 @@ export function PredictionOperationsView({
         h("input", { name: "contractVersion", maxLength: 50, required: true })),
       h("label", null, "만료 시각 (선택)",
         h("input", { type: "datetime-local", name: "expiresAt" })),
-      h("button", { type: "submit", disabled: busy }, "API 키 발급")),
+      h("button", { type: "submit", disabled: actionBusy }, "API 키 발급")),
     error ? h("p", { className: "error", role: "alert" }, error) : null,
     keys.length === 0
       ? h("p", { className: "empty" }, "예측 수집 API 키가 없습니다")
@@ -118,15 +152,15 @@ export function PredictionOperationsView({
                 name: "expiresAt",
                 "aria-label": `${key.prefix} 키의 새 만료 시각`,
                 title: "비워두면 현재 만료가 유지됩니다",
-                disabled: busy || key.status !== "ACTIVE"
+                disabled: actionBusy || key.status !== "ACTIVE"
               }),
               h("button", {
                 type: "submit",
-                disabled: busy || key.status !== "ACTIVE"
+                disabled: actionBusy || key.status !== "ACTIVE"
               }, "교체")),
             h("button", {
               type: "button",
-              disabled: busy || key.status !== "ACTIVE",
+              disabled: actionBusy || key.status !== "ACTIVE",
               onClick: () => Promise.resolve(onRevoke(key.id)).catch(() => {})
             }, "해지"))))))));
 }

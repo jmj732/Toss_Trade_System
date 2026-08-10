@@ -96,7 +96,7 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void persistsSellableQuantityReturnedByBrokerAlongsidePosition() {
+    void persistsBrokerSellableExactlyWithoutLocalPendingSellDeduction() {
         var owner = insertOwnerAndConnection();
         broker.account = account(owner.connectionId());
         broker.sellableQuantity = SellableQuantitySnapshot.known(
@@ -107,6 +107,47 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
         assertThat(jdbc.queryForObject(
                 "SELECT sellable_quantity FROM position_snapshots",
                 BigDecimal.class)).isEqualByComparingTo("0.5");
+    }
+
+    @Test
+    void sellableGreaterThanHeldQuantityPersistsUnknown() {
+        var owner = insertOwnerAndConnection();
+        broker.account = account(owner.connectionId());
+        broker.sellableQuantity = SellableQuantitySnapshot.known(
+                broker.account, "NVDA", new BigDecimal("1.1"), OBSERVED_AT);
+
+        service.sync(owner.userId(), owner.connectionId());
+
+        assertThat(jdbc.queryForObject(
+                "SELECT sellable_quantity FROM position_snapshots",
+                BigDecimal.class)).isNull();
+    }
+
+    @Test
+    void persistsLiveSellableReductionsWithoutDuplicateDeduction() {
+        var owner = insertOwnerAndConnection();
+        broker.account = account(owner.connectionId());
+
+        broker.sellableQuantity = SellableQuantitySnapshot.known(
+                broker.account, "NVDA", BigDecimal.ONE, OBSERVED_AT);
+        service.sync(owner.userId(), owner.connectionId());
+        assertLatestSellable("1");
+
+        broker.sellableQuantity = SellableQuantitySnapshot.known(
+                broker.account, "NVDA", new BigDecimal("0.5"), OBSERVED_AT);
+        service.sync(owner.userId(), owner.connectionId());
+        assertLatestSellable("0.5");
+
+        broker.sellableQuantity = SellableQuantitySnapshot.known(
+                broker.account, "NVDA", BigDecimal.ZERO, OBSERVED_AT);
+        service.sync(owner.userId(), owner.connectionId());
+        assertLatestSellable("0");
+    }
+
+    private void assertLatestSellable(String expected) {
+        assertThat(jdbc.queryForObject(
+                "SELECT sellable_quantity FROM position_snapshots ORDER BY created_at DESC LIMIT 1",
+                BigDecimal.class)).isEqualByComparingTo(expected);
     }
 
     @Test

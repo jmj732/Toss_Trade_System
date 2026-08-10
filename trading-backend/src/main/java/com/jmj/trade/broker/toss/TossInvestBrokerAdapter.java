@@ -82,13 +82,29 @@ final class TossInvestBrokerAdapter implements BrokerAdapter, BrokerOrderPort {
     public BrokerResponse<SellableQuantitySnapshot> getSellableQuantity(BrokerAccountRef account, String symbol) {
         mapper.requireToss(account);
         var normalized = mapper.normalizeSymbol(symbol);
-        // 토스는 종목별 매도 가능 수량 조회 API 를 아직 노출하지 않는다(E6). 없는 API 를 추측해
-        // 구현하거나 보유 수량을 매도 가능 수량으로 간주하지 않고, UNKNOWN 을 타입으로 반환한다.
-        // UNKNOWN 은 0 으로 간주되지 않으며(SPEC:1078) 재검증에서 fail-closed 로 차단된다.
-        // E6 실거래 어댑터가 실제 조회로 교체한다.
-        return new BrokerResponse<>(
-                SellableQuantitySnapshot.unknown(account, normalized, BrokerOrderPort.localMetadata().observedAt()),
-                BrokerOrderPort.localMetadata());
+        try {
+            var response = apiClient.getSellableQuantity(
+                    account.brokerConnectionId(), account.brokerAccountId(), normalized);
+            return new BrokerResponse<>(
+                    mapper.sellableQuantity(account, normalized, response.value(), response.metadata()),
+                    response.metadata());
+        } catch (BrokerException exception) {
+            if (!fallsBackToUnknown(exception)) {
+                throw exception;
+            }
+            var metadata = BrokerOrderPort.localMetadata();
+            return new BrokerResponse<>(
+                    SellableQuantitySnapshot.unknown(account, normalized, metadata.observedAt()),
+                    metadata);
+        }
+    }
+
+    private static boolean fallsBackToUnknown(BrokerException exception) {
+        return switch (exception.category()) {
+            case AUTHORIZATION, RATE_LIMITED, NOT_FOUND, VALIDATION, BROKER_UNAVAILABLE,
+                    NETWORK, TEMPORARY, CONTRACT, UNKNOWN -> true;
+            default -> false;
+        };
     }
 
     @Override
