@@ -9,7 +9,7 @@ import {
   SCREENSHOTS_DIR,
   writeRecord
 } from "./fixtures/record.mjs";
-import { freezeClock, primeAuth, ROUTES, STATES, stateRoute } from "./fixtures/states.mjs";
+import { freezeClock, primeAuth, ROUTES, routeStates, stateRoute } from "./fixtures/states.mjs";
 
 // Visual-regression state matrix. Every route is rendered under every pinned
 // state, screenshotted for the report, and compared against an approved
@@ -23,7 +23,7 @@ import { freezeClock, primeAuth, ROUTES, STATES, stateRoute } from "./fixtures/s
 const LOADING_HOLD_MS = 60000;
 
 for (const routeDef of ROUTES) {
-  for (const state of STATES) {
+  for (const state of routeStates(routeDef)) {
     test(`${routeDef.name} :: ${state}`, async ({ page, context }, testInfo) => {
       const viewport = testInfo.project.name;
       const key = `${routeDef.name}__${state}__${viewport}`;
@@ -55,6 +55,13 @@ for (const routeDef of ROUTES) {
         await page.goto(target, { waitUntil: "domcontentloaded", timeout: 30000 });
         if (state === "loading") {
           // Capture the pending UI while data requests are still held open.
+          await page.waitForTimeout(1200);
+        } else if (state === "refreshing") {
+          await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+          const refresh = page.locator('button:has-text("새로고침")').first();
+          if (await refresh.count()) {
+            await refresh.click().catch(() => {});
+          }
           await page.waitForTimeout(1200);
         } else {
           await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
