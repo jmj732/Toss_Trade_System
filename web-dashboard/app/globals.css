@@ -240,6 +240,9 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   align-items: stretch;
   gap: var(--sp-4);
 }
+.orders-surface .order-row {
+  flex-direction: column;
+}
 .order-row-main {
   align-items: center;
   display: flex;
