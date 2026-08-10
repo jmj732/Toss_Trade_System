@@ -161,6 +161,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [predictionError, setPredictionError] = useState("");
   const [busy, setBusy] = useState("");
   const [predictionLoading, setPredictionLoading] = useState(false);
+  const [operationsBusy, setOperationsBusy] = useState(false);
   const [outcomeBusy, setOutcomeBusy] = useState(false);
   // 주문별 진행 상태를 Set 으로 둔다. 스칼라면 두 주문 동시 실행 시
   // 먼저 끝난 쪽이 진행 중인 다른 버튼을 재활성화한다(D-13).
@@ -389,6 +390,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
     if (route === "predictions") {
       // 네 조회를 개별 정산해 하나가 실패해도 나머지를 거짓 empty 로 만들지 않는다.
       setPredictionLoading(true);
+      setOperationsBusy(true);
       Promise.allSettled([
         loadAnalysisPredictions(id, OUTCOME_QUERY),
         loadPredictionIngestionApiKeys(),
@@ -415,7 +417,10 @@ export function RouteWorkspace({ route, symbol = "" }) {
         } else {
           setPredictionError(describeError(paperResult.reason.message));
         }
-      }).finally(() => setPredictionLoading(false));
+      }).finally(() => {
+        setPredictionLoading(false);
+        setOperationsBusy(false);
+      });
     }
 
     if (route === "home") {
@@ -826,7 +831,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
         }),
         h(PredictionOperationsView, {
           operations: predictionOperations, keys: predictionKeys, issuedKey,
-          busy: predictionLoading,
+          busy: operationsBusy,
           actionBusy: Boolean(busy),
           error: predictionError, onIssue: command => mutation("key", async () => {
             const result = await issuePredictionIngestionApiKey(command);
@@ -845,13 +850,13 @@ export function RouteWorkspace({ route, symbol = "" }) {
             setPredictionKeys(await loadPredictionIngestionApiKeys());
           }),
           onRefresh: () => {
-            setPredictionLoading(true);
+            setOperationsBusy(true);
             return Promise.all([
               loadPredictionIngestionApiKeys(), loadPredictionOperations()
             ]).then(([keys, operations]) => {
               setPredictionKeys(keys); setPredictionOperations(operations);
             }).catch(value => setPredictionError(describeError(value.message)))
-              .finally(() => setPredictionLoading(false));
+              .finally(() => setOperationsBusy(false));
           },
           onDismissKey: () => setIssuedKey(null)
         }));

@@ -112,15 +112,19 @@ test("PaperPerformanceView is reachable on the predictions route", async () => {
   assert.match(source, /loadPaperPerformance\(id/);
 });
 
-test("predictions route uses one data loading state for initial and operations refresh", async () => {
+test("predictions route separates initial loading from operations refresh", async () => {
   const source = await readFile(new URL("route-workspace.js", root), "utf8");
 
   assert.match(source, /const \[predictionLoading, setPredictionLoading\] = useState\(false\)/);
-  assert.match(source, /setPredictionLoading\(true\)[\s\S]*?Promise\.allSettled\(\[/);
-  assert.match(source, /Promise\.allSettled\(\[[\s\S]*?\.finally\(\(\) => setPredictionLoading\(false\)\)/);
+  assert.match(source, /const \[operationsBusy, setOperationsBusy\] = useState\(false\)/);
+  assert.match(source, /setPredictionLoading\(true\);\s*setOperationsBusy\(true\);\s*Promise\.allSettled\(\[/);
+  assert.match(source, /Promise\.allSettled\(\[[\s\S]*?\.finally\(\(\) => \{\s*setPredictionLoading\(false\);\s*setOperationsBusy\(false\);\s*\}\)/);
   assert.match(source, /h\(AnalysisOutcomeView,[\s\S]*?busy: predictionLoading \|\| outcomeBusy/);
   assert.match(source, /h\(PaperPerformanceView,[\s\S]*?busy: predictionLoading \|\| paperBusy/);
-  assert.match(source, /h\(PredictionOperationsView,[\s\S]*?busy: predictionLoading/);
+  assert.match(source, /h\(PredictionOperationsView,[\s\S]*?busy: operationsBusy/);
   assert.match(source, /h\(PredictionOperationsView,[\s\S]*?actionBusy: Boolean\(busy\)/);
-  assert.match(source, /onRefresh: \(\) => \{[\s\S]*?setPredictionLoading\(true\)[\s\S]*?finally\(\(\) => setPredictionLoading\(false\)\)/);
+  const refresh = source.match(/onRefresh: \(\) => \{[\s\S]*?finally\(\(\) => setOperationsBusy\(false\)\);/);
+  assert.ok(refresh);
+  assert.match(refresh[0], /setOperationsBusy\(true\)/);
+  assert.doesNotMatch(refresh[0], /setPredictionLoading/);
 });
