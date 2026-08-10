@@ -160,6 +160,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [outcomeQuery, setOutcomeQuery] = useState(OUTCOME_QUERY);
   const [predictionError, setPredictionError] = useState("");
   const [busy, setBusy] = useState("");
+  const [predictionLoading, setPredictionLoading] = useState(false);
   const [outcomeBusy, setOutcomeBusy] = useState(false);
   // 주문별 진행 상태를 Set 으로 둔다. 스칼라면 두 주문 동시 실행 시
   // 먼저 끝난 쪽이 진행 중인 다른 버튼을 재활성화한다(D-13).
@@ -387,6 +388,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     if (route === "predictions") {
       // 네 조회를 개별 정산해 하나가 실패해도 나머지를 거짓 empty 로 만들지 않는다.
+      setPredictionLoading(true);
       Promise.allSettled([
         loadAnalysisPredictions(id, OUTCOME_QUERY),
         loadPredictionIngestionApiKeys(),
@@ -413,7 +415,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
         } else {
           setPredictionError(describeError(paperResult.reason.message));
         }
-      });
+      }).finally(() => setPredictionLoading(false));
     }
 
     if (route === "home") {
@@ -786,7 +788,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       return h("main", { className: "route-stack" },
         h(AnalysisOutcomeView, {
           performance: outcome, versions: models, query: outcomeQuery,
-          busy: outcomeBusy, createBusy: Boolean(busy), createError: predictionError,
+          busy: predictionLoading || outcomeBusy, createBusy: Boolean(busy), createError: predictionError,
           onQuery: query => {
             setOutcomeQuery(query);
             setOutcomeBusy(true);
@@ -813,7 +815,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
           })
         }),
         h(PaperPerformanceView, {
-          performance: paperPerformance, query: paperQuery, busy: paperBusy,
+          performance: paperPerformance, query: paperQuery, busy: predictionLoading || paperBusy,
           onQuery: query => {
             setPaperQuery(query);
             setPaperBusy(true);
@@ -824,7 +826,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
         }),
         h(PredictionOperationsView, {
           operations: predictionOperations, keys: predictionKeys, issuedKey,
-          busy: Boolean(busy),
+          busy: predictionLoading,
+          actionBusy: Boolean(busy),
           error: predictionError, onIssue: command => mutation("key", async () => {
             const result = await issuePredictionIngestionApiKey(command);
             if (result?.apiKey) {
@@ -841,11 +844,15 @@ export function RouteWorkspace({ route, symbol = "" }) {
             await revokePredictionIngestionApiKey(id);
             setPredictionKeys(await loadPredictionIngestionApiKeys());
           }),
-          onRefresh: () => Promise.all([
-            loadPredictionIngestionApiKeys(), loadPredictionOperations()
-          ]).then(([keys, operations]) => {
-            setPredictionKeys(keys); setPredictionOperations(operations);
-          }).catch(value => setPredictionError(describeError(value.message))),
+          onRefresh: () => {
+            setPredictionLoading(true);
+            return Promise.all([
+              loadPredictionIngestionApiKeys(), loadPredictionOperations()
+            ]).then(([keys, operations]) => {
+              setPredictionKeys(keys); setPredictionOperations(operations);
+            }).catch(value => setPredictionError(describeError(value.message)))
+              .finally(() => setPredictionLoading(false));
+          },
           onDismissKey: () => setIssuedKey(null)
         }));
     }

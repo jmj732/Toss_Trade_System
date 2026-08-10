@@ -52,6 +52,7 @@ export function PredictionOperationsView({
   keys = [],
   issuedKey,
   busy,
+  actionBusy = busy,
   error,
   onIssue,
   onRotate,
@@ -128,7 +129,7 @@ export function PredictionOperationsView({
         h("input", { name: "contractVersion", maxLength: 50, required: true })),
       h("label", null, "만료 시각 (선택)",
         h("input", { type: "datetime-local", name: "expiresAt" })),
-      h("button", { type: "submit", disabled: busy }, "API 키 발급")),
+      h("button", { type: "submit", disabled: actionBusy }, "API 키 발급")),
     error ? h("p", { className: "error", role: "alert" }, error) : null,
     keys.length === 0
       ? h("p", { className: "empty" }, "예측 수집 API 키가 없습니다")
@@ -151,15 +152,15 @@ export function PredictionOperationsView({
                 name: "expiresAt",
                 "aria-label": `${key.prefix} 키의 새 만료 시각`,
                 title: "비워두면 현재 만료가 유지됩니다",
-                disabled: busy || key.status !== "ACTIVE"
+                disabled: actionBusy || key.status !== "ACTIVE"
               }),
               h("button", {
                 type: "submit",
-                disabled: busy || key.status !== "ACTIVE"
+                disabled: actionBusy || key.status !== "ACTIVE"
               }, "교체")),
             h("button", {
               type: "button",
-              disabled: busy || key.status !== "ACTIVE",
+              disabled: actionBusy || key.status !== "ACTIVE",
               onClick: () => Promise.resolve(onRevoke(key.id)).catch(() => {})
             }, "해지"))))))));
 }

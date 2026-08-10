@@ -116,3 +116,62 @@ test("leads with run status before API key operations and keeps raw uncertain st
   assert.match(html, /UNKNOWN/);
   assert.match(html, /MANUAL_REVIEW_REQUIRED/);
 });
+
+test("keeps refresh/loading state separate from API key action busy", () => {
+  const loadingHtml = renderToStaticMarkup(createElement(PredictionOperationsView, {
+    operations: null,
+    keys: [{
+      id: "active-key",
+      modelVersion: "model-v1",
+      contractVersion: "contract-v1",
+      prefix: "tpik_12345678",
+      status: "ACTIVE",
+      expiresAt: null,
+      lastUsedAt: null
+    }],
+    issuedKey: null,
+    busy: true,
+    actionBusy: false,
+    error: "",
+    onIssue() {},
+    onRotate() {},
+    onRevoke() {},
+    onRefresh() {},
+    onDismissKey() {}
+  }));
+
+  assert.match(loadingHtml, /불러오는 중/);
+  assert.match(loadingHtml, /aria-busy="true"/);
+  assert.match(loadingHtml, /disabled="">새로고침/);
+  assert.doesNotMatch(loadingHtml, /disabled="">API 키 발급/);
+  assert.doesNotMatch(loadingHtml, /disabled="">교체/);
+  assert.doesNotMatch(loadingHtml, /disabled="">해지/);
+
+  const actionHtml = renderToStaticMarkup(createElement(PredictionOperationsView, {
+    operations: { evaluationEnabled: true, backlog: 0, maxLagMs: 0, longUngradedCount: 0 },
+    keys: [{
+      id: "active-key",
+      modelVersion: "model-v1",
+      contractVersion: "contract-v1",
+      prefix: "tpik_12345678",
+      status: "ACTIVE",
+      expiresAt: null,
+      lastUsedAt: null
+    }],
+    issuedKey: null,
+    busy: false,
+    actionBusy: true,
+    error: "",
+    onIssue() {},
+    onRotate() {},
+    onRevoke() {},
+    onRefresh() {},
+    onDismissKey() {}
+  }));
+
+  assert.doesNotMatch(actionHtml, /aria-busy="true"/);
+  assert.doesNotMatch(actionHtml, /disabled="">새로고침/);
+  assert.match(actionHtml, /disabled="">API 키 발급/);
+  assert.match(actionHtml, /disabled="">교체/);
+  assert.match(actionHtml, /disabled="">해지/);
+});
