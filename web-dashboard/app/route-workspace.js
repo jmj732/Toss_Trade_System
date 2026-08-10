@@ -472,7 +472,15 @@ export function RouteWorkspace({ route, symbol = "" }) {
       setApprovalOrder(order ?? { id: orderId });
       return Promise.resolve();
     }
-    return runOrderCommand(orderId, "cancel");
+    return confirmOrderCancel(orderId);
+  }
+
+  function confirmOrderCancel(orderId) {
+    if (typeof window === "undefined") {
+      return Promise.resolve();
+    }
+    const confirmed = window.confirm("이 주문을 취소/거부하시겠습니까? 이 작업은 주문 취소 또는 승인 거부로 기록됩니다.");
+    return confirmed ? runOrderCommand(orderId, "cancel") : Promise.resolve();
   }
 
   function runOrderCommand(orderId, action, displayed) {
@@ -746,7 +754,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
                 error: approvalError,
                 onConfirm: displayed =>
                   runOrderCommand(approvalOrder.id, "approve", displayed),
-                onReject: () => runOrderCommand(approvalOrder.id, "cancel"),
+                onReject: () => confirmOrderCancel(approvalOrder.id),
                 onClose: () => {
                   setApprovalOrder(null);
                   setApprovalError(null);
@@ -960,7 +968,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
             busy: busyOrderIds.has(approvalOrder.id),
             error: approvalError,
             onConfirm: displayed => runOrderCommand(approvalOrder.id, "approve", displayed),
-            onReject: () => runOrderCommand(approvalOrder.id, "cancel"),
+            onReject: () => confirmOrderCancel(approvalOrder.id),
             onClose: () => {
               setApprovalOrder(null);
               setApprovalError(null);
