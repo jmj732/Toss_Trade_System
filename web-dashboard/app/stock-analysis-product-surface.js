@@ -4,6 +4,27 @@ import { createElement as h } from "react";
 
 import { formatAmount, formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
 
+const REASON_LABELS = {
+  UNAUTHORIZED: "권한 확인 필요",
+  PROVIDER_UNSUPPORTED: "지원되지 않는 제공자 데이터",
+  GEMINI_UPSTREAM_ERROR: "설명 제공자 오류",
+  ERROR: "조회 오류"
+};
+
+const MISSING_DATA_LABELS = {
+  "marketRegime:FIELD_MISSING:macro.vix": "시장 변동성 지표",
+  GEMINI_UPSTREAM_ERROR: "설명 제공자 오류",
+  PROVIDER_UNSUPPORTED: "지원되지 않는 제공자 데이터"
+};
+
+function readableCode(value) {
+  return REASON_LABELS[value] ?? value;
+}
+
+function readableMissingData(value) {
+  return MISSING_DATA_LABELS[value] ?? value;
+}
+
 function surfaceData(value) {
   return value?.data ?? value;
 }
@@ -11,13 +32,13 @@ function surfaceData(value) {
 function surfaceMessage(value, loadingText) {
   if (!value) return loadingText;
   if (value.status === "UNAUTHORIZED" || value.unavailableReason === "UNAUTHORIZED") {
-    return "권한 확인 필요 (UNAUTHORIZED)";
+    return "권한 확인 필요";
   }
   if (value.status === "UNAVAILABLE" || value.unavailable) {
-    return `지원되지 않음 (${value.unavailableReason ?? "PROVIDER_UNSUPPORTED"})`;
+    return `지원되지 않음 (${readableCode(value.unavailableReason ?? "PROVIDER_UNSUPPORTED")})`;
   }
   if (value.status === "DEGRADED") return "부분 데이터만 확인할 수 있습니다";
-  if (value.status === "ERROR") return `조회 실패 (${value.unavailableReason ?? "ERROR"})`;
+  if (value.status === "ERROR") return `조회 실패 (${readableCode(value.unavailableReason ?? "ERROR")})`;
   return null;
 }
 
@@ -143,7 +164,7 @@ function MissingData({ values = [] }) {
   return h("div", { className: "missing-data" },
     h("h3", null, "누락 데이터"),
     values.length
-      ? h("ul", { className: "list" }, ...values.map(value => h("li", { key: value }, value)))
+      ? h("ul", { className: "list" }, ...values.map(value => h("li", { key: value }, readableMissingData(value))))
       : h("p", { className: "empty" }, "보고된 항목 없음"));
 }
 

@@ -1,8 +1,8 @@
 import { createElement as h, useState } from "react";
 
 import { formatAmount, formatQuantity, classifyProposalExpiry, UNKNOWN_TEXT } from "../lib/format.js";
+import { describeError } from "../lib/error-messages.js";
 import { OrderStatusBadge, OrderExpiryBadge, OrderTiming } from "./dashboard-view.js";
-import { describeError } from "./route-workspace.js";
 
 // ---------------------------------------------------------------------------
 // 매수 가능 금액 배너 — loadAccountBuyingPower()
@@ -22,16 +22,14 @@ export function BuyingPowerBanner({ buyingPower }) {
   const krw = data.krw ?? data.KRW;
   const usd = data.usd ?? data.USD;
   const degraded = buyingPower.status === "DEGRADED" || buyingPower.stale || buyingPower.unknown;
-  return h("div", { className: "buying-power-banner", style: { display: "flex", gap: "16px", background: "rgba(49, 130, 246, 0.05)", padding: "16px", borderRadius: "var(--r-md)", marginBottom: "24px" } },
+  return h("div", { className: "buying-power-banner" },
     degraded ? h("p", { className: "disclaimer" }, "일부 매수 가능 금액은 오래됐거나 확인되지 않았습니다.") : null,
     h("div", null,
-      h("span", { style: { fontSize: "var(--fs-xs)", color: "var(--muted)" } }, "원화 (KRW) 매수 가능 금액"),
-      h("strong", { style: { display: "block", fontSize: "var(--fs-lg)" } },
-        krw != null ? `₩${Number(krw.cashBuyingPower ?? krw).toLocaleString()}` : UNKNOWN_TEXT)),
+      h("span", null, "원화 (KRW) 매수 가능 금액"),
+      h("strong", null, krw != null ? formatAmount("KRW", krw.cashBuyingPower ?? krw) : UNKNOWN_TEXT)),
     h("div", null,
-      h("span", { style: { fontSize: "var(--fs-xs)", color: "var(--muted)" } }, "외화 (USD) 매수 가능 금액"),
-      h("strong", { style: { display: "block", fontSize: "var(--fs-lg)" } },
-        usd != null ? `$${Number(usd.cashBuyingPower ?? usd).toLocaleString()}` : UNKNOWN_TEXT)));
+      h("span", null, "외화 (USD) 매수 가능 금액"),
+      h("strong", null, usd != null ? formatAmount("USD", usd.cashBuyingPower ?? usd) : UNKNOWN_TEXT)));
 }
 
 export function OrdersView({ section, busyOrderId, onOrderAction, onModifyPrice, buyingPower }) {

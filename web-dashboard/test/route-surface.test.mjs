@@ -49,6 +49,15 @@ test("maps known backend error codes to Korean guidance and falls back to raw co
   assert.equal(describeError(""), "");
 });
 
+test("maps UI section failure codes to user guidance", () => {
+  assert.equal(describeError("ANALYSIS_UNAVAILABLE"),
+    "분석 정보를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.");
+  assert.equal(describeError("ORDER_PROPOSALS_UNAVAILABLE"),
+    "주문 검토 정보를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.");
+  assert.equal(describeError("PORTFOLIO_HISTORY_NOT_FOUND"),
+    "아직 기록된 포트폴리오 이력이 없습니다.");
+});
+
 // D-38: 심볼을 모를 때 존재하지 않을 수 있는 종목(AAPL)을 지어내지 않는다.
 test("loginHref returns an always-valid route for stock without a symbol", () => {
   assert.equal(loginHref("stock", ""), "/auth/login?returnTo=%2F");

@@ -7,7 +7,7 @@ import { PortfolioHistoryView } from "../app/portfolio-history-view.js";
 
 const QUERY = { from: "", to: "", maxPoints: 90 };
 
-test("renders separate KRW/USD trend lines, quality, and the raw points table", () => {
+test("renders separate KRW/USD trend lines, quality, and formatted points", () => {
   const html = renderToStaticMarkup(createElement(PortfolioHistoryView, {
     history: {
       stale: false,
@@ -50,11 +50,14 @@ test("renders separate KRW/USD trend lines, quality, and the raw points table", 
   // V-37: DashboardView 와 동일한 한국어 어휘. V-36: 공통 .badge-pill modifier.
   assert.match(html, /badge-pill badge-pill--warn[^>]*>확인 필요/);
   assert.doesNotMatch(html, /UNKNOWN/);
-  assert.match(html, /account\.cashBalance/);
+  assert.match(html, /현금 잔고/);
+  assert.doesNotMatch(html, /account\.cashBalance/);
   assert.equal((html.match(/class="trend-krw"/g) ?? []).length, 2);
   assert.equal((html.match(/class="trend-usd"/g) ?? []).length, 2);
-  assert.match(html, /130000/);
-  assert.match(html, /110/);
+  assert.match(html, /KRW 130,000/);
+  assert.match(html, /USD 110\.00/);
+  assert.match(html, /2026-01-01 09:00 KST/);
+  assert.doesNotMatch(html, /2026-01-01T00:00:00\.000Z/);
   assert.doesNotMatch(html, /\d+개 중 \d+개 표시/);
 });
 
@@ -99,7 +102,8 @@ test("shows an unavailable message and no trend when history has never synced", 
     onQuery() {}
   }));
 
-  assert.match(html, /PORTFOLIO_HISTORY_NOT_FOUND/);
+  assert.match(html, /아직 기록된 포트폴리오 이력이 없습니다/);
+  assert.doesNotMatch(html, /PORTFOLIO_HISTORY_NOT_FOUND/);
   assert.doesNotMatch(html, /sparkline/);
 });
 

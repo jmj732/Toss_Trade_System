@@ -52,7 +52,7 @@ test("integrates analysis, forecast, explanation, events, provenance, and missin
 
   for (const text of [
     "AAPL", "분석", "예측", "Gemini 설명", "관련 이벤트",
-    "데이터 출처", "누락 데이터", "부분 저하", "실패", "GEMINI_UPSTREAM_ERROR",
+    "데이터 출처", "누락 데이터", "부분 저하", "실패", "설명 제공자 오류",
     "Rate decision", "Grounded evidence", "snapshot-1"
   ]) {
     assert.match(html, new RegExp(text));
@@ -60,6 +60,30 @@ test("integrates analysis, forecast, explanation, events, provenance, and missin
   assert.doesNotMatch(html, /Approve|Cancel|actOnProposal/);
   // 상태 배지는 한국어로만 노출한다(D-40).
   assert.doesNotMatch(html, /surface-state[^>]*>DEGRADED</);
+});
+
+test("uses readable labels for known provider and missing-data codes", () => {
+  const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
+    symbol: "AAPL",
+    analysis: {
+      result: { status: "DEGRADED", missingData: ["marketRegime:FIELD_MISSING:macro.vix"] }
+    },
+    forecast: null,
+    explanation: { status: "DEGRADED", missingData: ["GEMINI_UPSTREAM_ERROR"] },
+    relatedEvents: [],
+    history: [],
+    status: { analysis: "READY", forecast: "IDLE", explanation: "DEGRADED" },
+    orderbook: { status: "UNAVAILABLE", unavailableReason: "PROVIDER_UNSUPPORTED" },
+    onCreateAnalysis() {},
+    onCreateForecast() {},
+    onCreateExplanation() {},
+    onSelectSnapshot() {}
+  }));
+
+  assert.match(html, /시장 변동성 지표/);
+  assert.match(html, /설명 제공자 오류/);
+  assert.match(html, /지원되지 않는 제공자 데이터/);
+  assert.doesNotMatch(html, /macro\.vix|GEMINI_UPSTREAM_ERROR|PROVIDER_UNSUPPORTED/);
 });
 
 test("never leaks raw undefined for missing optional fields", () => {
@@ -164,7 +188,7 @@ test("puts stock analysis summary before provider panels", () => {
   assert.match(html, /부분 데이터/);
   assert.match(html, /리스크/);
   assert.ok(html.indexOf("현재가") < html.indexOf("호가 잔량"));
-  assert.match(html, /지원되지 않음 \(PROVIDER_UNSUPPORTED\)/);
+  assert.match(html, /지원되지 않음 \(지원되지 않는 제공자 데이터\)/);
 });
 
 test("unauthorized provider envelope takes precedence over unsupported", () => {

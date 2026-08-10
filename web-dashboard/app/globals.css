@@ -96,6 +96,13 @@ button:disabled {
 [aria-busy="true"] button:disabled, button[aria-busy="true"]:disabled { cursor: wait; }
 button.secondary { background: var(--panel-raised); border-color: transparent; color: var(--text); }
 button.danger { background: #fff0f1; color: var(--danger-text); }
+button.danger:disabled {
+  background: var(--panel-raised);
+  color: var(--muted);
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
 .topbar, .connection-form, .grid {
   margin-inline: auto;
   max-width: 1280px;
@@ -209,6 +216,21 @@ textarea {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: var(--sp-6);
 }
+.buying-power-banner {
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  display: grid;
+  gap: var(--sp-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: var(--sp-6);
+  padding: var(--sp-4);
+}
+.buying-power-banner > p { grid-column: 1 / -1; margin: 0; }
+.buying-power-banner > div { display: grid; gap: var(--sp-1); min-width: 0; }
+.buying-power-banner span, .buying-power-banner strong { overflow-wrap: anywhere; }
+.buying-power-banner span { color: var(--muted); font-size: var(--fs-xs); }
+.buying-power-banner strong { font-size: var(--fs-lg); }
 .summary > div, .buying-power > div {
   background: #f7f8fa;
   border: 1px solid #eef0f2;
@@ -697,6 +719,8 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 @media (max-width: 480px) {
   .topbar { padding: var(--sp-5) var(--sp-4) var(--sp-3); }
   .grid, .route-stack, .market-overview-grid { padding-inline: var(--sp-4); }
+  .buying-power-banner { grid-template-columns: minmax(0, 1fr); }
+  .buying-power-banner > p { grid-column: auto; }
   .operations-readiness > header { display: grid; }
   .operations-readiness > header button,
   .readiness-probe-form button { width: 100%; }

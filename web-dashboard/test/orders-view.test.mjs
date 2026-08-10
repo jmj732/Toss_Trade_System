@@ -60,6 +60,24 @@ test("stacks the orders header before mobile rows at the <=900px breakpoint", as
   );
 });
 
+test("does not style a disabled cancel action as a live danger action", async () => {
+  const css = await readFile(stylesUrl, "utf8");
+  assert.match(css, /button\.danger:disabled\s*\{/);
+});
+
+test("renders buying power as currency-qualified stacked mobile-safe values", () => {
+  const html = render({
+    buyingPower: {
+      data: { KRW: { cashBuyingPower: 130000 }, USD: { cashBuyingPower: 100 } }
+    },
+    section: { data: [] }
+  });
+
+  assert.match(html, /KRW 130,000/);
+  assert.match(html, /USD 100\.00/);
+  assert.doesNotMatch(html, /class="buying-power-banner" style=/);
+});
+
 test("exposes an unknown status instead of hiding it (D-03)", () => {
   const html = render({
     section: { data: [{ id: "o", side: "SELL", symbol: "AAPL", currency: "USD", status: "QUEUED" }] }
