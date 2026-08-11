@@ -11,6 +11,7 @@ import {
   proposalExpiryBadge,
   UNKNOWN_TEXT
 } from "../lib/format.js";
+import { describeError } from "../lib/error-messages.js";
 
 // D-03: OrderIntentStatus 13종 전부를 한국어로 매핑한다. 이 맵은 이 파일이 정본이며
 // orders-view.js 가 import 해 재사용한다(리터럴 중복 금지).
@@ -174,6 +175,7 @@ function Quality({ section, region }) {
   }
   if (section.unknown) values.push(["unknown", "확인 필요"]);
   if (section.unavailable) values.push(["unavailable", "불러오기 실패"]);
+  if (section.empty) values.push(["empty", "결과 없음"]);
   const partial = isPartial(section);
   if (partial) values.push(["partial", "일부 누락"]);
   // D-06: partial 이면 "최신" 을 단언하지 않는다.
@@ -197,7 +199,7 @@ function Section({ title, section, className = "", qualityRegion, children }) {
   return h("section", { className: `panel signal-panel ${className}`.trim() },
     h("header", null, h("h2", null, title), h(Quality, { section, region: qualityRegion })),
     section.unavailable
-      ? h("p", { className: "empty" }, section.unavailableReason ?? "불러오기 실패")
+      ? h("p", { className: "empty" }, describeError(section.unavailableReason) ?? "불러오기 실패")
       : children);
 }
 
@@ -227,7 +229,7 @@ function Portfolio({ section }) {
           h(Amounts, { values: account?.marketValueAmounts })),
         // D-05: 총 평가금액이 언제 기준 데이터인지 함께 노출한다.
         h("small", { className: "metric-freshness" },
-          `기준 ${formatFreshness(portfolio?.completedAt)}`))),
+          `기준 ${formatFreshness(portfolio?.completedAt ?? section.asOf)}`))),
       h("div", { className: "portfolio-hero-secondary" },
         h("span", null, "총 손익"),
         h("strong", null, h(Amounts, { values: account?.profitLossAmounts, signed: true })))),
@@ -263,6 +265,12 @@ function Portfolio({ section }) {
 const ANALYSIS_STATUS_LABELS = { COMPLETED: "정상", DEGRADED: "품질 저하" };
 
 function Analysis({ section }) {
+  const empty = section.unavailableReason === "ANALYSIS_RESULT_NOT_FOUND";
+  if (empty) {
+    return h(Section, {
+      title: "분석", section: { ...section, unavailable: false, empty }, className: "analysis-panel"
+    }, h("p", { className: "empty" }, "분석 결과가 아직 없습니다."));
+  }
   const result = section.data?.result;
   const totals = result?.currencyTotals ?? [];
   const positions = result?.positions ?? [];
@@ -271,7 +279,7 @@ function Analysis({ section }) {
     : null;
   return h(Section, { title: "분석", section, className: "analysis-panel" },
     h("p", { className: "disclaimer" },
-      `기준 ${formatFreshness(result?.asOf ?? section.data?.completedAt)}`,
+      `기준 ${formatFreshness(result?.asOf ?? section.data?.completedAt ?? section.asOf)}`,
       statusLabel ? ` · 상태 ${statusLabel}` : ""),
     h("h3", null, "통화별 평가금액"),
     totals.length

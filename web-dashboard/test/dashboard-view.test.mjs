@@ -92,6 +92,31 @@ test("renders all dashboard sections and explicit data quality", () => {
   }
 });
 
+test("uses the section reference time when a live response omits a nested timestamp", () => {
+  const html = renderToStaticMarkup(createElement(DashboardView, {
+    dashboard: {
+      portfolio: {
+        stale: true, unknown: false, unavailable: false, asOf: "2026-05-01T00:00:00Z",
+        data: {
+          account: { marketValueAmounts: { USD: 120 }, profitLossAmounts: { USD: 20 } },
+          positions: [], buyingPower: {}
+        }
+      },
+      analysis: {
+        stale: true, unknown: false, unavailable: false, asOf: "2026-05-02T00:00:00Z",
+        data: { result: { currencyTotals: [], positions: [] } }
+      },
+      pendingEvents: { stale: false, unknown: false, unavailable: false, data: [] },
+      pendingOrderProposals: { stale: false, unknown: false, unavailable: false, data: [] }
+    },
+    busyOrderId: null,
+    onOrderAction() {}
+  }));
+
+  assert.match(html, /기준 2026-05-01 09:00 KST/);
+  assert.match(html, /기준 2026-05-02 09:00 KST/);
+});
+
 test("keeps portfolio lead freshness and quality text in the lead signal region", () => {
   const dashboard = {
     portfolio: section({
@@ -179,6 +204,26 @@ test("renders a live-read failure as stale with its explicit reason", () => {
   }));
 
   assert.match(html, /지연 · 실시간 동기화 실패/);
+});
+
+test("renders a missing portfolio analysis as an explicit empty state", () => {
+  const html = renderToStaticMarkup(createElement(DashboardView, {
+    dashboard: {
+      portfolio: section({ account: {}, positions: [], buyingPower: {} }),
+      analysis: {
+        stale: false, unknown: false, unavailable: true,
+        unavailableReason: "ANALYSIS_RESULT_NOT_FOUND", data: null
+      },
+      pendingEvents: section([]),
+      pendingOrderProposals: section([])
+    },
+    busyOrderId: null,
+    onOrderAction() {}
+  }));
+
+  assert.match(html, /분석 결과가 아직 없습니다/);
+  assert.ok(!html.includes("ANALYSIS_RESULT_NOT_FOUND"));
+  assert.ok(!html.includes("불러오기 실패"));
 });
 
 test("never leaks raw undefined/null/NaN/Invalid Date for missing optional fields", () => {

@@ -2,6 +2,7 @@ package com.jmj.trade.broker.toss;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 
@@ -76,6 +77,84 @@ final class TossApiDtos {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record Price(String symbol, String timestamp, String lastPrice, String currency) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OrderBookEnvelope(OrderBook result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record OrderBook(String timestamp, String currency, List<Level> asks, List<Level> bids) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Level(String price, String volume) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CandleSeriesEnvelope(CandleSeries result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CandleSeries(List<Candle> candles, String nextBefore) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Candle(
+            String timestamp,
+            String openPrice,
+            String highPrice,
+            String lowPrice,
+            String closePrice,
+            String volume,
+            String currency) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record ExchangeRateEnvelope(ExchangeRate result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record ExchangeRate(
+            String baseCurrency,
+            String quoteCurrency,
+            String rate,
+            String midRate,
+            String basisPoint,
+            String rateChangeType,
+            String validFrom,
+            String validUntil) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record MarketCalendarEnvelope(JsonNode result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record RankingsEnvelope(Rankings result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Rankings(
+            String rankedAt,
+            List<RankingItem> rankings) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record RankingItem(
+            String rank,
+            String symbol,
+            String currency,
+            RankingPrice price,
+            String tradingVolume,
+            String tradingAmount) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record RankingPrice(
+            String lastPrice,
+            String basePrice,
+            String changeRate) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

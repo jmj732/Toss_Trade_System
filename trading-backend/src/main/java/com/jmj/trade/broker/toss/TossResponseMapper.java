@@ -11,6 +11,7 @@ import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.CashBalanceStatus;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.MoneyByCurrency;
+import com.jmj.trade.broker.MarketDataAdapter;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
 import com.jmj.trade.broker.BrokerOrderLifecycle;
@@ -96,6 +97,87 @@ final class TossResponseMapper {
                 null,
                 instant(price.timestamp()),
                 metadata.observedAt());
+    }
+
+    MarketDataAdapter.OrderBook orderBook(
+            String symbol,
+            TossApiDtos.OrderBook source,
+            BrokerCallMetadata metadata) {
+        Objects.requireNonNull(metadata, "metadata");
+        if (source == null || source.asks() == null || source.bids() == null) {
+            throw contract();
+        }
+        return new MarketDataAdapter.OrderBook(
+                symbol,
+                instant(source.timestamp()),
+                currency(source.currency()),
+                levels(source.asks()),
+                levels(source.bids()));
+    }
+
+    MarketDataAdapter.CandleSeries candles(
+            String symbol,
+            String interval,
+            boolean adjusted,
+            TossApiDtos.CandleSeries source,
+            BrokerCallMetadata metadata) {
+        Objects.requireNonNull(metadata, "metadata");
+        if (source == null || source.candles() == null) {
+            throw contract();
+        }
+        return new MarketDataAdapter.CandleSeries(
+                symbol,
+                interval,
+                adjusted,
+                source.candles().stream().map(this::candle).toList(),
+                instant(source.nextBefore()));
+    }
+
+    MarketDataAdapter.ExchangeRate exchangeRate(
+            TossApiDtos.ExchangeRate source,
+            BrokerCallMetadata metadata) {
+        Objects.requireNonNull(metadata, "metadata");
+        if (source == null) {
+            throw contract();
+        }
+        return new MarketDataAdapter.ExchangeRate(
+                currency(source.baseCurrency()),
+                currency(source.quoteCurrency()),
+                nonNegativeDecimal(source.rate()),
+                nonNegativeDecimal(source.midRate()),
+                decimal(source.basisPoint()),
+                required(source.rateChangeType()),
+                instant(source.validFrom()),
+                instant(source.validUntil()));
+    }
+
+    MarketDataAdapter.MarketCalendar marketCalendar(
+            String market,
+            tools.jackson.databind.JsonNode source,
+            BrokerCallMetadata metadata) {
+        Objects.requireNonNull(metadata, "metadata");
+        if (source == null || source.isNull()) {
+            throw contract();
+        }
+        return new MarketDataAdapter.MarketCalendar(market, source);
+    }
+
+    MarketDataAdapter.Ranking ranking(
+            TossApiDtos.Rankings source,
+            String type,
+            String marketCountry,
+            String duration,
+            BrokerCallMetadata metadata) {
+        Objects.requireNonNull(metadata, "metadata");
+        if (source == null || source.rankings() == null) {
+            throw contract();
+        }
+        return new MarketDataAdapter.Ranking(
+                required(type),
+                required(marketCountry),
+                required(duration),
+                instant(source.rankedAt()),
+                source.rankings().stream().map(this::rankingItem).toList());
     }
 
     AccountCapacitySnapshot capacity(BrokerAccountRef account, Currency requested, TossApiDtos.BuyingPower buyingPower, BrokerCallMetadata metadata) {
@@ -237,6 +319,44 @@ final class TossResponseMapper {
                 observedAt);
     }
 
+    private List<MarketDataAdapter.Level> levels(List<TossApiDtos.Level> source) {
+        return source.stream()
+                .map(level -> level == null
+                        ? new MarketDataAdapter.Level(null, null)
+                        : new MarketDataAdapter.Level(nullableDecimal(level.price()), nullableDecimal(level.volume())))
+                .toList();
+    }
+
+    private MarketDataAdapter.Candle candle(TossApiDtos.Candle source) {
+        if (source == null) {
+            throw contract();
+        }
+        return new MarketDataAdapter.Candle(
+                instant(source.timestamp()),
+                nonNegativeDecimal(source.openPrice()),
+                nonNegativeDecimal(source.highPrice()),
+                nonNegativeDecimal(source.lowPrice()),
+                nonNegativeDecimal(source.closePrice()),
+                nonNegativeDecimal(source.volume()),
+                currency(source.currency()));
+    }
+
+    private MarketDataAdapter.RankingItem rankingItem(TossApiDtos.RankingItem source) {
+        if (source == null) {
+            throw contract();
+        }
+        return new MarketDataAdapter.RankingItem(
+                integer(source.rank()),
+                required(source.symbol()),
+                currency(source.currency()),
+                source.price() == null ? null : nullableDecimal(source.price().lastPrice()),
+                source.price() == null ? null : nullableDecimal(source.price().basePrice()),
+                source.price() == null ? null : nullableDecimal(source.price().changeRate()),
+                nullableDecimal(source.tradingVolume()),
+                nullableDecimal(source.tradingAmount()),
+                null);
+    }
+
     private List<Position> validateItems(BrokerAccountRef account, TossApiDtos.Holdings holdings, BrokerCallMetadata metadata) {
         return holdings.items().stream()
                 .map(item -> position(account, item, metadata.observedAt()))
@@ -292,6 +412,18 @@ final class TossResponseMapper {
     private BigDecimal decimal(String raw) {
         try {
             return new BigDecimal(required(raw));
+        } catch (RuntimeException exception) {
+            throw contract();
+        }
+    }
+
+    private BigDecimal nullableDecimal(String raw) {
+        return raw == null ? null : decimal(raw);
+    }
+
+    private int integer(String raw) {
+        try {
+            return Integer.parseInt(required(raw));
         } catch (RuntimeException exception) {
             throw contract();
         }

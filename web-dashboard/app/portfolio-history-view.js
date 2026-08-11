@@ -1,6 +1,8 @@
 "use client";
 
 import { createElement as h } from "react";
+import { describeError } from "../lib/error-messages.js";
+import { formatAmount, formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
 
 // V-37: DashboardView 와 동일한 한국어 어휘로 통일한다(지연/확인 필요/불러오기 실패/최신).
 // V-36: 상태별 색은 공통 .badge-pill modifier 로만 표현한다.
@@ -10,6 +12,14 @@ const QUALITY_BADGES = {
   unavailable: ["danger", "불러오기 실패"],
   available: ["neutral", "최신"]
 };
+
+const FIELD_LABELS = { "account.cashBalance": "현금 잔고" };
+
+function unknownFieldSummary(fields) {
+  const labels = fields.filter(field => FIELD_LABELS[field]).map(field => FIELD_LABELS[field]);
+  const otherCount = fields.length - labels.length;
+  return [...labels, ...(otherCount ? [`기타 항목 ${otherCount}건`] : [])].join(", ");
+}
 
 function Quality({ history }) {
   const keys = [];
@@ -23,7 +33,7 @@ function Quality({ history }) {
       return h("span", { className: `badge-pill badge-pill--${modifier}`, key }, label);
     }),
     history.unknownFields?.length
-      ? h("small", null, history.unknownFields.join(", "))
+      ? h("small", null, unknownFieldSummary(history.unknownFields))
       : null);
 }
 
@@ -75,16 +85,23 @@ function PointsTable({ points }) {
   if (points.length === 0) {
     return h("p", { className: "empty" }, "데이터가 없습니다");
   }
-  return h("div", { className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "포트폴리오 평가금액 추이 표" }, h("table", null,
+  const pointRow = point => h("tr", { key: point.syncRunId },
+    h("td", null, point.completedAt ? formatInstant(point.completedAt) : UNKNOWN_TEXT),
+    h("td", null, point.marketValueAmounts?.KRW == null
+      ? "—" : formatAmount("KRW", point.marketValueAmounts.KRW)),
+    h("td", null, point.marketValueAmounts?.USD == null
+      ? "—" : formatAmount("USD", point.marketValueAmounts.USD)),
+    h("td", null, point.profitLossAmounts?.KRW == null
+      ? "—" : formatAmount("KRW", point.profitLossAmounts.KRW)),
+    h("td", null, point.profitLossAmounts?.USD == null
+      ? "—" : formatAmount("USD", point.profitLossAmounts.USD)));
+  return h("div", {
+    className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "포트폴리오 평가금액 추이 표"
+  }, h("table", null,
     h("thead", null, h("tr", null,
       ...["시각", "평가금액 KRW", "평가금액 USD", "P/L KRW", "P/L USD"].map(label =>
         h("th", { key: label, scope: "col" }, label)))),
-    h("tbody", null, ...points.map(point => h("tr", { key: point.syncRunId },
-      h("td", null, point.completedAt),
-      h("td", null, point.marketValueAmounts?.KRW ?? "—"),
-      h("td", null, point.marketValueAmounts?.USD ?? "—"),
-      h("td", null, point.profitLossAmounts?.KRW ?? "—"),
-      h("td", null, point.profitLossAmounts?.USD ?? "—"))))));
+    h("tbody", null, ...points.map(pointRow))));
 }
 
 export function PortfolioHistoryView({ history, query, busy, onQuery }) {
@@ -125,7 +142,7 @@ export function PortfolioHistoryView({ history, query, busy, onQuery }) {
       h("button", { type: "submit", disabled: busy }, "적용")),
     !history || history.unavailable
       ? h("p", { className: busy ? "busy" : "empty" },
-        busy ? "이력을 불러오는 중…" : history?.unavailableReason ?? "이력이 아직 없습니다")
+        busy ? "이력을 불러오는 중…" : describeError(history?.unavailableReason) ?? "이력이 아직 없습니다")
       : h("div", null,
         busy ? h("p", { className: "busy" }, "이력을 새로고침 중…") : null,
         history.data.partial
