@@ -106,6 +106,26 @@ test("never leaks raw undefined for missing optional fields", () => {
   assert.doesNotMatch(html, /NaN|Invalid Date/);
 });
 
+test("renders missing latest analysis as an explicit empty state", () => {
+  const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
+    symbol: "AAPL",
+    analysis: null,
+    forecast: null,
+    explanation: null,
+    relatedEvents: [],
+    history: [],
+    status: { analysis: "READY", forecast: "READY", explanation: "READY" },
+    onCreateAnalysis() {},
+    onCreateForecast() {},
+    onCreateExplanation() {},
+    onSelectSnapshot() {}
+  }));
+
+  const analysisPanel = html.slice(html.indexOf("<h2>분석</h2>"), html.indexOf("<h2>예측</h2>"));
+  assert.match(analysisPanel, /분석 결과가 아직 없습니다/);
+  assert.doesNotMatch(analysisPanel, /불러오는 중|진행 중|오류|STOCK_ANALYSIS_RESULT_NOT_FOUND/);
+});
+
 test("labels unknown status values instead of pretending they are ready", () => {
   const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
     symbol: "AAPL",
