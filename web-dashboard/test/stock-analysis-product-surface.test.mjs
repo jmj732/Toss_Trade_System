@@ -181,8 +181,8 @@ test("puts stock analysis summary before provider panels", () => {
       status: "DEGRADED",
       data: {
         candles: [
-          { date: "2026-08-01", close: 99, open: 100 },
-          { date: "2026-08-02", close: 105, open: 101 }
+          { date: "2026-08-02", close: 105, open: 101 },
+          { date: "2026-08-01", close: 99, open: 100 }
         ]
       }
     },

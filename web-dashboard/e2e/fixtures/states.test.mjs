@@ -25,18 +25,16 @@ test("state matrix includes approved new global states", () => {
   assert.ok(!STATES.includes("unsupported"));
 });
 
-test("unsupported is scoped to stock/market route coverage", () => {
-  assert.deepEqual(
-    ROUTES.filter(route => route.extraStates?.includes("unsupported")).map(route => route.name),
-    ["stocks-AAPL"]
-  );
+test("live market routes are covered by the normal state matrix", () => {
+  assert.ok(ROUTES.some(route => route.name === "home"));
+  assert.equal(ROUTES.find(route => route.name === "stocks-AAPL")?.extraStates, undefined);
 });
 
-test("unsupported uses existing provider envelope on stock market endpoints", async () => {
+test("stock market endpoint fixture is a real provider response", async () => {
   const response = await responseFor("/api/v1/connections/audit-connection/exchange-rate", "unsupported");
 
   assert.equal(response.status, 200);
-  assert.equal(response.body.status, "UNAVAILABLE");
-  assert.equal(response.body.unavailable, true);
-  assert.equal(response.body.unavailableReason, "PROVIDER_UNSUPPORTED");
+  assert.equal(response.body.status, "AVAILABLE");
+  assert.equal(response.body.data.baseCurrency, "USD");
+  assert.equal(response.body.provenance[0].provider, "TOSS");
 });

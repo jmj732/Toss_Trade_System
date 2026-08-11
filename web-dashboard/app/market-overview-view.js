@@ -8,6 +8,13 @@ function payload(value) {
   return value?.data ?? value;
 }
 
+function provenance(value) {
+  const item = value?.provenance?.[0];
+  if (!item) return null;
+  const asOf = item.asOf ? ` · 기준 ${formatInstant(item.asOf)}` : "";
+  return `출처 ${item.provider}${asOf}`;
+}
+
 function unavailable(value) {
   if (!value) return "loading";
   if (value.status === "UNAVAILABLE" || value.unavailable) {
@@ -31,23 +38,23 @@ function ExchangeRateWidget({ exchangeRate }) {
   }
   exchangeRate = payload(exchangeRate);
   const rate = exchangeRate.rate ?? exchangeRate.basePrice;
-  const change = exchangeRate.change ?? exchangeRate.changePrice;
-  const changeRate = exchangeRate.changeRate ?? exchangeRate.changePercent;
-  const positive = (change ?? 0) >= 0;
+  const basisPoint = exchangeRate.basisPoint;
+  const direction = exchangeRate.rateChangeType;
+  const positive = direction === "UP" || Number(basisPoint ?? 0) >= 0;
   return h("section", { className: "panel market-widget" },
     h("header", null,
       h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 환율"), h("h2", null, "USD/KRW 환율"))),
     h("div", { className: "exchange-rate-hero" },
       h("strong", { className: "metric-value metric-value-large" },
         rate != null ? `₩${Number(rate).toLocaleString("ko-KR", { minimumFractionDigits: 2 })}` : UNKNOWN_TEXT),
-      change != null
+      basisPoint != null
         ? h("span", { className: positive ? "change-positive" : "change-negative" },
-          `${positive ? "▲" : "▼"} ${Math.abs(change).toFixed(2)}`,
-          changeRate != null ? ` (${(changeRate * 100).toFixed(2)}%)` : "")
-        : null),
-    exchangeRate.asOf
-      ? h("small", { className: "metric-freshness" }, `기준 ${formatInstant(exchangeRate.asOf)}`)
-      : null);
+          `${positive ? "▲" : "▼"} ${Math.abs(Number(basisPoint)).toFixed(2)}bp`)
+      : null),
+    exchangeRate.validFrom
+      ? h("small", { className: "metric-freshness" }, `기준 ${formatInstant(exchangeRate.validFrom)}`)
+      : null,
+    provenance(exchangeRate) ? h("small", { className: "metric-freshness" }, provenance(exchangeRate)) : null);
 }
 
 // ---------------------------------------------------------------------------
@@ -61,9 +68,13 @@ function MarketCalendarWidget({ calendar }) {
         h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 캘린더"), h("h2", null, "시장 일정"))),
       h("p", { className: "empty" }, message === "loading" ? "시장 일정을 불러오는 중…" : message));
   }
-  calendar = payload(calendar);
-  const status = calendar.marketStatus ?? calendar.status;
-  const holidays = calendar.holidays ?? calendar.closedDays ?? [];
+  const view = payload(calendar);
+  const raw = view?.payload ?? view;
+  const today = raw?.today ?? {};
+  const sessions = ["dayMarket", "preMarket", "regularMarket", "afterMarket"]
+    .map(key => today?.[key] ?? today?.integrated?.[key]).filter(Boolean);
+  const status = raw?.marketStatus ?? raw?.status ?? (sessions.length ? "OPEN" : "CLOSED");
+  const holidays = raw?.holidays ?? raw?.closedDays ?? [];
   const statusColor = status === "OPEN" ? "ok" : status === "CLOSED" ? "danger" : "warn";
   return h("section", { className: "panel market-widget" },
     h("header", null,
@@ -75,7 +86,8 @@ function MarketCalendarWidget({ calendar }) {
         h("li", { key: `${day.date}-${i}` },
           h("strong", null, day.date ?? UNKNOWN_TEXT),
           h("span", null, day.name ?? day.reason ?? "휴장일"))))
-      : h("p", { className: "empty" }, "등록된 휴장일이 없습니다"));
+      : h("p", { className: "empty" }, "등록된 휴장일이 없습니다"),
+    provenance(calendar) ? h("small", { className: "metric-freshness" }, provenance(calendar)) : null);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +104,7 @@ function RankingsWidget({ rankings, onCategoryChange }) {
   const [category, setCategory] = useState("VOLUME");
   const message = unavailable(rankings);
   const data = payload(rankings);
-  const items = data?.items ?? data?.stocks ?? [];
+  const items = data?.items ?? data?.rankings ?? data?.stocks ?? [];
   return h("section", { className: "panel market-widget rankings-widget" },
     h("header", null,
       h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 랭킹"), h("h2", null, "종목 랭킹"))),
@@ -117,14 +129,16 @@ function RankingsWidget({ rankings, onCategoryChange }) {
             const changePercent = item.changePercent ?? item.changeRate;
             const positive = (changePercent ?? 0) >= 0;
             return h("tr", { key: `${item.symbol}-${i}` },
-              h("td", null, `${i + 1}`),
+              h("td", null, item.rank ?? i + 1),
               h("td", null, h("strong", null, item.symbol ?? UNKNOWN_TEXT),
                 item.name ? h("small", { className: "ranking-name" }, item.name) : null),
-              h("td", null, item.price != null ? formatAmount(item.currency ?? "USD", item.price) : UNKNOWN_TEXT),
+              h("td", null, (item.price ?? item.lastPrice) != null
+                ? formatAmount(item.currency ?? "USD", item.price ?? item.lastPrice) : UNKNOWN_TEXT),
               h("td", { className: positive ? "change-positive" : "change-negative" },
                 changePercent != null ? `${positive ? "+" : ""}${(changePercent * 100).toFixed(2)}%` : UNKNOWN_TEXT));
           }))))
-      : h("p", { className: "empty" }, message && message !== "loading" ? message : "랭킹 데이터를 불러오는 중…"));
+      : h("p", { className: "empty" }, message && message !== "loading" ? message : "랭킹 데이터를 불러오는 중…"),
+    provenance(rankings) ? h("small", { className: "metric-freshness" }, provenance(rankings)) : null);
 }
 
 // ---------------------------------------------------------------------------

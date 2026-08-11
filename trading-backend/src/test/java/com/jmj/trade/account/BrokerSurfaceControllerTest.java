@@ -43,16 +43,26 @@ class BrokerSurfaceControllerTest {
     }
 
     @Test
-    void unsupportedRouteReturnsAnExplicitUnavailableEnvelope() throws Exception {
+    void candlesRouteReturnsTheProviderEnvelope() throws Exception {
         var surfaces = mock(BrokerSurfaceService.class);
-        when(surfaces.unsupported(USER, CONNECTION)).thenReturn(BrokerSurfaceResponse.unavailable("PROVIDER_UNSUPPORTED"));
+        when(surfaces.candles(USER, CONNECTION, "AAPL", "1d", 100, null, true))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "AAPL", "1d", true,
+                        List.of(new BrokerSurfaceResponse.CandleView(
+                                Instant.parse("2026-08-09T00:00:00Z"),
+                                new BigDecimal("100"), new BigDecimal("101"), new BigDecimal("99"),
+                                new BigDecimal("100.5"), new BigDecimal("1000"), "USD")),
+                        null), List.of(new BrokerSurfaceResponse.ProviderProvenance(
+                        "TOSS", "/api/v1/candles", "USD",
+                        Instant.parse("2026-08-09T00:00:00Z"), Instant.parse("2026-08-09T00:01:00Z")))));
         MockMvc mvc = standaloneSetup(new BrokerSurfaceController(surfaces)).build();
 
         mvc.perform(get("/api/v1/broker-connections/{connectionId}/candles", CONNECTION)
-                        .principal(() -> USER.toString()))
+                        .principal(() -> USER.toString())
+                        .param("symbol", "AAPL"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("UNAVAILABLE"))
-                .andExpect(jsonPath("$.unavailableReason").value("PROVIDER_UNSUPPORTED"))
-                .andExpect(jsonPath("$.data").doesNotExist());
+                .andExpect(jsonPath("$.status").value("AVAILABLE"))
+                .andExpect(jsonPath("$.data.candles[0].closePrice").value(100.5))
+                .andExpect(jsonPath("$.provenance[0].provider").value("TOSS"));
     }
 }

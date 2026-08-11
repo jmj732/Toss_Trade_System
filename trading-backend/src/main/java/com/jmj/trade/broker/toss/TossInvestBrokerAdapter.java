@@ -20,16 +20,18 @@ import com.jmj.trade.broker.BrokerOrderModification;
 import com.jmj.trade.broker.BrokerOrderSide;
 import com.jmj.trade.broker.BrokerOrderType;
 import com.jmj.trade.broker.Currency;
+import com.jmj.trade.broker.MarketDataAdapter;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
 import com.jmj.trade.broker.SellableQuantitySnapshot;
 
 import java.util.List;
 import java.util.Objects;
+import java.time.LocalDate;
 
 import static com.jmj.trade.broker.BrokerOrderPort.ack;
 
-final class TossInvestBrokerAdapter implements BrokerAdapter, BrokerOrderPort {
+final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter, BrokerOrderPort {
 
     private final TossApiClient apiClient;
     private final TossResponseMapper mapper;
@@ -69,6 +71,79 @@ final class TossInvestBrokerAdapter implements BrokerAdapter, BrokerOrderPort {
         var normalized = mapper.normalizeSymbol(symbol);
         var response = apiClient.getPrices(connection.brokerConnectionId(), normalized);
         return new BrokerResponse<>(mapper.quote(connection, normalized, response.value(), response.metadata()), response.metadata());
+    }
+
+    @Override
+    public BrokerResponse<OrderBook> getOrderBook(BrokerConnectionRef connection, String symbol) {
+        mapper.requireToss(connection);
+        var normalized = mapper.normalizeSymbol(symbol);
+        var response = apiClient.getOrderBook(connection.brokerConnectionId(), normalized);
+        return new BrokerResponse<>(mapper.orderBook(normalized, response.value(), response.metadata()), response.metadata());
+    }
+
+    @Override
+    public BrokerResponse<CandleSeries> getCandles(
+            BrokerConnectionRef connection,
+            String symbol,
+            String interval,
+            int count,
+            String before,
+            boolean adjusted) {
+        mapper.requireToss(connection);
+        var normalized = mapper.normalizeSymbol(symbol);
+        if (!"1m".equals(interval) && !"1d".equals(interval)) {
+            throw new BrokerException(BrokerErrorCategory.VALIDATION, null, null, null, null, false,
+                    "Toss candle interval is unsupported");
+        }
+        if (count < 1 || count > 200) {
+            throw new BrokerException(BrokerErrorCategory.VALIDATION, null, null, null, null, false,
+                    "Toss candle count is invalid");
+        }
+        var response = apiClient.getCandles(
+                connection.brokerConnectionId(), normalized, interval, count, before, adjusted);
+        return new BrokerResponse<>(
+                mapper.candles(normalized, interval, adjusted, response.value(), response.metadata()),
+                response.metadata());
+    }
+
+    @Override
+    public BrokerResponse<ExchangeRate> getExchangeRate(
+            BrokerConnectionRef connection,
+            Currency baseCurrency,
+            Currency quoteCurrency) {
+        mapper.requireToss(connection);
+        var response = apiClient.getExchangeRate(
+                connection.brokerConnectionId(), baseCurrency.name(), quoteCurrency.name());
+        return new BrokerResponse<>(mapper.exchangeRate(response.value(), response.metadata()), response.metadata());
+    }
+
+    @Override
+    public BrokerResponse<MarketCalendar> getMarketCalendar(
+            BrokerConnectionRef connection,
+            String market,
+            LocalDate date) {
+        mapper.requireToss(connection);
+        var normalized = market.toUpperCase(java.util.Locale.ROOT);
+        if (!"KR".equals(normalized) && !"US".equals(normalized)) {
+            throw new BrokerException(BrokerErrorCategory.VALIDATION, null, null, null, null, false,
+                    "Toss market calendar market is invalid");
+        }
+        var response = apiClient.getMarketCalendar(connection.brokerConnectionId(), normalized, date);
+        return new BrokerResponse<>(mapper.marketCalendar(normalized, response.value(), response.metadata()), response.metadata());
+    }
+
+    @Override
+    public BrokerResponse<Ranking> getRanking(
+            BrokerConnectionRef connection,
+            String type,
+            String marketCountry,
+            String duration,
+            int count) {
+        mapper.requireToss(connection);
+        var response = apiClient.getRankings(
+                connection.brokerConnectionId(), type, marketCountry, duration, count);
+        return new BrokerResponse<>(mapper.ranking(
+                response.value(), type, marketCountry, duration, response.metadata()), response.metadata());
     }
 
     @Override

@@ -46,6 +46,10 @@ function surface(data = null, status = "AVAILABLE", extra = {}) {
     unknownFields: [],
     unavailable: status === "UNAVAILABLE",
     unavailableReason: status === "UNAVAILABLE" ? "PROVIDER_UNSUPPORTED" : null,
+    provenance: status === "UNAVAILABLE" ? [] : [{
+      provider: "TOSS", endpoint: "/api/v1/market-data", currency: "USD",
+      asOf: NOW, observedAt: NOW
+    }],
     data,
     ...extra
   };
@@ -523,7 +527,7 @@ function matchEndpoint(pathname, method) {
   if (is(/\/stock-forecasts\/[^/]+/)) return { body: STOCK_FORECAST_FULL };
   if (is(/\/stock-analysis-explanations\/[^/]+/)) return { body: STOCK_EXPLANATION_FULL };
 
-  // Provider-backed market surfaces. Unsupported endpoints are explicit envelopes.
+  // Provider-backed market surfaces. Payloads mirror the live Toss contract.
   if (is(/\/buying-power$/)) {
     return { body: surface({ USD: { cashBuyingPower: 1000 } }), kind: "surface" };
   }
@@ -534,7 +538,47 @@ function matchEndpoint(pathname, method) {
       }), kind: "surface"
     };
   }
-  if (is(/\/(orderbook|candles|exchange-rate|market-calendar|rankings|commissions)(\/|$)/)
+  if (is(/\/orderbook$/)) {
+    return { body: surface({
+      symbol: "AAPL", timestamp: NOW, currency: "USD",
+      asks: [{ price: 210.1, volume: 120 }, { price: 210.2, volume: 85 }],
+      bids: [{ price: 209.9, volume: 140 }, { price: 209.8, volume: 90 }]
+    }), kind: "surface" };
+  }
+  if (is(/\/candles$/)) {
+    return { body: surface({
+      symbol: "AAPL", interval: "1d", adjusted: true, nextBefore: "2026-08-01T00:00:00Z",
+      candles: [
+        { timestamp: NOW, openPrice: 208, highPrice: 212, lowPrice: 207, closePrice: 210, volume: 1200000, currency: "USD" },
+        { timestamp: "2026-08-04T00:00:00Z", openPrice: 205, highPrice: 209, lowPrice: 204, closePrice: 208, volume: 1100000, currency: "USD" }
+      ]
+    }), kind: "surface" };
+  }
+  if (is(/\/exchange-rate$/)) {
+    return { body: surface({
+      baseCurrency: "USD", quoteCurrency: "KRW", rate: 1380.25, midRate: 1380.1,
+      basisPoint: 1.5, rateChangeType: "UP", validFrom: NOW, validUntil: "2026-08-05T00:01:00Z"
+    }), kind: "surface" };
+  }
+  if (is(/\/market-calendar\/[^/]+$/)) {
+    return { body: surface({
+      market: "US", payload: {
+        previousBusinessDay: { date: "2026-08-04", regularMarket: { open: "2026-08-04T22:30:00+09:00", close: "2026-08-05T05:00:00+09:00" } },
+        today: { date: "2026-08-05", regularMarket: { open: "2026-08-05T22:30:00+09:00", close: "2026-08-06T05:00:00+09:00" } },
+        nextBusinessDay: { date: "2026-08-06", regularMarket: { open: "2026-08-06T22:30:00+09:00", close: "2026-08-07T05:00:00+09:00" } }
+      }
+    }), kind: "surface" };
+  }
+  if (is(/\/rankings$/)) {
+    return { body: surface({
+      rankedAt: NOW,
+      rankings: [
+        { rank: 1, symbol: "AAPL", price: { lastPrice: 210, basePrice: 208, changeRate: 0.0096 }, tradingVolume: 1200000, tradingAmount: 252000000, currency: "USD" },
+        { rank: 2, symbol: "NVDA", price: { lastPrice: 125, basePrice: 123, changeRate: 0.0162 }, tradingVolume: 980000, tradingAmount: 122500000, currency: "USD" }
+      ]
+    }), kind: "surface" };
+  }
+  if (is(/\/commissions$/)
       || is(/\/stocks\/[^/]+\/(warnings|investor-trading)$/)) {
     return { body: surface(null, "UNAVAILABLE"), kind: "surface" };
   }
@@ -709,7 +753,7 @@ export const ROUTES = [
   { path: "/events", name: "events" },
   { path: "/predictions", name: "predictions" },
   { path: "/settings", name: "settings" },
-  { path: "/stocks/AAPL", name: "stocks-AAPL", extraStates: ["unsupported"] }
+  { path: "/stocks/AAPL", name: "stocks-AAPL" }
 ];
 
 export const CONNECTION_ID = "audit-connection";

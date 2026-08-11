@@ -38,6 +38,7 @@ import {
   createStockForecast,
   loadStockAnalysisExplanation,
   createStockAnalysisExplanation,
+  loadRankings,
   orderActionKey,
   loadSession,
   loadUnreadCount,
@@ -64,6 +65,22 @@ function json(body, status = 200) {
     headers: { "content-type": "application/json" }
   });
 }
+
+test("uses Toss-supported duration for gainers and losers rankings", async () => {
+  const calls = [];
+  const fetcher = async url => {
+    calls.push(url);
+    return json({ status: "AVAILABLE", data: { rankings: [] } });
+  };
+
+  await loadRankings("connection-1", "GAINERS", fetcher);
+  await loadRankings("connection-1", "LOSERS", fetcher);
+  await loadRankings("connection-1", "VOLUME", fetcher);
+
+  assert.deepEqual(calls.map(url => new URL(url, "http://localhost").searchParams.get("duration")), [
+    "1d", "1d", "realtime"
+  ]);
+});
 
 test("loads bearer metadata and owned dashboard with same-origin cookies", async () => {
   const calls = [];

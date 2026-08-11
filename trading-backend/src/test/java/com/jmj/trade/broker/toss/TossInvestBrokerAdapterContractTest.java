@@ -19,6 +19,8 @@ import org.testcontainers.utility.DockerImageName;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.UUID;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
@@ -142,6 +144,115 @@ class TossInvestBrokerAdapterContractTest {
         assertThat(response.value().brokerTimestamp()).isNull();
         assertThat(response.value().bidPrice()).isNull();
         assertThat(response.value().askPrice()).isNull();
+    }
+
+    @Test
+    void mapsOrderbookLevelsWithoutDroppingProviderCurrencyOrTimestamp() {
+        server.stubFor(get(urlEqualTo("/api/v1/orderbook?symbol=AAPL")).willReturn(json("""
+                {"result":{"timestamp":"2026-08-09T00:00:00.123+09:00","currency":"USD",
+                "asks":[{"price":"210.10","volume":"120"}],"bids":[{"price":"209.90","volume":"140"}]}}
+                """)));
+
+        var response = adapter().getOrderBook(CONNECTION, "aapl");
+
+        assertThat(response.value()).satisfies(orderBook -> {
+            assertThat(orderBook.symbol()).isEqualTo("AAPL");
+            assertThat(orderBook.timestamp()).isEqualTo(Instant.parse("2026-08-08T15:00:00.123Z"));
+            assertThat(orderBook.currency()).isEqualTo(Currency.USD);
+            assertThat(orderBook.asks()).singleElement().satisfies(level -> {
+                assertThat(level.price()).isEqualByComparingTo("210.10");
+                assertThat(level.volume()).isEqualByComparingTo("120");
+            });
+        });
+    }
+
+    @Test
+    void preservesPartialOrderbookLevelsForDegradeHandling() {
+        server.stubFor(get(urlEqualTo("/api/v1/orderbook?symbol=AAPL")).willReturn(json("""
+                {"result":{"timestamp":"2026-08-09T00:00:00+09:00","currency":"USD",
+                "asks":[{"price":"210.10"}],"bids":[]}}
+                """)));
+
+        var response = adapter().getOrderBook(CONNECTION, "AAPL");
+
+        assertThat(response.value().asks()).singleElement().satisfies(level -> {
+            assertThat(level.price()).isEqualByComparingTo("210.10");
+            assertThat(level.volume()).isNull();
+        });
+        assertThat(response.value().bids()).isEmpty();
+    }
+
+    @Test
+    void mapsCandlesWithOfficialIntervalAndAdjustedFlag() {
+        server.stubFor(get(urlEqualTo("/api/v1/candles?symbol=AAPL&interval=1d&count=2&adjusted=true"))
+                .willReturn(json("""
+                        {"result":{"candles":[{"timestamp":"2026-08-08T00:00:00+09:00","openPrice":"205","highPrice":"212","lowPrice":"204","closePrice":"210","volume":"1200000","currency":"USD"}],"nextBefore":"2026-08-07T00:00:00+09:00"}}
+                        """)));
+
+        var response = adapter().getCandles(CONNECTION, "AAPL", "1d", 2, null, true);
+
+        assertThat(response.value().interval()).isEqualTo("1d");
+        assertThat(response.value().adjusted()).isTrue();
+        assertThat(response.value().candles()).singleElement().satisfies(candle -> {
+            assertThat(candle.closePrice()).isEqualByComparingTo("210");
+            assertThat(candle.volume()).isEqualByComparingTo("1200000");
+            assertThat(candle.currency()).isEqualTo(Currency.USD);
+        });
+        assertThat(response.value().nextBefore()).isEqualTo(Instant.parse("2026-08-06T15:00:00Z"));
+    }
+
+    @Test
+    void mapsExchangeRateValidityWindowWithoutConvertingCurrencies() {
+        server.stubFor(get(urlEqualTo("/api/v1/exchange-rate?baseCurrency=USD&quoteCurrency=KRW"))
+                .willReturn(json("""
+                        {"result":{"baseCurrency":"USD","quoteCurrency":"KRW","rate":"1380.25","midRate":"1380.10","basisPoint":"1.5","rateChangeType":"UP","validFrom":"2026-08-09T00:00:00+09:00","validUntil":"2026-08-09T00:01:00+09:00"}}
+                        """)));
+
+        var response = adapter().getExchangeRate(CONNECTION, Currency.USD, Currency.KRW);
+
+        assertThat(response.value().rate()).isEqualByComparingTo("1380.25");
+        assertThat(response.value().midRate()).isEqualByComparingTo("1380.10");
+        assertThat(response.value().baseCurrency()).isEqualTo(Currency.USD);
+        assertThat(response.value().quoteCurrency()).isEqualTo(Currency.KRW);
+        assertThat(response.value().validUntil()).isEqualTo(Instant.parse("2026-08-08T15:01:00Z"));
+    }
+
+    @Test
+    void mapsCalendarPayloadAndRankingValuesAsProviderData() {
+        server.stubFor(get(urlEqualTo("/api/v1/market-calendar/US?date=2026-08-09"))
+                .willReturn(json("""
+                        {"result":{"today":{"date":"2026-08-09","regularMarket":null},"previousBusinessDay":{"date":"2026-08-08"},"nextBusinessDay":{"date":"2026-08-10"}}}
+                        """)));
+        server.stubFor(get(urlEqualTo("/api/v1/rankings?type=MARKET_TRADING_VOLUME&marketCountry=US&duration=realtime&count=2"))
+                .willReturn(json("""
+                        {"result":{"rankedAt":"2026-08-09T00:00:00+09:00","rankings":[{"rank":"1","symbol":"AAPL","currency":"USD","price":{"lastPrice":"210","basePrice":"208","changeRate":"0.0096"},"tradingVolume":"1200000","tradingAmount":"252000000"}]}}
+                        """)));
+
+        var calendar = adapter().getMarketCalendar(CONNECTION, "US", LocalDate.parse("2026-08-09"));
+        var ranking = adapter().getRanking(CONNECTION, "MARKET_TRADING_VOLUME", "US", "realtime", 2);
+
+        assertThat(calendar.value().payload().path("today").path("date").asText()).isEqualTo("2026-08-09");
+        assertThat(ranking.value().items()).singleElement().satisfies(item -> {
+            assertThat(item.rank()).isEqualTo(1);
+            assertThat(item.tradingVolume()).isEqualByComparingTo("1200000");
+            assertThat(item.lastPrice()).isEqualByComparingTo("210");
+            assertThat(item.marketCap()).isNull();
+        });
+    }
+
+    @Test
+    void normalizesRateLimitAsRetriableProviderError() {
+        server.stubFor(get(urlEqualTo("/api/v1/orderbook?symbol=AAPL"))
+                .willReturn(aResponse().withStatus(429).withHeader("Retry-After", "2")
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"error\":{\"code\":\"rate-limit-exceeded\"}}")));
+
+        assertThatThrownBy(() -> adapter().getOrderBook(CONNECTION, "AAPL"))
+                .isInstanceOfSatisfying(BrokerException.class, exception -> {
+                    assertThat(exception.category()).isEqualTo(BrokerErrorCategory.RATE_LIMITED);
+                    assertThat(exception.isRetriable()).isTrue();
+                    assertThat(exception.retryAfter()).hasValue(Duration.ofSeconds(2));
+                });
     }
 
     @Test

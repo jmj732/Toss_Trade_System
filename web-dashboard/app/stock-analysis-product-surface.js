@@ -102,17 +102,23 @@ function referenceLabel(candle) {
   return candle?.date ?? candle?.time ?? UNKNOWN_TEXT;
 }
 
+function surfaceProvenance(value) {
+  const item = value?.provenance?.[0];
+  if (!item) return null;
+  return `출처 ${item.provider}${item.asOf ? ` · 기준 ${formatInstant(item.asOf)}` : ""}`;
+}
+
 function latestQuote(candles) {
   const items = candleItems(candles);
-  const latest = items.at(-1);
-  const previous = items.at(-2);
-  const close = latest?.close;
-  const previousClose = previous?.close;
+  const latest = items[0];
+  const previous = items[1];
+  const close = latest?.closePrice ?? latest?.close;
+  const previousClose = previous?.closePrice ?? previous?.close;
   const changeRate = close != null && previousClose
     ? ((Number(close) - Number(previousClose)) / Number(previousClose)) * 100
     : null;
   return {
-    price: formatAmount("USD", close),
+    price: formatAmount(latest?.currency ?? "USD", close),
     change: changeRate == null || Number.isNaN(changeRate)
       ? UNKNOWN_TEXT
       : `${changeRate >= 0 ? "+" : ""}${changeRate.toFixed(2)}%`,
@@ -334,7 +340,7 @@ function OrderbookPanel({ orderbook }) {
   const bids = data?.bids ?? [];
   const hasData = asks.length > 0 || bids.length > 0;
   return h("section", { className: "panel stock-surface-panel" },
-    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 10호가"), h("h2", null, "호가 잔량"))),
+    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 호가"), h("h2", null, "호가 잔량"))),
     hasData
       ? h("div", { className: "orderbook-widget", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "12px" } },
         h("div", { className: "asks", style: { background: "rgba(240, 68, 82, 0.05)", padding: "12px", borderRadius: "var(--r-md)" } },
@@ -343,24 +349,30 @@ function OrderbookPanel({ orderbook }) {
             ...asks.slice(0, 10).map((level, i) =>
               h("li", { key: `ask-${i}` },
                 h("span", null, `호가 ${i + 1}`),
-                h("strong", null, `$${Number(level.price).toLocaleString()} (${Number(level.quantity).toLocaleString()}주)`))))),
+                h("strong", null, `${data?.currency ?? ""} ${level.price != null ? Number(level.price).toLocaleString() : UNKNOWN_TEXT}`,
+                  ` (${level.volume != null ? Number(level.volume).toLocaleString() : UNKNOWN_TEXT}주)`))))),
         h("div", { className: "bids", style: { background: "rgba(49, 130, 246, 0.05)", padding: "12px", borderRadius: "var(--r-md)" } },
           h("h4", { style: { color: "var(--accent-text)", margin: "0 0 8px" } }, "매수 호가 (Bids)"),
           h("ul", { className: "list", style: { fontSize: "var(--fs-xs)" } },
             ...bids.slice(0, 10).map((level, i) =>
               h("li", { key: `bid-${i}` },
                 h("span", null, `호가 ${i + 1}`),
-                h("strong", null, `$${Number(level.price).toLocaleString()} (${Number(level.quantity).toLocaleString()}주)`))))))
-      : h("p", { className: "empty" }, message ?? "호가 데이터가 없습니다"));
+                h("strong", null, `${data?.currency ?? ""} ${level.price != null ? Number(level.price).toLocaleString() : UNKNOWN_TEXT}`,
+                  ` (${level.volume != null ? Number(level.volume).toLocaleString() : UNKNOWN_TEXT}주)`))))))
+      : h("p", { className: "empty" }, message ?? "호가 데이터가 없습니다"),
+    orderbook?.unknownFields?.length
+      ? h("small", { className: "metric-freshness" }, `누락 필드: ${orderbook.unknownFields.join(", ")}`)
+      : null,
+    surfaceProvenance(orderbook)
+      ? h("small", { className: "metric-freshness" }, surfaceProvenance(orderbook)) : null);
 }
 
 // ---------------------------------------------------------------------------
 // 캔들 차트 패널 — loadCandles()
 // ---------------------------------------------------------------------------
 const TIMEFRAMES = [
-  { key: "1d", label: "일봉" },
-  { key: "1w", label: "주봉" },
-  { key: "1M", label: "월봉" }
+  { key: "1m", label: "1분봉" },
+  { key: "1d", label: "일봉" }
 ];
 
 function CandleChartPanel({ candles, timeframe, onTimeframeChange }) {
@@ -385,17 +397,23 @@ function CandleChartPanel({ candles, timeframe, onTimeframeChange }) {
             ...["일자", "시가", "고가", "저가", "종가", "거래량"].map(label =>
               h("th", { key: label, scope: "col" }, label)))),
           h("tbody", null, ...items.slice(-10).reverse().map((c, i) => {
-            const bullish = (c.close ?? 0) >= (c.open ?? 0);
+            const close = c.closePrice ?? c.close;
+            const open = c.openPrice ?? c.open;
+            const high = c.highPrice ?? c.high;
+            const low = c.lowPrice ?? c.low;
+            const bullish = (close ?? 0) >= (open ?? 0);
             return h("tr", { key: `candle-${i}` },
-              h("td", null, c.date ?? c.time ?? UNKNOWN_TEXT),
-              h("td", null, c.open != null ? `$${Number(c.open).toLocaleString()}` : UNKNOWN_TEXT),
-              h("td", { style: { color: "var(--danger-text)" } }, c.high != null ? `$${Number(c.high).toLocaleString()}` : UNKNOWN_TEXT),
-              h("td", { style: { color: "var(--accent-text)" } }, c.low != null ? `$${Number(c.low).toLocaleString()}` : UNKNOWN_TEXT),
+              h("td", null, c.timestamp ? instantCell(c.timestamp) : c.date ?? c.time ?? UNKNOWN_TEXT),
+              h("td", null, open != null ? `${c.currency ?? "USD"} ${Number(open).toLocaleString()}` : UNKNOWN_TEXT),
+              h("td", { style: { color: "var(--danger-text)" } }, high != null ? `${c.currency ?? "USD"} ${Number(high).toLocaleString()}` : UNKNOWN_TEXT),
+              h("td", { style: { color: "var(--accent-text)" } }, low != null ? `${c.currency ?? "USD"} ${Number(low).toLocaleString()}` : UNKNOWN_TEXT),
               h("td", { style: { fontWeight: "var(--fw-bold)", color: bullish ? "var(--danger-text)" : "var(--accent-text)" } },
-                c.close != null ? `$${Number(c.close).toLocaleString()}` : UNKNOWN_TEXT),
+                close != null ? `${c.currency ?? "USD"} ${Number(close).toLocaleString()}` : UNKNOWN_TEXT),
               h("td", null, c.volume != null ? Number(c.volume).toLocaleString() : UNKNOWN_TEXT));
           }))))
-      : h("p", { className: "empty" }, message ?? "차트 데이터가 없습니다"));
+      : h("p", { className: "empty" }, message ?? "차트 데이터가 없습니다"),
+    surfaceProvenance(candles)
+      ? h("small", { className: "metric-freshness" }, surfaceProvenance(candles)) : null);
 }
 
 // ---------------------------------------------------------------------------

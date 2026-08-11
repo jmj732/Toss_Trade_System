@@ -562,14 +562,14 @@ export function loadOrderbook(connectionId, symbol, fetcher = fetch) {
 
 export function loadCandles(connectionId, symbol, timeframe = "1d", fetcher = fetch) {
   return readEvent(
-    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`,
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/candles?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(timeframe)}`,
     fetcher
   );
 }
 
 export function loadExchangeRate(connectionId, fetcher = fetch) {
   return readEvent(
-    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/exchange-rate`,
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/exchange-rate?baseCurrency=USD&quoteCurrency=KRW`,
     fetcher
   );
 }
@@ -596,8 +596,9 @@ export function loadInvestorTrading(connectionId, symbol, fetcher = fetch) {
 }
 
 export function loadRankings(connectionId, category = "VOLUME", fetcher = fetch) {
+  const duration = category === "GAINERS" || category === "LOSERS" ? "1d" : "realtime";
   return readEvent(
-    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/rankings?category=${encodeURIComponent(category)}`,
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/rankings?category=${encodeURIComponent(category)}&marketCountry=US&duration=${duration}&count=10`,
     fetcher
   );
 }

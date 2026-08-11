@@ -23,6 +23,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -72,6 +73,96 @@ final class TossApiClient {
                 .retrieve()
                 .toEntity(String.class), TossApiDtos.PricesEnvelope.class)
                 .map(TossApiDtos.PricesEnvelope::result);
+    }
+
+    TossApiResponse<TossApiDtos.OrderBook> getOrderBook(UUID brokerConnectionId, String symbol) {
+        return withTokenRefresh(brokerConnectionId, token -> restClient.get()
+                .uri(builder -> builder.path("/api/v1/orderbook").queryParam("symbol", symbol).build())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.OrderBookEnvelope.class)
+                .map(TossApiDtos.OrderBookEnvelope::result);
+    }
+
+    TossApiResponse<TossApiDtos.CandleSeries> getCandles(
+            UUID brokerConnectionId,
+            String symbol,
+            String interval,
+            int count,
+            String before,
+            boolean adjusted) {
+        return withTokenRefresh(brokerConnectionId, token -> restClient.get()
+                .uri(builder -> {
+                    var uri = builder.path("/api/v1/candles")
+                            .queryParam("symbol", symbol)
+                            .queryParam("interval", interval)
+                            .queryParam("count", count)
+                            .queryParam("adjusted", adjusted);
+                    if (before != null && !before.isBlank()) {
+                        uri.queryParam("before", before);
+                    }
+                    return uri.build();
+                })
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.CandleSeriesEnvelope.class)
+                .map(TossApiDtos.CandleSeriesEnvelope::result);
+    }
+
+    TossApiResponse<TossApiDtos.ExchangeRate> getExchangeRate(
+            UUID brokerConnectionId,
+            String baseCurrency,
+            String quoteCurrency) {
+        return withTokenRefresh(brokerConnectionId, token -> restClient.get()
+                .uri(builder -> builder.path("/api/v1/exchange-rate")
+                        .queryParam("baseCurrency", baseCurrency)
+                        .queryParam("quoteCurrency", quoteCurrency)
+                        .build())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.ExchangeRateEnvelope.class)
+                .map(TossApiDtos.ExchangeRateEnvelope::result);
+    }
+
+    TossApiResponse<tools.jackson.databind.JsonNode> getMarketCalendar(
+            UUID brokerConnectionId,
+            String market,
+            LocalDate date) {
+        return withTokenRefresh(brokerConnectionId, token -> restClient.get()
+                .uri(builder -> {
+                    var uri = builder.path("/api/v1/market-calendar/" + market);
+                    if (date != null) {
+                        uri.queryParam("date", date);
+                    }
+                    return uri.build();
+                })
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.MarketCalendarEnvelope.class)
+                .map(TossApiDtos.MarketCalendarEnvelope::result);
+    }
+
+    TossApiResponse<TossApiDtos.Rankings> getRankings(
+            UUID brokerConnectionId,
+            String type,
+            String marketCountry,
+            String duration,
+            int count) {
+        return withTokenRefresh(brokerConnectionId, token -> restClient.get()
+                .uri(builder -> {
+                    var uri = builder.path("/api/v1/rankings")
+                            .queryParam("type", type)
+                            .queryParam("marketCountry", marketCountry)
+                            .queryParam("duration", duration);
+                    if (count > 0) {
+                        uri.queryParam("count", count);
+                    }
+                    return uri.build();
+                })
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.RankingsEnvelope.class)
+                .map(TossApiDtos.RankingsEnvelope::result);
     }
 
     TossApiResponse<TossApiDtos.BuyingPower> getBuyingPower(UUID brokerConnectionId, String accountSeq, String currency) {
@@ -287,6 +378,21 @@ final class TossApiClient {
             return typed.result();
         }
         if (envelope instanceof TossApiDtos.PricesEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.OrderBookEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.CandleSeriesEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.ExchangeRateEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.MarketCalendarEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.RankingsEnvelope typed) {
             return typed.result();
         }
         if (envelope instanceof TossApiDtos.BuyingPowerEnvelope typed) {
