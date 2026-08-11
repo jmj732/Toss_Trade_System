@@ -39,6 +39,14 @@ test("does not assert an empty orders list until the workspace has loaded", asyn
   assert.doesNotMatch(source, /대기 중인 주문이 없습니다/);
 });
 
+test("a missing latest analysis still loads the read-only stock surfaces", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  // 분석 404는 빈 상태로 확정하되, 시세/호가/경고 GET까지 조기 반환하지 않는다.
+  assert.match(source, /if \(value\.status !== 404\) \{[\s\S]*?\n\s*return;\n\s*\}\n\s*analysisResult = \{ result: null \};/);
+  assert.match(source, /analysisResult = \{ result: null \};[\s\S]*?loadOrderbook/);
+});
+
 test("maps known backend error codes to Korean guidance and falls back to raw codes", () => {
   assert.equal(describeError("INTERNAL_ERROR"),
     "일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");

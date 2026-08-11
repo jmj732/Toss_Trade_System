@@ -282,8 +282,9 @@ export function RouteWorkspace({ route, symbol = "" }) {
       setStockStatus({ analysis: value.status === 404 ? "READY" : "FAILED", forecast: "READY", explanation: "READY" });
       if (value.status !== 404) {
         setStockErrors(current => ({ ...current, analysis: value.message }));
+        return;
       }
-      return;
+      analysisResult = { result: null };
     }
     setStockAnalysis(analysisResult);
     setStockStatus(current => ({ ...current, analysis: statusFrom(analysisResult) }));
