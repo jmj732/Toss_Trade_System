@@ -175,6 +175,7 @@ function Quality({ section, region }) {
   }
   if (section.unknown) values.push(["unknown", "확인 필요"]);
   if (section.unavailable) values.push(["unavailable", "불러오기 실패"]);
+  if (section.empty) values.push(["empty", "결과 없음"]);
   const partial = isPartial(section);
   if (partial) values.push(["partial", "일부 누락"]);
   // D-06: partial 이면 "최신" 을 단언하지 않는다.
@@ -264,6 +265,12 @@ function Portfolio({ section }) {
 const ANALYSIS_STATUS_LABELS = { COMPLETED: "정상", DEGRADED: "품질 저하" };
 
 function Analysis({ section }) {
+  const empty = section.unavailableReason === "ANALYSIS_RESULT_NOT_FOUND";
+  if (empty) {
+    return h(Section, {
+      title: "분석", section: { ...section, unavailable: false, empty }, className: "analysis-panel"
+    }, h("p", { className: "empty" }, "분석 결과가 아직 없습니다."));
+  }
   const result = section.data?.result;
   const totals = result?.currencyTotals ?? [];
   const positions = result?.positions ?? [];
