@@ -85,7 +85,6 @@ const PAPER_QUERY = { from: "", to: "", maxPoints: 90 };
 const OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "", symbol: "" };
 
 export { describeError } from "../lib/error-messages.js";
-
 export function selectHomeSymbol(dashboard) {
   const positions = dashboard?.portfolio?.data?.positions;
   if (!Array.isArray(positions)) {
@@ -130,7 +129,6 @@ export function AccountSwitcher({ accountLabel = "기본계좌", connectionId = 
       }),
       h("button", { type: "submit", disabled: busy || !connectionId.trim() }, "계좌 불러오기"))));
 }
-
 export function RouteNav({ symbol }) {
   const pathname = usePathname();
   const stockHref = symbol ? `/stocks/${encodeURIComponent(symbol)}` : null;
