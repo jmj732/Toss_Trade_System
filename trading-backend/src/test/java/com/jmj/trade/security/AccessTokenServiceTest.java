@@ -28,7 +28,7 @@ class AccessTokenServiceTest {
         var sessionId = UUID.randomUUID();
         var authTime = NOW.minusSeconds(30);
         var service = new AccessTokenService(
-                "01234567890123456789012345678901", Duration.ofMinutes(5), CLOCK);
+                "01234567890123456789012345678901", Duration.ofMinutes(20), CLOCK);
 
         var issued = service.issue(userId, sessionId, authTime);
         var claims = service.parse(issued.value());
@@ -36,7 +36,7 @@ class AccessTokenServiceTest {
         assertThat(claims.userId()).isEqualTo(userId);
         assertThat(claims.sessionId()).isEqualTo(sessionId);
         assertThat(claims.authenticatedAt()).isEqualTo(authTime);
-        assertThat(issued.expiresAt()).isEqualTo(NOW.plusSeconds(300));
+        assertThat(issued.expiresAt()).isEqualTo(NOW.plusSeconds(1200));
     }
 
     @Test
