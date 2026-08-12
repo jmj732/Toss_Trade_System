@@ -75,8 +75,7 @@ test("renders degraded usable candles chronologically with accessible svg, table
         { timestamp: "2026-07-31T00:00:00Z", open: null, high: "x", low: 5, close: 6, volume: 70 }
       ]
     },
-    provenance: "TOSS",
-    asOf: "2026-08-02T00:01:00Z",
+    provenance: [{ provider: "TOSS", endpoint: "/api/v1/candles", asOf: "2026-08-02T00:01:00Z" }],
     unknownFields: ["candles[2].high"]
   };
 
@@ -107,6 +106,25 @@ test("renders degraded usable candles chronologically with accessible svg, table
   assert.ok(html.indexOf("2026-07-31") < html.indexOf("2026-08-01"));
   assert.ok(html.indexOf("2026-08-01") < html.indexOf("2026-08-02"));
   assert.doesNotMatch(html, /READY/);
+});
+
+test("preserves array provenance and degraded empty status without crashing or inventing ready data", () => {
+  const html = renderToStaticMarkup(createElement(MarketCandleChart, {
+    envelope: {
+      status: "DEGRADED",
+      unknownFields: ["candles"],
+      provenance: [{ provider: "TOSS", endpoint: "/api/v1/candles", asOf: "2026-08-12T01:00:00Z" }],
+      data: { candles: [] }
+    },
+    symbol: "AAPL",
+    interval: "1m"
+  }));
+
+  assert.match(html, /부분 데이터/);
+  assert.match(html, /출처 TOSS/);
+  assert.match(html, /기준/);
+  assert.match(html, /누락 필드: candles/);
+  assert.doesNotMatch(html, /market-candle-svg/);
 });
 
 test("svg title and description ids are unique and name the symbol interval", () => {
@@ -228,14 +246,28 @@ test("keeps degraded warning and hides chart when rows have zero usable OHLC", (
 
 test("status priority hides chart for unavailable or error and empty normal stays empty", () => {
   const unavailable = renderToStaticMarkup(createElement(MarketCandleChart, {
-    envelope: { status: "UNAVAILABLE", data: { candles: [{ open: 1, high: 2, low: 1, close: 2 }] } }
+    envelope: { status: "UNAVAILABLE", unavailableReason: "PROVIDER_UNSUPPORTED", data: { candles: [{ open: 1, high: 2, low: 1, close: 2 }] } }
   }));
   const empty = renderToStaticMarkup(createElement(MarketCandleChart, {
     envelope: { status: "AVAILABLE", data: { candles: [] } }
   }));
 
   assert.match(unavailable, /차트 데이터를 불러오지 못했습니다/);
+  assert.match(unavailable, /PROVIDER_UNSUPPORTED/);
   assert.doesNotMatch(unavailable, /<svg/);
   assert.match(empty, /차트 데이터가 없습니다/);
   assert.doesNotMatch(empty, /<svg/);
+});
+
+test("shows loading and no-holdings states without claiming empty provider data", () => {
+  const loading = renderToStaticMarkup(createElement(MarketCandleChart, { envelope: null, symbol: "AAPL" }));
+  const noHoldings = renderToStaticMarkup(createElement(MarketCandleChart, {
+    envelope: { status: "AVAILABLE", data: { candles: [] } },
+    symbol: ""
+  }));
+
+  assert.match(loading, /차트를 불러오는 중/);
+  assert.match(noHoldings, /보유 종목이 없어 차트를 표시할 수 없습니다/);
+  assert.doesNotMatch(loading, /차트 데이터가 없습니다/);
+  assert.doesNotMatch(noHoldings, /차트 데이터가 없습니다/);
 });

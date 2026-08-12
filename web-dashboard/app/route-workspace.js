@@ -8,6 +8,7 @@ import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
 import { EventWorkflow } from "./event-workflow.js";
 import { MarketOverviewView } from "./market-overview-view.js";
+import { CANDLE_INTERVALS } from "./market-candle-chart.js";
 import { NotificationCenter } from "./notification-center.js";
 import { OrderApprovalPanel } from "./order-approval-panel.jsx";
 import { OrdersView } from "./orders-view.js";
@@ -84,6 +85,51 @@ const PAPER_QUERY = { from: "", to: "", maxPoints: 90 };
 const OUTCOME_QUERY = { from: "", to: "", modelVersion: "", contractVersion: "", symbol: "" };
 
 export { describeError } from "../lib/error-messages.js";
+
+export function selectHomeSymbol(dashboard) {
+  const positions = dashboard?.portfolio?.data?.positions;
+  if (!Array.isArray(positions)) {
+    return "";
+  }
+  const symbol = positions.find(value => typeof value?.symbol === "string" && value.symbol.trim())?.symbol;
+  return typeof symbol === "string" ? symbol.trim().toUpperCase() : "";
+}
+
+export function homeCandleRequestKey(connectionId, symbol, interval) {
+  return `${connectionId}\n${symbol}\n${interval}`;
+}
+
+export function needsHomeCandleRequest(previous, next) {
+  return previous !== next;
+}
+
+export function readSavedConnectionId(storage) {
+  return storage?.getItem("trade.connectionId")?.trim() ?? "";
+}
+
+export function AccountSwitcher({ accountLabel = "기본계좌", connectionId = "", busy = false, onSwitch, onConnectionChange }) {
+  return h("details", { className: "account-switcher", "data-route-region": "account-switcher" },
+    h("summary", null,
+      h("span", { className: "account-switcher-primary" }, accountLabel),
+      h("span", { className: "account-switcher-action" }, "계좌 변경")),
+    h("form", {
+      className: "account-switcher-form",
+      onSubmit: event => {
+        event.preventDefault();
+        onSwitch(event.currentTarget.elements.connectionId.value);
+      }
+    },
+    h("label", { htmlFor: "account-switcher-connection-id" }, "연결된 계좌"),
+    h("div", null,
+      h("input", {
+        id: "account-switcher-connection-id",
+        name: "connectionId",
+        value: connectionId,
+        onChange: event => onConnectionChange?.(event.target.value),
+        required: true
+      }),
+      h("button", { type: "submit", disabled: busy || !connectionId.trim() }, "계좌 불러오기"))));
+}
 
 export function RouteNav({ symbol }) {
   const pathname = usePathname();
@@ -182,6 +228,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [orderbook, setOrderbook] = useState(null);
   const [candles, setCandles] = useState(null);
   const [candleTimeframe, setCandleTimeframe] = useState("1d");
+  const [homeCandleInterval, setHomeCandleInterval] = useState("1m");
+  const [homeCandles, setHomeCandles] = useState(null);
   const [investorTrading, setInvestorTrading] = useState(null);
   const [stockWarnings, setStockWarnings] = useState(null);
   const [commissions, setCommissions] = useState(null);
@@ -192,6 +240,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   // 변경 작업을 단일 실행으로 감싸 연타로 인한 중복 제출을 막는다(모든 라우트 공통).
   const mutationFlight = useRef();
   mutationFlight.current ??= createSingleFlight();
+  const homeCandleRequest = useRef("");
 
   useEffect(() => {
     loadSession().then(setSession).catch(value => {
@@ -216,14 +265,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
         .catch(value => setReadinessError(describeError(value.message)))
         .finally(() => setReadinessBusy(false));
     }
-    // 홈은 저장된 연결을 자동 복구하지 않는다: 명시적으로 열기 전에는 랜딩을 유지한다(D-36).
-    // 나머지 6개 라우트는 기존대로 자동 복구한다.
-    if (route !== "home") {
-      const saved = window.localStorage.getItem("trade.connectionId") ?? "";
-      if (saved) {
-        setConnectionId(saved);
-        openWorkspace(saved);
-      }
+    // 로그인 후에는 마지막으로 선택한 계좌를 홈에서도 즉시 복구한다.
+    const saved = readSavedConnectionId(window.localStorage);
+    if (saved) {
+      setConnectionId(saved);
+      openWorkspace(saved);
     }
   }, [session]);
 
@@ -353,6 +399,9 @@ export function RouteWorkspace({ route, symbol = "" }) {
       setDashboard(dashboard);
       setConnection({ id, status: "ACTIVE" });
       setWorkspaceStatus("ready");
+      if (route === "home") {
+        loadHomeCandles(id, selectHomeSymbol(dashboard), homeCandleInterval);
+      }
     } catch (value) {
       setError(describeError(value.message));
       setWorkspaceStatus("error");
@@ -428,6 +477,29 @@ export function RouteWorkspace({ route, symbol = "" }) {
     if (route === "stock") {
       await loadStockSurface(id);
     }
+  }
+
+  function loadHomeCandles(id, symbol, interval) {
+    if (!symbol) {
+      homeCandleRequest.current = "";
+      setHomeCandles(null);
+      return;
+    }
+    const next = homeCandleRequestKey(id, symbol, interval);
+    if (!needsHomeCandleRequest(homeCandleRequest.current, next)) {
+      return;
+    }
+    homeCandleRequest.current = next;
+    setHomeCandles({ status: "LOADING" });
+    loadCandles(id, symbol, interval)
+      .then(value => {
+        if (homeCandleRequest.current === next) setHomeCandles(value);
+      })
+      .catch(value => {
+        if (homeCandleRequest.current === next) {
+          setHomeCandles({ status: "ERROR", unavailableReason: value.code ?? value.message });
+        }
+      });
   }
 
   function mutation(label, task) {
@@ -707,6 +779,14 @@ export function RouteWorkspace({ route, symbol = "" }) {
     });
   }
 
+  function homeCandleIntervalChange(interval) {
+    if (!CANDLE_INTERVALS.some(option => option.key === interval)) {
+      return;
+    }
+    setHomeCandleInterval(interval);
+    loadHomeCandles(connectionId.trim(), selectHomeSymbol(dashboard), interval);
+  }
+
   // 미로딩(idle)·로딩중·실패를 각각 구분해 "없음"으로 단언하지 않는다.
   function connectionNotice(idleText) {
     if (workspaceStatus === "loading") {
@@ -901,7 +981,15 @@ export function RouteWorkspace({ route, symbol = "" }) {
   if (route === "home") {
     // 홈은 상단 액션(리스크 정책·알림)과 랜딩/워크스페이스 전환을 갖는 별도 레이아웃이지만
     // 세션·연결·주문·안전 게이트는 위의 공유 상태/핸들러를 그대로 쓴다(D-36).
-    const homeSymbol = dashboard?.portfolio?.data?.positions?.[0]?.symbol;
+    const homeSymbol = selectHomeSymbol(dashboard);
+    const marketOverview = h(MarketOverviewView, {
+      exchangeRate, calendar: marketCalendar, rankings,
+      onRankingCategory: category => {
+        setRankings({ status: "LOADING" });
+        loadRankings(connectionId, category).then(setRankings)
+          .catch(value => setRankings({ status: "ERROR", unavailableReason: value.code ?? value.message }));
+      }
+    });
     return h("div", null,
       statusRegion,
       h("header", { className: "topbar" },
@@ -909,6 +997,13 @@ export function RouteWorkspace({ route, symbol = "" }) {
           h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
           h("h1", null, workspaceReady ? "내 자산" : "내 투자, 한눈에")),
         h("div", { className: "topbar-actions" },
+          workspaceReady ? h(AccountSwitcher, {
+            accountLabel: "기본계좌",
+            connectionId: connectionId.trim(),
+            busy: workspaceStatus === "loading" || Boolean(busy),
+            onSwitch: openWorkspace,
+            onConnectionChange: setConnectionId
+          }) : null,
           workspaceReady ? h(RiskPolicyPanel, {
             policy: riskPolicy,
             history: riskPolicyHistory,
@@ -963,7 +1058,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
                 type: "submit",
                 disabled: workspaceStatus === "loading" || Boolean(busy)
               }, "불러오기"))))) : null,
-      workspaceReady ? h("div", { className: "workspace-content" },
+      workspaceReady ? h("div", { className: "workspace-content home-reference-shell" },
         approvalOrder
           ? h(OrderApprovalPanel, {
             order: approvalOrder,
@@ -977,19 +1072,17 @@ export function RouteWorkspace({ route, symbol = "" }) {
             }
           })
           : null,
-        h(MarketOverviewView, {
-          exchangeRate, calendar: marketCalendar, rankings,
-          onRankingCategory: category => {
-            setRankings({ status: "LOADING" });
-            loadRankings(connectionId, category).then(setRankings)
-              .catch(value => setRankings({ status: "ERROR", unavailableReason: value.code ?? value.message }));
-          }
-        }),
         h(DashboardView, {
           dashboard,
           busyOrderId: busyOrderIds,
           onOrderAction: orderAction,
-          realtimePrices
+          realtimePrices,
+          homeLayout: true,
+          marketOverview,
+          homeCandles,
+          homeCandleSymbol: homeSymbol,
+          homeCandleInterval,
+          onHomeCandleIntervalChange: homeCandleIntervalChange
         })) : null);
   }
   return h("div", null,

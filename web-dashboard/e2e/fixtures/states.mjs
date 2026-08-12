@@ -682,7 +682,7 @@ export function stateRoute(state, opts = {}) {
     const url = new URL(request.url());
     const method = request.method();
     if (opts.onRequest) {
-      opts.onRequest({ url: url.pathname, method, state });
+      opts.onRequest({ url: url.pathname, query: url.search, method, state });
     }
 
     if (state === "unauthorized") {
@@ -704,7 +704,20 @@ export function stateRoute(state, opts = {}) {
       });
     }
 
-    const match = matchEndpoint(url.pathname, method);
+    const endpointMatch = matchEndpoint(url.pathname, method);
+    const match = /\/candles$/.test(url.pathname) && endpointMatch.kind === "surface"
+      ? {
+        ...endpointMatch,
+        body: {
+          ...endpointMatch.body,
+          data: {
+            ...endpointMatch.body.data,
+            symbol: url.searchParams.get("symbol")?.trim().toUpperCase() || endpointMatch.body.data.symbol,
+            interval: url.searchParams.get("interval") || endpointMatch.body.data.interval
+          }
+        }
+      }
+      : endpointMatch;
 
     if (state === "loading") {
       // Hold the response open so the screenshot captures the pending UI.

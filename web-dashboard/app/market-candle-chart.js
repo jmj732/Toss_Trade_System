@@ -75,13 +75,20 @@ function orderedCandles(envelope) {
 
 function derivedStatus(envelope, rowCount) {
   if (envelope?.status === "ERROR" || envelope?.status === "UNAVAILABLE") return envelope.status;
-  if (envelope?.status === "DEGRADED" && rowCount > 0) return "DEGRADED";
+  if (envelope?.status === "DEGRADED") return "DEGRADED";
   return rowCount > 0 ? "READY" : "EMPTY";
 }
 
-function StatusNote({ envelope, status }) {
+function StatusNote({ envelope, status, symbol }) {
+  if (!envelope || envelope.status === "LOADING") {
+    return h("p", { className: "busy", role: "status" }, "차트를 불러오는 중…");
+  }
+  if (!symbol) {
+    return h("p", { className: "empty" }, "보유 종목이 없어 차트를 표시할 수 없습니다");
+  }
   if (status === "ERROR" || status === "UNAVAILABLE") {
-    return h("p", { className: "empty" }, "차트 데이터를 불러오지 못했습니다");
+    return h("p", { className: "empty", role: "alert" },
+      `차트 데이터를 불러오지 못했습니다${envelope.unavailableReason ? ` (${envelope.unavailableReason})` : ""}`);
   }
   if (status === "DEGRADED") {
     return h("p", { className: "busy", role: "status" }, "부분 데이터");
@@ -93,9 +100,15 @@ function StatusNote({ envelope, status }) {
 }
 
 function Metadata({ envelope }) {
+  const provenance = Array.isArray(envelope?.provenance) ? envelope.provenance : [];
+  const sourceText = provenance.map(item => {
+    const asOf = item?.asOf ? ` · 기준 ${formatInstant(item.asOf)}` : "";
+    return item?.provider ? `출처 ${item.provider}${asOf}` : null;
+  }).filter(Boolean).join(" · ");
+  const asOf = envelope?.asOf ?? provenance[0]?.asOf;
   return h("div", { className: "metric-freshness" },
-    envelope?.provenance ? h("small", null, envelope.provenance) : null,
-    envelope?.asOf ? h("small", null, formatInstant(envelope.asOf)) : null,
+    sourceText ? h("small", null, sourceText) : null,
+    asOf && !sourceText ? h("small", null, `기준 ${formatInstant(asOf)}`) : null,
     envelope?.unknownFields?.length
       ? h("small", null, `누락 필드: ${envelope.unknownFields.join(", ")}`)
       : null);
@@ -195,7 +208,7 @@ export function MarketCandleChart({ envelope, symbol = "UNKNOWN", interval = "1d
     .map((candle, index) => ({ index, values: usablePrice(candle) }))
     .filter(entry => entry.values);
   const status = derivedStatus(envelope, rows.length);
-  const showRows = (status === "READY" || status === "DEGRADED") && rows.length > 0;
+  const showRows = Boolean(symbol) && (status === "READY" || status === "DEGRADED") && rows.length > 0;
   const showChart = showRows && drawable.length > 0;
 
   return h("section", { className: "panel market-candle-chart" },
@@ -212,7 +225,7 @@ export function MarketCandleChart({ envelope, symbol = "UNKNOWN", interval = "1d
             "aria-pressed": interval === option.key,
             onClick: () => onIntervalChange?.(option.key)
           }, option.label)))),
-    h(StatusNote, { envelope, status }),
+    h(StatusNote, { envelope, status, symbol }),
     showChart ? h(CandleSvg, { rows, drawable, symbol, interval }) : null,
     showRows ? h(CandleTable, { rows }) : null,
     h(Metadata, { envelope }));

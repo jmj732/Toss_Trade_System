@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
-import { describeError, loginHref } from "../app/route-workspace.js";
+import * as workspace from "../app/route-workspace.js";
+
+const { describeError, loginHref } = workspace;
 
 const root = new URL("../app/", import.meta.url);
 
@@ -101,8 +105,51 @@ test("home inherits the safety gates the standalone page previously lacked", asy
   assert.match(source, /RISK_POLICY_VERSION_CONFLICT/);
   // 읽지 않음 카운트 실패는 0 이 아니라 null(미확정)로 둔다.
   assert.match(source, /setUnreadCount\(null\)/);
-  // 홈은 저장된 연결을 자동 복구하지 않는다.
-  assert.match(source, /route !== "home"[\s\S]*?trade\.connectionId/);
+  // 로그인 후 홈도 저장된 계좌를 자동 복구한다.
+  assert.match(source, /const saved = readSavedConnectionId\(window\.localStorage\);[\s\S]*?openWorkspace\(saved\);/);
+  assert.doesNotMatch(source, /if \(route !== "home"\) \{[\s\S]*?trade\.connectionId/);
+});
+
+test("restores only a non-empty saved connection id", () => {
+  assert.equal(typeof workspace.readSavedConnectionId, "function");
+  const storage = { getItem: key => key === "trade.connectionId" ? "  connection-1  " : null };
+  assert.equal(workspace.readSavedConnectionId(storage), "connection-1");
+  assert.equal(workspace.readSavedConnectionId({ getItem: () => "   " }), "");
+  assert.equal(workspace.readSavedConnectionId({ getItem: () => null }), "");
+});
+
+test("keeps the connected account primary while exposing an explicit account switch", () => {
+  assert.equal(typeof workspace.AccountSwitcher, "function");
+  const html = renderToStaticMarkup(createElement(workspace.AccountSwitcher, {
+    accountLabel: "기본계좌",
+    connectionId: "connection-1",
+    busy: false,
+    onSwitch() {}
+  }));
+  assert.match(html, /기본계좌/);
+  assert.match(html, /계좌 변경/);
+  assert.match(html, /name="connectionId"/);
+  assert.match(html, /value="connection-1"/);
+  assert.match(html, /계좌 불러오기/);
+});
+
+test("home keeps the reference composition regions explicit", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+  assert.match(source, /home-reference-shell/);
+  assert.match(source, /h\(DashboardView, \{[\s\S]*?realtimePrices[\s\S]*?homeLayout: true[\s\S]*?homeCandles[\s\S]*?homeCandleInterval/);
+});
+
+test("home candle loading is guarded by exact request key and canonical interval keys", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+  const loader = source.match(/function loadHomeCandles\(id, symbol, interval\) \{[\s\S]*?\n  \}/);
+
+  assert.ok(loader);
+  assert.match(source, /selectHomeSymbol\(dashboard\)/);
+  assert.match(loader[0], /homeCandleRequestKey\(id, symbol, interval\)/);
+  assert.match(loader[0], /needsHomeCandleRequest\(homeCandleRequest\.current, next\)/);
+  assert.match(loader[0], /loadCandles\(id, symbol, interval\)/);
+  assert.doesNotMatch(loader[0], /AAPL|MSFT|NVDA|GOOGL|AMZN|TSLA/);
+  assert.match(source, /CANDLE_INTERVALS\.some\(option => option\.key === interval\)/);
 });
 
 // D-35: "열기"/"불러오기" 는 워크스페이스 로드 중 비활성으로 피드백을 준다.
