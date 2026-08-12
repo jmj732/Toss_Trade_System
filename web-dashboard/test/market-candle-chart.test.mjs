@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createElement } from "react";
+import { Fragment, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { CANDLE_INTERVALS, MarketCandleChart } from "../app/market-candle-chart.js";
@@ -86,9 +86,9 @@ test("renders degraded usable candles chronologically with accessible svg, table
     onIntervalChange() {}
   }));
 
-  assert.match(html, /aria-labelledby="market-candle-title market-candle-desc"/);
-  assert.match(html, /<title id="market-candle-title">시세 캔들 차트<\/title>/);
-  assert.match(html, /<desc id="market-candle-desc">3개 제공 캔들 중 2개를 시간순으로 표시합니다<\/desc>/);
+  assert.match(html, /aria-labelledby="market-candle-unknown-1m-[^"]+-title market-candle-unknown-1m-[^"]+-desc"/);
+  assert.match(html, /<title id="market-candle-unknown-1m-[^"]+-title">UNKNOWN 1분봉\(1m\) 시세 캔들 차트<\/title>/);
+  assert.match(html, /<desc id="market-candle-unknown-1m-[^"]+-desc">UNKNOWN 1분봉\(1m\) 3개 제공 캔들 중 2개를 시간순으로 표시합니다<\/desc>/);
   assert.match(html, /aria-pressed="true"[^>]*>1분봉/);
   assert.match(html, /aria-pressed="false"[^>]*>일봉/);
   assert.match(html, /부분 데이터/);
@@ -107,6 +107,36 @@ test("renders degraded usable candles chronologically with accessible svg, table
   assert.ok(html.indexOf("2026-07-31") < html.indexOf("2026-08-01"));
   assert.ok(html.indexOf("2026-08-01") < html.indexOf("2026-08-02"));
   assert.doesNotMatch(html, /READY/);
+});
+
+test("svg title and description ids are unique and name the symbol interval", () => {
+  const envelope = {
+    status: "AVAILABLE",
+    data: {
+      candles: [
+        { timestamp: "2026-08-02T00:00:00Z", open: 10, high: 12, low: 9, close: 11, volume: 100 }
+      ]
+    }
+  };
+  const html = renderToStaticMarkup(createElement(Fragment, null,
+    createElement(MarketCandleChart, { envelope, symbol: "AAPL", interval: "1m" }),
+    createElement(MarketCandleChart, { envelope, symbol: "MSFT", interval: "1d" })
+  ));
+  const labelledBy = [...html.matchAll(/aria-labelledby="([^"]+)"/g)].map(match => match[1].split(" "));
+  const titleIds = labelledBy.map(([titleId]) => titleId);
+  const descIds = labelledBy.map(([, descId]) => descId);
+
+  assert.equal(labelledBy.length, 2);
+  assert.equal(new Set(titleIds).size, 2);
+  assert.equal(new Set(descIds).size, 2);
+  for (const [titleId, descId] of labelledBy) {
+    assert.match(html, new RegExp(`<title id="${titleId}">[^<]+</title>`));
+    assert.match(html, new RegExp(`<desc id="${descId}">[^<]+</desc>`));
+  }
+  assert.match(html, /<title id="[^"]+">AAPL 1분봉\(1m\) 시세 캔들 차트<\/title>/);
+  assert.match(html, /<desc id="[^"]+">AAPL 1분봉\(1m\) 1개 제공 캔들 중 1개를 시간순으로 표시합니다<\/desc>/);
+  assert.match(html, /<title id="[^"]+">MSFT 일봉\(1d\) 시세 캔들 차트<\/title>/);
+  assert.match(html, /<desc id="[^"]+">MSFT 일봉\(1d\) 1개 제공 캔들 중 1개를 시간순으로 표시합니다<\/desc>/);
 });
 
 test("does not draw malformed candles and does not mutate provider order", () => {

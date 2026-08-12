@@ -1,6 +1,6 @@
 "use client";
 
-import { createElement as h } from "react";
+import { createElement as h, useId } from "react";
 import { formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
 
 export const CANDLE_INTERVALS = [
@@ -33,6 +33,15 @@ function displayNumber(value) {
   const number = finite(value);
   if (number !== null) return number.toLocaleString("ko-KR");
   return value === null || value === undefined || value === "" ? UNKNOWN_TEXT : String(value);
+}
+
+function idPart(value) {
+  return String(value || "unknown").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown";
+}
+
+function intervalText(interval) {
+  const option = CANDLE_INTERVALS.find(entry => entry.key === interval);
+  return `${option?.label ?? interval}(${interval})`;
 }
 
 function candleField(candle, field) {
@@ -92,7 +101,11 @@ function Metadata({ envelope }) {
       : null);
 }
 
-function CandleSvg({ rows, drawable }) {
+function CandleSvg({ rows, drawable, symbol, interval }) {
+  const instanceId = `market-candle-${idPart(symbol)}-${idPart(interval)}-${idPart(useId())}`;
+  const titleId = `${instanceId}-title`;
+  const descId = `${instanceId}-desc`;
+  const chartName = `${symbol || "UNKNOWN"} ${intervalText(interval)}`;
   const prices = drawable.flatMap(({ values }) => [values.high, values.low]);
   const min = Math.min(...prices);
   const max = Math.max(...prices);
@@ -106,12 +119,12 @@ function CandleSvg({ rows, drawable }) {
   return h("svg", {
     className: "market-candle-svg",
     role: "img",
-    "aria-labelledby": "market-candle-title market-candle-desc",
+    "aria-labelledby": `${titleId} ${descId}`,
     viewBox: `0 0 ${CHART.width} ${CHART.height + CHART.volumeHeight + 8}`
   },
-  h("title", { id: "market-candle-title" }, "시세 캔들 차트"),
-  h("desc", { id: "market-candle-desc" },
-    `${rows.length}개 제공 캔들 중 ${drawable.length}개를 시간순으로 표시합니다`),
+  h("title", { id: titleId }, `${chartName} 시세 캔들 차트`),
+  h("desc", { id: descId },
+    `${chartName} ${rows.length}개 제공 캔들 중 ${drawable.length}개를 시간순으로 표시합니다`),
   ...rows.map((candle, index) => {
     const volume = candleNumbers(candle).volume;
     if (volume === null) return null;
@@ -176,7 +189,7 @@ function CandleTable({ rows }) {
     }))));
 }
 
-export function MarketCandleChart({ envelope, interval = "1d", onIntervalChange }) {
+export function MarketCandleChart({ envelope, symbol = "UNKNOWN", interval = "1d", onIntervalChange }) {
   const rows = orderedCandles(envelope);
   const drawable = rows
     .map((candle, index) => ({ index, values: usablePrice(candle) }))
@@ -200,7 +213,7 @@ export function MarketCandleChart({ envelope, interval = "1d", onIntervalChange 
             onClick: () => onIntervalChange?.(option.key)
           }, option.label)))),
     h(StatusNote, { envelope, status }),
-    showChart ? h(CandleSvg, { rows, drawable }) : null,
+    showChart ? h(CandleSvg, { rows, drawable, symbol, interval }) : null,
     showRows ? h(CandleTable, { rows }) : null,
     h(Metadata, { envelope }));
 }
