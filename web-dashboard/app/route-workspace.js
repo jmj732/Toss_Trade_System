@@ -221,7 +221,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [exchangeRate, setExchangeRate] = useState(null);
   const [marketCalendar, setMarketCalendar] = useState(null);
   const [rankings, setRankings] = useState(null);
-  const [realtimePrices, setRealtimePrices] = useState([]);
+  const [realtimePrices, setRealtimePrices] = useState(null);
   const [buyingPower, setBuyingPower] = useState(null);
   const [orderbook, setOrderbook] = useState(null);
   const [candles, setCandles] = useState(null);
@@ -305,6 +305,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     setOrderbook(null);
     setCandles(null);
+    setRealtimePrices(null);
     setInvestorTrading(null);
     setStockWarnings(null);
     setCommissions(null);
@@ -339,6 +340,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       const surfaceFailure = value => ({ status: "ERROR", unavailableReason: value.code ?? value.message });
       loadOrderbook(selectedConnectionId, stockSymbol).then(setOrderbook).catch(value => setOrderbook(surfaceFailure(value)));
       loadCandles(selectedConnectionId, stockSymbol, candleTimeframe).then(setCandles).catch(value => setCandles(surfaceFailure(value)));
+      loadRealtimePrices(selectedConnectionId, stockSymbol).then(setRealtimePrices).catch(value => setRealtimePrices(surfaceFailure(value)));
       loadInvestorTrading(selectedConnectionId, stockSymbol).then(setInvestorTrading).catch(value => setInvestorTrading(surfaceFailure(value)));
       loadStockWarnings(selectedConnectionId, stockSymbol).then(setStockWarnings).catch(value => setStockWarnings(surfaceFailure(value)));
       loadCommissions(selectedConnectionId, stockSymbol, "BUY").then(setCommissions).catch(value => setCommissions(surfaceFailure(value)));
@@ -768,7 +770,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       history: stockHistory, status: stockStatus, errors: describedErrors, busy: Boolean(busy),
       onCreateAnalysis: createAnalysis, onCreateForecast: createForecast,
       onCreateExplanation: createExplanation, onSelectSnapshot: selectSnapshot,
-      orderbook, candles, candleTimeframe, investorTrading, stockWarnings, commissions,
+      orderbook, realtimePrices, candles, candleTimeframe, investorTrading, stockWarnings, commissions,
       onCandleTimeframeChange: tf => {
         setCandleTimeframe(tf);
         setCandles(null); // Optimistic clear

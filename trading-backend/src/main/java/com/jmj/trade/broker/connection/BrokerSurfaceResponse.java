@@ -189,7 +189,7 @@ public record BrokerSurfaceResponse<T>(
     }
 
     public record RankingItemView(
-            int rank,
+            Integer rank,
             String symbol,
             String currency,
             BigDecimal lastPrice,

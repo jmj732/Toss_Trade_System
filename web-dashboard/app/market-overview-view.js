@@ -12,15 +12,31 @@ function provenance(value) {
   const item = value?.provenance?.[0];
   if (!item) return null;
   const asOf = item.asOf ? ` · 기준 ${formatInstant(item.asOf)}` : "";
-  return `출처 ${item.provider}${asOf}`;
+  const observedAt = item.observedAt ? ` · 수집 ${formatInstant(item.observedAt)}` : "";
+  return `출처 ${item.provider}${asOf}${observedAt}`;
 }
+
+const FAILURE_LABELS = {
+  PROVIDER_TIMEOUT: "제공자 시간 초과",
+  PROVIDER_RATE_LIMITED: "제공자 호출 제한",
+  PROVIDER_MALFORMED: "제공자 응답 형식 오류",
+  PROVIDER_STALE: "제공자 데이터 만료"
+};
 
 function unavailable(value) {
   if (!value) return "loading";
   if (value.status === "UNAVAILABLE" || value.unavailable) {
-    return `지원되지 않음 (${value.unavailableReason ?? "PROVIDER_UNSUPPORTED"})`;
+    const reason = value.unavailableReason ?? "PROVIDER_UNSUPPORTED";
+    return reason.startsWith("PROVIDER_UNSUPPORTED")
+      ? `지원되지 않음 (${reason})`
+      : `조회 실패 (${FAILURE_LABELS[reason] ?? reason})`;
   }
-  if (value.status === "DEGRADED") return "부분 데이터만 확인할 수 있습니다";
+  if (value.status === "DEGRADED") {
+    const fields = value.unknownFields ?? [];
+    return fields.length
+      ? `부분 데이터만 확인할 수 있습니다 · 누락 필드: ${fields.join(", ")}`
+      : "부분 데이터만 확인할 수 있습니다";
+  }
   if (value.status === "ERROR") return `조회 실패 (${value.unavailableReason ?? "ERROR"})`;
   return null;
 }
@@ -30,16 +46,16 @@ function unavailable(value) {
 // ---------------------------------------------------------------------------
 function ExchangeRateWidget({ exchangeRate }) {
   const message = unavailable(exchangeRate);
-  if (message) {
+  const data = payload(exchangeRate);
+  if (message && (message === "loading" || exchangeRate?.status !== "DEGRADED" || !data || data === exchangeRate)) {
     return h("section", { className: "panel market-widget" },
       h("header", null,
         h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 환율"), h("h2", null, "USD/KRW 환율"))),
       h("p", { className: "empty" }, message === "loading" ? "환율 정보를 불러오는 중…" : message));
   }
-  exchangeRate = payload(exchangeRate);
-  const rate = exchangeRate.rate ?? exchangeRate.basePrice;
-  const basisPoint = exchangeRate.basisPoint;
-  const direction = exchangeRate.rateChangeType;
+  const rate = data.rate ?? data.basePrice;
+  const basisPoint = data.basisPoint;
+  const direction = data.rateChangeType;
   const positive = direction === "UP" || Number(basisPoint ?? 0) >= 0;
   return h("section", { className: "panel market-widget" },
     h("header", null,
@@ -51,9 +67,10 @@ function ExchangeRateWidget({ exchangeRate }) {
         ? h("span", { className: positive ? "change-positive" : "change-negative" },
           `${positive ? "▲" : "▼"} ${Math.abs(Number(basisPoint)).toFixed(2)}bp`)
       : null),
-    exchangeRate.validFrom
-      ? h("small", { className: "metric-freshness" }, `기준 ${formatInstant(exchangeRate.validFrom)}`)
+    data.validFrom
+      ? h("small", { className: "metric-freshness" }, `기준 ${formatInstant(data.validFrom)}`)
       : null,
+    message ? h("small", { className: "metric-freshness" }, message) : null,
     provenance(exchangeRate) ? h("small", { className: "metric-freshness" }, provenance(exchangeRate)) : null);
 }
 
@@ -62,13 +79,14 @@ function ExchangeRateWidget({ exchangeRate }) {
 // ---------------------------------------------------------------------------
 function MarketCalendarWidget({ calendar }) {
   const message = unavailable(calendar);
-  if (message) {
+  const data = payload(calendar);
+  if (message && (message === "loading" || calendar?.status !== "DEGRADED" || !data || data === calendar)) {
     return h("section", { className: "panel market-widget" },
       h("header", null,
         h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 캘린더"), h("h2", null, "시장 일정"))),
       h("p", { className: "empty" }, message === "loading" ? "시장 일정을 불러오는 중…" : message));
   }
-  const view = payload(calendar);
+  const view = data;
   const raw = view?.payload ?? view;
   const today = raw?.today ?? {};
   const sessions = ["dayMarket", "preMarket", "regularMarket", "afterMarket"]
@@ -87,6 +105,7 @@ function MarketCalendarWidget({ calendar }) {
           h("strong", null, day.date ?? UNKNOWN_TEXT),
           h("span", null, day.name ?? day.reason ?? "휴장일"))))
       : h("p", { className: "empty" }, "등록된 휴장일이 없습니다"),
+    message ? h("small", { className: "metric-freshness" }, message) : null,
     provenance(calendar) ? h("small", { className: "metric-freshness" }, provenance(calendar)) : null);
 }
 

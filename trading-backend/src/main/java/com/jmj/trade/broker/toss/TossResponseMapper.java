@@ -110,7 +110,7 @@ final class TossResponseMapper {
         return new MarketDataAdapter.OrderBook(
                 symbol,
                 instant(source.timestamp()),
-                currency(source.currency()),
+                optionalCurrency(source.currency()),
                 levels(source.asks()),
                 levels(source.bids()));
     }
@@ -333,12 +333,12 @@ final class TossResponseMapper {
         }
         return new MarketDataAdapter.Candle(
                 instant(source.timestamp()),
-                nonNegativeDecimal(source.openPrice()),
-                nonNegativeDecimal(source.highPrice()),
-                nonNegativeDecimal(source.lowPrice()),
-                nonNegativeDecimal(source.closePrice()),
-                nonNegativeDecimal(source.volume()),
-                currency(source.currency()));
+                nullableNonNegativeDecimal(source.openPrice()),
+                nullableNonNegativeDecimal(source.highPrice()),
+                nullableNonNegativeDecimal(source.lowPrice()),
+                nullableNonNegativeDecimal(source.closePrice()),
+                nullableNonNegativeDecimal(source.volume()),
+                optionalCurrency(source.currency()));
     }
 
     private MarketDataAdapter.RankingItem rankingItem(TossApiDtos.RankingItem source) {
@@ -346,9 +346,9 @@ final class TossResponseMapper {
             throw contract();
         }
         return new MarketDataAdapter.RankingItem(
-                integer(source.rank()),
-                required(source.symbol()),
-                currency(source.currency()),
+                nullableInteger(source.rank()),
+                optionalText(source.symbol()),
+                optionalCurrency(source.currency()),
                 source.price() == null ? null : nullableDecimal(source.price().lastPrice()),
                 source.price() == null ? null : nullableDecimal(source.price().basePrice()),
                 source.price() == null ? null : nullableDecimal(source.price().changeRate()),
@@ -390,6 +390,10 @@ final class TossResponseMapper {
         }
     }
 
+    private Currency optionalCurrency(String raw) {
+        return raw == null || raw.isBlank() ? null : currency(raw);
+    }
+
     private Instant instant(String raw) {
         if (raw == null) {
             return null;
@@ -418,7 +422,14 @@ final class TossResponseMapper {
     }
 
     private BigDecimal nullableDecimal(String raw) {
-        return raw == null ? null : decimal(raw);
+        return raw == null || raw.isBlank() ? null : decimal(raw);
+    }
+
+    private BigDecimal nullableNonNegativeDecimal(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        return nonNegativeDecimal(raw);
     }
 
     private int integer(String raw) {
@@ -427,6 +438,14 @@ final class TossResponseMapper {
         } catch (RuntimeException exception) {
             throw contract();
         }
+    }
+
+    private Integer nullableInteger(String raw) {
+        return raw == null || raw.isBlank() ? null : integer(raw);
+    }
+
+    private String optionalText(String raw) {
+        return raw == null || raw.isBlank() ? null : raw;
     }
 
     private String required(String raw) {

@@ -177,6 +177,10 @@ test("puts stock analysis summary before provider panels", () => {
     relatedEvents: [],
     history: [],
     status: { analysis: "DEGRADED", forecast: "IDLE", explanation: "IDLE" },
+    realtimePrices: {
+      status: "AVAILABLE",
+      data: [{ symbol: "VERY-LONG-US-EQUITY-SYMBOL", lastPrice: "106", currency: "USD", brokerTimestamp: "2026-08-01T00:00:00Z" }]
+    },
     candles: {
       status: "DEGRADED",
       data: {
@@ -199,15 +203,66 @@ test("puts stock analysis summary before provider panels", () => {
   }));
 
   assert.match(html, /현재가/);
-  assert.match(html, /USD 105\.00/);
-  assert.match(html, /\+6\.06%/);
+  assert.match(html, /USD 106\.00/);
+  assert.match(html, /확인 필요/);
   assert.match(html, /기준 시각/);
   const summaryHtml = html.slice(0, html.indexOf("데이터 품질"));
-  assert.match(summaryHtml, /2026-08-02/);
+  assert.match(summaryHtml, /2026-08-01/);
   assert.doesNotMatch(summaryHtml, /2026-08-02 09:00 KST/);
   assert.match(html, /부분 데이터/);
   assert.match(html, /리스크/);
   assert.ok(html.indexOf("현재가") < html.indexOf("호가 잔량"));
+  assert.match(html, /지원되지 않음 \(지원되지 않는 제공자 데이터\)/);
+});
+
+test("uses the direct provider quote instead of deriving current price from candles", () => {
+  const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
+    symbol: "AAPL",
+    analysis: null,
+    forecast: null,
+    explanation: null,
+    relatedEvents: [],
+    history: [],
+    status: { analysis: "READY", forecast: "IDLE", explanation: "IDLE" },
+    realtimePrices: {
+      status: "AVAILABLE",
+      data: [{ symbol: "AAPL", lastPrice: "211.25", currency: "USD", brokerTimestamp: "2026-08-09T00:00:00Z" }]
+    },
+    candles: {
+      status: "DEGRADED",
+      unknownFields: ["candles[0].volume"],
+      data: { candles: [{ date: "2026-08-02", close: 105, open: 101, volume: null }] }
+    },
+    onCreateAnalysis() {},
+    onCreateForecast() {},
+    onCreateExplanation() {},
+    onSelectSnapshot() {}
+  }));
+
+  assert.match(html, /USD 211\.25/);
+  assert.doesNotMatch(html, /USD 105\.00/);
+  assert.match(html, /확인 필요/);
+  assert.match(html, /누락 필드: candles\[0\]\.volume/);
+});
+
+test("distinguishes provider failure from unsupported data", () => {
+  const html = renderToStaticMarkup(createElement(StockAnalysisProductSurface, {
+    symbol: "AAPL",
+    analysis: null,
+    forecast: null,
+    explanation: null,
+    relatedEvents: [],
+    history: [],
+    status: { analysis: "READY", forecast: "IDLE", explanation: "IDLE" },
+    orderbook: { status: "UNAVAILABLE", unavailableReason: "PROVIDER_TIMEOUT" },
+    candles: { status: "UNAVAILABLE", unavailableReason: "PROVIDER_UNSUPPORTED" },
+    onCreateAnalysis() {},
+    onCreateForecast() {},
+    onCreateExplanation() {},
+    onSelectSnapshot() {}
+  }));
+
+  assert.match(html, /조회 실패 \(제공자 시간 초과\)/);
   assert.match(html, /지원되지 않음 \(지원되지 않는 제공자 데이터\)/);
 });
 
