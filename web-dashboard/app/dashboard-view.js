@@ -1,5 +1,6 @@
 import { createElement as h } from "react";
 
+import { MarketCandleChart } from "./market-candle-chart.js";
 import {
   formatAmount,
   formatSignedAmount,
@@ -385,15 +386,51 @@ export function RealtimePriceTicker({ prices }) {
       })));
 }
 
-export function DashboardView({ dashboard, busyOrderId, onOrderAction, includeOrders = true, realtimePrices = [] }) {
-  return h("main", { className: "grid dashboard-surface" },
-    h(RealtimePriceTicker, { prices: realtimePrices }),
-    h(Portfolio, { section: dashboard.portfolio }),
-    h(Analysis, { section: dashboard.analysis }),
-    h(Events, { section: dashboard.pendingEvents }),
+export function DashboardView({
+  dashboard,
+  busyOrderId,
+  onOrderAction,
+  includePortfolio = true,
+  includeOrders = true,
+  realtimePrices = [],
+  homeLayout = false,
+  marketOverview = null,
+  homeCandles = null,
+  homeCandleSymbol = "",
+  homeCandleInterval = "1m",
+  onHomeCandleIntervalChange
+}) {
+  const portfolio = h(Portfolio, { key: "portfolio", section: dashboard.portfolio });
+  const dashboardSections = [
+    h(Analysis, { key: "analysis", section: dashboard.analysis }),
+    h(Events, { key: "events", section: dashboard.pendingEvents }),
     includeOrders ? h(Proposals, {
+      key: "orders",
       section: dashboard.pendingOrderProposals,
       busyOrderId,
       onOrderAction
-    }) : null);
+    }) : null
+  ];
+  const homeMain = [
+    h(MarketCandleChart, {
+      key: "home-candles",
+      envelope: homeCandles,
+      symbol: homeCandleSymbol,
+      interval: homeCandleInterval,
+      onIntervalChange: onHomeCandleIntervalChange
+    }),
+    marketOverview ? h("div", { key: "market-overview", className: "home-market-overview" }, marketOverview) : null,
+    h(RealtimePriceTicker, { key: "prices", prices: realtimePrices }),
+    ...dashboardSections
+  ].filter(Boolean);
+  return h("main", { className: "grid dashboard-surface" },
+    homeLayout
+      ? h("div", { className: "home-dashboard-columns" },
+        includePortfolio ? h("aside", { className: "home-dashboard-account", "aria-label": "계좌 포트폴리오" }, portfolio) : null,
+        h("div", { className: "home-dashboard-main" }, homeMain))
+      : [
+        h(RealtimePriceTicker, { key: "prices", prices: realtimePrices }),
+        includePortfolio ? portfolio : null,
+        ...dashboardSections
+      ]);
 }

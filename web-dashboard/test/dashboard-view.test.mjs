@@ -92,6 +92,89 @@ test("renders all dashboard sections and explicit data quality", () => {
   }
 });
 
+test("home layout separates the account rail from the main content flow", () => {
+  const html = renderToStaticMarkup(createElement(DashboardView, {
+    homeLayout: true,
+    dashboard: {
+      portfolio: { data: { account: {}, positions: [], buyingPower: {} } },
+      analysis: { data: { result: { currencyTotals: [], positions: [] } } },
+      pendingEvents: { data: [] },
+      pendingOrderProposals: { data: [] }
+    },
+    busyOrderId: null,
+    onOrderAction() {}
+  }));
+  assert.match(html, /home-dashboard-columns/);
+  assert.match(html, /home-dashboard-main/);
+  assert.match(html, /home-dashboard-account/);
+});
+
+test("home layout keeps DOM rail first, then chart main, without duplicating portfolio", () => {
+  const html = renderToStaticMarkup(createElement(DashboardView, {
+    homeLayout: true,
+    dashboard: {
+      portfolio: { data: { account: {}, positions: [], buyingPower: {} } },
+      analysis: { data: { result: { currencyTotals: [], positions: [] } } },
+      pendingEvents: { data: [] },
+      pendingOrderProposals: { data: [] }
+    },
+    homeCandles: { status: "AVAILABLE", data: { candles: [] } },
+    homeCandleSymbol: "AAPL",
+    homeCandleInterval: "1m",
+    onHomeCandleIntervalChange() {},
+    marketOverview: createElement("section", { className: "market-overview-grid" }, "시장"),
+    busyOrderId: null,
+    onOrderAction() {}
+  }));
+
+  assert.ok(html.indexOf("home-dashboard-account") < html.indexOf("home-dashboard-main"));
+  assert.ok(html.indexOf("market-candle-chart") < html.indexOf("market-overview-grid"));
+  assert.ok(html.indexOf("market-overview-grid") < html.indexOf("analysis-panel"));
+  assert.equal((html.match(/portfolio-panel/g) ?? []).length, 1);
+});
+
+test("home chart interval controls keep labels and API values wired", () => {
+  const calls = [];
+  const tree = DashboardView({
+    homeLayout: true,
+    dashboard: {
+      portfolio: { data: { account: {}, positions: [], buyingPower: {} } },
+      analysis: { data: { result: { currencyTotals: [], positions: [] } } },
+      pendingEvents: { data: [] },
+      pendingOrderProposals: { data: [] }
+    },
+    homeCandles: { status: "AVAILABLE", data: { candles: [] } },
+    homeCandleSymbol: "AAPL",
+    homeCandleInterval: "1m",
+    onHomeCandleIntervalChange: interval => calls.push(interval)
+  });
+  const chart = findByTypeName(tree, "MarketCandleChart");
+
+  assert.equal(chart.props.symbol, "AAPL");
+  assert.equal(chart.props.interval, "1m");
+  chart.props.onIntervalChange("1d");
+  assert.deepEqual(calls, ["1d"]);
+});
+
+function findByTypeName(node, typeName) {
+  if (!node || typeof node !== "object") {
+    return null;
+  }
+  if (node.type?.name === typeName) {
+    return node;
+  }
+  const children = Array.isArray(node.props?.children)
+    ? node.props.children
+    : [node.props?.children];
+  for (const child of children) {
+    const match = findByTypeName(child, typeName);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
 test("uses the section reference time when a live response omits a nested timestamp", () => {
   const html = renderToStaticMarkup(createElement(DashboardView, {
     dashboard: {

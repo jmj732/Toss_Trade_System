@@ -38,3 +38,13 @@ test("stock market endpoint fixture is a real provider response", async () => {
   assert.equal(response.body.data.baseCurrency, "USD");
   assert.equal(response.body.provenance[0].provider, "TOSS");
 });
+
+test("candle fixture preserves the requested symbol and interval", async () => {
+  const response = await responseFor(
+    "/api/v1/broker-connections/audit-connection/candles?symbol=NVDA&interval=1m",
+    "degraded"
+  );
+
+  assert.equal(response.body.data.symbol, "NVDA");
+  assert.equal(response.body.data.interval, "1m");
+});
