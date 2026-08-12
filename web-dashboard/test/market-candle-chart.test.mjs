@@ -7,9 +7,62 @@ import { CANDLE_INTERVALS, MarketCandleChart } from "../app/market-candle-chart.
 
 test("exports only Toss candle intervals without changing API values", () => {
   assert.deepEqual(CANDLE_INTERVALS, [
-    { value: "1m", label: "1분봉" },
-    { value: "1d", label: "일봉" }
+    { key: "1m", label: "1분봉" },
+    { key: "1d", label: "일봉" }
   ]);
+});
+
+test("interval buttons expose API keys to the renderer callback", () => {
+  const calls = [];
+  const tree = MarketCandleChart({
+    envelope: { status: "AVAILABLE", data: { candles: [] } },
+    interval: "1m",
+    onIntervalChange: interval => calls.push(interval)
+  });
+  const buttons = tree.props.children[0].props.children[1].props.children;
+
+  assert.equal(buttons[0].key, "1m");
+  assert.equal(buttons[0].props["aria-pressed"], true);
+  assert.equal(buttons[1].key, "1d");
+  assert.equal(buttons[1].props["aria-pressed"], false);
+
+  buttons[1].props.onClick();
+  assert.deepEqual(calls, ["1d"]);
+});
+
+test("renders canonical backend OHLC fields in svg geometry and table", () => {
+  const html = renderToStaticMarkup(createElement(MarketCandleChart, {
+    envelope: {
+      status: "AVAILABLE",
+      data: {
+        candles: [
+          {
+            timestamp: "2026-08-02T00:00:00Z",
+            open: 1,
+            high: 2,
+            low: 1,
+            close: 2,
+            openPrice: 100,
+            highPrice: 120,
+            lowPrice: 90,
+            closePrice: 110,
+            volume: 1000
+          }
+        ]
+      }
+    },
+    interval: "1d",
+    onIntervalChange() {}
+  }));
+
+  assert.equal((html.match(/class="candle-wick/g) ?? []).length, 1);
+  assert.equal((html.match(/class="candle-body/g) ?? []).length, 1);
+  assert.match(html, /100/);
+  assert.match(html, /120/);
+  assert.match(html, /90/);
+  assert.match(html, /110/);
+  assert.doesNotMatch(html, />1<\/td>/);
+  assert.doesNotMatch(html, />2<\/td>/);
 });
 
 test("renders degraded usable candles chronologically with accessible svg, table, and raw metadata", () => {

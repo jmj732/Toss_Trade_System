@@ -4,8 +4,8 @@ import { createElement as h } from "react";
 import { formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
 
 export const CANDLE_INTERVALS = [
-  { value: "1m", label: "1분봉" },
-  { value: "1d", label: "일봉" }
+  { key: "1m", label: "1분봉" },
+  { key: "1d", label: "일봉" }
 ];
 
 const CHART = { width: 360, height: 140, volumeHeight: 36 };
@@ -30,12 +30,16 @@ function displayNumber(value) {
   return value === null || value === undefined || value === "" ? UNKNOWN_TEXT : String(value);
 }
 
+function candleField(candle, field) {
+  return candle[`${field}Price`] ?? candle[field];
+}
+
 function candleNumbers(candle) {
   return {
-    open: finite(candle.open),
-    high: finite(candle.high),
-    low: finite(candle.low),
-    close: finite(candle.close),
+    open: finite(candleField(candle, "open")),
+    high: finite(candleField(candle, "high")),
+    low: finite(candleField(candle, "low")),
+    close: finite(candleField(candle, "close")),
     volume: finite(candle.volume)
   };
 }
@@ -154,10 +158,10 @@ function CandleTable({ rows }) {
       const direction = delta === null ? null : delta >= 0 ? "up" : "down";
       return h("tr", { key: `${candleTime(candle)}-${index}` },
         h("td", null, displayTime(candle)),
-        h("td", null, displayNumber(candle.open)),
-        h("td", null, displayNumber(candle.high)),
-        h("td", null, displayNumber(candle.low)),
-        h("td", null, displayNumber(candle.close)),
+        h("td", null, displayNumber(candleField(candle, "open"))),
+        h("td", null, displayNumber(candleField(candle, "high"))),
+        h("td", null, displayNumber(candleField(candle, "low"))),
+        h("td", null, displayNumber(candleField(candle, "close"))),
         h("td", { className: direction ? `candle-${direction}` : undefined },
           delta === null ? UNKNOWN_TEXT : `${delta >= 0 ? "상승" : "하락"} ${delta >= 0 ? "+" : ""}${displayNumber(delta)}`),
         h("td", null, values.volume === null ? "거래량 미제공" : values.volume.toLocaleString("ko-KR")));
@@ -181,11 +185,11 @@ export function MarketCandleChart({ envelope, interval = "1d", onIntervalChange 
       h("div", { className: "panel-actions" },
         ...CANDLE_INTERVALS.map(option =>
           h("button", {
-            key: option.value,
+            key: option.key,
             type: "button",
-            className: interval === option.value ? "primary" : "secondary",
-            "aria-pressed": interval === option.value,
-            onClick: () => onIntervalChange?.(option.value)
+            className: interval === option.key ? "primary" : "secondary",
+            "aria-pressed": interval === option.key,
+            onClick: () => onIntervalChange?.(option.key)
           }, option.label)))),
     h(StatusNote, { envelope, status }),
     showChart ? h(CandleSvg, { rows, drawable }) : null,
