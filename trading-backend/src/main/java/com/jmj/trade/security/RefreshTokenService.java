@@ -30,13 +30,13 @@ class RefreshTokenService {
     @Autowired
     RefreshTokenService(
             JdbcTemplate jdbc,
-            @Value("${security.refresh-token-ttl:P30D}") Duration ttl
+            @Value("${security.refresh-token-ttl:P7D}") Duration ttl
     ) {
         this(jdbc, new SecureRandom(), Clock.systemUTC(), ttl);
     }
 
     RefreshTokenService(JdbcTemplate jdbc, Clock clock) {
-        this(jdbc, new SecureRandom(), clock, Duration.ofDays(30));
+        this(jdbc, new SecureRandom(), clock, Duration.ofDays(7));
     }
 
     private RefreshTokenService(JdbcTemplate jdbc, SecureRandom random, Clock clock, Duration ttl) {

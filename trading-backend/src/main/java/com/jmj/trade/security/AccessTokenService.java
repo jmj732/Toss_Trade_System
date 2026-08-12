@@ -30,7 +30,7 @@ public final class AccessTokenService {
     AccessTokenService(
             @Value("${security.access-token-signing-secret}")
             String secret,
-            @Value("${security.access-token-ttl:PT5M}") Duration ttl
+            @Value("${security.access-token-ttl:PT20M}") Duration ttl
     ) {
         this(secret, ttl, Clock.systemUTC());
     }

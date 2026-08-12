@@ -13,7 +13,7 @@ the refresh token is a Secure, HttpOnly, SameSite cookie and only its SHA-256 ha
   validated dashboard path with the access token in the URL fragment. The dashboard consumes the
   fragment immediately and removes it with `history.replaceState`.
 - Access tokens are signed HS256 tokens with `sub` (internal UUID), `sid` (refresh session UUID),
-  `iat`, `exp`, `auth_time`, and `amr=oidc`. They expire after five minutes by default and are
+  `iat`, `exp`, `auth_time`, and `amr=oidc`. They expire after twenty minutes by default and are
   validated by a stateless Bearer filter. The signing secret is environment supplied in staging
   and production.
 - Refresh sessions are stored in `auth_refresh_sessions`: session UUID, user UUID, family UUID,
