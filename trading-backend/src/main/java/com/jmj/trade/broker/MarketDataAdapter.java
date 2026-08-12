@@ -100,7 +100,7 @@ public interface MarketDataAdapter {
     }
 
     record RankingItem(
-            int rank,
+            Integer rank,
             String symbol,
             Currency currency,
             BigDecimal lastPrice,

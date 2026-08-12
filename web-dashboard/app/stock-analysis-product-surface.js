@@ -7,6 +7,11 @@ import { formatAmount, formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
 const REASON_LABELS = {
   UNAUTHORIZED: "권한 확인 필요",
   PROVIDER_UNSUPPORTED: "지원되지 않는 제공자 데이터",
+  PROVIDER_TIMEOUT: "제공자 시간 초과",
+  PROVIDER_RATE_LIMITED: "제공자 호출 제한",
+  PROVIDER_MALFORMED: "제공자 응답 형식 오류",
+  PROVIDER_STALE: "제공자 데이터 만료",
+  PROVIDER_UNSUPPORTED_MARKET_CAP_RANKING: "지원되지 않는 시가총액 랭킹",
   GEMINI_UPSTREAM_ERROR: "설명 제공자 오류",
   ERROR: "조회 오류"
 };
@@ -35,7 +40,10 @@ function surfaceMessage(value, loadingText) {
     return "권한 확인 필요";
   }
   if (value.status === "UNAVAILABLE" || value.unavailable) {
-    return `지원되지 않음 (${readableCode(value.unavailableReason ?? "PROVIDER_UNSUPPORTED")})`;
+    const reason = value.unavailableReason ?? "PROVIDER_UNSUPPORTED";
+    return reason.startsWith("PROVIDER_UNSUPPORTED")
+      ? `지원되지 않음 (${readableCode(reason)})`
+      : `조회 실패 (${readableCode(reason)})`;
   }
   if (value.status === "DEGRADED") return "부분 데이터만 확인할 수 있습니다";
   if (value.status === "ERROR") return `조회 실패 (${readableCode(value.unavailableReason ?? "ERROR")})`;
@@ -105,24 +113,19 @@ function referenceLabel(candle) {
 function surfaceProvenance(value) {
   const item = value?.provenance?.[0];
   if (!item) return null;
-  return `출처 ${item.provider}${item.asOf ? ` · 기준 ${formatInstant(item.asOf)}` : ""}`;
+  return `출처 ${item.provider}${item.asOf ? ` · 기준 ${formatInstant(item.asOf)}` : ""}${item.observedAt ? ` · 수집 ${formatInstant(item.observedAt)}` : ""}`;
 }
 
-function latestQuote(candles) {
-  const items = candleItems(candles);
-  const latest = items[0];
-  const previous = items[1];
-  const close = latest?.closePrice ?? latest?.close;
-  const previousClose = previous?.closePrice ?? previous?.close;
-  const changeRate = close != null && previousClose
-    ? ((Number(close) - Number(previousClose)) / Number(previousClose)) * 100
-    : null;
+function latestQuote(symbol, realtimePrices) {
+  const data = surfaceData(realtimePrices);
+  const items = Array.isArray(data) ? data : data?.data ?? [];
+  const quote = items.find(item => item?.symbol?.toUpperCase() === symbol?.toUpperCase());
+  const price = quote?.lastPrice ?? quote?.price;
   return {
-    price: formatAmount(latest?.currency ?? "USD", close),
-    change: changeRate == null || Number.isNaN(changeRate)
-      ? UNKNOWN_TEXT
-      : `${changeRate >= 0 ? "+" : ""}${changeRate.toFixed(2)}%`,
-    referenceTime: referenceLabel(latest)
+    price: formatAmount(quote?.currency ?? "USD", price),
+    change: UNKNOWN_TEXT,
+    referenceTime: quote?.brokerTimestamp || quote?.observedAt
+      ? instantCell(quote.brokerTimestamp ?? quote.observedAt) : UNKNOWN_TEXT
   };
 }
 
@@ -136,8 +139,9 @@ function providerStatus(value, hasData) {
   return hasData ? "available" : "empty";
 }
 
-function qualitySummary({ analysis, candles, orderbook, investorTrading, stockWarnings, commissions }) {
+function qualitySummary({ analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions }) {
   const statuses = [
+    providerStatus(realtimePrices, Boolean(surfaceData(realtimePrices)?.length || surfaceData(realtimePrices)?.data?.length)),
     providerStatus(candles, candleItems(candles).length > 0),
     providerStatus(orderbook, Boolean(surfaceData(orderbook)?.asks?.length || surfaceData(orderbook)?.bids?.length)),
     providerStatus(investorTrading, (Array.isArray(surfaceData(investorTrading))
@@ -210,10 +214,10 @@ function Panel({ title, state, error, action, children }) {
     children);
 }
 
-function StockSummary({ symbol, analysis, candles, orderbook, investorTrading, stockWarnings, commissions }) {
-  const quote = latestQuote(candles);
+function StockSummary({ symbol, analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions }) {
+  const quote = latestQuote(symbol, realtimePrices);
   const [quality, qualityModifier] = qualitySummary({
-    analysis, candles, orderbook, investorTrading, stockWarnings, commissions
+    analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions
   });
   const [risk, riskModifier] = riskSummary(analysis, stockWarnings);
   return h("section", { className: "panel stock-surface-panel stock-surface-summary" },
@@ -413,7 +417,10 @@ function CandleChartPanel({ candles, timeframe, onTimeframeChange }) {
           }))))
       : h("p", { className: "empty" }, message ?? "차트 데이터가 없습니다"),
     surfaceProvenance(candles)
-      ? h("small", { className: "metric-freshness" }, surfaceProvenance(candles)) : null);
+      ? h("small", { className: "metric-freshness" }, surfaceProvenance(candles)) : null,
+    candles?.unknownFields?.length
+      ? h("small", { className: "metric-freshness" }, `누락 필드: ${candles.unknownFields.join(", ")}`)
+      : null);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +512,7 @@ export function StockAnalysisProductSurface({
   onCreateExplanation,
   onSelectSnapshot,
   orderbook,
+  realtimePrices,
   candles,
   candleTimeframe,
   onCandleTimeframeChange,
@@ -514,7 +522,7 @@ export function StockAnalysisProductSurface({
 }) {
   return h("main", { className: "stock-surface" },
     h("div", { className: "stock-surface-grid" },
-      h(StockSummary, { symbol, analysis, candles, orderbook, investorTrading, stockWarnings, commissions }),
+      h(StockSummary, { symbol, analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions }),
       h(AnalysisPanel, {
         analysis, state: status.analysis ?? "IDLE", error: errors.analysis, busy, onCreate: onCreateAnalysis
       }),

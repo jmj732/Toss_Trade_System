@@ -4,10 +4,12 @@ import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerConnectionRef;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.BrokerException;
+import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.MarketDataAdapter;
 import com.jmj.trade.broker.Quote;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -21,6 +23,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.time.LocalDate;
+import java.time.Clock;
 
 @Service
 @ConditionalOnProperty(prefix = "broker.credentials", name = "enabled", havingValue = "true")
@@ -30,16 +33,28 @@ public final class BrokerSurfaceService {
     private final FreshPortfolioReadService portfolios;
     private final BrokerAdapter broker;
     private final MarketDataAdapter marketData;
+    private final Clock clock;
 
+    @Autowired
     public BrokerSurfaceService(
             JdbcTemplate jdbc,
             FreshPortfolioReadService portfolios,
             BrokerAdapter brokerAdapter
     ) {
+        this(jdbc, portfolios, brokerAdapter, Clock.systemUTC());
+    }
+
+    BrokerSurfaceService(
+            JdbcTemplate jdbc,
+            FreshPortfolioReadService portfolios,
+            BrokerAdapter brokerAdapter,
+            Clock clock
+    ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.portfolios = Objects.requireNonNull(portfolios, "portfolios");
         this.broker = Objects.requireNonNull(brokerAdapter, "brokerAdapter");
         this.marketData = brokerAdapter instanceof MarketDataAdapter adapter ? adapter : null;
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     public BrokerSurfaceResponse<Map<String, PortfolioReadService.BuyingPowerView>> buyingPower(
@@ -104,8 +119,10 @@ public final class BrokerSurfaceService {
                         unknownFields.add(symbol + ".askPrice");
                     }
                 }
+            } catch (BrokerException exception) {
+                return failure(exception, "/api/v1/prices");
             } catch (RuntimeException exception) {
-                unknownFields.add(symbol + ".quote");
+                return failure(BrokerErrorCategory.CONTRACT, "/api/v1/prices");
             }
         }
         if (!unknownFields.isEmpty()) {
@@ -171,19 +188,20 @@ public final class BrokerSurfaceService {
             levelsUnknown(source.asks(), "asks", unknown);
             levelsUnknown(source.bids(), "bids", unknown);
             var data = new BrokerSurfaceResponse.OrderBookView(
-                    source.symbol(), source.timestamp(), source.currency().name(),
+                    source.symbol(), source.timestamp(), currency(source.currency()),
                     levels(source.asks()), levels(source.bids()));
+            if (source.currency() == null) unknown.add("currency");
             var provenance = List.of(provenance(
-                    "/api/v1/orderbook", source.currency().name(), source.timestamp(), response.metadata().observedAt()));
+                    "/api/v1/orderbook", currency(source.currency()), source.timestamp(), response.metadata().observedAt()));
             if (!unknown.isEmpty()) {
                 return BrokerSurfaceResponse.degraded(data, false, true, unknown,
                         "ORDERBOOK_PARTIAL", provenance);
             }
             return BrokerSurfaceResponse.available(data, provenance);
         } catch (BrokerException exception) {
-            return failure(exception);
+            return failure(exception, "/api/v1/orderbook");
         } catch (RuntimeException exception) {
-            return BrokerSurfaceResponse.unavailable("PROVIDER_MALFORMED");
+            return failure(BrokerErrorCategory.CONTRACT, "/api/v1/orderbook");
         }
     }
 
@@ -214,23 +232,35 @@ public final class BrokerSurfaceService {
                     source.symbol(), source.interval(), source.adjusted(),
                     source.candles().stream().map(candle -> new BrokerSurfaceResponse.CandleView(
                             candle.timestamp(), candle.openPrice(), candle.highPrice(), candle.lowPrice(),
-                            candle.closePrice(), candle.volume(), candle.currency().name())).toList(),
+                            candle.closePrice(), candle.volume(), currency(candle.currency()))).toList(),
                     source.nextBefore());
             var unknown = new ArrayList<String>();
             if (source.candles().isEmpty()) unknown.add("candles");
-            var asOf = source.candles().isEmpty() ? null : source.candles().getFirst().timestamp();
-            var currency = source.candles().isEmpty() ? null : source.candles().getFirst().currency().name();
+            for (var i = 0; i < source.candles().size(); i++) {
+                var candle = source.candles().get(i);
+                if (candle.timestamp() == null) unknown.add("candles[" + i + "].timestamp");
+                if (candle.openPrice() == null) unknown.add("candles[" + i + "].openPrice");
+                if (candle.highPrice() == null) unknown.add("candles[" + i + "].highPrice");
+                if (candle.lowPrice() == null) unknown.add("candles[" + i + "].lowPrice");
+                if (candle.closePrice() == null) unknown.add("candles[" + i + "].closePrice");
+                if (candle.volume() == null) unknown.add("candles[" + i + "].volume");
+                if (candle.currency() == null) unknown.add("candles[" + i + "].currency");
+            }
+            var asOf = source.candles().stream().map(MarketDataAdapter.Candle::timestamp)
+                    .filter(Objects::nonNull).findFirst().orElse(null);
+            var candleCurrency = commonCurrency(source.candles().stream()
+                    .map(MarketDataAdapter.Candle::currency).toList());
             var provenance = List.of(provenance(
-                    "/api/v1/candles", currency, asOf, response.metadata().observedAt()));
+                    "/api/v1/candles", currency(candleCurrency), asOf, response.metadata().observedAt()));
             if (!unknown.isEmpty()) {
                 return BrokerSurfaceResponse.degraded(data, false, true, unknown,
-                        "CANDLES_EMPTY", provenance);
+                        source.candles().isEmpty() ? "CANDLES_EMPTY" : "CANDLES_PARTIAL", provenance);
             }
             return BrokerSurfaceResponse.available(data, provenance);
         } catch (BrokerException exception) {
-            return failure(exception);
+            return failure(exception, "/api/v1/candles");
         } catch (RuntimeException exception) {
-            return BrokerSurfaceResponse.unavailable("PROVIDER_MALFORMED");
+            return failure(BrokerErrorCategory.CONTRACT, "/api/v1/candles");
         }
     }
 
@@ -251,13 +281,18 @@ public final class BrokerSurfaceService {
             var data = new BrokerSurfaceResponse.ExchangeRateView(
                     source.baseCurrency().name(), source.quoteCurrency().name(), source.rate(), source.midRate(),
                     source.basisPoint(), source.rateChangeType(), source.validFrom(), source.validUntil());
-            return BrokerSurfaceResponse.available(data, List.of(provenance(
+            var provenance = List.of(provenance(
                     "/api/v1/exchange-rate", source.baseCurrency().name() + "/" + source.quoteCurrency().name(),
-                    source.validFrom(), response.metadata().observedAt())));
+                    source.validFrom(), response.metadata().observedAt()));
+            if (source.validUntil() != null && !source.validUntil().isAfter(clock.instant())) {
+                return BrokerSurfaceResponse.degraded(data, true, false, List.of("validUntil"),
+                        "PROVIDER_STALE", provenance);
+            }
+            return BrokerSurfaceResponse.available(data, provenance);
         } catch (BrokerException exception) {
-            return failure(exception);
+            return failure(exception, "/api/v1/exchange-rate");
         } catch (RuntimeException exception) {
-            return BrokerSurfaceResponse.unavailable("PROVIDER_MALFORMED");
+            return failure(BrokerErrorCategory.CONTRACT, "/api/v1/exchange-rate");
         }
     }
 
@@ -275,12 +310,17 @@ public final class BrokerSurfaceService {
             var response = marketData.getMarketCalendar(new BrokerConnectionRef(connectionId), market, date);
             var source = response.value();
             var data = new BrokerSurfaceResponse.MarketCalendarView(source.market(), source.payload());
-            return BrokerSurfaceResponse.available(data, List.of(provenance(
-                    "/api/v1/market-calendar/" + market, null, null, response.metadata().observedAt())));
+            var provenance = List.of(provenance(
+                    "/api/v1/market-calendar/" + market, null, null, response.metadata().observedAt()));
+            if (!source.payload().has("today") || source.payload().path("today").isNull()) {
+                return BrokerSurfaceResponse.degraded(data, false, true, List.of("today"),
+                        "MARKET_CALENDAR_PARTIAL", provenance);
+            }
+            return BrokerSurfaceResponse.available(data, provenance);
         } catch (BrokerException exception) {
-            return failure(exception);
+            return failure(exception, "/api/v1/market-calendar/" + market);
         } catch (RuntimeException exception) {
-            return BrokerSurfaceResponse.unavailable("PROVIDER_MALFORMED");
+            return failure(BrokerErrorCategory.CONTRACT, "/api/v1/market-calendar/" + market);
         }
     }
 
@@ -317,19 +357,32 @@ public final class BrokerSurfaceService {
             var data = new BrokerSurfaceResponse.RankingView(
                     source.type(), source.marketCountry(), source.duration(), source.rankedAt(),
                     source.items().stream().map(item -> new BrokerSurfaceResponse.RankingItemView(
-                            item.rank(), item.symbol(), item.currency().name(), item.lastPrice(), item.basePrice(),
+                            item.rank(), item.symbol(), currency(item.currency()), item.lastPrice(), item.basePrice(),
                             item.changeRate(), item.tradingVolume(), item.tradingAmount(), item.marketCap())).toList());
             var unknown = new ArrayList<String>();
             if (source.items().isEmpty()) unknown.add("items");
+            if (source.rankedAt() == null) unknown.add("rankedAt");
+            for (var i = 0; i < source.items().size(); i++) {
+                var item = source.items().get(i);
+                if (item.rank() == null) unknown.add("items[" + i + "].rank");
+                if (item.symbol() == null) unknown.add("items[" + i + "].symbol");
+                if (item.currency() == null) unknown.add("items[" + i + "].currency");
+                if (item.lastPrice() == null) unknown.add("items[" + i + "].lastPrice");
+                if (item.basePrice() == null) unknown.add("items[" + i + "].basePrice");
+                if (item.changeRate() == null) unknown.add("items[" + i + "].changeRate");
+                if (item.tradingVolume() == null) unknown.add("items[" + i + "].tradingVolume");
+                if (item.tradingAmount() == null) unknown.add("items[" + i + "].tradingAmount");
+            }
+            var provenance = List.of(provenance(
+                    "/api/v1/rankings", null, source.rankedAt(), response.metadata().observedAt()));
             return unknown.isEmpty()
-                    ? BrokerSurfaceResponse.available(data, List.of(provenance(
-                    "/api/v1/rankings", null, source.rankedAt(), response.metadata().observedAt())))
-                    : BrokerSurfaceResponse.degraded(data, false, true, unknown, "RANKINGS_EMPTY", List.of(provenance(
-                    "/api/v1/rankings", null, source.rankedAt(), response.metadata().observedAt())));
+                    ? BrokerSurfaceResponse.available(data, provenance)
+                    : BrokerSurfaceResponse.degraded(data, false, true, unknown,
+                    source.items().isEmpty() ? "RANKINGS_EMPTY" : "RANKINGS_PARTIAL", provenance);
         } catch (BrokerException exception) {
-            return failure(exception);
+            return failure(exception, "/api/v1/rankings");
         } catch (RuntimeException exception) {
-            return BrokerSurfaceResponse.unavailable("PROVIDER_MALFORMED");
+            return failure(BrokerErrorCategory.CONTRACT, "/api/v1/rankings");
         }
     }
 
@@ -344,8 +397,18 @@ public final class BrokerSurfaceService {
         };
     }
 
-    private static <T> BrokerSurfaceResponse<T> failure(BrokerException exception) {
-        var reason = switch (exception.category()) {
+    private <T> BrokerSurfaceResponse<T> failure(BrokerException exception, String endpoint) {
+        var reason = reason(exception.category());
+        return BrokerSurfaceResponse.unavailable(reason, List.of(provenance(endpoint, null, null, clock.instant())));
+    }
+
+    private <T> BrokerSurfaceResponse<T> failure(BrokerErrorCategory category, String endpoint) {
+        return BrokerSurfaceResponse.unavailable(reason(category),
+                List.of(provenance(endpoint, null, null, clock.instant())));
+    }
+
+    private static String reason(BrokerErrorCategory category) {
+        return switch (category) {
             case RATE_LIMITED -> "PROVIDER_RATE_LIMITED";
             case NETWORK, TEMPORARY, BROKER_UNAVAILABLE -> "PROVIDER_TIMEOUT";
             case CONTRACT -> "PROVIDER_MALFORMED";
@@ -353,7 +416,6 @@ public final class BrokerSurfaceService {
             case VALIDATION, INVALID_REQUEST -> "PROVIDER_INVALID_REQUEST";
             default -> "PROVIDER_UNAVAILABLE";
         };
-        return BrokerSurfaceResponse.unavailable(reason);
     }
 
     private static BrokerSurfaceResponse.ProviderProvenance provenance(
@@ -363,6 +425,17 @@ public final class BrokerSurfaceService {
 
     private static List<BrokerSurfaceResponse.LevelView> levels(List<MarketDataAdapter.Level> source) {
         return source.stream().map(level -> new BrokerSurfaceResponse.LevelView(level.price(), level.volume())).toList();
+    }
+
+    private static String currency(Currency value) {
+        return value == null ? null : value.name();
+    }
+
+    private static Currency commonCurrency(List<Currency> values) {
+        return !values.isEmpty()
+                && values.stream().allMatch(Objects::nonNull)
+                && values.stream().distinct().count() == 1
+                ? values.getFirst() : null;
     }
 
     private static void levelsUnknown(

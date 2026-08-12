@@ -241,6 +241,23 @@ class TossInvestBrokerAdapterContractTest {
     }
 
     @Test
+    void preservesMissingRankingIdentityFieldsForSurfaceDegradation() {
+        server.stubFor(get(urlEqualTo("/api/v1/rankings?type=MARKET_TRADING_VOLUME&marketCountry=US&duration=realtime&count=2"))
+                .willReturn(json("""
+                        {"result":{"rankedAt":"2026-08-09T00:00:00+09:00","rankings":[{"currency":"USD","price":{"lastPrice":"210","basePrice":""}}]}}
+                        """)));
+
+        var response = adapter().getRanking(CONNECTION, "MARKET_TRADING_VOLUME", "US", "realtime", 2);
+
+        assertThat(response.value().items()).singleElement().satisfies(item -> {
+            assertThat(item.rank()).isNull();
+            assertThat(item.symbol()).isNull();
+            assertThat(item.lastPrice()).isEqualByComparingTo("210");
+            assertThat(item.basePrice()).isNull();
+        });
+    }
+
+    @Test
     void normalizesRateLimitAsRetriableProviderError() {
         server.stubFor(get(urlEqualTo("/api/v1/orderbook?symbol=AAPL"))
                 .willReturn(aResponse().withStatus(429).withHeader("Retry-After", "2")
