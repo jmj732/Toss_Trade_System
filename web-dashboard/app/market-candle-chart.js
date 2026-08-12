@@ -14,6 +14,11 @@ function finite(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function nonNegativeFinite(value) {
+  const number = finite(value);
+  return number !== null && number >= 0 ? number : null;
+}
+
 function candleTime(candle) {
   return candle.timestamp ?? candle.asOf ?? candle.date ?? candle.time ?? UNKNOWN_TEXT;
 }
@@ -36,17 +41,20 @@ function candleField(candle, field) {
 
 function candleNumbers(candle) {
   return {
-    open: finite(candleField(candle, "open")),
-    high: finite(candleField(candle, "high")),
-    low: finite(candleField(candle, "low")),
-    close: finite(candleField(candle, "close")),
-    volume: finite(candle.volume)
+    open: nonNegativeFinite(candleField(candle, "open")),
+    high: nonNegativeFinite(candleField(candle, "high")),
+    low: nonNegativeFinite(candleField(candle, "low")),
+    close: nonNegativeFinite(candleField(candle, "close")),
+    volume: nonNegativeFinite(candle.volume)
   };
 }
 
 function usablePrice(candle) {
   const numbers = candleNumbers(candle);
-  return [numbers.open, numbers.high, numbers.low, numbers.close].every(value => value !== null)
+  const prices = [numbers.open, numbers.high, numbers.low, numbers.close];
+  return prices.every(value => value !== null)
+    && numbers.high >= Math.max(numbers.open, numbers.close, numbers.low)
+    && numbers.low <= Math.min(numbers.open, numbers.close, numbers.high)
     ? numbers
     : null;
 }
@@ -89,7 +97,7 @@ function CandleSvg({ rows, drawable }) {
   const min = Math.min(...prices);
   const max = Math.max(...prices);
   const span = max - min || 1;
-  const maxVolume = Math.max(...rows.map(candle => finite(candle.volume) ?? 0), 1);
+  const maxVolume = Math.max(...rows.map(candle => candleNumbers(candle).volume ?? 0), 1);
   const step = CHART.width / Math.max(rows.length, 1);
   const priceY = value => ((max - value) / span) * CHART.height;
   const volumeY = value => CHART.height + CHART.volumeHeight - (value / maxVolume) * CHART.volumeHeight;
@@ -105,7 +113,7 @@ function CandleSvg({ rows, drawable }) {
   h("desc", { id: "market-candle-desc" },
     `${rows.length}개 제공 캔들 중 ${drawable.length}개를 시간순으로 표시합니다`),
   ...rows.map((candle, index) => {
-    const volume = finite(candle.volume);
+    const volume = candleNumbers(candle).volume;
     if (volume === null) return null;
     const x = index * step + step * 0.2;
     const width = step * 0.6;

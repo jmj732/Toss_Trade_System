@@ -71,7 +71,7 @@ test("renders degraded usable candles chronologically with accessible svg, table
     data: {
       candles: [
         { timestamp: "2026-08-02T00:00:00Z", open: 10, high: 12, low: 9, close: 11, volume: 100 },
-        { timestamp: "2026-08-01T00:00:00Z", open: 8, high: 10, low: 7, close: 6, volume: null },
+        { timestamp: "2026-08-01T00:00:00Z", open: 8, high: 10, low: 5, close: 6, volume: null },
         { timestamp: "2026-07-31T00:00:00Z", open: null, high: "x", low: 5, close: 6, volume: 70 }
       ]
     },
@@ -113,7 +113,7 @@ test("does not draw malformed candles and does not mutate provider order", () =>
   const candles = [
     { date: "newest", open: 1, high: 2, low: 1, close: 2, volume: 5 },
     { date: "bad", open: "no", high: 2, low: 1, close: 2, volume: 4 },
-    { date: "oldest", open: 3, high: 4, low: 2, close: 1, volume: "bad" }
+    { date: "oldest", open: 3, high: 4, low: 1, close: 1, volume: "bad" }
   ];
 
   const html = renderToStaticMarkup(createElement(MarketCandleChart, {
@@ -127,6 +127,29 @@ test("does not draw malformed candles and does not mutate provider order", () =>
   assert.equal((html.match(/class="volume-bar/g) ?? []).length, 2);
   assert.ok(html.indexOf("oldest") < html.indexOf("bad"));
   assert.ok(html.indexOf("bad") < html.indexOf("newest"));
+});
+
+test("does not draw impossible or negative OHLC and treats negative volume as missing", () => {
+  const html = renderToStaticMarkup(createElement(MarketCandleChart, {
+    envelope: {
+      status: "AVAILABLE",
+      data: {
+        candles: [
+          { date: "negative-volume", open: 10, high: 12, low: 9, close: 11, volume: -1 },
+          { date: "negative-price", open: -10, high: 12, low: 9, close: 11, volume: 10 },
+          { date: "low-above-values", open: 10, high: 12, low: 13, close: 11, volume: 10 },
+          { date: "high-below-values", open: 10, high: 9, low: 8, close: 11, volume: 10 },
+          { date: "valid", open: 10, high: 12, low: 9, close: 11, volume: 20 }
+        ]
+      }
+    }
+  }));
+
+  assert.equal((html.match(/class="candle-wick/g) ?? []).length, 2);
+  assert.equal((html.match(/class="candle-body/g) ?? []).length, 2);
+  assert.equal((html.match(/class="volume-bar/g) ?? []).length, 4);
+  assert.match(html, /negative-volume/);
+  assert.match(html, /거래량 미제공/);
 });
 
 test("treats numeric string OHLC as malformed for candle geometry but keeps raw table values", () => {

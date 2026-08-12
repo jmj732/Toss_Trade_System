@@ -367,6 +367,22 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   padding: var(--sp-2) var(--sp-3);
 }
 .ranking-name { color: var(--muted); margin-left: var(--sp-1); }
+.market-candle-chart { overflow: hidden; }
+.market-candle-chart .market-candle-svg {
+  display: block;
+  height: auto;
+  margin-top: var(--sp-4);
+  max-width: 100%;
+  overflow: visible;
+}
+.market-candle-chart .candle-up { fill: var(--danger); stroke: var(--danger-text); }
+.market-candle-chart .candle-down { fill: var(--accent); stroke: var(--accent-text); }
+.market-candle-chart .candle-wick {
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+.market-candle-chart .candle-body { stroke-width: 1; }
+.market-candle-chart .volume-bar { fill: var(--panel-raised); }
 .center {
   align-items: center;
   display: flex;
