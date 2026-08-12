@@ -11,9 +11,7 @@ export const CANDLE_INTERVALS = [
 const CHART = { width: 360, height: 140, volumeHeight: 36 };
 
 function finite(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const number = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(number) ? number : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function candleTime(candle) {
@@ -28,7 +26,8 @@ function displayTime(candle) {
 
 function displayNumber(value) {
   const number = finite(value);
-  return number === null ? UNKNOWN_TEXT : number.toLocaleString("ko-KR");
+  if (number !== null) return number.toLocaleString("ko-KR");
+  return value === null || value === undefined || value === "" ? UNKNOWN_TEXT : String(value);
 }
 
 function candleNumbers(candle) {
@@ -53,9 +52,9 @@ function orderedCandles(envelope) {
   return Array.isArray(candles) ? [...candles].reverse() : [];
 }
 
-function derivedStatus(envelope, drawableCount, rowCount) {
+function derivedStatus(envelope, rowCount) {
   if (envelope?.status === "ERROR" || envelope?.status === "UNAVAILABLE") return envelope.status;
-  if (envelope?.status === "DEGRADED" && drawableCount > 0) return "DEGRADED";
+  if (envelope?.status === "DEGRADED" && rowCount > 0) return "DEGRADED";
   return rowCount > 0 ? "READY" : "EMPTY";
 }
 
@@ -170,8 +169,9 @@ export function MarketCandleChart({ envelope, interval = "1d", onIntervalChange 
   const drawable = rows
     .map((candle, index) => ({ index, values: usablePrice(candle) }))
     .filter(entry => entry.values);
-  const status = derivedStatus(envelope, drawable.length, rows.length);
-  const showChart = status === "READY" || status === "DEGRADED";
+  const status = derivedStatus(envelope, rows.length);
+  const showRows = (status === "READY" || status === "DEGRADED") && rows.length > 0;
+  const showChart = showRows && drawable.length > 0;
 
   return h("section", { className: "panel market-candle-chart" },
     h("header", null,
@@ -189,6 +189,6 @@ export function MarketCandleChart({ envelope, interval = "1d", onIntervalChange 
           }, option.label)))),
     h(StatusNote, { envelope, status }),
     showChart ? h(CandleSvg, { rows, drawable }) : null,
-    showChart ? h(CandleTable, { rows }) : null,
+    showRows ? h(CandleTable, { rows }) : null,
     h(Metadata, { envelope }));
 }

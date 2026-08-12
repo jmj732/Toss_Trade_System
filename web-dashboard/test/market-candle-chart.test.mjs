@@ -76,6 +76,50 @@ test("does not draw malformed candles and does not mutate provider order", () =>
   assert.ok(html.indexOf("bad") < html.indexOf("newest"));
 });
 
+test("treats numeric string OHLC as malformed for candle geometry but keeps raw table values", () => {
+  const html = renderToStaticMarkup(createElement(MarketCandleChart, {
+    envelope: {
+      status: "AVAILABLE",
+      data: {
+        candles: [
+          { date: "numeric-string", open: "10.50", high: "12.25", low: "9.75", close: "11.00", volume: 5 }
+        ]
+      }
+    },
+    interval: "1d",
+    onIntervalChange() {}
+  }));
+
+  assert.match(html, /numeric-string/);
+  assert.match(html, /10\.50/);
+  assert.match(html, /12\.25/);
+  assert.match(html, /9\.75/);
+  assert.match(html, /11\.00/);
+  assert.doesNotMatch(html, /class="candle-wick/);
+  assert.doesNotMatch(html, /class="candle-body/);
+  assert.doesNotMatch(html, /<svg/);
+});
+
+test("keeps degraded warning and hides chart when rows have zero usable OHLC", () => {
+  const html = renderToStaticMarkup(createElement(MarketCandleChart, {
+    envelope: {
+      status: "DEGRADED",
+      data: {
+        candles: [
+          { date: "bad-1", open: "10", high: "11", low: "9", close: "10", volume: 5 },
+          { date: "bad-2", open: null, high: 12, low: 8, close: 10, volume: 7 }
+        ]
+      }
+    }
+  }));
+
+  assert.match(html, /부분 데이터/);
+  assert.doesNotMatch(html, /READY/);
+  assert.doesNotMatch(html, /<svg/);
+  assert.doesNotMatch(html, /class="candle-wick/);
+  assert.doesNotMatch(html, /class="candle-body/);
+});
+
 test("status priority hides chart for unavailable or error and empty normal stays empty", () => {
   const unavailable = renderToStaticMarkup(createElement(MarketCandleChart, {
     envelope: { status: "UNAVAILABLE", data: { candles: [{ open: 1, high: 2, low: 1, close: 2 }] } }
