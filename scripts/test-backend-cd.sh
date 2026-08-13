@@ -1,21 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workflow=".github/workflows/release-gates.yml"
+workflow=".github/workflows/cd.yml"
+ci_workflow=".github/workflows/ci.yml"
 
 fail() {
-  echo "backend CD contract: FAIL: $1" >&2
+  echo "trade CD contract: FAIL: $1" >&2
   exit 1
 }
 
 test -f "$workflow" || fail "missing $workflow"
+test -f "$ci_workflow" || fail "missing $ci_workflow"
 
-grep -q '^  backend-cd:' "$workflow" || fail "missing backend-cd job"
-grep -q 'spring-backend' "$workflow" || fail "backend CD must depend on Spring gates"
-grep -q 'fastapi-analysis' "$workflow" || fail "backend CD must depend on analysis gates"
-grep -q 'nextjs-dashboard' "$workflow" || fail "backend CD must depend on dashboard gates"
-grep -q 'npm-audit' "$workflow" || fail "backend CD must depend on audit gates"
-grep -q 'compose-smoke' "$workflow" || fail "backend CD must depend on compose gates"
+grep -q '^  deploy:' "$workflow" || fail "missing deploy job"
+grep -q '^  deploy-vercel:' "$workflow" || fail "missing Vercel deploy job"
+grep -q 'Deploy Spring backend and dashboard' "$workflow" ||
+  fail "CD must identify the dashboard deployment"
+grep -q 'Deploy dashboard to Vercel' "$workflow" ||
+  fail "CD must identify the Vercel deployment"
+grep -q '^  workflow_run:' "$workflow" || fail "CD must wait for CI workflow completion"
+grep -q 'workflows: \[CI\]' "$workflow" || fail "CD must follow the CI workflow"
+grep -q 'web-dashboard/' "$ci_workflow" ||
+  fail "CI must detect web-dashboard changes"
+grep -q '^  dashboard:' "$ci_workflow" || fail "missing dashboard CI job"
+grep -q '^  backend:' "$ci_workflow" || fail "CI must include backend gates"
+grep -q '^  analysis:' "$ci_workflow" || fail "CI must include analysis gates"
+grep -q '^  dashboard:' "$ci_workflow" || fail "CI must include dashboard gates"
+grep -q '^  stack:' "$ci_workflow" || fail "CI must include stack gates"
+grep -q '^  ci-gate:' "$ci_workflow" || fail "CI must expose a single release gate"
 grep -q 'cancel-in-progress: false' "$workflow" ||
   fail "an active backend deploy must not be cancelled by a newer push"
 grep -q 'docker build --pull --tag "\$ANALYSIS_IMAGE" analysis-service' "$workflow" ||
@@ -56,4 +68,15 @@ if rg -n 'BEGIN (RSA|OPENSSH) PRIVATE KEY|ghp_[A-Za-z0-9]|DOPPLER_TOKEN=' \
   fail "credential-like value found in CD configuration"
 fi
 
-echo "backend CD contract: PASS"
+grep -q 'up -d --wait migrate backend dashboard' "$workflow" ||
+  fail "server deploy must restart the dashboard"
+grep -q 'VERCEL_TOKEN' "$workflow" || fail "Vercel token must come from GitHub Secrets"
+grep -q 'VERCEL_ORG_ID' "$workflow" || fail "Vercel org ID must be configured"
+grep -q 'VERCEL_PROJECT_ID' "$workflow" || fail "Vercel project ID must be configured"
+grep -q 'vercel@58.5.1 link' "$workflow" || fail "Vercel deploy must link the target project"
+grep -q 'vercel@58.5.1 pull' "$workflow" || fail "Vercel deploy must pull production settings"
+grep -q 'vercel@58.5.1 build --prod' "$workflow" || fail "Vercel deploy must build production output"
+grep -q 'vercel@58.5.1 deploy --prebuilt --prod' "$workflow" ||
+  fail "Vercel deploy must promote the prebuilt output"
+
+echo "trade CD contract: PASS"

@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy Spring backend
+    name: Deploy Spring backend and dashboard
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -176,3 +176,43 @@ jobs:
               up -d --wait migrate backend dashboard
           curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null
           REMOTE
+
+  deploy-vercel:
+    name: Deploy dashboard to Vercel
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build and deploy production dashboard
+        working-directory: web-dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${VERCEL_TOKEN:?missing VERCEL_TOKEN}"
+          : "${VERCEL_ORG_ID:?missing VERCEL_ORG_ID}"
+          : "${VERCEL_PROJECT_ID:?missing VERCEL_PROJECT_ID}"
+
+          npx --yes vercel@58.5.1 link --yes \
+            --team "$VERCEL_ORG_ID" \
+            --project "$VERCEL_PROJECT_ID" \
+            --token "$VERCEL_TOKEN"
+          npx --yes vercel@58.5.1 pull --yes \
+            --environment=production \
+            --token "$VERCEL_TOKEN"
+          npx --yes vercel@58.5.1 build --prod --token "$VERCEL_TOKEN"
+          npx --yes vercel@58.5.1 deploy --prebuilt --prod --token "$VERCEL_TOKEN"

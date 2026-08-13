@@ -185,8 +185,8 @@ test("puts stock analysis summary before provider panels", () => {
       status: "DEGRADED",
       data: {
         candles: [
-          { date: "2026-08-02", close: 105, open: 101 },
-          { date: "2026-08-01", close: 99, open: 100 }
+          { date: "2026-08-02", close: 105, open: 101, high: 106, low: 100 },
+          { date: "2026-08-01", close: 99, open: 100, high: 102, low: 98 }
         ]
       }
     },
@@ -212,6 +212,9 @@ test("puts stock analysis summary before provider panels", () => {
   assert.match(html, /부분 데이터/);
   assert.match(html, /리스크/);
   assert.ok(html.indexOf("현재가") < html.indexOf("호가 잔량"));
+  const candleHtml = html.slice(html.indexOf("Toss OpenAPI 캔들"), html.indexOf("Toss OpenAPI 호가"));
+  assert.match(candleHtml, /class="market-candle-svg"/);
+  assert.doesNotMatch(candleHtml, /<table/);
   assert.match(html, /지원되지 않음 \(지원되지 않는 제공자 데이터\)/);
 });
 
@@ -263,7 +266,7 @@ test("distinguishes provider failure from unsupported data", () => {
   }));
 
   assert.match(html, /조회 실패 \(제공자 시간 초과\)/);
-  assert.match(html, /지원되지 않음 \(지원되지 않는 제공자 데이터\)/);
+  assert.match(html, /차트 데이터를 불러오지 못했습니다 \(PROVIDER_UNSUPPORTED\)/);
 });
 
 test("unauthorized provider envelope takes precedence over unsupported", () => {

@@ -19,22 +19,6 @@ function nonNegativeFinite(value) {
   return number !== null && number >= 0 ? number : null;
 }
 
-function candleTime(candle) {
-  return candle.timestamp ?? candle.asOf ?? candle.date ?? candle.time ?? UNKNOWN_TEXT;
-}
-
-function displayTime(candle) {
-  if (candle.timestamp) return formatInstant(candle.timestamp);
-  if (candle.asOf) return formatInstant(candle.asOf);
-  return candle.date ?? candle.time ?? UNKNOWN_TEXT;
-}
-
-function displayNumber(value) {
-  const number = finite(value);
-  if (number !== null) return number.toLocaleString("ko-KR");
-  return value === null || value === undefined || value === "" ? UNKNOWN_TEXT : String(value);
-}
-
 function idPart(value) {
   return String(value || "unknown").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown";
 }
@@ -178,38 +162,14 @@ function CandleSvg({ rows, drawable, symbol, interval }) {
   }));
 }
 
-function CandleTable({ rows }) {
-  return h("div", {
-    className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "캔들 숫자 표"
-  }, h("table", null,
-    h("thead", null, h("tr", null,
-      ...["시각", "시가", "고가", "저가", "종가", "등락", "거래량"].map(label =>
-        h("th", { key: label, scope: "col" }, label)))),
-    h("tbody", null, ...rows.map((candle, index) => {
-      const values = candleNumbers(candle);
-      const comparable = values.open !== null && values.close !== null;
-      const delta = comparable ? values.close - values.open : null;
-      const direction = delta === null ? null : delta >= 0 ? "up" : "down";
-      return h("tr", { key: `${candleTime(candle)}-${index}` },
-        h("td", null, displayTime(candle)),
-        h("td", null, displayNumber(candleField(candle, "open"))),
-        h("td", null, displayNumber(candleField(candle, "high"))),
-        h("td", null, displayNumber(candleField(candle, "low"))),
-        h("td", null, displayNumber(candleField(candle, "close"))),
-        h("td", { className: direction ? `candle-${direction}` : undefined },
-          delta === null ? UNKNOWN_TEXT : `${delta >= 0 ? "상승" : "하락"} ${delta >= 0 ? "+" : ""}${displayNumber(delta)}`),
-        h("td", null, values.volume === null ? "거래량 미제공" : values.volume.toLocaleString("ko-KR")));
-    }))));
-}
-
 export function MarketCandleChart({ envelope, symbol = "UNKNOWN", interval = "1d", onIntervalChange }) {
   const rows = orderedCandles(envelope);
   const drawable = rows
     .map((candle, index) => ({ index, values: usablePrice(candle) }))
     .filter(entry => entry.values);
   const status = derivedStatus(envelope, rows.length);
-  const showRows = Boolean(symbol) && (status === "READY" || status === "DEGRADED") && rows.length > 0;
-  const showChart = showRows && drawable.length > 0;
+  const showChart = Boolean(symbol) && (status === "READY" || status === "DEGRADED")
+    && rows.length > 0 && drawable.length > 0;
 
   return h("section", { className: "panel market-candle-chart" },
     h("header", null,
@@ -227,6 +187,5 @@ export function MarketCandleChart({ envelope, symbol = "UNKNOWN", interval = "1d
           }, option.label)))),
     h(StatusNote, { envelope, status, symbol }),
     showChart ? h(CandleSvg, { rows, drawable, symbol, interval }) : null,
-    showRows ? h(CandleTable, { rows }) : null,
     h(Metadata, { envelope }));
 }

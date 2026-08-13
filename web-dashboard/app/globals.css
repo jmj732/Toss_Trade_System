@@ -772,8 +772,7 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   top: var(--sp-4);
 }
 .home-dashboard-account .portfolio-panel { margin: 0; }
-.home-reference-shell .market-candle-chart,
-.home-reference-shell .market-candle-chart .table-wrap { min-width: 0; overflow-x: auto; }
+.home-reference-shell .market-candle-chart { min-width: 0; overflow-x: auto; }
 
 @media (max-width: 900px) {
   .topbar { padding: var(--sp-6) var(--sp-5) var(--sp-4); }

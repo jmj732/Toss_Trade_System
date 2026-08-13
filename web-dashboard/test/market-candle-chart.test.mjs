@@ -30,7 +30,7 @@ test("interval buttons expose API keys to the renderer callback", () => {
   assert.deepEqual(calls, ["1d"]);
 });
 
-test("renders canonical backend OHLC fields in svg geometry and table", () => {
+test("renders canonical backend OHLC fields in svg geometry without a raw table", () => {
   const html = renderToStaticMarkup(createElement(MarketCandleChart, {
     envelope: {
       status: "AVAILABLE",
@@ -57,15 +57,11 @@ test("renders canonical backend OHLC fields in svg geometry and table", () => {
 
   assert.equal((html.match(/class="candle-wick/g) ?? []).length, 1);
   assert.equal((html.match(/class="candle-body/g) ?? []).length, 1);
-  assert.match(html, /100/);
-  assert.match(html, /120/);
-  assert.match(html, /90/);
-  assert.match(html, /110/);
-  assert.doesNotMatch(html, />1<\/td>/);
-  assert.doesNotMatch(html, />2<\/td>/);
+  assert.match(html, /<svg class="market-candle-svg"/);
+  assert.doesNotMatch(html, /<table/);
 });
 
-test("renders degraded usable candles chronologically with accessible svg, table, and raw metadata", () => {
+test("renders degraded usable candles with accessible svg and raw metadata", () => {
   const envelope = {
     status: "DEGRADED",
     data: {
@@ -98,13 +94,7 @@ test("renders degraded usable candles chronologically with accessible svg, table
   assert.equal((html.match(/class="candle-wick/g) ?? []).length, 2);
   assert.equal((html.match(/class="candle-body/g) ?? []).length, 2);
   assert.equal((html.match(/class="volume-bar/g) ?? []).length, 2);
-  assert.match(html, /candle-down[^>]*>하락/);
-  assert.match(html, /candle-up[^>]*>상승/);
-  assert.match(html, /거래량 미제공/);
-  assert.match(html, /확인 필요/);
-
-  assert.ok(html.indexOf("2026-07-31") < html.indexOf("2026-08-01"));
-  assert.ok(html.indexOf("2026-08-01") < html.indexOf("2026-08-02"));
+  assert.doesNotMatch(html, /<table/);
   assert.doesNotMatch(html, /READY/);
 });
 
@@ -157,7 +147,7 @@ test("svg title and description ids are unique and name the symbol interval", ()
   assert.match(html, /<desc id="[^"]+">MSFT 일봉\(1d\) 1개 제공 캔들 중 1개를 시간순으로 표시합니다<\/desc>/);
 });
 
-test("does not draw malformed candles and does not mutate provider order", () => {
+test("does not draw malformed candles", () => {
   const candles = [
     { date: "newest", open: 1, high: 2, low: 1, close: 2, volume: 5 },
     { date: "bad", open: "no", high: 2, low: 1, close: 2, volume: 4 },
@@ -173,8 +163,7 @@ test("does not draw malformed candles and does not mutate provider order", () =>
   assert.deepEqual(candles.map(candle => candle.date), ["newest", "bad", "oldest"]);
   assert.equal((html.match(/class="candle-wick/g) ?? []).length, 2);
   assert.equal((html.match(/class="volume-bar/g) ?? []).length, 2);
-  assert.ok(html.indexOf("oldest") < html.indexOf("bad"));
-  assert.ok(html.indexOf("bad") < html.indexOf("newest"));
+  assert.doesNotMatch(html, /<table/);
 });
 
 test("does not draw impossible or negative OHLC and treats negative volume as missing", () => {
@@ -196,11 +185,10 @@ test("does not draw impossible or negative OHLC and treats negative volume as mi
   assert.equal((html.match(/class="candle-wick/g) ?? []).length, 2);
   assert.equal((html.match(/class="candle-body/g) ?? []).length, 2);
   assert.equal((html.match(/class="volume-bar/g) ?? []).length, 4);
-  assert.match(html, /negative-volume/);
-  assert.match(html, /거래량 미제공/);
+  assert.doesNotMatch(html, /<table/);
 });
 
-test("treats numeric string OHLC as malformed for candle geometry but keeps raw table values", () => {
+test("treats numeric string OHLC as malformed and does not render raw values", () => {
   const html = renderToStaticMarkup(createElement(MarketCandleChart, {
     envelope: {
       status: "AVAILABLE",
@@ -214,11 +202,7 @@ test("treats numeric string OHLC as malformed for candle geometry but keeps raw 
     onIntervalChange() {}
   }));
 
-  assert.match(html, /numeric-string/);
-  assert.match(html, /10\.50/);
-  assert.match(html, /12\.25/);
-  assert.match(html, /9\.75/);
-  assert.match(html, /11\.00/);
+  assert.doesNotMatch(html, /numeric-string|10\.50|12\.25|9\.75|11\.00/);
   assert.doesNotMatch(html, /class="candle-wick/);
   assert.doesNotMatch(html, /class="candle-body/);
   assert.doesNotMatch(html, /<svg/);
