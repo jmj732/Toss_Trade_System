@@ -157,7 +157,9 @@ test("home loads portfolio history but reuses dashboard.pendingEvents instead of
   assert.match(loadWorkspace[0], /route === "home"[\s\S]*?loadPortfolioHistory\(id, HISTORY_QUERY\)/);
   assert.match(loadWorkspace[0], /setHistoryBusy\(true\)[\s\S]*?finally\(\(\) => setHistoryBusy\(false\)\)/);
   assert.match(loadWorkspace[0], /loadHomeCandles\(id, selectHomeSymbol\(dashboard\), homeCandleInterval\)/);
-  assert.doesNotMatch(loadWorkspace[0], /route === "home"[\s\S]*?listEvents\(id\)/);
+  assert.match(loadWorkspace[0], /const needsEvents = route !== "home";/);
+  assert.match(loadWorkspace[0], /if \(needsEvents\) \{\s*try \{\s*setEvents\(await listEvents\(id\)\);/);
+  assert.doesNotMatch(loadWorkspace[0], /if \(route === "home"\) \{\s*setEvents\(await listEvents\(id\)\);/);
 
   const homeDashboard = source.match(/h\(DashboardView, \{[\s\S]*?onHomeCandleIntervalChange: homeCandleIntervalChange[\s\S]*?\}\)/);
   assert.ok(homeDashboard);
