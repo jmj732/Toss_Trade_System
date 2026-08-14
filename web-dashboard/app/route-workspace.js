@@ -102,6 +102,14 @@ export function needsHomeCandleRequest(previous, next) {
   return previous !== next;
 }
 
+export function homeHistoryRequestKey(connectionId) {
+  return connectionId;
+}
+
+export function needsHomeHistoryRequest(previous, next) {
+  return previous !== next;
+}
+
 export function readSavedConnectionId(storage) {
   return storage?.getItem("trade.connectionId")?.trim() ?? "";
 }
@@ -239,6 +247,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const mutationFlight = useRef();
   mutationFlight.current ??= createSingleFlight();
   const homeCandleRequest = useRef("");
+  const homeHistoryRequest = useRef("");
 
   useEffect(() => {
     loadSession().then(setSession).catch(value => {
@@ -463,11 +472,23 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
     if (route === "home") {
       const surfaceFailure = value => ({ status: "ERROR", unavailableReason: value.code ?? value.message });
+      const next = homeHistoryRequestKey(id);
+      if (needsHomeHistoryRequest(homeHistoryRequest.current, next)) {
+        homeHistoryRequest.current = next;
+      }
       setHistoryBusy(true);
       loadPortfolioHistory(id, HISTORY_QUERY)
-        .then(setPortfolioHistory)
-        .catch(value => setPortfolioHistory({ unavailable: true, unavailableReason: value.code ?? value.message }))
-        .finally(() => setHistoryBusy(false));
+        .then(value => {
+          if (homeHistoryRequest.current === next) setPortfolioHistory(value);
+        })
+        .catch(value => {
+          if (homeHistoryRequest.current === next) {
+            setPortfolioHistory({ unavailable: true, unavailableReason: value.code ?? value.message });
+          }
+        })
+        .finally(() => {
+          if (homeHistoryRequest.current === next) setHistoryBusy(false);
+        });
       loadExchangeRate(id).then(setExchangeRate).catch(value => setExchangeRate(surfaceFailure(value)));
       loadMarketCalendar(id, "US").then(setMarketCalendar).catch(value => setMarketCalendar(surfaceFailure(value)));
       loadRankings(id, "VOLUME").then(setRankings).catch(value => setRankings(surfaceFailure(value)));
@@ -1081,11 +1102,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
           dashboard,
           busyOrderId: busyOrderIds,
           onOrderAction: orderAction,
-          realtimePrices,
           homeLayout: "operations",
           portfolioHistory,
           historyBusy,
           riskPolicy,
+          realtimePrices,
           marketOverview,
           homeCandles,
           homeCandleSymbol: homeSymbol,

@@ -60,7 +60,7 @@ function currencyPath(points, field, currency, width, height) {
   }).join(" ");
 }
 
-function Trend({ title, points, field }) {
+export function Trend({ title, points, field }) {
   const width = 320;
   const height = 80;
   const krwPath = currencyPath(points, field, "KRW", width, height);
@@ -81,7 +81,7 @@ function Trend({ title, points, field }) {
       h("span", { className: "trend-usd-dot" }, "USD")));
 }
 
-function PointsTable({ points }) {
+export function PointsTable({ points }) {
   if (points.length === 0) {
     return h("p", { className: "empty" }, "데이터가 없습니다");
   }
@@ -102,6 +102,31 @@ function PointsTable({ points }) {
       ...["시각", "평가금액 KRW", "평가금액 USD", "P/L KRW", "P/L USD"].map(label =>
         h("th", { key: label, scope: "col" }, label)))),
     h("tbody", null, ...points.map(pointRow))));
+}
+
+export function PortfolioHistoryTrend({ history, busy = false }) {
+  const points = history?.data?.points ?? [];
+  return h("section", {
+    className: "portfolio-history panel portfolio-history-compact",
+    "aria-busy": busy
+  },
+    h("header", null,
+      h("div", null,
+        h("p", { className: "eyebrow" }, "포트폴리오 이력"),
+        h("h2", null, "자산 · P/L 추세")),
+      history ? h(Quality, { history }) : null),
+    !history || history.unavailable
+      ? h("p", { className: busy ? "busy" : "empty" },
+        busy ? "이력을 불러오는 중…" : describeError(history?.unavailableReason) ?? "이력이 아직 없습니다")
+      : h("div", null,
+        busy ? h("p", { className: "busy" }, "이력을 새로고침 중…") : null,
+        history.data.partial
+          ? h("p", { className: "busy" },
+            `${history.data.totalMatched}개 중 ${history.data.returnedPoints}개 표시`)
+          : null,
+        h(Trend, { title: "평가금액", points, field: "marketValueAmounts" }),
+        h(Trend, { title: "손익", points, field: "profitLossAmounts" }),
+        h(PointsTable, { points })));
 }
 
 export function PortfolioHistoryView({ history, query, busy, onQuery }) {
