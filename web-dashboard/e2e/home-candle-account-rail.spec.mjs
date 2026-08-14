@@ -30,7 +30,10 @@ test("home operations shell requests the lower market candle once, then only on 
   );
 
   await page.getByRole("button", { name: "일봉" }).click();
-  await page.waitForTimeout(100);
+  const duplicateCandleRequest = observeNextCandleRequest(page);
+  await page.getByRole("button", { name: "일봉" }).click();
+  await expect(page.getByRole("button", { name: "일봉" })).toHaveAttribute("aria-pressed", "true");
+  expect(await duplicateCandleRequest).toBeNull();
   expect(candleRequests()).toHaveLength(2);
   await expect(page.locator(".home-operations-shell")).toBeVisible();
   for (const region of ["freshness-status", "core-metrics", "portfolio-trend", "holdings", "review-queue", "events", "market-context"]) {
@@ -50,3 +53,14 @@ test("home operations shell requests the lower market candle once, then only on 
   });
   expect(operationsPrecedeMarketContext).toBe(true);
 });
+
+async function observeNextCandleRequest(page) {
+  return page.waitForRequest(request => new URL(request.url()).pathname.endsWith("/candles"), { timeout: 500 })
+    .then(request => request.url())
+    .catch(error => {
+      if (error.name === "TimeoutError") {
+        return null;
+      }
+      throw error;
+    });
+}

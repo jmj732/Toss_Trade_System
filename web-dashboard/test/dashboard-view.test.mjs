@@ -167,8 +167,7 @@ test("home layout orders operations before lower market context without duplicat
     'data-home-region="market-context"',
     "market-candle-chart"
   ]);
-  assert.ok(html.indexOf("event-panel") < html.indexOf("market-candle-chart"));
-  assert.ok(html.indexOf("decision-queue") < html.indexOf("market-candle-chart"));
+  assertOrder(html, ["decision-queue", "event-panel", "market-candle-chart"]);
   assert.equal((html.match(/portfolio-panel/g) ?? []).length, 1);
 });
 
@@ -202,8 +201,8 @@ test("home review summary counts actionable review statuses while preserving pro
     onOrderAction() {}
   }));
 
-  assert.match(html, /data-home-region="review-summary"[\s\S]*3건/);
-  assert.match(html, /data-order-row="expired"[\s\S]*만료됨/);
+  assert.match(region(html, "review-summary"), /3건/);
+  assert.match(row(html, "expired"), /만료됨/);
   assert.match(row(html, "expired"), /disabled="">승인 검토/);
   assert.match(row(html, "expired"), /주문 취소/);
   assert.match(row(html, "manual"), /수동 검토 필요/);
@@ -266,6 +265,13 @@ function row(html, id) {
   const start = html.indexOf(`data-order-row="${id}"`);
   assert.notEqual(start, -1, `missing order row: ${id}`);
   const next = html.indexOf('data-order-row="', start + 1);
+  return next === -1 ? html.slice(start) : html.slice(start, next);
+}
+
+function region(html, name) {
+  const start = html.indexOf(`data-home-region="${name}"`);
+  assert.notEqual(start, -1, `missing home region: ${name}`);
+  const next = html.indexOf('data-home-region="', start + 1);
   return next === -1 ? html.slice(start) : html.slice(start, next);
 }
 
