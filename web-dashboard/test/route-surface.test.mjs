@@ -133,10 +133,37 @@ test("keeps the connected account primary while exposing an explicit account swi
   assert.match(html, /계좌 불러오기/);
 });
 
-test("home keeps the reference composition regions explicit", async () => {
+test("home uses the operations composition and removes the old chart-first shell", async () => {
+  const workspaceSource = await readFile(new URL("route-workspace.js", root), "utf8");
+  const dashboardSource = await readFile(new URL("dashboard-view.js", root), "utf8");
+  const homeSource = `${workspaceSource}\n${dashboardSource}`;
+
+  assert.match(homeSource, /home-operations-shell/);
+  for (const region of [
+    "freshness-status", "core-metrics", "portfolio-trend", "holdings",
+    "review-queue", "events", "market-context", "review-summary"
+  ]) {
+    assert.match(homeSource, new RegExp(`data-home-region":\\s*"${region}"`));
+  }
+  assert.doesNotMatch(homeSource, /home-reference-shell|home-dashboard-columns|home-dashboard-main|home-dashboard-account/);
+  assert.match(workspaceSource, /h\(DashboardView, \{[\s\S]*?homeLayout: "operations"[\s\S]*?portfolioHistory[\s\S]*?historyBusy[\s\S]*?riskPolicy[\s\S]*?realtimePrices[\s\S]*?homeCandles[\s\S]*?homeCandleInterval/);
+});
+
+test("home loads portfolio history but reuses dashboard.pendingEvents instead of listEvents", async () => {
   const source = await readFile(new URL("route-workspace.js", root), "utf8");
-  assert.match(source, /home-reference-shell/);
-  assert.match(source, /h\(DashboardView, \{[\s\S]*?realtimePrices[\s\S]*?homeLayout: true[\s\S]*?homeCandles[\s\S]*?homeCandleInterval/);
+
+  const loadWorkspace = source.match(/async function loadWorkspace\(id\) \{[\s\S]*?\n  \}/);
+  assert.ok(loadWorkspace);
+  assert.match(loadWorkspace[0], /route === "home"[\s\S]*?loadPortfolioHistory\(id, HISTORY_QUERY\)/);
+  assert.match(loadWorkspace[0], /setHistoryBusy\(true\)[\s\S]*?finally\(\(\) => setHistoryBusy\(false\)\)/);
+  assert.match(loadWorkspace[0], /loadHomeCandles\(id, selectHomeSymbol\(dashboard\), homeCandleInterval\)/);
+  assert.doesNotMatch(loadWorkspace[0], /route === "home"[\s\S]*?listEvents\(id\)/);
+
+  const homeDashboard = source.match(/h\(DashboardView, \{[\s\S]*?onHomeCandleIntervalChange: homeCandleIntervalChange[\s\S]*?\}\)/);
+  assert.ok(homeDashboard);
+  assert.match(homeDashboard[0], /dashboard/);
+  assert.match(homeDashboard[0], /portfolioHistory/);
+  assert.doesNotMatch(homeDashboard[0], /events:/);
 });
 
 test("home candle loading is guarded by exact request key and canonical interval keys", async () => {
