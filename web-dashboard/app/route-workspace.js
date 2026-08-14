@@ -239,6 +239,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const mutationFlight = useRef();
   mutationFlight.current ??= createSingleFlight();
   const homeCandleRequest = useRef("");
+  const homeHistoryRequest = useRef(0);
 
   useEffect(() => {
     loadSession().then(setSession).catch(value => {
@@ -416,10 +417,13 @@ export function RouteWorkspace({ route, symbol = "" }) {
       }
     }
     if (route === "portfolio") {
+      setHistoryBusy(true);
       try {
         setPortfolioHistory(await loadPortfolioHistory(id, HISTORY_QUERY));
       } catch (value) {
         setError(describeError(value.message));
+      } finally {
+        setHistoryBusy(false);
       }
     }
     if (route === "predictions" || route === "stock") {
@@ -463,6 +467,21 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
     if (route === "home") {
       const surfaceFailure = value => ({ status: "ERROR", unavailableReason: value.code ?? value.message });
+      const request = homeHistoryRequest.current + 1;
+      homeHistoryRequest.current = request;
+      setHistoryBusy(true);
+      loadPortfolioHistory(id, HISTORY_QUERY)
+        .then(value => {
+          if (homeHistoryRequest.current === request) setPortfolioHistory(value);
+        })
+        .catch(value => {
+          if (homeHistoryRequest.current === request) {
+            setPortfolioHistory({ unavailable: true, unavailableReason: value.code ?? value.message });
+          }
+        })
+        .finally(() => {
+          if (homeHistoryRequest.current === request) setHistoryBusy(false);
+        });
       loadExchangeRate(id).then(setExchangeRate).catch(value => setExchangeRate(surfaceFailure(value)));
       loadMarketCalendar(id, "US").then(setMarketCalendar).catch(value => setMarketCalendar(surfaceFailure(value)));
       loadRankings(id, "VOLUME").then(setRankings).catch(value => setRankings(surfaceFailure(value)));
@@ -1058,7 +1077,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
                 type: "submit",
                 disabled: workspaceStatus === "loading" || Boolean(busy)
               }, "불러오기"))))) : null,
-      workspaceReady ? h("div", { className: "workspace-content home-reference-shell" },
+      workspaceReady ? h("div", { className: "workspace-content" },
         approvalOrder
           ? h(OrderApprovalPanel, {
             order: approvalOrder,
@@ -1076,8 +1095,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
           dashboard,
           busyOrderId: busyOrderIds,
           onOrderAction: orderAction,
+          homeLayout: "operations",
+          portfolioHistory,
+          historyBusy,
+          riskPolicy,
           realtimePrices,
-          homeLayout: true,
           marketOverview,
           homeCandles,
           homeCandleSymbol: homeSymbol,
