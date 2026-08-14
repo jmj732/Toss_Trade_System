@@ -734,45 +734,47 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 .disclaimer { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-body); }
 .workspace-content { padding-top: var(--sp-2); }
 
-/* Reference composition: market strip first, read-only account rail on the right. */
-.home-reference-shell .market-overview-grid {
-  gap: 0;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.home-operations-shell {
+  align-items: start;
+  gap: var(--sp-5);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   max-width: 1440px;
 }
-.home-reference-shell .market-widget {
+.home-operations-shell > [data-home-region] { min-width: 0; }
+.home-operations-shell [data-home-region="freshness-status"],
+.home-operations-shell [data-home-region="core-metrics"],
+.home-operations-shell [data-home-region="portfolio-trend"],
+.home-operations-shell [data-home-region="holdings"],
+.home-operations-shell [data-home-region="market-context"] {
+  grid-column: 1 / -1;
+}
+.home-core-metrics {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+}
+.home-core-metrics > div {
+  background: var(--panel-raised);
+  border-radius: var(--r-sm);
+  min-width: 0;
+  padding: var(--sp-3);
+}
+.home-market-context {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+.home-market-context .market-overview-grid {
+  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding-inline: 0;
+}
+.home-market-context .market-widget {
   border-radius: var(--r-sm);
   box-shadow: none;
   min-width: 0;
 }
-.home-reference-shell .dashboard-surface {
-  align-items: start;
-  column-gap: var(--sp-5);
-  grid-template-columns: minmax(0, 1fr);
-  max-width: 1440px;
-}
-.home-dashboard-columns {
-  align-items: start;
-  display: grid;
-  gap: var(--sp-5);
-  grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
-}
-.home-dashboard-main {
-  display: grid;
-  gap: var(--sp-5);
-  grid-column: 1;
-  grid-row: 1;
-  min-width: 0;
-}
-.home-dashboard-account {
-  grid-column: 2;
-  grid-row: 1;
-  min-width: 0;
-  position: sticky;
-  top: var(--sp-4);
-}
-.home-dashboard-account .portfolio-panel { margin: 0; }
-.home-reference-shell .market-candle-chart { min-width: 0; overflow-x: auto; }
+.home-market-context .market-candle-chart { min-width: 0; overflow-x: auto; }
 
 @media (max-width: 900px) {
   .topbar { padding: var(--sp-6) var(--sp-5) var(--sp-4); }
@@ -781,7 +783,7 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   .grid { grid-template-columns: minmax(0, 1fr); }
   .grid, .route-stack, .market-overview-grid { padding-inline: var(--sp-5); }
   .market-overview-grid { grid-template-columns: minmax(0, 1fr); }
-  .home-reference-shell .market-overview-grid { grid-template-columns: minmax(0, 1fr); }
+  .home-market-context .market-overview-grid { grid-template-columns: minmax(0, 1fr); }
   .dashboard-surface .portfolio-panel,
   .dashboard-surface .decision-queue,
   .realtime-ticker { grid-column: auto; }
@@ -811,13 +813,7 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 }
 
 @media (max-width: 760px) {
-  .home-dashboard-columns { grid-template-columns: minmax(0, 1fr); }
-  .home-dashboard-main,
-  .home-dashboard-account {
-    grid-column: auto;
-    grid-row: auto;
-  }
-  .home-dashboard-account { position: static; }
+  .home-operations-shell { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 480px) {

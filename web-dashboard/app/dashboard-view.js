@@ -1,6 +1,7 @@
 import { createElement as h } from "react";
 
 import { MarketCandleChart } from "./market-candle-chart.js";
+import { PortfolioHistoryTrend } from "./portfolio-history-view.js";
 import {
   formatAmount,
   formatSignedAmount,
@@ -214,7 +215,7 @@ function Amounts({ values = {}, signed = false }) {
     : h("span", { className: "unknown-text" }, UNKNOWN_TEXT);
 }
 
-function Portfolio({ section }) {
+function Portfolio({ section, compact = false }) {
   const portfolio = section.data;
   const account = portfolio?.account;
   const positions = portfolio?.positions ?? [];
@@ -222,7 +223,7 @@ function Portfolio({ section }) {
     title: "포트폴리오", section, className: "portfolio-panel",
     qualityRegion: "portfolio-quality"
   },
-    h("div", { className: "portfolio-hero" },
+    compact ? null : h("div", { className: "portfolio-hero" },
       h("div", null,
         h("div", { "data-dashboard-region": "portfolio-lead" },
         h("span", { className: "metric-label" }, "총 평가금액"),
@@ -234,15 +235,15 @@ function Portfolio({ section }) {
       h("div", { className: "portfolio-hero-secondary" },
         h("span", null, "총 손익"),
         h("strong", null, h(Amounts, { values: account?.profitLossAmounts, signed: true })))),
-    h("div", { className: "summary" },
+    compact ? null : h("div", { className: "summary" },
       h("div", null, h("span", null, "계좌"), h("strong", null,
         account?.displayAccountNumber ?? UNKNOWN_TEXT)),
       // D-20: 현금 잔고 확인 상태를 enum 원문 대신 한국어로, 상태 라벨로 노출한다.
       h("div", null, h("span", null, "현금 잔고 상태"),
         h("strong", null,
           CASH_STATUS_LABELS[account?.cashBalanceStatus] ?? UNKNOWN_TEXT))),
-    h("h3", null, "주문 가능 금액"),
-    h("div", { className: "buying-power" },
+    compact ? null : h("h3", null, "주문 가능 금액"),
+    compact ? null : h("div", { className: "buying-power" },
       ...["KRW", "USD"].map(currency => h("div", { key: currency },
         h("span", null, currency),
         h("strong", null, formatAmount(
@@ -312,8 +313,9 @@ function Events({ section }) {
       : h("p", { className: "empty" }, "검토할 이벤트가 없습니다."));
 }
 
-function Proposals({ section, busyOrderId, onOrderAction }) {
-  const orders = section.data ?? [];
+function Proposals({ section, busyOrderId, onOrderAction, statuses = null, hideInactiveActions = false }) {
+  const orders = (section.data ?? [])
+    .filter(order => !statuses || statuses.includes(order.status));
   return h(Section, { title: "주문 검토", section, className: "decision-queue" },
     orders.length
       ? h("ul", { className: "list proposals" }, ...orders.map(order => {
@@ -346,7 +348,7 @@ function Proposals({ section, busyOrderId, onOrderAction }) {
             // D-42: 만료 배지와 생성/만료 시각.
             h(OrderExpiryBadge, { state: expiryState }),
             h(OrderTiming, { order })),
-          h("div", { className: "actions order-row-actions" },
+          !actionable && hideInactiveActions ? null : h("div", { className: "actions order-row-actions" },
             h("button", {
               type: "button",
               disabled: busy || !sideKnown || !actionable || expired,
@@ -394,13 +396,34 @@ export function DashboardView({
   includeOrders = true,
   realtimePrices = [],
   homeLayout = false,
+  portfolioHistory = null,
+  historyBusy = false,
+  riskPolicy = null,
   marketOverview = null,
   homeCandles = null,
   homeCandleSymbol = "",
   homeCandleInterval = "1m",
   onHomeCandleIntervalChange
 }) {
+  const homeOperations = homeLayout === "operations" || homeLayout === true;
   const portfolio = h(Portfolio, { key: "portfolio", section: dashboard.portfolio });
+  const homeOrders = (dashboard.pendingOrderProposals?.data ?? [])
+    .filter(order => order.status === "PROPOSED" || order.status === "MANUAL_REVIEW_REQUIRED");
+  const account = dashboard.portfolio?.data?.account ?? {};
+  const riskLabel = riskPolicy
+    ? `${riskPolicy.customized ? "맞춤 정책" : "기본 정책"} · v${riskPolicy.version ?? UNKNOWN_TEXT} · 제한 ${Object.keys(riskPolicy.limits ?? {}).length}건`
+    : "정책 확인 필요";
+  const homeMarketContext = [
+    h(MarketCandleChart, {
+      key: "home-candles",
+      envelope: homeCandles,
+      symbol: homeCandleSymbol,
+      interval: homeCandleInterval,
+      onIntervalChange: onHomeCandleIntervalChange
+    }),
+    marketOverview ? h("div", { key: "market-overview", className: "home-market-overview" }, marketOverview) : null,
+    h(RealtimePriceTicker, { key: "prices", prices: realtimePrices })
+  ].filter(Boolean);
   const dashboardSections = [
     h(Analysis, { key: "analysis", section: dashboard.analysis }),
     h(Events, { key: "events", section: dashboard.pendingEvents }),
@@ -411,26 +434,48 @@ export function DashboardView({
       onOrderAction
     }) : null
   ];
-  const homeMain = [
-    h(MarketCandleChart, {
-      key: "home-candles",
-      envelope: homeCandles,
-      symbol: homeCandleSymbol,
-      interval: homeCandleInterval,
-      onIntervalChange: onHomeCandleIntervalChange
-    }),
-    marketOverview ? h("div", { key: "market-overview", className: "home-market-overview" }, marketOverview) : null,
-    h(RealtimePriceTicker, { key: "prices", prices: realtimePrices }),
-    ...dashboardSections
-  ].filter(Boolean);
+  if (homeOperations) {
+    return h("main", { className: "grid dashboard-surface home-operations-shell", "aria-label": "내 자산 홈" },
+      h("section", { className: "panel home-freshness", "data-home-region": "freshness-status" },
+        h("h2", null, "데이터 상태"),
+        h(Quality, { section: dashboard.portfolio, region: "home-portfolio-quality" })),
+      h("section", {
+        className: "panel home-core-metrics",
+        "data-home-region": "core-metrics",
+        "aria-label": "핵심 계좌 지표"
+      },
+        h("div", null,
+          h("span", { className: "metric-label" }, "총 평가금액"),
+          h("strong", { className: "metric-value" }, h(Amounts, { values: account.marketValueAmounts }))),
+        h("div", null,
+          h("span", { className: "metric-label" }, "총 손익"),
+          h("strong", { className: "metric-value" }, h(Amounts, { values: account.profitLossAmounts, signed: true }))),
+        h("div", null,
+          h("span", { className: "metric-label" }, "리스크 정책"),
+          h("strong", { className: "metric-value" }, riskLabel)),
+        h("div", { "data-home-region": "review-summary" },
+          h("span", { className: "metric-label" }, "검토 필요"),
+          h("strong", { className: "metric-value" }, `${homeOrders.length}건`))),
+      h("div", { "data-home-region": "portfolio-trend" },
+        h(PortfolioHistoryTrend, { history: portfolioHistory, busy: historyBusy })),
+      h("div", { "data-home-region": "holdings" },
+        h(Portfolio, { section: dashboard.portfolio, compact: true })),
+      h("div", { "data-home-region": "review-queue", "aria-label": "검토 대기 주문" },
+        h(Proposals, {
+          section: dashboard.pendingOrderProposals,
+          busyOrderId,
+          onOrderAction,
+          statuses: ["PROPOSED", "MANUAL_REVIEW_REQUIRED"],
+          hideInactiveActions: true
+        })),
+      h("div", { "data-home-region": "events" },
+        h(Events, { section: dashboard.pendingEvents }),
+        h(Analysis, { section: dashboard.analysis })),
+      h("section", { className: "home-market-context", "data-home-region": "market-context", "aria-label": "시장 정보" },
+        ...homeMarketContext));
+  }
   return h("main", { className: "grid dashboard-surface" },
-    homeLayout
-      ? h("div", { className: "home-dashboard-columns" },
-        includePortfolio ? h("aside", { className: "home-dashboard-account", "aria-label": "계좌 포트폴리오" }, portfolio) : null,
-        h("div", { className: "home-dashboard-main" }, homeMain))
-      : [
-        h(RealtimePriceTicker, { key: "prices", prices: realtimePrices }),
-        includePortfolio ? portfolio : null,
-        ...dashboardSections
-      ]);
+    h(RealtimePriceTicker, { key: "prices", prices: realtimePrices }),
+    includePortfolio ? portfolio : null,
+    ...dashboardSections);
 }
