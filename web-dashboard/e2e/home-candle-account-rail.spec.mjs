@@ -39,8 +39,15 @@ test("home operations shell requests the lower market candle once, then only on 
   }
   const operationRegionsPrecedeChart = await page.locator(".home-operations-shell").evaluate(root => [
     "freshness-status", "core-metrics", "portfolio-trend", "holdings",
-    "review-queue", "events", "market-context"
+    "review-queue", "events"
   ].every(region => (root.querySelector(`[data-home-region="${region}"]`)
     ?.compareDocumentPosition(root.querySelector(".market-candle-chart")) ?? 0) === Node.DOCUMENT_POSITION_FOLLOWING));
   expect(operationRegionsPrecedeChart).toBe(true);
+  const operationsPrecedeMarketContext = await page.locator(".home-operations-shell").evaluate(root => {
+    const market = root.querySelector('[data-home-region="market-context"]');
+    return ["review-queue", "events"].every(region => (
+      root.querySelector(`[data-home-region="${region}"]`)
+        ?.compareDocumentPosition(market) ?? 0) === Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  expect(operationsPrecedeMarketContext).toBe(true);
 });
