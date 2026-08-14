@@ -463,6 +463,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
     if (route === "home") {
       const surfaceFailure = value => ({ status: "ERROR", unavailableReason: value.code ?? value.message });
+      setHistoryBusy(true);
+      loadPortfolioHistory(id, HISTORY_QUERY)
+        .then(setPortfolioHistory)
+        .catch(value => setPortfolioHistory({ unavailable: true, unavailableReason: value.code ?? value.message }))
+        .finally(() => setHistoryBusy(false));
       loadExchangeRate(id).then(setExchangeRate).catch(value => setExchangeRate(surfaceFailure(value)));
       loadMarketCalendar(id, "US").then(setMarketCalendar).catch(value => setMarketCalendar(surfaceFailure(value)));
       loadRankings(id, "VOLUME").then(setRankings).catch(value => setRankings(surfaceFailure(value)));
@@ -1058,7 +1063,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
                 type: "submit",
                 disabled: workspaceStatus === "loading" || Boolean(busy)
               }, "불러오기"))))) : null,
-      workspaceReady ? h("div", { className: "workspace-content home-reference-shell" },
+      workspaceReady ? h("div", { className: "workspace-content home-operations-shell" },
         approvalOrder
           ? h(OrderApprovalPanel, {
             order: approvalOrder,
@@ -1077,7 +1082,10 @@ export function RouteWorkspace({ route, symbol = "" }) {
           busyOrderId: busyOrderIds,
           onOrderAction: orderAction,
           realtimePrices,
-          homeLayout: true,
+          homeLayout: "operations",
+          portfolioHistory,
+          historyBusy,
+          riskPolicy,
           marketOverview,
           homeCandles,
           homeCandleSymbol: homeSymbol,
