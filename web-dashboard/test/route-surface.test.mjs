@@ -155,10 +155,10 @@ test("home loads portfolio history but reuses dashboard.pendingEvents instead of
   const loadWorkspace = source.match(/async function loadWorkspace\(id\) \{[\s\S]*?\n  \}/);
   assert.ok(loadWorkspace);
   assert.match(loadWorkspace[0], /route === "home"[\s\S]*?loadPortfolioHistory\(id, HISTORY_QUERY\)/);
-  assert.match(loadWorkspace[0], /homeHistoryRequestKey\(id\)/);
-  assert.match(loadWorkspace[0], /needsHomeHistoryRequest\(homeHistoryRequest\.current, next\)/);
-  assert.match(loadWorkspace[0], /if \(homeHistoryRequest\.current === next\) setPortfolioHistory/);
-  assert.match(loadWorkspace[0], /if \(homeHistoryRequest\.current === next\) setHistoryBusy\(false\)/);
+  assert.match(source, /const homeHistoryRequest = useRef\(0\)/);
+  assert.match(loadWorkspace[0], /const request = homeHistoryRequest\.current \+ 1;\s*homeHistoryRequest\.current = request;/);
+  assert.match(loadWorkspace[0], /if \(homeHistoryRequest\.current === request\) setPortfolioHistory/);
+  assert.match(loadWorkspace[0], /if \(homeHistoryRequest\.current === request\) setHistoryBusy\(false\)/);
   assert.match(loadWorkspace[0], /setHistoryBusy\(true\)[\s\S]*?\.finally\(\(\) => \{[\s\S]*?setHistoryBusy\(false\);[\s\S]*?\}\)/);
   assert.match(loadWorkspace[0], /setPortfolioHistory\(\{ unavailable: true, unavailableReason: value\.code \?\? value\.message \}\)/);
   assert.match(loadWorkspace[0], /loadHomeCandles\(id, selectHomeSymbol\(dashboard\), homeCandleInterval\)/);
