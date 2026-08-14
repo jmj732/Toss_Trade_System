@@ -17,8 +17,7 @@ test("home operations shell requests the lower market candle once, then only on 
   await page.goto("/#access_token=test-token", { waitUntil: "domcontentloaded" });
   await expect(page.locator('[data-home-region="market-context"] .market-candle-chart')).toContainText("부분 데이터");
 
-  const candleRequests = () => requests.filter(request => request.url.endsWith("/candles")
-    && (request.query === "?symbol=NVDA&interval=1m" || request.query === "?symbol=NVDA&interval=1d"));
+  const candleRequests = () => requests.filter(request => request.url.endsWith("/candles"));
   await expect.poll(() => candleRequests().length).toBe(1);
   expect(`${candleRequests()[0].url}${candleRequests()[0].query}`).toBe(
     `/api/v1/broker-connections/${CONNECTION_ID}/candles?symbol=NVDA&interval=1m`
