@@ -1,9 +1,12 @@
-# Backend CD
+# Trade stack CD
 
-The backend CD job lives in `.github/workflows/cd.yml`. It runs after the `CI` workflow
-(`.github/workflows/ci.yml`) completes successfully for a push to `main`, so it deploys
-only once the Spring, analysis, dashboard, audit, and mock-stack gates pass. Deployments
-are serialized and an active deploy is not cancelled by a newer push.
+The CD job lives in `.github/workflows/cd.yml`. A `web-dashboard/**` change is detected by
+`.github/workflows/ci.yml`, runs the dashboard test/build and gate, then the CD workflow
+builds and deploys the dashboard image after a successful push to `main`. The same deploy
+also updates the Spring backend and analysis images from that verified commit. The separate
+`deploy-vercel` job builds and promotes the same dashboard checkout to Vercel production after
+the same successful CI completion. Deployments are serialized and an active deploy is not
+cancelled by a newer push.
 
 ## One-time server setup
 
@@ -26,7 +29,7 @@ doppler run --project trade --config stg -- env \
   ANALYSIS_IMAGE=trade-analysis:<commit> \
   DASHBOARD_IMAGE=trade-dashboard:<commit> \
   docker compose -f compose.yaml -f compose.staging.yaml \
-    -f compose.staging.credentialed.yaml up -d --wait migrate backend
+    -f compose.staging.credentialed.yaml up -d --wait migrate backend dashboard
 ```
 
 The backend, analysis, and dashboard images are built from the verified checkout, streamed
@@ -44,10 +47,17 @@ Add these repository or environment secrets before enabling the first deploy:
 | `BACKEND_DEPLOY_PATH` | Writable server path for Compose files, for example `/home/deploy/trade` |
 | `BACKEND_DEPLOY_SSH_KEY` | Private key for the deploy user |
 | `BACKEND_DEPLOY_KNOWN_HOSTS` | Pinned output for the host from a trusted `ssh-keyscan -H` |
+| `VERCEL_TOKEN` | Vercel production deployment token |
+| `VERCEL_ORG_ID` | Vercel team/org ID for the linked project |
+| `VERCEL_PROJECT_ID` | Vercel project ID for `web-dashboard` |
 
 The workflow uses `StrictHostKeyChecking=yes`, `IdentitiesOnly=yes`, and the supplied pinned
 known-hosts file. It does not log the key, provider credentials, Doppler token, or Compose
 environment.
+
+Disable Vercel's direct Git auto-deploy for this project. Otherwise Vercel can create a second
+deployment that bypasses the repository's CI gate; the GitHub Actions `deploy-vercel` job is the
+controlled production path.
 
 ## Rollback
 

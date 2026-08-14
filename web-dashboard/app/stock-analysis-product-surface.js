@@ -3,6 +3,7 @@
 import { createElement as h } from "react";
 
 import { formatAmount, formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
+import { MarketCandleChart } from "./market-candle-chart.js";
 
 const REASON_LABELS = {
   UNAUTHORIZED: "권한 확인 필요",
@@ -374,53 +375,13 @@ function OrderbookPanel({ orderbook }) {
 // ---------------------------------------------------------------------------
 // 캔들 차트 패널 — loadCandles()
 // ---------------------------------------------------------------------------
-const TIMEFRAMES = [
-  { key: "1m", label: "1분봉" },
-  { key: "1d", label: "일봉" }
-];
-
-function CandleChartPanel({ candles, timeframe, onTimeframeChange }) {
-  const message = surfaceMessage(candles, "차트 데이터를 불러오는 중…");
-  const data = surfaceData(candles);
-  const items = data?.candles ?? data?.data ?? [];
-  return h("section", { className: "panel stock-surface-panel" },
-    h("header", null,
-      h("div", null, h("p", { className: "eyebrow" }, "Toss OpenAPI 캔들"), h("h2", null, "시세 차트")),
-      h("div", { className: "panel-actions", style: { display: "flex", gap: "4px" } },
-        ...TIMEFRAMES.map(tf =>
-          h("button", {
-            key: tf.key, type: "button",
-            className: (timeframe ?? "1d") === tf.key ? "primary" : "secondary",
-            style: { minHeight: "32px", padding: "4px 12px", fontSize: "var(--fs-xs)" },
-            onClick: () => onTimeframeChange && onTimeframeChange(tf.key)
-          }, tf.label)))),
-    items.length
-      ? h("div", { className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "캔들 차트 표" },
-        h("table", null,
-          h("thead", null, h("tr", null,
-            ...["일자", "시가", "고가", "저가", "종가", "거래량"].map(label =>
-              h("th", { key: label, scope: "col" }, label)))),
-          h("tbody", null, ...items.slice(-10).reverse().map((c, i) => {
-            const close = c.closePrice ?? c.close;
-            const open = c.openPrice ?? c.open;
-            const high = c.highPrice ?? c.high;
-            const low = c.lowPrice ?? c.low;
-            const bullish = (close ?? 0) >= (open ?? 0);
-            return h("tr", { key: `candle-${i}` },
-              h("td", null, c.timestamp ? instantCell(c.timestamp) : c.date ?? c.time ?? UNKNOWN_TEXT),
-              h("td", null, open != null ? `${c.currency ?? "USD"} ${Number(open).toLocaleString()}` : UNKNOWN_TEXT),
-              h("td", { style: { color: "var(--danger-text)" } }, high != null ? `${c.currency ?? "USD"} ${Number(high).toLocaleString()}` : UNKNOWN_TEXT),
-              h("td", { style: { color: "var(--accent-text)" } }, low != null ? `${c.currency ?? "USD"} ${Number(low).toLocaleString()}` : UNKNOWN_TEXT),
-              h("td", { style: { fontWeight: "var(--fw-bold)", color: bullish ? "var(--danger-text)" : "var(--accent-text)" } },
-                close != null ? `${c.currency ?? "USD"} ${Number(close).toLocaleString()}` : UNKNOWN_TEXT),
-              h("td", null, c.volume != null ? Number(c.volume).toLocaleString() : UNKNOWN_TEXT));
-          }))))
-      : h("p", { className: "empty" }, message ?? "차트 데이터가 없습니다"),
-    surfaceProvenance(candles)
-      ? h("small", { className: "metric-freshness" }, surfaceProvenance(candles)) : null,
-    candles?.unknownFields?.length
-      ? h("small", { className: "metric-freshness" }, `누락 필드: ${candles.unknownFields.join(", ")}`)
-      : null);
+function CandleChartPanel({ symbol, candles, timeframe, onTimeframeChange }) {
+  return h(MarketCandleChart, {
+    envelope: candles,
+    symbol,
+    interval: timeframe,
+    onIntervalChange: onTimeframeChange
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -533,7 +494,7 @@ export function StockAnalysisProductSurface({
         explanation, state: status.explanation ?? "IDLE", error: errors.explanation, busy, onCreate: onCreateExplanation
       }),
       h(StockWarningsPanel, { warnings: stockWarnings }),
-      h(CandleChartPanel, { candles, timeframe: candleTimeframe, onTimeframeChange: onCandleTimeframeChange }),
+      h(CandleChartPanel, { symbol, candles, timeframe: candleTimeframe, onTimeframeChange: onCandleTimeframeChange }),
       h(OrderbookPanel, { orderbook }),
       h(InvestorTradingPanel, { investorTrading }),
       h(CommissionsPanel, { commissions }),
