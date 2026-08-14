@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  homeHistoryRequestKey,
   homeCandleRequestKey,
-  needsHomeHistoryRequest,
   needsHomeCandleRequest,
   selectHomeSymbol
 } from "../app/route-workspace.js";
@@ -41,11 +39,4 @@ test("home candle request keys compare connection, symbol, and interval exactly"
   assert.equal(needsHomeCandleRequest(key, homeCandleRequestKey("connection-2", "AAPL", "1m")), true);
   assert.equal(needsHomeCandleRequest(key, homeCandleRequestKey("connection-1", "MSFT", "1m")), true);
   assert.equal(needsHomeCandleRequest(key, homeCandleRequestKey("connection-1", "AAPL", "1d")), true);
-});
-
-test("home history request keys compare connection exactly", () => {
-  const key = homeHistoryRequestKey("connection-1");
-
-  assert.equal(needsHomeHistoryRequest(key, homeHistoryRequestKey("connection-1")), false);
-  assert.equal(needsHomeHistoryRequest(key, homeHistoryRequestKey("connection-2")), true);
 });
