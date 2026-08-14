@@ -173,6 +173,17 @@ test("home loads portfolio history but reuses dashboard.pendingEvents instead of
   assert.doesNotMatch(homeDashboard[0], /events:/);
 });
 
+test("portfolio route marks initial history busy until the real request settles", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+  const loadWorkspace = source.match(/async function loadWorkspace\(id\) \{[\s\S]*?\n  \}/);
+  assert.ok(loadWorkspace);
+
+  const portfolioLoad = loadWorkspace[0].match(/if \(route === "portfolio"\) \{[\s\S]*?\n    \}/);
+  assert.ok(portfolioLoad);
+  assert.match(portfolioLoad[0], /setHistoryBusy\(true\);[\s\S]*?setPortfolioHistory\(await loadPortfolioHistory\(id, HISTORY_QUERY\)\);/);
+  assert.match(portfolioLoad[0], /catch \(value\) \{[\s\S]*?setError\(describeError\(value\.message\)\);[\s\S]*?\} finally \{[\s\S]*?setHistoryBusy\(false\);/);
+});
+
 test("home candle loading is guarded by exact request key and canonical interval keys", async () => {
   const source = await readFile(new URL("route-workspace.js", root), "utf8");
   const loader = source.match(/function loadHomeCandles\(id, symbol, interval\) \{[\s\S]*?\n  \}/);

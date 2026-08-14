@@ -417,10 +417,13 @@ export function RouteWorkspace({ route, symbol = "" }) {
       }
     }
     if (route === "portfolio") {
+      setHistoryBusy(true);
       try {
         setPortfolioHistory(await loadPortfolioHistory(id, HISTORY_QUERY));
       } catch (value) {
         setError(describeError(value.message));
+      } finally {
+        setHistoryBusy(false);
       }
     }
     if (route === "predictions" || route === "stock") {
@@ -1074,7 +1077,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
                 type: "submit",
                 disabled: workspaceStatus === "loading" || Boolean(busy)
               }, "불러오기"))))) : null,
-      workspaceReady ? h("div", { className: "workspace-content home-operations-shell" },
+      workspaceReady ? h("div", { className: "workspace-content" },
         approvalOrder
           ? h(OrderApprovalPanel, {
             order: approvalOrder,
