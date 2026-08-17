@@ -21,6 +21,7 @@ import {
   listNotifications,
   loadAnalysisPredictions,
   loadDashboard,
+  listBrokerConnections,
   loadEvent,
   loadPaperPerformance,
   loadPortfolioHistory,
@@ -40,6 +41,8 @@ import {
   createStockAnalysisExplanation,
   loadRankings,
   orderActionKey,
+  paperOrderProposalKey,
+  proposePaperOrder,
   loadSession,
   loadUnreadCount,
   logout,
@@ -99,6 +102,40 @@ test("loads bearer metadata and owned dashboard with same-origin cookies", async
     ["/api/v1/broker-connections/connection%2F1/dashboard",
       { credentials: "same-origin" }]
   ]);
+});
+
+test("loads broker connections without exposing credentials and proposes a paper order", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json(url === "/api/v1/broker-connections"
+      ? [{ id: "connection-1", brokerType: "TOSS_INVEST", status: "ACTIVE" }]
+      : { id: "order-1", status: "PROPOSED" });
+  };
+
+  await listBrokerConnections(fetcher);
+  await proposePaperOrder({
+    connectionId: "connection-1", side: "BUY", type: "MARKET", symbol: "NVDA",
+    quantity: 1, limitPrice: null, currency: "USD"
+  }, fetcher);
+
+  assert.equal(calls[0][0], "/api/v1/broker-connections");
+  assert.equal(calls[0][1].credentials, "same-origin");
+  assert.equal(calls[1][0], "/api/v1/paper-orders");
+  assert.equal(calls[1][1].headers["Idempotency-Key"], "paper-order:propose:connection-1:BUY:MARKET:NVDA:1::USD");
+  assert.deepEqual(JSON.parse(calls[1][1].body), {
+    connectionId: "connection-1", side: "BUY", type: "MARKET", symbol: "NVDA",
+    quantity: 1, limitPrice: null, currency: "USD", channel: "WEB"
+  });
+});
+
+test("paper order idempotency keys separate currencies", () => {
+  const base = { connectionId: "connection-1", side: "BUY", type: "MARKET", symbol: "NVDA", quantity: 1 };
+  assert.notEqual(
+    paperOrderProposalKey({ ...base, currency: "USD" }),
+    paperOrderProposalKey({ ...base, currency: "KRW" })
+  );
 });
 
 test("stock product APIs preserve owner paths, history selection, and bearer mutations", async () => {

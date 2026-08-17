@@ -24,6 +24,8 @@ const SCHEMES = [
   { suffix: "-dark", colorScheme: "dark" }
 ];
 
+const E2E_PORT = Number(process.env.TRADE_E2E_PORT ?? 3000);
+
 export default defineConfig({
   testDir: "e2e",
   // The audit is meant to surface failures, not gate on them, so keep going.
@@ -35,7 +37,7 @@ export default defineConfig({
   workers: 6,
   reporter: [["list"], ["json", { outputFile: "e2e/__reports__/results.json" }]],
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: `http://localhost:${E2E_PORT}`,
     screenshot: "on",
     trace: "on-first-retry",
     video: "off"
@@ -50,7 +52,7 @@ export default defineConfig({
   }))),
   webServer: {
     command: "npm run dev",
-    port: 3000,
+    port: E2E_PORT,
     reuseExistingServer: true,
     timeout: 120000
   }

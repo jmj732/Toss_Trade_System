@@ -7,6 +7,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Objects;
+import java.util.List;
 import java.util.UUID;
 
 public class BrokerConnectionService {
@@ -66,6 +67,14 @@ public class BrokerConnectionService {
         } catch (OptimisticLockingFailureException exception) {
             throw BrokerConnectionException.conflict();
         }
+    }
+
+    @Transactional(readOnly = true)
+    public List<BrokerConnectionView> list(UUID userId) {
+        return connectionRepository.findAllByUserIdAndDeletedAtIsNullOrderByCreatedAtAsc(requireId(userId, "userId"))
+                .stream()
+                .map(BrokerConnectionView::from)
+                .toList();
     }
 
     @Transactional

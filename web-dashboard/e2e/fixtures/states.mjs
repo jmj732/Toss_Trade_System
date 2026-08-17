@@ -26,6 +26,16 @@ export const RISK_POLICY = {
   maxConcentration: 0.25
 };
 
+export const CONNECTIONS_FULL = [
+  {
+    id: "audit-connection",
+    brokerType: "TOSS_INVEST",
+    status: "ACTIVE",
+    credentialRevision: 1,
+    lastValidatedAt: NOW
+  }
+];
+
 function section(data, extra = {}) {
   return {
     stale: false,
@@ -498,6 +508,9 @@ function matchEndpoint(pathname, method) {
       ? { body: { ...RISK_POLICY, version: 1, customized: true } }
       : { body: RISK_POLICY };
   }
+  if (is(/\/broker-connections$/) && method === "GET") {
+    return { body: CONNECTIONS_FULL, kind: "connections" };
+  }
   if (is(/\/dashboard$/)) return { body: fullDashboard(), kind: "dashboard" };
   if (is(/\/portfolio-history/)) return { body: PORTFOLIO_HISTORY_FULL, kind: "portfolio-history" };
   if (is(/\/paper-performance/)) {
@@ -586,6 +599,9 @@ function matchEndpoint(pathname, method) {
   // Broker command endpoints (verify/sync/analysis/connection lifecycle).
   if (is(/\/broker-connections\/[^/]+\/verify/)) return { body: { id: "conn-1", status: "ACTIVE" } };
   if (is(/\/broker-connections\/toss/)) return { body: { id: "conn-1", status: "ACTIVE" } };
+  if (is(/\/paper-orders$/) && method === "POST") {
+    return { body: { id: "order-created", status: "PROPOSED", side: "BUY", type: "MARKET", symbol: "AAPL", quantity: 1, limitPrice: null, currency: "USD" }, kind: "order" };
+  }
   if (is(/\/paper-orders\//)) return { body: { status: "COMPLETED" }, kind: "order" };
 
   throw new Error(`Unregistered frontend API ${method} ${pathname}`);

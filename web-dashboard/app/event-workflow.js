@@ -150,8 +150,11 @@ export function EventWorkflow({
   onReview
 }) {
   const [selectedSymbols, setSelectedSymbols] = useState(new Set());
+  const [filter, setFilter] = useState("ALL");
   const busy = Boolean(busyAction);
   const selected = Boolean(selectedEvent);
+  const visibleEvents = filter === "ALL" ? events : events.filter(event => event.type === filter);
+  const filters = [...new Set(events.map(event => event.type).filter(Boolean))];
 
   function toggle(symbol, checked) {
     setSelectedSymbols(current => {
@@ -182,11 +185,20 @@ export function EventWorkflow({
   return h("section", { className: "event-workflow panel", "aria-busy": busy },
     h("header", null,
       h("div", null,
-        h("p", { className: "eyebrow" }, "이벤트 인텔리전스"),
-        h("h2", null, "수동 이벤트")),
+        h("p", { className: "eyebrow" }, "Intelligence Feed"),
+        h("h2", null, "이벤트 인텔리전스")),
       busyAction ? h("span", { className: "busy", title: `${busyAction}…` }, busyLabel(busyAction)) : null),
     h("div", { className: "event-layout" },
-      h("form", { className: "event-form", onSubmit: submit },
+      h("div", { className: "intelligence-feed" },
+        h("div", { className: "feed-filter" },
+          h("label", { htmlFor: "event-type-filter" }, "유형 필터"),
+          h("select", { id: "event-type-filter", value: filter, onChange: event => setFilter(event.target.value) },
+            h("option", { value: "ALL" }, "전체"),
+            ...filters.map(type => h("option", { key: type, value: type }, type)))),
+        h(EventList, { events: visibleEvents, onSelect })),
+      h("details", { className: "manual-event-secondary" },
+        h("summary", null, "수동 이벤트 등록"),
+        h("form", { className: "event-form", onSubmit: submit },
         h("label", null, "출처 이벤트 ID",
           h("input", { name: "sourceEventId", required: true, maxLength: 200 })),
         h("label", null, "이벤트 유형",
@@ -209,10 +221,7 @@ export function EventWorkflow({
         h("button", {
           type: "submit",
           disabled: busy || !connectionId || selectedSymbols.size === 0
-        }, "이벤트 등록")),
-      h("div", null,
-        h("h3", null, "이벤트"),
-        h(EventList, { events, onSelect }))),
+        }, "이벤트 등록")))),
     h("div", { className: "event-detail" },
       h("header", null,
         h("div", null,
@@ -220,6 +229,11 @@ export function EventWorkflow({
           selectedEvent
             ? h(EventSignal, { event: selectedEvent })
             : h("p", { className: "empty" }, "이벤트를 선택하면 상태와 영향 범위를 확인합니다")),
+          selectedEvent ? h("dl", { className: "event-impact-facts" },
+            h("div", null, h("dt", null, "포트폴리오 영향"), h("dd", null, selectedEvent.portfolioImpact ?? UNKNOWN_TEXT)),
+            h("div", null, h("dt", null, "Thesis 변화"), h("dd", null, selectedEvent.thesisChange ?? UNKNOWN_TEXT)),
+            h("div", null, h("dt", null, "새 판단"), h("dd", null, selectedEvent.decision ?? UNKNOWN_TEXT)),
+            h("div", null, h("dt", null, "필요 행동"), h("dd", null, selectedEvent.action ?? UNKNOWN_TEXT))) : null,
         h("div", { className: "event-review-actions" },
           h("button", {
             type: "button",
@@ -237,6 +251,12 @@ export function EventWorkflow({
             className: "secondary",
             disabled: busy || !selected,
             onClick: () => onReview(selectedEvent.id, status, selectedEvent.reviewVersion)
-          }, label)))),
+          }, label)),
+          selectedEvent?.affectedSymbols?.[0]
+            ? h("a", { className: "button-link secondary", href: `/stocks/${encodeURIComponent(selectedEvent.affectedSymbols[0])}` }, "영향 종목 보기")
+            : null,
+          selectedEvent?.affectedSymbols?.[0]
+            ? h("a", { className: "button-link secondary", href: `/orders?symbol=${encodeURIComponent(selectedEvent.affectedSymbols[0])}` }, "주문 작성")
+            : null)),
       h(Comparison, { detail: selectedEvent })));
 }

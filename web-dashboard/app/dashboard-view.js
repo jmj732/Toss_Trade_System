@@ -403,7 +403,8 @@ export function DashboardView({
   homeCandles = null,
   homeCandleSymbol = "",
   homeCandleInterval = "1m",
-  onHomeCandleIntervalChange
+  onHomeCandleIntervalChange,
+  showHomeActionSections = true
 }) {
   const homeOperations = homeLayout === "operations" || homeLayout === true;
   const portfolio = h(Portfolio, { key: "portfolio", section: dashboard.portfolio });
@@ -461,18 +462,21 @@ export function DashboardView({
       h("div", { "data-home-region": "holdings" },
         h(Portfolio, { section: dashboard.portfolio, compact: true })),
       h("div", { "data-home-region": "review-queue", "aria-label": "검토 대기 주문" },
-        h(Proposals, {
-          section: dashboard.pendingOrderProposals,
-          busyOrderId,
-          onOrderAction,
-          statuses: ["PROPOSED", "MANUAL_REVIEW_REQUIRED"],
-          hideInactiveActions: true
-        })),
+        showHomeActionSections
+          ? h(Proposals, {
+            section: dashboard.pendingOrderProposals,
+            busyOrderId,
+            onOrderAction,
+            statuses: ["PROPOSED", "MANUAL_REVIEW_REQUIRED"],
+            hideInactiveActions: true
+          })
+          : h("p", { className: "empty" }, "결정 센터에서 주문을 검토합니다.")),
       h("div", { "data-home-region": "events" },
-        h(Events, { section: dashboard.pendingEvents }),
+        showHomeActionSections ? h(Events, { section: dashboard.pendingEvents }) : null,
         h(Analysis, { section: dashboard.analysis })),
-      h("section", { className: "home-market-context", "data-home-region": "market-context", "aria-label": "시장 정보" },
-        ...homeMarketContext));
+      h("details", { className: "home-market-context", open: true, "data-home-region": "market-context", "aria-label": "시장 정보" },
+        h("summary", { className: "panel-summary" }, "시장 정보"),
+        h("div", { className: "home-market-context-body" }, ...homeMarketContext)));
   }
   return h("main", { className: "grid dashboard-surface" },
     h(RealtimePriceTicker, { key: "prices", prices: realtimePrices }),

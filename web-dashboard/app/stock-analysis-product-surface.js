@@ -2,7 +2,7 @@
 
 import { createElement as h } from "react";
 
-import { formatAmount, formatInstant, UNKNOWN_TEXT } from "../lib/format.js";
+import { formatAmount, formatInstant, formatRatio, formatSignedAmount, UNKNOWN_TEXT } from "../lib/format.js";
 import { MarketCandleChart } from "./market-candle-chart.js";
 
 const REASON_LABELS = {
@@ -160,7 +160,7 @@ function qualitySummary({ analysis, realtimePrices, candles, orderbook, investor
   if (statuses.includes("stale")) return ["지연 데이터", "warn"];
   if (statuses.every(status => status === "loading")) return ["불러오는 중", "neutral"];
   if (statuses.every(status => status === "empty" || status === "loading")) return ["데이터 없음", "neutral"];
-  return ["정상", "ok"];
+  return [UNKNOWN_TEXT, "neutral"];
 }
 
 function riskSummary(analysis, stockWarnings) {
@@ -215,7 +215,21 @@ function Panel({ title, state, error, action, children }) {
     children);
 }
 
-function StockSummary({ symbol, analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions }) {
+function PositionPlan({ analysis, position }) {
+  const plan = analysis?.result?.positionPlan ?? analysis?.positionPlan;
+  const value = key => plan?.[key] ?? UNKNOWN_TEXT;
+  return h("section", { className: "position-plan", "data-position-plan": plan ? "available" : "unavailable" },
+    h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Position Plan"), h("h3", null, "포지션 계획"))),
+    h("dl", { className: "decision-metrics" },
+      h("div", null, h("dt", null, "진입가"), h("dd", null, formatAmount(position?.currency, value("entryPrice")))),
+      h("div", null, h("dt", null, "손절가"), h("dd", null, formatAmount(position?.currency, value("stopPrice")))),
+      h("div", null, h("dt", null, "목표가"), h("dd", null, formatAmount(position?.currency, value("targetPrice")))),
+      h("div", null, h("dt", null, "R:R"), h("dd", null, value("riskReward"))),
+      h("div", null, h("dt", null, "최대 손실"), h("dd", null, formatAmount(position?.currency, value("maxLoss")))),
+      h("div", null, h("dt", null, "현재 포지션"), h("dd", null, formatAmount(position?.currency, position?.marketValueAmount)))));
+}
+
+function StockSummary({ symbol, analysis, position, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions, onCreateOrder }) {
   const quote = latestQuote(symbol, realtimePrices);
   const [quality, qualityModifier] = qualitySummary({
     analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions
@@ -234,7 +248,16 @@ function StockSummary({ symbol, analysis, realtimePrices, candles, orderbook, in
       h("div", null, h("dt", null, "데이터 품질"), h("dd", null,
         h("span", { className: `badge-pill badge-pill--${qualityModifier}` }, quality))),
       h("div", null, h("dt", null, "리스크"), h("dd", null,
-        h("span", { className: `badge-pill badge-pill--${riskModifier}` }, risk)))));
+        h("span", { className: `badge-pill badge-pill--${riskModifier}` }, risk))),
+      h("div", null, h("dt", null, "판단"), h("dd", null, analysis?.result?.decision ?? UNKNOWN_TEXT)),
+      h("div", null, h("dt", null, "신뢰도"), h("dd", null, analysis?.result?.confidence ?? UNKNOWN_TEXT)),
+      h("div", null, h("dt", null, "보유 손익"), h("dd", null,
+        formatSignedAmount(position?.currency, position?.profitLossAmount))),
+      h("div", null, h("dt", null, "포트폴리오 비중"), h("dd", null, formatRatio(position?.weight))),
+      h("div", null, h("dt", null, "주문"), h("dd", null,
+        h("button", { type: "button", className: "secondary", onClick: onCreateOrder }, "이 종목 주문 작성"))),
+      ),
+    h(PositionPlan, { analysis, position }));
 }
 
 function AnalysisPanel({ analysis, state, error, busy, onCreate }) {
@@ -479,11 +502,13 @@ export function StockAnalysisProductSurface({
   onCandleTimeframeChange,
   investorTrading,
   stockWarnings,
-  commissions
+  commissions,
+  position,
+  onCreateOrder
 }) {
   return h("main", { className: "stock-surface" },
     h("div", { className: "stock-surface-grid" },
-      h(StockSummary, { symbol, analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions }),
+      h(StockSummary, { symbol, analysis, position, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions, onCreateOrder }),
       h(AnalysisPanel, {
         analysis, state: status.analysis ?? "IDLE", error: errors.analysis, busy, onCreate: onCreateAnalysis
       }),

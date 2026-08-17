@@ -220,6 +220,33 @@ export function createBrokerConnection(credentials, fetcher = fetch) {
     "/api/v1/broker-connections/toss", "POST", credentials, fetcher);
 }
 
+export function listBrokerConnections(fetcher = fetch) {
+  return readEvent("/api/v1/broker-connections", fetcher);
+}
+
+export function paperOrderProposalKey(command) {
+  return [
+    "paper-order:propose",
+    command?.connectionId,
+    command?.side,
+    command?.type,
+    command?.symbol,
+    command?.quantity,
+    command?.limitPrice ?? "",
+    command?.currency ?? ""
+  ].join(":");
+}
+
+export function proposePaperOrder(command, fetcher = fetch) {
+  const { idempotencyKey, channel = "WEB", ...order } = command ?? {};
+  return brokerCommand(
+    "/api/v1/paper-orders",
+    "POST",
+    { ...order, channel },
+    fetcher,
+    { "Idempotency-Key": idempotencyKey ?? paperOrderProposalKey(order) });
+}
+
 export function replaceBrokerCredentials(
   connectionId,
   credentials,

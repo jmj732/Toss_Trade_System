@@ -6,11 +6,14 @@ import org.springframework.data.jpa.repository.Query;
 import com.jmj.trade.broker.toss.TossCredentialMetadata;
 
 import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 interface BrokerConnectionRepository extends JpaRepository<BrokerConnection, UUID> {
 
     Optional<BrokerConnection> findByIdAndUserId(UUID id, UUID userId);
+
+    List<BrokerConnection> findAllByUserIdAndDeletedAtIsNullOrderByCreatedAtAsc(UUID userId);
 
     @Query("""
             select new com.jmj.trade.broker.connection.BrokerConnectionMetadata(

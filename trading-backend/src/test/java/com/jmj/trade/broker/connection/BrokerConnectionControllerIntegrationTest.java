@@ -189,6 +189,34 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     }
 
     @Test
+    void listsOnlyOwnedLiveConnectionsWithoutReturningConnectionSecrets() throws Exception {
+        var first = mockMvc.perform(post("/api/v1/broker-connections/toss")
+                        .header("Authorization", authorization(USER_ID))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(credentialsJson("first-client", "first-secret")))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        mockMvc.perform(post("/api/v1/broker-connections/toss")
+                        .header("Authorization", authorization(OTHER_USER_ID))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(credentialsJson("other-client", "other-secret")))
+                .andExpect(status().isOk());
+
+        var body = mockMvc.perform(get("/api/v1/broker-connections")
+                        .header("Authorization", authorization(USER_ID)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("UNVERIFIED"))
+                .andExpect(jsonPath("$[0].userId").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).contains(idFrom(first));
+        assertThat(body).doesNotContain("first-client", "first-secret", "other-client", "other-secret");
+        assertThat(body).doesNotContain(UUID.fromString(OTHER_USER_ID).toString());
+    }
+
+    @Test
     void crossUserReplaceVerifyAndDeleteMatchMissing404() throws Exception {
         var connectionId = idFrom(mockMvc.perform(post("/api/v1/broker-connections/toss")
                         .header("Authorization", authorization(USER_ID))
