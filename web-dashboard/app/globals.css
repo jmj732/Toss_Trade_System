@@ -525,7 +525,7 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .account-switcher[open] summary::after { content: "⌃"; }
 .account-switcher-primary { font-weight: var(--fw-bold); }
 .account-switcher-action { color: var(--muted); font-size: var(--fs-xs); }
-.account-switcher-form {
+.account-switcher-options {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -540,9 +540,45 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   width: min(22rem, calc(100vw - 2 * var(--sp-4)));
   z-index: 12;
 }
-.account-switcher-form label { color: var(--muted); font-size: var(--fs-xs); }
-.account-switcher-form > div { display: flex; gap: var(--sp-2); }
-.account-switcher-form button { flex: 0 0 auto; min-height: 2.75rem; padding-inline: var(--sp-3); }
+.account-option { justify-content: flex-start; width: 100%; }
+.account-option + .account-option { margin-top: var(--sp-2); }
+.account-option:disabled { cursor: default; opacity: .65; }
+.global-stock-search { align-items: center; display: flex; gap: var(--sp-2); }
+.global-stock-search label { color: var(--muted); font-size: var(--fs-xs); }
+.global-stock-search input { min-width: 10rem; width: 12rem; }
+.market-status { border: 1px solid var(--line); border-radius: var(--r-pill); color: var(--muted); font-size: var(--fs-xs); padding: var(--sp-2) var(--sp-3); white-space: nowrap; }
+.decision-center { display: grid; gap: var(--sp-5); margin-inline: auto; max-width: 1440px; min-width: 0; padding: var(--sp-4) var(--sp-8) 0; }
+.decision-center > * { min-width: 0; }
+.action-queue > header, .portfolio-risk-panel > header, .position-management > header,
+.order-creation-panel > header { align-items: flex-start; display: flex; justify-content: space-between; gap: var(--sp-3); }
+.action-list { display: grid; gap: var(--sp-3); list-style: none; margin: var(--sp-4) 0 0; padding: 0; }
+.action-item { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--sp-4); }
+.action-item-heading { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.action-item-heading strong { overflow-wrap: anywhere; }
+.action-item-facts, .decision-metrics { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); margin: var(--sp-4) 0 0; }
+.action-item-facts div, .decision-metrics div { min-width: 0; }
+.action-item-facts dt, .decision-metrics dt { color: var(--muted); font-size: var(--fs-xs); }
+.action-item-facts dd, .decision-metrics dd { margin: var(--sp-1) 0 0; overflow-wrap: anywhere; }
+.action-item-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
+.portfolio-risk-panel { min-width: 0; }
+.position-summary { margin-bottom: var(--sp-5); }
+.position-management { min-width: 0; }
+.position-management .table-wrap { margin-top: var(--sp-4); }
+.position-plan { border-top: 1px solid var(--line); grid-column: 1 / -1; margin-top: var(--sp-4); padding-top: var(--sp-4); }
+.order-creation-panel { margin: 0 auto; max-width: 1280px; }
+.order-creation-form { align-items: end; display: grid; gap: var(--sp-3); grid-template-columns: repeat(6, minmax(0, 1fr)); margin-top: var(--sp-4); }
+.order-creation-form label { color: var(--muted); display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+.order-creation-form button { grid-column: span 2; min-height: 2.75rem; }
+.settings-secondary { margin-top: var(--sp-5); }
+.settings-secondary > summary, .manual-event-secondary > summary { cursor: pointer; font-weight: var(--fw-bold); list-style-position: inside; padding: var(--sp-4); }
+.settings-secondary[open] > summary, .manual-event-secondary[open] > summary { border-bottom: 1px solid var(--line); }
+.settings-secondary > .prediction-operations, .manual-event-secondary > .event-form { margin-top: var(--sp-4); }
+.intelligence-feed { min-width: 0; }
+.feed-filter { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.event-impact-facts { border-top: 1px solid var(--line); display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr)); margin: var(--sp-4) 0; padding-top: var(--sp-4); }
+.event-impact-facts div { min-width: 0; }
+.event-impact-facts dt { color: var(--muted); font-size: var(--fs-xs); }
+.event-impact-facts dd { margin: var(--sp-1) 0 0; overflow-wrap: anywhere; }
 .notification-center { position: relative; }
 .notification-toggle { align-items: center; display: flex; gap: var(--sp-2); }
 .badge {
@@ -772,6 +808,16 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   gap: var(--sp-5);
   min-width: 0;
 }
+.home-market-context-body {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+.home-market-context > summary {
+  cursor: pointer;
+  font-weight: 700;
+  list-style-position: inside;
+}
 .home-market-context .market-overview-grid {
   gap: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -815,6 +861,11 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
     top: 76px;
     width: auto;
   }
+  .decision-center { padding-inline: var(--sp-5); }
+  .order-creation-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .order-creation-form button { grid-column: 1 / -1; }
+  .global-stock-search { flex: 1 1 100%; }
+  .global-stock-search input { flex: 1; min-width: 0; width: auto; }
   .history-filter, .prediction-registry-form, .prediction-create-form {
     align-items: stretch; flex-direction: column;
   }
@@ -837,11 +888,14 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 @media (max-width: 360px) {
   .topbar-actions button, .connection-form button { width: 100%; }
   .topbar-actions, .connection-form > div { width: 100%; }
+  .topbar-actions .global-stock-search button { width: auto; }
   .account-switcher { width: 100%; }
   .account-switcher summary { justify-content: space-between; }
-  .account-switcher-form { left: 0; right: auto; width: 100%; }
-  .account-switcher-form > div { align-items: stretch; flex-direction: column; }
-  .account-switcher-form button { width: 100%; }
+  .account-switcher-options { left: 0; right: auto; width: 100%; }
+  .account-option { width: 100%; }
+  .decision-center { padding-inline: var(--sp-4); }
+  .order-creation-form { grid-template-columns: minmax(0, 1fr); }
+  .order-creation-form button { grid-column: auto; }
   .order-row-actions button { width: 100%; }
   .route-nav { gap: var(--sp-1); }
   .route-nav a, .route-nav span { padding-inline: var(--sp-3); }

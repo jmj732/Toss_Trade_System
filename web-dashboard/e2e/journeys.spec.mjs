@@ -5,6 +5,7 @@ import { expect, test } from "@playwright/test";
 import { collectDiagnostics, SCREENSHOTS_DIR, writeRecord } from "./fixtures/record.mjs";
 import {
   CONNECTION_ID,
+  CONNECTIONS_FULL,
   freezeClock,
   fullDashboard,
   jsonResponse,
@@ -110,6 +111,7 @@ test("journey: analysis", async ({ page, context }) => {
     if (isRiskPolicy(pathname)) {
       return jsonResponse(route, 200, pathname.includes("history") ? [] : RISK_POLICY);
     }
+    if (/\/broker-connections$/.test(pathname)) return jsonResponse(route, 200, CONNECTIONS_FULL);
     if (/\/dashboard$/.test(pathname)) return jsonResponse(route, 200, fullDashboard());
     if (/\/events$/.test(pathname)) return jsonResponse(route, 200, []);
     if (/\/stock-analyses\/[^/]+\/history/.test(pathname)) return jsonResponse(route, 200, []);
@@ -220,6 +222,7 @@ test("journey: orders double-submit guard", async ({ page, context }) => {
     if (isRiskPolicy(pathname)) {
       return jsonResponse(route, 200, pathname.includes("history") ? [] : RISK_POLICY);
     }
+    if (/\/broker-connections$/.test(pathname)) return jsonResponse(route, 200, CONNECTIONS_FULL);
     if (/\/dashboard$/.test(pathname)) return jsonResponse(route, 200, fullDashboard());
     if (/\/events$/.test(pathname)) return jsonResponse(route, 200, []);
 
@@ -354,6 +357,7 @@ test("journey: error recovery", async ({ page, context }) => {
     if (isRiskPolicy(pathname)) {
       return jsonResponse(route, 200, pathname.includes("history") ? [] : RISK_POLICY);
     }
+    if (/\/broker-connections$/.test(pathname)) return jsonResponse(route, 200, CONNECTIONS_FULL);
     if (/\/dashboard$/.test(pathname)) {
       dashboardAttempts += 1;
       // First load fails; retry succeeds.
@@ -389,15 +393,13 @@ test("journey: error recovery", async ({ page, context }) => {
       blockedAt = "error-not-shown";
     }
 
-    // Retry via the "열기" (open) button on the connection form.
-    const openBtn = page.locator('button:has-text("열기")').first();
+    // Retry the selected owned connection without exposing its internal id.
+    const openBtn = page.locator('button:has-text("다시 시도")').first();
     const hasRetry = (await openBtn.count()) > 0;
     steps.push({ step: "retry-control-present", ok: hasRetry });
     if (!hasRetry) {
       blockedAt = blockedAt || "no-retry-control";
     } else {
-      // Ensure the connection id is present so the retry actually requests.
-      await page.fill("#route-connection-id", CONNECTION_ID).catch(() => {});
       await openBtn.click().catch(() => {});
       await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
       await page.waitForTimeout(500);

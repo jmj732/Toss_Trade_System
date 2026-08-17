@@ -6,10 +6,18 @@ import { usePathname } from "next/navigation.js";
 import { AnalysisOutcomeView } from "./analysis-outcome-view.js";
 import { BrokerOnboarding } from "./broker-onboarding.js";
 import { DashboardView } from "./dashboard-view.js";
+import {
+  DataFreshnessIndicator,
+  DecisionCenter,
+  GlobalStockSearch,
+  MarketStatusIndicator,
+  PortfolioPositionTable
+} from "./decision-center.js";
 import { EventWorkflow } from "./event-workflow.js";
 import { MarketOverviewView } from "./market-overview-view.js";
 import { CANDLE_INTERVALS } from "./market-candle-chart.js";
 import { NotificationCenter } from "./notification-center.js";
+import { OrderCreationPanel } from "./order-creation-panel.js";
 import { OrderApprovalPanel } from "./order-approval-panel.jsx";
 import { OrdersView } from "./orders-view.js";
 import { OperationsReadinessView } from "./operations-readiness-view.js";
@@ -35,6 +43,7 @@ import {
   deprecatePredictionModelVersion,
   issuePredictionIngestionApiKey,
   listEvents,
+  listBrokerConnections,
   listNotifications,
   loadAnalysisPredictions,
   loadDashboard,
@@ -77,7 +86,8 @@ import {
   loadRealtimePrices,
   loadAccountBuyingPower,
   issueLiveOrderStepUp,
-  modifyLiveOrder
+  modifyLiveOrder,
+  proposePaperOrder
 } from "../lib/api.js";
 
 const HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
@@ -106,28 +116,19 @@ export function readSavedConnectionId(storage) {
   return storage?.getItem("trade.connectionId")?.trim() ?? "";
 }
 
-export function AccountSwitcher({ accountLabel = "기본계좌", connectionId = "", busy = false, onSwitch, onConnectionChange }) {
+export function AccountSwitcher({ accountLabel = "계좌", accounts = [], connectionId = "", workspaceStatus = "", busy = false, onSwitch }) {
   return h("details", { className: "account-switcher", "data-route-region": "account-switcher" },
     h("summary", null,
       h("span", { className: "account-switcher-primary" }, accountLabel),
       h("span", { className: "account-switcher-action" }, "계좌 변경")),
-    h("form", {
-      className: "account-switcher-form",
-      onSubmit: event => {
-        event.preventDefault();
-        onSwitch(event.currentTarget.elements.connectionId.value);
-      }
-    },
-    h("label", { htmlFor: "account-switcher-connection-id" }, "연결된 계좌"),
-    h("div", null,
-      h("input", {
-        id: "account-switcher-connection-id",
-        name: "connectionId",
-        value: connectionId,
-        onChange: event => onConnectionChange?.(event.target.value),
-        required: true
-      }),
-      h("button", { type: "submit", disabled: busy || !connectionId.trim() }, "계좌 불러오기"))));
+    h("div", { className: "account-switcher-options", role: "menu", "aria-label": "연결된 계좌" },
+      accounts.length
+        ? accounts.map((account, index) => h("button", {
+          key: String(account.id), type: "button", role: "menuitem", className: "account-option",
+          disabled: workspaceStatus === "loading" || Boolean(busy) || account.id === connectionId,
+          onClick: () => onSwitch(account.id)
+        }, `${account.brokerType === "TOSS_INVEST" ? "토스증권" : account.brokerType ?? "브로커"} · 계좌 ${index + 1}`))
+        : h("p", { className: "empty" }, "연결된 계좌가 없습니다")));
 }
 export function RouteNav({ symbol }) {
   const pathname = usePathname();
@@ -135,7 +136,7 @@ export function RouteNav({ symbol }) {
   const links = [
     ["/", "홈"], ["/portfolio", "포트폴리오"],
     [stockHref, "종목"],
-    ["/events", "이벤트"], ["/orders", "주문"], ["/predictions", "예측"],
+    ["/events", "이벤트"], ["/orders", "주문"],
     ["/settings", "설정"]
   ];
   return h("nav", { className: "route-nav", "data-route-region": "nav", "aria-label": "주요 메뉴" },
@@ -169,6 +170,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const stockSymbol = symbol.trim().toUpperCase();
   const [session, setSession] = useState(undefined);
   const [connectionId, setConnectionId] = useState("");
+  const [connections, setConnections] = useState([]);
   const [connection, setConnection] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [events, setEvents] = useState([]);
@@ -216,6 +218,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [paperPerformance, setPaperPerformance] = useState(null);
   const [paperQuery, setPaperQuery] = useState(PAPER_QUERY);
   const [paperBusy, setPaperBusy] = useState(false);
+  const [orderDraft, setOrderDraft] = useState({ symbol: "", side: "BUY" });
 
   // 신규 API 연동용 State
   const [exchangeRate, setExchangeRate] = useState(null);
@@ -264,13 +267,35 @@ export function RouteWorkspace({ route, symbol = "" }) {
         .catch(value => setReadinessError(describeError(value.message)))
         .finally(() => setReadinessBusy(false));
     }
-    // 로그인 후에는 마지막으로 선택한 계좌를 홈에서도 즉시 복구한다.
+    // 계좌 ID는 내부 복구 키로만 사용한다. 일반 UI 선택은 실제 소유 연결 목록으로 한다.
     const saved = readSavedConnectionId(window.localStorage);
-    if (saved) {
-      setConnectionId(saved);
-      openWorkspace(saved);
-    }
+    listBrokerConnections().then(values => {
+      const available = Array.isArray(values) ? values : [];
+      setConnections(available);
+      const selected = available.find(value => value.id === saved) ?? available[0];
+      if (selected?.id) {
+        setConnectionId(selected.id);
+        openWorkspace(selected.id);
+      }
+    }).catch(() => {
+      // 구버전 backend와의 복구 호환. ID는 화면에 다시 표시하지 않는다.
+      if (saved) {
+        setConnectionId(saved);
+        openWorkspace(saved);
+      }
+    });
   }, [session]);
+
+  useEffect(() => {
+    if (route !== "orders" || typeof window === "undefined") {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    setOrderDraft({
+      symbol: params.get("symbol")?.trim().toUpperCase() ?? "",
+      side: params.get("side") === "SELL" ? "SELL" : "BUY"
+    });
+  }, [route]);
 
   // Esc 로 열린 리스크 정책 드롭다운을 닫을 수 있게 한다.
   useEffect(() => {
@@ -382,7 +407,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   function openWorkspace(value = connectionId) {
     const id = value.trim();
     if (!id) {
-      setError("연결 ID가 필요합니다.");
+      setError("계좌를 먼저 선택하세요.");
       return Promise.resolve();
     }
     // "열기" 연타로 동시 요청이 경쟁하지 않도록 단일 실행으로 감싼다.
@@ -398,7 +423,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
     try {
       const dashboard = await loadDashboard(id);
       setDashboard(dashboard);
-      setConnection({ id, status: "ACTIVE" });
+      setConnection(connections.find(value => value.id === id) ?? { id, status: "ACTIVE" });
       setWorkspaceStatus("ready");
       if (route === "home") {
         loadHomeCandles(id, selectHomeSymbol(dashboard), homeCandleInterval);
@@ -412,6 +437,12 @@ export function RouteWorkspace({ route, symbol = "" }) {
     if (needsEvents) {
       try {
         setEvents(await listEvents(id));
+        if (route === "events" && typeof window !== "undefined") {
+          const requestedEventId = new URLSearchParams(window.location.search).get("event");
+          if (requestedEventId) {
+            setSelectedEvent(await loadEvent(id, requestedEventId));
+          }
+        }
       } catch (value) {
         setError(describeError(value.message));
       }
@@ -463,6 +494,17 @@ export function RouteWorkspace({ route, symbol = "" }) {
         setPredictionLoading(false);
         setOperationsBusy(false);
       });
+    }
+    if (route === "settings") {
+      setOperationsBusy(true);
+      Promise.allSettled([loadPredictionIngestionApiKeys(), loadPredictionOperations()])
+        .then(([keysResult, operationsResult]) => {
+          if (keysResult.status === "fulfilled") setPredictionKeys(keysResult.value);
+          else setPredictionError(describeError(keysResult.reason.message));
+          if (operationsResult.status === "fulfilled") setPredictionOperations(operationsResult.value);
+          else setPredictionError(describeError(operationsResult.reason.message));
+        })
+        .finally(() => setOperationsBusy(false));
     }
 
     if (route === "home") {
@@ -599,6 +641,16 @@ export function RouteWorkspace({ route, symbol = "" }) {
       const issued = await issueLiveOrderStepUp(orderId);
       await modifyLiveOrder(orderId, newLimitPrice, issued?.stepUpToken);
       await loadWorkspace(connectionId.trim());
+    });
+  }
+
+  function createOrderProposal(command) {
+    return mutation("order-propose", async () => {
+      const proposal = await proposePaperOrder(command);
+      setApprovalOrder(proposal);
+      setApprovalError(null);
+      const refreshed = await loadDashboard(connectionId);
+      setDashboard(refreshed);
     });
   }
 
@@ -782,13 +834,23 @@ export function RouteWorkspace({ route, symbol = "" }) {
   function stockSurface() {
     const describedErrors = Object.fromEntries(
       Object.entries(stockErrors).map(([key, value]) => [key, describeError(value)]));
+    const position = dashboard?.portfolio?.data?.positions?.find(item =>
+      item?.symbol?.toUpperCase() === stockSymbol);
+    const weight = dashboard?.analysis?.data?.result?.positions?.find(item =>
+      item?.symbol?.toUpperCase() === stockSymbol)?.weight;
     return h(StockAnalysisProductSurface, {
       symbol: stockSymbol, analysis: stockAnalysis, forecast: stockForecast, explanation: stockExplanation,
+      position: position ? { ...position, weight } : null,
       relatedEvents: events.filter(event => event.affectedSymbols?.some(
         affected => affected.toUpperCase() === stockSymbol)),
       history: stockHistory, status: stockStatus, errors: describedErrors, busy: Boolean(busy),
       onCreateAnalysis: createAnalysis, onCreateForecast: createForecast,
       onCreateExplanation: createExplanation, onSelectSnapshot: selectSnapshot,
+      onCreateOrder: () => {
+        if (typeof window !== "undefined") {
+          window.location.href = `/orders?symbol=${encodeURIComponent(stockSymbol)}&side=BUY`;
+        }
+      },
       orderbook, realtimePrices, candles, candleTimeframe, investorTrading, stockWarnings, commissions,
       onCandleTimeframeChange: tf => {
         setCandleTimeframe(tf);
@@ -821,6 +883,41 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   const workspaceReady = workspaceStatus === "ready" && Boolean(dashboard);
 
+  function predictionOperationsView() {
+    return h(PredictionOperationsView, {
+      operations: predictionOperations, keys: predictionKeys, issuedKey,
+      busy: operationsBusy,
+      actionBusy: Boolean(busy),
+      error: predictionError,
+      onIssue: command => mutation("key", async () => {
+        const result = await issuePredictionIngestionApiKey(command);
+        if (result?.apiKey) {
+          // 발급된 원문 키를 상태로만 한 번 노출한다. 저장소에 쓰지 않아 새로고침 시 사라진다(V-49).
+          setIssuedKey(result);
+          setPredictionKeys(await loadPredictionIngestionApiKeys());
+        }
+      }),
+      onRotate: (id, command) => mutation("key", async () => {
+        await rotatePredictionIngestionApiKey(id, command);
+        setPredictionKeys(await loadPredictionIngestionApiKeys());
+      }),
+      onRevoke: id => mutation("key", async () => {
+        await revokePredictionIngestionApiKey(id);
+        setPredictionKeys(await loadPredictionIngestionApiKeys());
+      }),
+      onRefresh: () => {
+        setOperationsBusy(true);
+        return Promise.all([loadPredictionIngestionApiKeys(), loadPredictionOperations()])
+          .then(([keys, operations]) => {
+            setPredictionKeys(keys); setPredictionOperations(operations);
+          })
+          .catch(value => setPredictionError(describeError(value.message)))
+          .finally(() => setOperationsBusy(false));
+      },
+      onDismissKey: () => setIssuedKey(null)
+    });
+  }
+
   function routeContent() {
     if (route === "stock") {
       return stockSurface();
@@ -828,7 +925,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
     if (route === "portfolio") {
       return workspaceReady
         ? h("div", null,
-          h(DashboardView, { dashboard, includeOrders: false, realtimePrices }),
+          h(DecisionCenter, { dashboard, onOrder: orderAction },
+            h(PortfolioPositionTable, { section: dashboard.portfolio, analysis: dashboard.analysis })),
           h(PortfolioHistoryView, {
             history: portfolioHistory, query: HISTORY_QUERY, busy: historyBusy,
             onQuery: query => {
@@ -843,6 +941,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
       return h("main", { className: "route-stack" },
         workspaceReady
           ? h("div", null,
+            h(OrderCreationPanel, {
+              connectionId, initialSymbol: orderDraft.symbol, initialSide: orderDraft.side, busy: busy === "order-propose",
+              error: busy === "order-propose" ? "" : error,
+              onCreate: createOrderProposal
+            }),
             approvalOrder
               ? h(OrderApprovalPanel, {
                 order: approvalOrder,
@@ -918,37 +1021,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
               .finally(() => setPaperBusy(false));
           }
         }),
-        h(PredictionOperationsView, {
-          operations: predictionOperations, keys: predictionKeys, issuedKey,
-          busy: operationsBusy,
-          actionBusy: Boolean(busy),
-          error: predictionError, onIssue: command => mutation("key", async () => {
-            const result = await issuePredictionIngestionApiKey(command);
-            if (result?.apiKey) {
-              // 발급된 원문 키를 상태로만 한 번 노출한다. 저장소에 쓰지 않아 새로고침 시 사라진다(V-49).
-              setIssuedKey(result);
-              setPredictionKeys(await loadPredictionIngestionApiKeys());
-            }
-          }),
-          onRotate: (id, command) => mutation("key", async () => {
-            await rotatePredictionIngestionApiKey(id, command);
-            setPredictionKeys(await loadPredictionIngestionApiKeys());
-          }),
-          onRevoke: id => mutation("key", async () => {
-            await revokePredictionIngestionApiKey(id);
-            setPredictionKeys(await loadPredictionIngestionApiKeys());
-          }),
-          onRefresh: () => {
-            setOperationsBusy(true);
-            return Promise.all([
-              loadPredictionIngestionApiKeys(), loadPredictionOperations()
-            ]).then(([keys, operations]) => {
-              setPredictionKeys(keys); setPredictionOperations(operations);
-            }).catch(value => setPredictionError(describeError(value.message)))
-              .finally(() => setOperationsBusy(false));
-          },
-          onDismissKey: () => setIssuedKey(null)
-        }));
+        predictionOperationsView());
     }
     return h("main", { className: "route-stack" },
       route === "settings" ? h(OperationsReadinessView, {
@@ -956,6 +1029,9 @@ export function RouteWorkspace({ route, symbol = "" }) {
         onRefresh: () => refreshReadiness().catch(() => {}),
         onProbe: probeReadiness
       }) : null,
+      route === "settings" ? h("details", { className: "settings-secondary", open: true },
+        h("summary", null, "시스템 · 모델 운영"),
+        predictionOperationsView()) : null,
       h(RiskPolicyPanel, {
         policy: riskPolicy, history: [], open: riskOpen, busy: Boolean(busy),
         onToggle: () => setRiskOpen(value => !value),
@@ -1014,24 +1090,21 @@ export function RouteWorkspace({ route, symbol = "" }) {
       h("header", { className: "topbar" },
         h("div", { "data-route-region": "title" },
           h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
-          h("h1", null, workspaceReady ? "내 자산" : "내 투자, 한눈에")),
+          h("h1", null, workspaceReady ? "Decision Center" : "내 투자, 한눈에")),
         h("div", { className: "topbar-actions" },
           workspaceReady ? h(AccountSwitcher, {
-            accountLabel: "기본계좌",
+            accountLabel: "계좌",
+            accounts: connections,
             connectionId: connectionId.trim(),
+            workspaceStatus,
             busy: workspaceStatus === "loading" || Boolean(busy),
-            onSwitch: openWorkspace,
-            onConnectionChange: setConnectionId
+            onSwitch: openWorkspace
           }) : null,
-          workspaceReady ? h(RiskPolicyPanel, {
-            policy: riskPolicy,
-            history: riskPolicyHistory,
-            open: riskOpen,
-            busy: Boolean(busy),
-            onToggle: () => setRiskOpen(value => !value),
-            onUpdate: riskPolicyUpdate,
-            onLoadHistory: riskPolicyLoadHistory
-          }) : null,
+          h(GlobalStockSearch, { onSearch: ticker => {
+            window.location.href = `/stocks/${encodeURIComponent(ticker)}`;
+          }}),
+          h(MarketStatusIndicator, { calendar: marketCalendar }),
+          workspaceReady ? h(DataFreshnessIndicator, { section: dashboard?.portfolio }) : null,
           workspaceReady ? h(NotificationCenter, {
             unreadCount,
             notifications,
@@ -1058,25 +1131,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
           busyAction: busy,
           onCredentials: credentialsAction,
           onCommand: brokerAction
-        }),
-        h("details", { className: "connection-picker", "data-route-region": "connection" },
-          h("summary", null, "기존 연결 불러오기"),
-          h("form", { className: "connection-form", onSubmit: event => {
-            event.preventDefault(); openWorkspace(connectionId);
-          } },
-            h("label", { htmlFor: "connection-id" }, "연결 ID"),
-            h("div", null,
-              h("input", {
-                id: "connection-id",
-                value: connectionId,
-                onChange: event => setConnectionId(event.target.value),
-                placeholder: "연결 ID를 입력하세요",
-                required: true
-              }),
-              h("button", {
-                type: "submit",
-                disabled: workspaceStatus === "loading" || Boolean(busy)
-              }, "불러오기"))))) : null,
+        })) : null,
       workspaceReady ? h("div", { className: "workspace-content" },
         approvalOrder
           ? h(OrderApprovalPanel, {
@@ -1091,21 +1146,23 @@ export function RouteWorkspace({ route, symbol = "" }) {
             }
           })
           : null,
-        h(DashboardView, {
-          dashboard,
-          busyOrderId: busyOrderIds,
-          onOrderAction: orderAction,
-          homeLayout: "operations",
-          portfolioHistory,
-          historyBusy,
-          riskPolicy,
-          realtimePrices,
-          marketOverview,
-          homeCandles,
-          homeCandleSymbol: homeSymbol,
-          homeCandleInterval,
-          onHomeCandleIntervalChange: homeCandleIntervalChange
-        })) : null);
+        h(DecisionCenter, { dashboard, onOrder: orderAction },
+          h(DashboardView, {
+            dashboard,
+            busyOrderId: busyOrderIds,
+            onOrderAction: orderAction,
+            homeLayout: "operations",
+            portfolioHistory,
+            historyBusy,
+            riskPolicy,
+            realtimePrices,
+            marketOverview,
+            homeCandles,
+            homeCandleSymbol: homeSymbol,
+            homeCandleInterval,
+            onHomeCandleIntervalChange: homeCandleIntervalChange,
+            showHomeActionSections: false
+          }))) : null);
   }
   return h("div", null,
     statusRegion,
@@ -1114,29 +1171,29 @@ export function RouteWorkspace({ route, symbol = "" }) {
         h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
         h("h1", null, {
           portfolio: "포트폴리오", stock: stockSymbol || "종목 분석", events: "이벤트",
-          orders: "주문", predictions: "분석", settings: "설정"
+          orders: "주문", predictions: "시스템", settings: "설정"
         }[route] ?? "내 자산")),
-      h("button", {
-        type: "button", className: "secondary",
-        // 로그아웃이 실패해도 로컬 세션을 반드시 폐기해 탈출구를 보장한다.
-        onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
-      }, "로그아웃")),
+      h("div", { className: "topbar-actions" },
+        h(GlobalStockSearch, { onSearch: ticker => {
+          window.location.href = `/stocks/${encodeURIComponent(ticker)}`;
+        }}),
+        h(MarketStatusIndicator, { calendar: marketCalendar }),
+        workspaceReady ? h(DataFreshnessIndicator, { section: dashboard?.portfolio }) : null,
+        workspaceReady ? h(NotificationCenter, {
+          unreadCount, notifications, open: notificationsOpen, busy: Boolean(busy),
+          onToggle: notificationsToggle, onMarkRead: notificationMarkRead
+        }) : null,
+        h("a", { className: "button-link secondary", href: "/settings" }, "설정"),
+        h("button", {
+          type: "button", className: "secondary",
+          onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
+        }, "로그아웃"))),
     h(RouteNav, { symbol: stockSymbol }),
     h("section", { "data-route-region": "connection", "aria-label": "계좌 연결" },
-      h("form", { className: "connection-form", onSubmit: event => {
-        event.preventDefault(); openWorkspace(event.currentTarget.elements.connectionId.value);
-      } },
-        h("label", { htmlFor: "route-connection-id" }, "연결 ID"),
-        h("div", null,
-          h("input", {
-            id: "route-connection-id", name: "connectionId", value: connectionId,
-            onChange: event => setConnectionId(event.target.value)
-          }),
-          h("button", {
-            type: "submit",
-            // 워크스페이스 로드 중에도 "열기" 를 비활성해 진행 중임을 알린다(D-35).
-            disabled: workspaceStatus === "loading" || Boolean(busy)
-          }, "열기"))),
-      ErrorMessage({ value: error })),
+      workspaceReady ? h(AccountSwitcher, {
+        accountLabel: "현재 계좌", accounts: connections, connectionId, workspaceStatus,
+        busy: workspaceStatus === "loading" || Boolean(busy), onSwitch: openWorkspace
+      }) : h("p", { className: "empty" }, "계좌를 선택하면 이 화면을 사용할 수 있습니다.")),
+    ErrorMessage({ value: error }),
     routeContent());
 }

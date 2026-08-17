@@ -48,8 +48,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "broker.credentials.enabled=true",
                 "broker.credentials.active-key-version=1",
                 "broker.credentials.keys.1=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
-                "analysis.service.connect-timeout=PT0.3S",
-                "analysis.service.read-timeout=PT0.3S",
+                "analysis.service.connect-timeout=PT1S",
+                "analysis.service.read-timeout=PT1S",
                 "spring.datasource.hikari.maximum-pool-size=4"
         })
 @Import(ReleaseWorkflowE2EIntegrationTest.PipelineBrokerConfiguration.class)

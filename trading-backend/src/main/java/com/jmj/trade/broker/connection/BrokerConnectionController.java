@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.security.Principal;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/broker-connections")
@@ -54,6 +55,13 @@ public class BrokerConnectionController {
                 userId(principal),
                 validated.clientId(),
                 validated.clientSecret()));
+    }
+
+    @GetMapping
+    List<BrokerConnectionResponse> list(Principal principal) {
+        return connectionService.list(userId(principal)).stream()
+                .map(BrokerConnectionResponse::from)
+                .toList();
     }
 
     @PutMapping("/{id}/credentials")

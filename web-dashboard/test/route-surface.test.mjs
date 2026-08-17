@@ -122,15 +122,17 @@ test("keeps the connected account primary while exposing an explicit account swi
   assert.equal(typeof workspace.AccountSwitcher, "function");
   const html = renderToStaticMarkup(createElement(workspace.AccountSwitcher, {
     accountLabel: "기본계좌",
+    accounts: [{ id: "connection-1", brokerType: "TOSS_INVEST", status: "ACTIVE" }],
     connectionId: "connection-1",
     busy: false,
     onSwitch() {}
   }));
   assert.match(html, /기본계좌/);
   assert.match(html, /계좌 변경/);
-  assert.match(html, /name="connectionId"/);
-  assert.match(html, /value="connection-1"/);
-  assert.match(html, /계좌 불러오기/);
+  assert.match(html, /토스증권/);
+  assert.match(html, /계좌 1/);
+  // 연결 ID는 소유 연결 식별에만 사용하고 UI에 노출하지 않는다.
+  assert.doesNotMatch(html, /connection-1/);
 });
 
 test("home uses the operations composition and removes the old chart-first shell", async () => {
@@ -171,6 +173,12 @@ test("home loads portfolio history but reuses dashboard.pendingEvents instead of
   assert.match(homeDashboard[0], /dashboard/);
   assert.match(homeDashboard[0], /portfolioHistory/);
   assert.doesNotMatch(homeDashboard[0], /events:/);
+});
+
+test("event action links load the requested event detail", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+  assert.match(source, /new URLSearchParams\(window\.location\.search\)\.get\("event"\)/);
+  assert.match(source, /requestedEventId[\s\S]*?setSelectedEvent\(await loadEvent\(id, requestedEventId\)\)/);
 });
 
 test("portfolio route marks initial history busy until the real request settles", async () => {
