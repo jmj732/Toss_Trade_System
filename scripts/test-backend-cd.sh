@@ -68,8 +68,44 @@ if rg -n 'BEGIN (RSA|OPENSSH) PRIVATE KEY|ghp_[A-Za-z0-9]|DOPPLER_TOKEN=' \
   fail "credential-like value found in CD configuration"
 fi
 
-grep -q 'up -d --wait migrate backend dashboard' "$workflow" ||
-  fail "server deploy must restart the dashboard"
+grep -q 'up --no-build -d --wait migrate backend dashboard' "$workflow" ||
+  fail "server deploy must use only the transferred images"
+grep -q 'cleanup_on_exit()' "$workflow" ||
+  fail "server deploy must define an exit cleanup"
+grep -q 'trap cleanup_on_exit EXIT' "$workflow" ||
+  fail "server deploy must clean unused images after success or failure"
+grep -q "trap 'exit 143' INT TERM" "$workflow" ||
+  fail "server deploy must clean images when interrupted"
+grep -q 'exit_status=1' "$workflow" ||
+  fail "server deploy must fail when image cleanup fails"
+grep -q 'exit "\$exit_status"' "$workflow" ||
+  fail "server deploy must propagate cleanup failures"
+grep -q "docker inspect --format '{{.Config.Image}}'" "$workflow" ||
+  fail "server deploy must preserve exact container image references"
+if grep -q 'docker image rm --no-prune' "$workflow"; then
+  fail "server deploy must prune untagged image parents"
+fi
+grep -q 'docker image rm "\$image"' "$workflow" ||
+  fail "server deploy must remove unused images with parent pruning"
+grep -q 'find -- "\$BACKEND_DEPLOY_PATH" -maxdepth 1 -type f' "$workflow" ||
+  fail "server deploy must scope archive cleanup to the deploy path"
+grep -Fq -- "-name '.[0-9a-f]*-trade-backend_*.tar.gz'" "$workflow" ||
+  fail "server deploy must clean backend transfer archives"
+grep -Fq -- "-name '.[0-9a-f]*-trade-analysis_*.tar.gz'" "$workflow" ||
+  fail "server deploy must clean analysis transfer archives"
+grep -Fq -- "-name '.[0-9a-f]*-trade-dashboard_*.tar.gz'" "$workflow" ||
+  fail "server deploy must clean dashboard transfer archives"
+if bash -c '
+  cleanup_on_exit() {
+    local exit_status=$?
+    exit_status=1
+    exit "$exit_status"
+  }
+  trap cleanup_on_exit EXIT
+  true
+'; then
+  fail "cleanup failure must fail an otherwise successful shell"
+fi
 grep -q 'VERCEL_TOKEN' "$workflow" || fail "Vercel token must come from GitHub Secrets"
 grep -q 'VERCEL_ORG_ID' "$workflow" || fail "Vercel org ID must be configured"
 grep -q 'VERCEL_PROJECT_ID' "$workflow" || fail "Vercel project ID must be configured"

@@ -29,11 +29,14 @@ doppler run --project trade --config stg -- env \
   ANALYSIS_IMAGE=trade-analysis:<commit> \
   DASHBOARD_IMAGE=trade-dashboard:<commit> \
   docker compose -f compose.yaml -f compose.staging.yaml \
-    -f compose.staging.credentialed.yaml up -d --wait migrate backend dashboard
+    -f compose.staging.credentialed.yaml up --no-build -d --wait migrate backend dashboard
 ```
 
 The backend, analysis, and dashboard images are built from the verified checkout, streamed
 over SSH, and loaded on the host, so no registry token or remote source checkout is needed.
+The deploy uses `--no-build` and removes unreferenced commit-tagged images, prunable untagged
+parents, and transfer archives on both successful and failed exits; container image references
+are preserved.
 
 ## GitHub Secrets
 
@@ -61,6 +64,6 @@ controlled production path.
 
 ## Rollback
 
-Each deployment keeps the commit-tagged Docker image on the server. Roll back by selecting a
-known-good commit tag for `BACKEND_IMAGE` and repeating the server-side Compose command. Do
-not rebuild from an unverified working tree.
+Historical images are removed after deployment cleanup. Roll back by rerunning CD from a
+known-good, verified commit so its images are rebuilt and transferred; do not rebuild from an
+unverified working tree.

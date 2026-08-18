@@ -96,22 +96,33 @@ jobs:
               -name '.[0-9a-f]*-trade-analysis_*.tar.gz' -o \
               -name '.[0-9a-f]*-trade-dashboard_*.tar.gz' \
             \) -delete
-          container_image_ids="$(docker ps -aq | while IFS= read -r container_id; do
-            docker inspect --format '{{.Image}}' "$container_id"
+          container_image_refs="$(docker ps -aq | while IFS= read -r container_id; do
+            docker inspect --format '{{.Config.Image}}' "$container_id"
           done)"
           docker image ls --format '{{.Repository}}:{{.Tag}}' |
             awk '/^trade-(backend|analysis|dashboard):/ { print }' |
             while IFS= read -r image; do
-              image_id="$(docker image inspect --format '{{.Id}}' "$image")"
-              if grep -Fqx "$image_id" <<<"$container_image_ids"; then
+              if grep -Fqx "$image" <<<"$container_image_refs"; then
                 printf 'keeping container image %s\n' "$image"
               else
                 printf 'removing unused image %s\n' "$image"
-                docker image rm --no-prune "$image"
+                docker image rm "$image"
               fi
             done
           CLEANUP
           }
+
+          cleanup_on_exit() {
+            local exit_status=$?
+            if ! prune_unused_images; then
+              printf 'image cleanup failed; refusing a clean deploy result\n' >&2
+              exit_status=1
+            fi
+            rm -f "$key_file" "$known_hosts_file" || exit_status=1
+            exit "$exit_status"
+          }
+          trap cleanup_on_exit EXIT
+          trap 'exit 143' INT TERM
 
           prune_unused_images
 
@@ -173,7 +184,7 @@ jobs:
               -f compose.yaml \
               -f compose.staging.yaml \
               -f compose.staging.credentialed.yaml \
-              up -d --wait migrate backend dashboard
+              up --no-build -d --wait migrate backend dashboard
           curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null
           REMOTE
 
