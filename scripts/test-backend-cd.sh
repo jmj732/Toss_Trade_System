@@ -73,12 +73,12 @@ grep -q 'up -d --wait migrate backend dashboard' "$workflow" ||
 grep -q 'VERCEL_TOKEN' "$workflow" || fail "Vercel token must come from GitHub Secrets"
 grep -q 'VERCEL_ORG_ID' "$workflow" || fail "Vercel org ID must be configured"
 grep -q 'VERCEL_PROJECT_ID' "$workflow" || fail "Vercel project ID must be configured"
-if grep -q 'vercel@58.5.1 link' "$workflow"; then
-  fail "Vercel deploy must skip user-scoped project linking for project tokens"
+if rg -n 'vercel@58.5.1 (link|pull|build)' "$workflow" >/dev/null; then
+  fail "Vercel project tokens must deploy without project-settings or local-build CLI calls"
 fi
-grep -q 'vercel@58.5.1 pull' "$workflow" || fail "Vercel deploy must pull production settings"
-grep -q 'vercel@58.5.1 build --prod' "$workflow" || fail "Vercel deploy must build production output"
-grep -q 'vercel@58.5.1 deploy --prebuilt --prod' "$workflow" ||
-  fail "Vercel deploy must promote the prebuilt output"
+grep -q 'vercel@58.5.1 deploy --yes --prod' "$workflow" ||
+  fail "Vercel deploy must use a non-interactive production deployment"
+grep -q -- '--project "\$VERCEL_PROJECT_ID"' "$workflow" ||
+  fail "Vercel deploy must target the configured project explicitly"
 
 echo "trade CD contract: PASS"
