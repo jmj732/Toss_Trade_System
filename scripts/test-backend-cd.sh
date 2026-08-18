@@ -73,7 +73,9 @@ grep -q 'up -d --wait migrate backend dashboard' "$workflow" ||
 grep -q 'VERCEL_TOKEN' "$workflow" || fail "Vercel token must come from GitHub Secrets"
 grep -q 'VERCEL_ORG_ID' "$workflow" || fail "Vercel org ID must be configured"
 grep -q 'VERCEL_PROJECT_ID' "$workflow" || fail "Vercel project ID must be configured"
-grep -q 'vercel@58.5.1 link' "$workflow" || fail "Vercel deploy must link the target project"
+if grep -q 'vercel@58.5.1 link' "$workflow"; then
+  fail "Vercel deploy must skip user-scoped project linking for project tokens"
+fi
 grep -q 'vercel@58.5.1 pull' "$workflow" || fail "Vercel deploy must pull production settings"
 grep -q 'vercel@58.5.1 build --prod' "$workflow" || fail "Vercel deploy must build production output"
 grep -q 'vercel@58.5.1 deploy --prebuilt --prod' "$workflow" ||
