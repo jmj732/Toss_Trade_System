@@ -1,0 +1,10 @@
+{
+  "requestId": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+  "input": {
+    "snapshotId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "symbol": "AAPL",
+    "schemaVersion": "1",
+    "collectedAt": "2026-08-02T00:00:00Z",
+    "observations": []
+  }
+}

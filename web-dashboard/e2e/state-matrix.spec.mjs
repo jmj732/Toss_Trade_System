@@ -58,9 +58,16 @@ for (const routeDef of ROUTES) {
           await page.waitForTimeout(1200);
         } else if (state === "refreshing") {
           await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
-          const refresh = page.locator('button:has-text("새로고침")').first();
+          // Only a control the user can actually reach counts. Since the rework put
+          // several refresh controls inside collapsed <details> sections, an unscoped
+          // locator matches a hidden button and the click blocks on actionability
+          // until the whole test times out. Requiring :visible keeps the refresh
+          // genuinely exercised wherever one is reachable, and the explicit timeout
+          // means a screen with no reachable refresh degrades to a plain load
+          // instead of hanging.
+          const refresh = page.locator('button:visible:has-text("새로고침")').first();
           if (await refresh.count()) {
-            await refresh.click().catch(() => {});
+            await refresh.click({ timeout: 2000 }).catch(() => {});
           }
           await page.waitForTimeout(1200);
         } else {

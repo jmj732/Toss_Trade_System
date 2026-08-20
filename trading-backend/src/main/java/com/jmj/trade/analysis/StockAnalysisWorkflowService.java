@@ -376,6 +376,43 @@ public final class StockAnalysisWorkflowService {
                 : !expectedMissing.equals(response.missingData()))) {
             throw new StockAnalysisException(StockAnalysisException.Code.CONTRACT_ERROR);
         }
+        if (invalidDecision(response.decision()) || invalidPositionPlan(response.positionPlan())) {
+            throw new StockAnalysisException(StockAnalysisException.Code.CONTRACT_ERROR);
+        }
+    }
+
+    /**
+     * decision 은 nullable 이다(v3 응답에는 없고, 판단 근거가 없으면 서비스가 null 을 낸다).
+     * 존재할 때만 구조와 신뢰도 범위를 검사한다.
+     */
+    private boolean invalidDecision(StockAnalysisCoreContract.Decision decision) {
+        if (decision == null) {
+            return false;
+        }
+        return decision.action() == null
+                || decision.ruleVersion() == null
+                || decision.ruleVersion().isBlank()
+                || decision.basis() == null
+                || decision.missingData() == null
+                || decision.basis().stream().anyMatch(item -> item == null
+                || item.metric() == null
+                || item.metric().isBlank()
+                || item.contribution() == null)
+                || (decision.confidence() != null
+                && (decision.confidence().signum() < 0
+                || decision.confidence().compareTo(BigDecimal.ONE) > 0));
+    }
+
+    /** positionPlan 도 nullable 이다. 존재하면 손절가는 반드시 진입가보다 낮아야 한다. */
+    private boolean invalidPositionPlan(StockAnalysisCoreContract.PositionPlan plan) {
+        if (plan == null) {
+            return false;
+        }
+        return plan.ruleVersion() == null
+                || plan.ruleVersion().isBlank()
+                || plan.missingData() == null
+                || (plan.entry() != null && plan.stop() != null
+                && plan.stop().compareTo(plan.entry()) >= 0);
     }
 
     private boolean invalidMetric(StockAnalysisCoreContract.Metric metric) {

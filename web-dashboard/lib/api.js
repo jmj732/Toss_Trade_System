@@ -247,6 +247,34 @@ export function proposePaperOrder(command, fetcher = fetch) {
     { "Idempotency-Key": idempotencyKey ?? paperOrderProposalKey(order) });
 }
 
+// BC-6: 비영속 사전 위험 검사(preview). 서버가 아무것도 기록하지 않으므로
+// Idempotency-Key 를 붙이지 않는다(붙이면 "영속 명령"이라는 의미가 왜곡된다).
+// channel 도 보내지 않는다 — preview 요청 본문은 주문 파라미터만 담는다.
+export function previewPaperOrder(command, fetcher = fetch) {
+  const { connectionId, side, type, symbol, quantity, limitPrice = null, currency } = command ?? {};
+  return brokerCommand(
+    "/api/v1/paper-orders/preview",
+    "POST",
+    { connectionId, side, type, symbol, quantity, limitPrice, currency },
+    fetcher);
+}
+
+// BC-7: kill switch 상태 조회. scope 는 필수(기본값 없이 USER 만 보고 "정지 아님"으로
+// 오해하는 것을 서버가 의도적으로 막는다). targetId 는 USER scope 에서 생략 가능.
+// 여러 scope 를 프론트에서 OR 로 합성하지 않는다 — 단일 (scope,target) 행만 읽는다.
+export function loadKillSwitch(scope = "USER", targetId, fetcher = fetch) {
+  if (typeof targetId === "function") {
+    fetcher = targetId;
+    targetId = undefined;
+  }
+  const params = new URLSearchParams();
+  params.set("scope", scope);
+  if (targetId) {
+    params.set("targetId", targetId);
+  }
+  return readEvent(`/api/v1/trading/kill-switch?${params.toString()}`, fetcher);
+}
+
 export function replaceBrokerCredentials(
   connectionId,
   credentials,
@@ -564,6 +592,49 @@ export async function modifyLiveOrder(orderId, newLimitPrice, stepUpToken, fetch
     { method: "POST", headers, body: JSON.stringify({ newLimitPrice }) },
     fetcher);
   return body(response);
+}
+
+// Live 승인은 사용자가 화면에서 확인한 표시값(displayed 는 서버 스키마 형태)만 전송한다.
+// Paper 와 달리 approve 는 브로커로 나가지 않는다 — 별도 dispatchLiveOrder 단계가 있다.
+// 응답 본문은 없다(void). step-up 토큰은 선택 헤더다.
+export function approveLiveOrder(orderId, displayed, stepUpToken, fetcher = fetch) {
+  const extraHeaders = stepUpToken ? { "X-Step-Up-Token": stepUpToken } : {};
+  return brokerCommand(
+    `/api/v1/live-orders/${encodeURIComponent(orderId)}/approve`,
+    "POST",
+    {
+      displayedQuantity: displayed?.displayedQuantity,
+      displayedMaxLoss: displayed?.displayedMaxLoss,
+      displayedCurrency: displayed?.displayedCurrency
+    },
+    fetcher,
+    extraHeaders);
+}
+
+// Live 브로커 전송. 승인과 분리된 실제 발주 단계다 — 승인만으로는 주문이 나가지 않는다.
+// Idempotency-Key 는 필수이며 호출부가 crypto.randomUUID() 로 생성해 넘긴다(라이브러리에서 만들지 않는다).
+export function dispatchLiveOrder(orderId, idempotencyKey, stepUpToken, fetcher = fetch) {
+  const extraHeaders = { "Idempotency-Key": idempotencyKey };
+  if (stepUpToken) {
+    extraHeaders["X-Step-Up-Token"] = stepUpToken;
+  }
+  return brokerCommand(
+    `/api/v1/live-orders/${encodeURIComponent(orderId)}/dispatch`,
+    "POST",
+    null,
+    fetcher,
+    extraHeaders);
+}
+
+// Live 주문 취소/거부. step-up 토큰은 선택 헤더다. Idempotency-Key 는 붙이지 않는다.
+export function cancelLiveOrder(orderId, stepUpToken, fetcher = fetch) {
+  const extraHeaders = stepUpToken ? { "X-Step-Up-Token": stepUpToken } : {};
+  return brokerCommand(
+    `/api/v1/live-orders/${encodeURIComponent(orderId)}/cancel`,
+    "POST",
+    null,
+    fetcher,
+    extraHeaders);
 }
 
 export function loadAccountBuyingPower(connectionId, currency = "USD", fetcher = fetch) {

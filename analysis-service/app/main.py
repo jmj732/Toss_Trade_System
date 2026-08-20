@@ -171,6 +171,50 @@ class AnalyzerResult(ContractModel):
     metrics: list[AnalysisMetric]
 
 
+class DecisionAction(str, Enum):
+    BUY = "BUY"
+    ADD = "ADD"
+    HOLD = "HOLD"
+    REDUCE = "REDUCE"
+    SELL = "SELL"
+    WAIT = "WAIT"
+
+
+class DecisionContribution(str, Enum):
+    POSITIVE = "POSITIVE"
+    NEGATIVE = "NEGATIVE"
+    NEUTRAL = "NEUTRAL"
+
+
+class DecisionBasis(ContractModel):
+    metric: str
+    value: Decimal | None
+    contribution: DecisionContribution
+
+
+class Decision(ContractModel):
+    action: DecisionAction
+    confidence: Decimal | None
+    rule_version: str
+    basis: list[DecisionBasis]
+    missing_data: list[str]
+
+
+class PositionPlan(ContractModel):
+    entry: Decimal | None
+    add: Decimal | None
+    stop: Decimal | None
+    target1: Decimal | None
+    target2: Decimal | None
+    risk_reward: Decimal | None
+    max_loss_per_share: Decimal | None
+    invalidation: str | None
+    rule_version: str
+    currency: str | None
+    basis_price: Decimal | None
+    missing_data: list[str]
+
+
 class StockAnalysisCoreResponse(ContractModel):
     request_id: UUID
     schema_version: Literal["1"]
@@ -181,7 +225,86 @@ class StockAnalysisCoreResponse(ContractModel):
     missing_data: list[str]
     observations: list[StockAnalysisObservation]
     analyzers: list[AnalyzerResult]
+    decision: Decision | None = None
+    position_plan: PositionPlan | None = None
 
+
+DECISION_RULE_VERSION = "decision-rule-v1"
+POSITION_PLAN_RULE_VERSION = "position-plan-v1"
+
+# 연율 변동성 -> 20 거래일 변동폭 환산 계수. sqrt(20/252) ~= 0.2817.
+# forecast.expected_max_loss 가 이미 쓰는 계수와 동일하게 유지한다(새 계수를 만들지 않는다).
+HORIZON_SCALE = Decimal("0.2817")
+
+# 판단 신호. (지표, 가중치, 필수 여부, 점수 함수)
+# 점수 함수는 -1 / 0 / +1 만 낸다. 어떤 신호도 값을 예측하지 않고, 임계값 비교만 한다.
+# 임계값 근거는 각 항목 주석에 남긴다. 경계값은 "더 결정적인" 쪽에 귀속시킨다.
+DECISION_SIGNALS: tuple[tuple[str, Decimal, bool, Any], ...] = (
+    # 20일선 대비 위치. +-2% 는 일간 노이즈 대역으로 보고 중립 처리.
+    ("technical.price_vs_sma20", Decimal("0.15"), True,
+     lambda value: 1 if value >= Decimal("0.02") else -1 if value <= Decimal("-0.02") else 0),
+    # 50일선 대비 위치. 중기 추세이므로 노이즈 대역을 20일선의 2.5배(+-5%)로 잡는다.
+    ("technical.price_vs_sma50", Decimal("0.10"), False,
+     lambda value: 1 if value >= Decimal("0.05") else -1 if value <= Decimal("-0.05") else 0),
+    # 20일선/50일선 이격. +-1% 미만은 교차 직전/직후 구간으로 보고 중립.
+    ("technical.sma_trend", Decimal("0.15"), True,
+     lambda value: 1 if value >= Decimal("0.01") else -1 if value <= Decimal("-0.01") else 0),
+    # RSI14. Wilder 원저의 70/30 경계. 과매수는 신규 진입에 불리(-1), 과매도는 유리(+1).
+    ("technical.rsi14", Decimal("0.15"), True,
+     lambda value: -1 if value >= Decimal("70") else 1 if value <= Decimal("30") else 0),
+    # 연율 변동성. 25% 이하는 저위험, 50% 이상은 고위험으로 본다.
+    ("technical.volatility20", Decimal("0.10"), True,
+     lambda value: 1 if value <= Decimal("0.25") else -1 if value >= Decimal("0.50") else 0),
+    # 순이익률 10% 이상 우량, 0 이하 적자.
+    ("fundamental.profit_margin", Decimal("0.05"), False,
+     lambda value: 1 if value >= Decimal("0.10") else -1 if value <= Decimal("0") else 0),
+    # ROE 15% 이상 우량, 0 이하 자본 훼손.
+    ("fundamental.roe", Decimal("0.05"), False,
+     lambda value: 1 if value >= Decimal("0.15") else -1 if value <= Decimal("0") else 0),
+    # 부채비율(총부채/자본) 1배 이하 보수적, 2배 이상 과다.
+    ("fundamental.debt_to_equity", Decimal("0.05"), False,
+     lambda value: 1 if value <= Decimal("1") else -1 if value >= Decimal("2") else 0),
+    # 영업현금흐름률 15% 이상 우량, 0 이하 현금 유출.
+    ("fundamental.operating_cash_flow_margin", Decimal("0.05"), False,
+     lambda value: 1 if value >= Decimal("0.15") else -1 if value <= Decimal("0") else 0),
+    # PER 15배 이하 저평가, 40배 이상 고평가. 0 이하(적자)는 밸류에이션 근거 없음 -> 부정.
+    ("valuation.pe", Decimal("0.05"), False,
+     lambda value: -1 if value <= Decimal("0")
+     else 1 if value <= Decimal("15") else -1 if value >= Decimal("40") else 0),
+    # PBR 1.5배 이하 저평가, 5배 이상 고평가. 0 이하(자본잠식)는 부정.
+    ("valuation.price_to_book", Decimal("0.05"), False,
+     lambda value: -1 if value <= Decimal("0")
+     else 1 if value <= Decimal("1.5") else -1 if value >= Decimal("5") else 0),
+    # PSR 2배 이하 저평가, 10배 이상 고평가. 0 이하는 부정.
+    ("valuation.price_to_sales", Decimal("0.05"), False,
+     lambda value: -1 if value <= Decimal("0")
+     else 1 if value <= Decimal("2") else -1 if value >= Decimal("10") else 0),
+    # FCF 수익률 5% 이상 우량, 0 이하 현금 유출.
+    ("valuation.fcf_yield", Decimal("0.05"), False,
+     lambda value: 1 if value >= Decimal("0.05") else -1 if value <= Decimal("0") else 0),
+    # VIX 20/30 경계는 marketRegime.state 가 이미 쓰는 경계와 동일하게 유지한다.
+    ("marketRegime.vix", Decimal("0.05"), False,
+     lambda value: 1 if value <= Decimal("20") else -1 if value >= Decimal("30") else 0),
+    # S&P500 20일 수익률. +-2% 미만은 방향 없음으로 본다.
+    ("marketRegime.sp500Return20d", Decimal("0.05"), False,
+     lambda value: 1 if value >= Decimal("0.02") else -1 if value <= Decimal("-0.02") else 0),
+)
+DECISION_REQUIRED = tuple(name for name, _, required, _ in DECISION_SIGNALS if required)
+
+# 정규화 점수(-1..+1) 구간. 경계값은 더 결정적인 쪽(BUY/ADD/REDUCE/SELL)에 귀속.
+ACTION_BUY_SCORE = Decimal("0.5")
+ACTION_ADD_SCORE = Decimal("0.2")
+ACTION_REDUCE_SCORE = Decimal("-0.2")
+ACTION_SELL_SCORE = Decimal("-0.5")
+
+# 포지션 계획 계수. 모두 20 거래일 변동폭(sigma20) 배수로 표현한다.
+PLAN_WIDE_STOP_SIGMA = Decimal("1.5")     # 손절 허용 최대 폭
+PLAN_TIGHT_STOP_SIGMA = Decimal("0.5")    # 손절 허용 최소 폭(노이즈 손절 방지)
+PLAN_SMA20_BUFFER_SIGMA = Decimal("0.25")  # 20일선 아래 완충 구간
+PLAN_TARGET1_SIGMA = Decimal("2")
+PLAN_TARGET2_SIGMA = Decimal("4")
+PLAN_ADD_FRACTION = Decimal("0.5")        # 진입가와 손절가 사이 중간 지점에서 분할 매수
+PLAN_CURRENCIES = ("KRW", "USD")
 
 FORECAST_METRIC_ORDER = [
     "forecast.d1_up_probability",
@@ -386,6 +509,8 @@ def analyze_stock_core(request: StockAnalysisRequest) -> StockAnalysisCoreRespon
         missing_data=missing_data,
         observations=request.input.observations,
         analyzers=analyzers,
+        decision=_decision(analyzers),
+        position_plan=_position_plan(indexed, analyzers),
     )
 
 
@@ -417,6 +542,161 @@ def forecast_stock(request: StockForecastRequest) -> StockForecastCoreResponse:
         model_version=request.model_version,
         contract_version=request.contract_version,
         forecasts=metrics,
+    )
+
+
+def _decision_inputs(analyzers: list[AnalyzerResult]) -> dict[str, Decimal]:
+    """이미 계산된 analyzer metric 중 판단에 쓸 수 있는 수치만 뽑는다.
+
+    metric 이 missingData 를 달고 있거나, 값이 없거나, 수치가 아니면 판단 입력에서 제외한다.
+    새 데이터를 만들지 않고 기존 missingData 규율을 그대로 따른다.
+    """
+    values: dict[str, Decimal] = {}
+    for name, candidates in _index_metrics(analyzers).items():
+        if len(candidates) != 1:
+            continue
+        metric = candidates[0]
+        if metric.missing_data or metric.value is None:
+            continue
+        try:
+            value = Decimal(str(metric.value))
+        except ArithmeticError:
+            continue
+        if value.is_finite():
+            values[name] = value
+    return values
+
+
+def _decision_action(score: Decimal) -> DecisionAction:
+    if score >= ACTION_BUY_SCORE:
+        return DecisionAction.BUY
+    if score >= ACTION_ADD_SCORE:
+        return DecisionAction.ADD
+    if score > ACTION_REDUCE_SCORE:
+        return DecisionAction.HOLD
+    if score > ACTION_SELL_SCORE:
+        return DecisionAction.REDUCE
+    return DecisionAction.SELL
+
+
+def _decision(analyzers: list[AnalyzerResult]) -> Decision | None:
+    values = _decision_inputs(analyzers)
+    basis: list[DecisionBasis] = []
+    missing: list[str] = []
+    weighted = Decimal("0")
+    total_weight = Decimal("0")
+    available = 0
+    for name, weight, required, score in DECISION_SIGNALS:
+        value = values.get(name)
+        if value is None:
+            basis.append(DecisionBasis(
+                metric=name, value=None, contribution=DecisionContribution.NEUTRAL))
+            missing.append(
+                f"DECISION_REQUIRED_INPUT_MISSING:{name}"
+                if required
+                else f"DECISION_INPUT_MISSING:{name}"
+            )
+            continue
+        available += 1
+        signal = score(value)
+        weighted += weight * Decimal(signal)
+        total_weight += weight
+        basis.append(DecisionBasis(
+            metric=name,
+            value=value,
+            contribution=DecisionContribution.POSITIVE
+            if signal > 0
+            else DecisionContribution.NEGATIVE
+            if signal < 0
+            else DecisionContribution.NEUTRAL,
+        ))
+    if not any(name in values for name in DECISION_REQUIRED):
+        # 필수 지표가 하나도 없다 = 판단 근거가 없다. HOLD 같은 기본값으로 위조하지 않는다.
+        # 사유는 응답 최상위 missingData 의 FIELD_MISSING 항목이 이미 담고 있다.
+        return None
+    action = (
+        DecisionAction.WAIT
+        if any(name not in values for name in DECISION_REQUIRED)
+        else _decision_action((weighted / total_weight).quantize(
+            CORE_SCALE, rounding=ROUND_HALF_EVEN))
+    )
+    confidence = (Decimal(available) / Decimal(len(DECISION_SIGNALS))).quantize(
+        CORE_SCALE, rounding=ROUND_HALF_EVEN
+    )
+    return Decision(
+        action=action,
+        confidence=_decimal_text(confidence),
+        rule_version=DECISION_RULE_VERSION,
+        basis=basis,
+        missing_data=_stable_unique(missing),
+    )
+
+
+def _plan_currency(indexed) -> str | None:
+    matches = indexed.get("quote.price", [])
+    if len(matches) != 1 or not matches[0].unit:
+        return None
+    unit = matches[0].unit.upper()
+    return unit if unit in PLAN_CURRENCIES else None
+
+
+def _position_plan(indexed, analyzers: list[AnalyzerResult]) -> PositionPlan | None:
+    price, _, _ = _resolve(indexed, "quote.price")
+    sigma = _decision_inputs(analyzers).get("technical.volatility20")
+    if price is None or sigma is None:
+        # 기준가와 변동성이 둘 다 있어야만 계획을 만든다. 사유는 최상위 missingData 에 있다.
+        return None
+    currency = _plan_currency(indexed)
+    missing = [] if currency else ["MISSING_CURRENCY:quote.price"]
+    sma20, _, _ = _resolve(indexed, "technical.sma20")
+    if sma20 is None or sma20 <= 0:
+        sma20 = None
+        missing.append("PLAN_STRUCTURE_STOP_MISSING:technical.sma20")
+    sigma20 = sigma * HORIZON_SCALE
+    if price <= 0:
+        missing.append("PLAN_INPUT_OUT_OF_RANGE:quote.price")
+    if sigma20 <= 0 or PLAN_WIDE_STOP_SIGMA * sigma20 >= 1:
+        missing.append("PLAN_INPUT_OUT_OF_RANGE:technical.volatility20")
+    if not any(reason.startswith("PLAN_INPUT_OUT_OF_RANGE:") for reason in missing):
+        wide_stop = price * (1 - PLAN_WIDE_STOP_SIGMA * sigma20)
+        tight_stop = price * (1 - PLAN_TIGHT_STOP_SIGMA * sigma20)
+        # 계약에 실리는 정밀도로 먼저 고정한 뒤 나머지를 유도한다.
+        # 그래야 maxLossPerShare / riskReward 가 게시된 entry·stop 과 정확히 맞아떨어진다.
+        entry = _quantized(price)
+        stop = _quantized(
+            min(max(sma20 * (1 - PLAN_SMA20_BUFFER_SIGMA * sigma20), wide_stop), tight_stop)
+            if sma20 is not None
+            else wide_stop
+        )
+        if stop <= 0 or stop >= entry:
+            missing.append("PLAN_INPUT_OUT_OF_RANGE:technical.volatility20")
+    if any(reason.startswith("PLAN_INPUT_OUT_OF_RANGE:") for reason in missing):
+        return PositionPlan(
+            entry=None, add=None, stop=None, target1=None, target2=None,
+            risk_reward=None, max_loss_per_share=None, invalidation=None,
+            rule_version=POSITION_PLAN_RULE_VERSION, currency=currency,
+            basis_price=_decimal_text(price), missing_data=_stable_unique(missing),
+        )
+    target1 = _quantized(price * (1 + PLAN_TARGET1_SIGMA * sigma20))
+    max_loss = entry - stop
+    stop_text = _decimal_text(stop)
+    return PositionPlan(
+        entry=_decimal_text(entry),
+        add=_decimal_text(_quantized(entry - max_loss * PLAN_ADD_FRACTION)),
+        stop=stop_text,
+        target1=_decimal_text(target1),
+        target2=_decimal_text(_quantized(price * (1 + PLAN_TARGET2_SIGMA * sigma20))),
+        risk_reward=_decimal_text((target1 - entry) / max_loss),
+        max_loss_per_share=_decimal_text(max_loss),
+        invalidation=(
+            f"종가가 {stop_text} {currency} 아래로 마감하면 계획 무효"
+            if currency
+            else f"종가가 {stop_text} 아래로 마감하면 계획 무효"
+        ),
+        rule_version=POSITION_PLAN_RULE_VERSION,
+        currency=currency,
+        basis_price=_decimal_text(entry),
+        missing_data=_stable_unique(missing),
     )
 
 
@@ -774,6 +1054,10 @@ def _market_regime(indexed, basis_as_of):
                     else "NEUTRAL"
                 )),
     ])
+
+
+def _quantized(value: Decimal) -> Decimal:
+    return value.quantize(CORE_SCALE, rounding=ROUND_HALF_EVEN)
 
 
 def _decimal_text(value: Decimal) -> str:

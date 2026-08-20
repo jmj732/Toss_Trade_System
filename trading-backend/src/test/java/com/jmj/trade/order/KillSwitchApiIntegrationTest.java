@@ -35,6 +35,7 @@ import java.util.UUID;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -131,6 +132,94 @@ class KillSwitchApiIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.version").value(2));
 
         assertRows(2);
+    }
+
+    // --- BC-7: 상태 조회 -------------------------------------------------------------------
+
+    @Test
+    void unsetStateIsReportedAsUnknownRatherThanDisengaged() throws Exception {
+        // 미설정과 "해제됨"은 다른 사실이다. engaged 를 false 로 뭉개지 않고 null 로 비운다.
+        mockMvc.perform(get("/api/v1/trading/kill-switch")
+                        .param("scope", "USER")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scope").value("USER"))
+                .andExpect(jsonPath("$.targetId").value(USER_ID.toString()))
+                .andExpect(jsonPath("$.engaged").doesNotExist())
+                .andExpect(jsonPath("$.version").doesNotExist())
+                .andExpect(jsonPath("$.reason").doesNotExist())
+                .andExpect(jsonPath("$.changedAt").doesNotExist());
+    }
+
+    @Test
+    void engagedStateIsReportedWithLedgerVersionAndReason() throws Exception {
+        mockMvc.perform(post("/api/v1/trading/kill-switch")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"USER\",\"targetId\":\"" + USER_ID
+                                + "\",\"engaged\":true,\"reason\":\"panic\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/trading/kill-switch")
+                        .param("scope", "USER")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scope").value("USER"))
+                .andExpect(jsonPath("$.engaged").value(true))
+                .andExpect(jsonPath("$.version").value(1))
+                .andExpect(jsonPath("$.reason").value("panic"))
+                .andExpect(jsonPath("$.changedAt").isNotEmpty());
+    }
+
+    @Test
+    void disengagedStateIsDistinctFromUnsetAndKeepsLatestVersion() throws Exception {
+        mockMvc.perform(post("/api/v1/trading/kill-switch")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"GLOBAL\",\"engaged\":true,\"reason\":\"panic\"}"))
+                .andExpect(status().isOk());
+        insertDisengageToken(KillSwitchLedger.GLOBAL_TARGET, "state-tok");
+        mockMvc.perform(post("/api/v1/trading/kill-switch")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .header("X-Step-Up-Token", "state-tok")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"scope\":\"GLOBAL\",\"engaged\":false,\"reason\":\"resume\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/trading/kill-switch")
+                        .param("scope", "GLOBAL")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scope").value("GLOBAL"))
+                .andExpect(jsonPath("$.targetId").value(KillSwitchLedger.GLOBAL_TARGET.toString()))
+                .andExpect(jsonPath("$.engaged").value(false))
+                .andExpect(jsonPath("$.version").value(2))
+                .andExpect(jsonPath("$.reason").value("resume"));
+    }
+
+    @Test
+    void anotherUsersSwitchIsNotReadable() throws Exception {
+        var otherUserId = UUID.fromString("44444444-4444-4444-4444-444444444444");
+        jdbc.update("INSERT INTO users (id) VALUES (?) ON CONFLICT DO NOTHING", otherUserId);
+
+        mockMvc.perform(get("/api/v1/trading/kill-switch")
+                        .param("scope", "USER")
+                        .param("targetId", otherUserId.toString())
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("KILL_SWITCH_TARGET_FORBIDDEN"));
+    }
+
+    @Test
+    void unknownScopeIsRejected() throws Exception {
+        mockMvc.perform(get("/api/v1/trading/kill-switch")
+                        .param("scope", "EVERYTHING")
+                        .with(user(USER_ID.toString())))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("KILL_SWITCH_INPUT_INVALID"));
     }
 
     private void insertDisengageToken(UUID subjectRef, String rawToken) {

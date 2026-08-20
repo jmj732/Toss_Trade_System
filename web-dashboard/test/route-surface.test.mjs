@@ -11,22 +11,44 @@ const { describeError, loginHref } = workspace;
 const root = new URL("../app/", import.meta.url);
 
 test("publishes independent App Router surfaces", async () => {
-  for (const route of ["portfolio", "events", "orders", "predictions", "settings"]) {
+  for (const route of ["portfolio", "events", "orders", "settings"]) {
     const source = await readFile(new URL(`${route}/page.js`, root), "utf8");
     assert.match(source, /RouteWorkspace/);
   }
+  // 예측 경로는 Settings 로 리다이렉트한다(북마크 보존). RouteWorkspace 를 마운트하지 않는다.
+  const predictions = await readFile(new URL("predictions/page.js", root), "utf8");
+  assert.match(predictions, /redirect\("\/settings"\)/);
+  assert.doesNotMatch(predictions, /RouteWorkspace/);
   const stock = await readFile(new URL("stocks/[symbol]/page.js", root), "utf8");
   assert.match(stock, /RouteWorkspace/);
   assert.match(stock, /symbol/);
 });
 
-test("shared workspace exposes explicit route title, nav, and connection regions", async () => {
+// 예측 기능(품질·모델 레지스트리·모의 성과·운영/API Key)의 도달 경로는 Settings 한 곳뿐이다(중복 마운트 금지).
+test("prediction features live only in Settings after the /predictions redirect", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+  // 예측 라우트 분기는 제거됐다.
+  assert.doesNotMatch(source, /if \(route === "predictions"\)/);
+  // 세 예측 뷰는 Settings 섹션 슬롯에서만 마운트된다.
+  assert.match(source, /analysis: h\("div"[\s\S]*?h\(AnalysisOutcomeView, \{/);
+  assert.match(source, /predictionOperationsView\(\)\),/);
+  assert.match(source, /strategy: h\(PaperPerformanceView, \{/);
+  // 각 뷰는 한 번씩만 마운트된다(중복 마운트 없음).
+  assert.equal((source.match(/h\(AnalysisOutcomeView, \{/g) ?? []).length, 1);
+  assert.equal((source.match(/h\(PaperPerformanceView, \{/g) ?? []).length, 1);
+});
+
+test("shared workspace exposes explicit route title and nav, with a single shell account switcher", async () => {
   const source = await readFile(new URL("route-workspace.js", root), "utf8");
 
   assert.match(source, /"data-route-region":\s*"title"/);
   assert.match(source, /"data-route-region":\s*"nav"/);
-  assert.match(source, /"data-route-region":\s*"connection"/);
-  assert.match(source, /aria-label":\s*"계좌 연결"/);
+  // Shell 단일화: 라우트별 계좌 연결 섹션을 제거하고 topbar 의 AccountSwitcher 하나만 남긴다.
+  assert.doesNotMatch(source, /"data-route-region":\s*"connection"/);
+  assert.doesNotMatch(source, /aria-label":\s*"계좌 연결"/);
+  // AccountSwitcher 는 공통 topbar 헬퍼 한 곳에서만 마운트한다.
+  assert.equal((source.match(/h\(AccountSwitcher,/g) ?? []).length, 1);
+  assert.match(source, /function workspaceTopbar\(/);
 });
 
 test("does not assert an empty orders list until the workspace has loaded", async () => {
@@ -135,20 +157,22 @@ test("keeps the connected account primary while exposing an explicit account swi
   assert.doesNotMatch(html, /connection-1/);
 });
 
-test("home uses the operations composition and removes the old chart-first shell", async () => {
+test("home mounts the adaptive HomeDecisionCenter and drops the old operations shell", async () => {
   const workspaceSource = await readFile(new URL("route-workspace.js", root), "utf8");
   const dashboardSource = await readFile(new URL("dashboard-view.js", root), "utf8");
   const homeSource = `${workspaceSource}\n${dashboardSource}`;
 
-  assert.match(homeSource, /home-operations-shell/);
-  for (const region of [
-    "freshness-status", "core-metrics", "portfolio-trend", "holdings",
-    "review-queue", "events", "market-context", "review-summary"
-  ]) {
-    assert.match(homeSource, new RegExp(`data-home-region":\\s*"${region}"`));
+  // 구 operations shell 과 그 region 들은 사라진다.
+  assert.doesNotMatch(homeSource, /home-operations-shell|home-core-metrics/);
+  for (const region of ["freshness-status", "core-metrics", "review-queue", "review-summary"]) {
+    assert.doesNotMatch(homeSource, new RegExp(`data-home-region":\\s*"${region}"`));
   }
-  assert.doesNotMatch(homeSource, /home-reference-shell|home-dashboard-columns|home-dashboard-main|home-dashboard-account/);
-  assert.match(workspaceSource, /h\(DashboardView, \{[\s\S]*?homeLayout: "operations"[\s\S]*?portfolioHistory[\s\S]*?historyBusy[\s\S]*?riskPolicy[\s\S]*?realtimePrices[\s\S]*?homeCandles[\s\S]*?homeCandleInterval/);
+  // 홈은 surface 상태머신 + Action 목록을 계산해 HomeDecisionCenter 로 넘긴다(순서: buildActions → resolveSurfaceState).
+  assert.match(workspaceSource, /const actions = buildActions\(\{ dashboard, now \}\);/);
+  assert.match(workspaceSource, /const surface = resolveSurfaceState\(\{ connectionId[\s\S]*?actions, now \}\);/);
+  assert.match(workspaceSource, /h\(HomeDecisionCenter, \{[\s\S]*?surface[\s\S]*?actions[\s\S]*?dashboard[\s\S]*?portfolioHistory[\s\S]*?marketContext[\s\S]*?\}\)/);
+  // marketContext 는 기존 캔들 + 시장 개요 + 실시간 시세를 묶어 주입한다.
+  assert.match(workspaceSource, /const marketContext = h\("div"[\s\S]*?MarketCandleChart[\s\S]*?marketOverview[\s\S]*?RealtimePriceTicker/);
 });
 
 test("home loads portfolio history but reuses dashboard.pendingEvents instead of listEvents", async () => {
@@ -168,11 +192,89 @@ test("home loads portfolio history but reuses dashboard.pendingEvents instead of
   assert.match(loadWorkspace[0], /if \(needsEvents\) \{\s*try \{\s*setEvents\(await listEvents\(id\)\);/);
   assert.doesNotMatch(loadWorkspace[0], /if \(route === "home"\) \{\s*setEvents\(await listEvents\(id\)\);/);
 
-  const homeDashboard = source.match(/h\(DashboardView, \{[\s\S]*?onHomeCandleIntervalChange: homeCandleIntervalChange[\s\S]*?\}\)/);
-  assert.ok(homeDashboard);
-  assert.match(homeDashboard[0], /dashboard/);
-  assert.match(homeDashboard[0], /portfolioHistory/);
-  assert.doesNotMatch(homeDashboard[0], /events:/);
+  assert.match(source, /onIntervalChange: homeCandleIntervalChange/);
+  const homeCenter = source.match(/h\(HomeDecisionCenter, \{[\s\S]*?\}\)\) : null/);
+  assert.ok(homeCenter);
+  assert.match(homeCenter[0], /dashboard/);
+  assert.match(homeCenter[0], /portfolioHistory/);
+  assert.doesNotMatch(homeCenter[0], /events:/);
+});
+
+// BC-6/BC-7: 프론트가 세 계약을 소비하도록 배선됐는지 고정한다.
+test("workspace loads the USER kill switch and injects it into the surface state", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /import \{[\s\S]*?loadKillSwitch[\s\S]*?\} from "\.\.\/lib\/api\.js"/);
+  // USER scope 만 조회한다(GLOBAL 을 프론트에서 합성하지 않는다).
+  assert.match(source, /loadKillSwitch\("USER"\)\.then\(setKillSwitch\)/);
+  // 조회 실패는 null(미확정)로 둔다 — 조용히 {engaged:false} 로 접지 않는다.
+  assert.match(source, /catch\(\(\) => setKillSwitch\(null\)\)/);
+  assert.doesNotMatch(source, /setKillSwitch\(\{ engaged: false/);
+  // killSwitch 를 surface 상태머신에 주입한다.
+  assert.match(source, /resolveSurfaceState\(\{ connectionId[\s\S]*?killSwitch[\s\S]*?\}\)/);
+  // engaged===true 차단 배너를 Shell 에 마운트한다.
+  assert.match(source, /h\(KillSwitchBanner, \{ killSwitch \}\)/);
+  // Settings 는 상태 표시로 미설정/정지/해제를 구분해 노출한다.
+  assert.match(source, /h\(KillSwitchStatus, \{ killSwitch \}\)/);
+});
+
+test("orders route wires the BC-6 preview handler into the order draft", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /import \{[\s\S]*?previewPaperOrder[\s\S]*?\} from "\.\.\/lib\/api\.js"/);
+  assert.match(source, /function previewOrder\(command\) \{\s*return previewPaperOrder\(command\);/);
+  assert.match(source, /h\(OrderCreationPanel, \{[\s\S]*?onPreview: previewOrder/);
+  // kill switch engaged 면 주문 작성이 차단된다.
+  assert.match(source, /tradingHalted: killSwitch\?\.engaged === true/);
+});
+
+// P2: Orders 는 하나의 화면이되 Paper/Live 실행 컨텍스트가 명확히 분리된다.
+test("orders route mounts the Paper/Live execution-context tabs bound to orderContext", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /import \{ OrdersView, OrderContextTabs \} from "\.\/orders-view\.js"/);
+  assert.match(source, /const \[orderContext, setOrderContext\] = useState\("PAPER"\)/);
+  assert.match(source, /h\(OrderContextTabs, \{[\s\S]*?context: orderContext[\s\S]*?onSelect: setOrderContext/);
+});
+
+test("order creation is Paper-only; Live shows a create-not-supported notice", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /const isLiveContext = orderContext === "LIVE"/);
+  // Live 컨텍스트는 작성 폼 대신 안내를 노출한다(작성 미지원).
+  assert.match(source, /isLiveContext\s*\?[\s\S]*?실거래 주문 생성은 아직 지원하지 않습니다/);
+  // 승인·전송·정정·취소는 연동됐고 생성만 미지원임을 문구가 정확히 반영한다.
+  assert.match(source, /기존 실거래 주문의 승인·전송·정정·취소만 가능합니다/);
+  // 반대 분기에서만 작성 폼을 마운트한다.
+  assert.match(source, /:\s*h\(OrderCreationPanel, \{/);
+});
+
+test("orders route passes context and the kill-switch halt flag into OrdersView", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /const tradingHalted = killSwitch\?\.engaged === true/);
+  assert.match(source, /h\(OrdersView, \{[\s\S]*?context: orderContext[\s\S]*?tradingHalted,/);
+  // 승인 패널도 거래중지 게이트를 받는다.
+  assert.match(source, /h\(OrderApprovalPanel, \{[\s\S]*?tradingHalted,/);
+});
+
+test("buying power is merged into the creation form, not the orders queue (§11.6)", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  // buyingPower 는 이제 작성 폼(OrderCreationPanel)으로 전달된다.
+  assert.match(source, /h\(OrderCreationPanel, \{[\s\S]*?buyingPower\s*\}/);
+  // OrdersView 로는 더 이상 buyingPower 를 넘기지 않는다.
+  const ordersViewCall = source.match(/h\(OrdersView, \{[\s\S]*?\}\)/);
+  assert.ok(ordersViewCall);
+  assert.doesNotMatch(ordersViewCall[0], /buyingPower/);
+});
+
+test("deep-link ?order= selects the tab matching the order's executionMode", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(
+    source,
+    /if \(requested\.executionMode === "LIVE" \|\| requested\.executionMode === "PAPER"\) \{\s*setOrderContext\(requested\.executionMode\);/);
 });
 
 test("event action links load the requested event detail", async () => {
@@ -221,45 +323,134 @@ test("an issued prediction API key is surfaced once and never persisted", async 
   assert.doesNotMatch(source, /localStorage[^\n]*[iI]ssuedKey/);
 });
 
-// V-48: PaperPerformanceView 를 예측 라우트에 배선한다.
-test("PaperPerformanceView is reachable on the predictions route", async () => {
+// V-48: PaperPerformanceView 는 이제 Settings 의 전략 섹션에서 도달한다.
+test("PaperPerformanceView is reachable in Settings", async () => {
   const source = await readFile(new URL("route-workspace.js", root), "utf8");
   assert.match(source, /import \{ PaperPerformanceView \}/);
-  assert.match(source, /h\(PaperPerformanceView/);
+  assert.match(source, /strategy: h\(PaperPerformanceView/);
   assert.match(source, /loadPaperPerformance\(id/);
 });
 
-test("predictions route separates initial loading from operations refresh", async () => {
+// 예측/운영 로딩은 진입 즉시가 아니라 Settings 섹션을 펼칠 때 지연 로드된다.
+test("settings analysis section keeps initial loading distinct from operations refresh", async () => {
   const source = await readFile(new URL("route-workspace.js", root), "utf8");
 
   assert.match(source, /const \[predictionLoading, setPredictionLoading\] = useState\(false\)/);
   assert.match(source, /const \[operationsBusy, setOperationsBusy\] = useState\(false\)/);
-  assert.match(source, /setPredictionLoading\(true\);\s*setOperationsBusy\(true\);\s*Promise\.allSettled\(\[/);
-  assert.match(source, /Promise\.allSettled\(\[[\s\S]*?\.finally\(\(\) => \{\s*setPredictionLoading\(false\);\s*setOperationsBusy\(false\);\s*\}\)/);
+  // 진입(loadWorkspace)에는 예측/운영/settings 조회 블록이 없다(지연 로딩).
+  const loadWorkspace = source.match(/async function loadWorkspace\(id\) \{[\s\S]*?\n  \}/);
+  assert.ok(loadWorkspace);
+  assert.doesNotMatch(loadWorkspace[0], /route === "predictions"/);
+  assert.doesNotMatch(loadWorkspace[0], /route === "settings"/);
+  // 분석·모델 섹션 지연 로더: 개별 정산 + 두 busy 를 함께 켜고 함께 끈다.
+  assert.match(source, /if \(key === "analysis"\) \{[\s\S]*?setPredictionLoading\(true\);\s*setOperationsBusy\(true\);/);
+  assert.match(source, /Promise\.allSettled\(\[\s*loadAnalysisPredictions\(id, OUTCOME_QUERY\),\s*loadPredictionIngestionApiKeys\(\),\s*loadPredictionOperations\(\)/);
+  assert.match(source, /\.finally\(\(\) => \{\s*setPredictionLoading\(false\);\s*setOperationsBusy\(false\);\s*\}\)/);
   assert.match(source, /h\(AnalysisOutcomeView,[\s\S]*?busy: predictionLoading \|\| outcomeBusy/);
   assert.match(source, /h\(PaperPerformanceView,[\s\S]*?busy: predictionLoading \|\| paperBusy/);
   assert.match(source, /h\(PredictionOperationsView,[\s\S]*?busy: operationsBusy/);
   assert.match(source, /h\(PredictionOperationsView,[\s\S]*?actionBusy: Boolean\(busy\)/);
+  // operations refresh 는 operationsBusy 만 건드리고 predictionLoading 은 건드리지 않는다.
   const refresh = source.match(/onRefresh: \(\) => \{[\s\S]*?finally\(\(\) => setOperationsBusy\(false\)\);/);
   assert.ok(refresh);
   assert.match(refresh[0], /setOperationsBusy\(true\)/);
   assert.doesNotMatch(refresh[0], /setPredictionLoading/);
 });
 
-test("settings route keeps readiness loading distinct and orders readiness risk broker panels", async () => {
+test("settings mounts five lazy <details> sections in account/risk/data/analysis/strategy order", async () => {
   const source = await readFile(new URL("route-workspace.js", root), "utf8");
 
-  assert.match(source, /const \[readinessBusy, setReadinessBusy\] = useState\(route === "settings"\)/);
-  assert.match(source, /setReadinessBusy\(true\);\s*loadOperationalReadiness\(\)[\s\S]*?\.finally\(\(\) => setReadinessBusy\(false\)\)/);
+  // 지연 로딩이라 진입 시 readiness 를 자동 조회하지 않는다(초기 busy=false).
+  assert.match(source, /const \[readinessBusy, setReadinessBusy\] = useState\(false\)/);
+  // 섹션 로더는 키별로 한 번만 로드한다(이미 로드한 섹션은 재요청 금지).
+  assert.match(source, /function loadSettingsSection\(key\) \{[\s\S]*?if \(settingsLoaded\.current\.has\(key\)\) \{[\s\S]*?return;/);
+  assert.match(source, /settingsLoaded\.current\.add\(key\)/);
+  // 데이터 섹션은 readiness 만, 전략 섹션은 paper 성과만 로드한다.
+  assert.match(source, /if \(key === "data"\) \{[\s\S]*?loadOperationalReadiness\(\)\.then\(setReadiness\)/);
+  assert.match(source, /if \(key === "strategy"\) \{[\s\S]*?loadPaperPerformance\(id, PAPER_QUERY\)\.then\(setPaperPerformance\)/);
+
+  // SettingsSections 로 5개 섹션을 마운트하고 펼침 로더를 배선한다.
+  assert.match(source, /h\(SettingsSections, \{\s*onExpand: loadSettingsSection/);
+  // 섹션 순서: 계좌 → 위험 → 데이터 → 분석·모델 → 전략.
+  const at = key => source.indexOf(key);
+  assert.ok(at("account: h(BrokerOnboarding") > -1);
+  assert.ok(at("account: h(BrokerOnboarding") < at('risk: h("div"'));
+  assert.ok(at('risk: h("div"') < at("data: h(OperationsReadinessView"));
+  assert.ok(at("data: h(OperationsReadinessView") < at('analysis: h("div"'));
+  assert.ok(at('analysis: h("div"') < at("strategy: h(PaperPerformanceView"));
+  // 위험 섹션은 RiskPolicyPanel + KillSwitchStatus 를 함께 싣는다.
+  assert.match(source, /risk: h\("div"[\s\S]*?RiskPolicyPanel[\s\S]*?KillSwitchStatus/);
 
   const refresh = source.match(/function refreshReadiness\(\) \{[\s\S]*?\n  \}/);
   assert.ok(refresh);
   assert.match(refresh[0], /setReadinessBusy\(true\)/);
   assert.match(refresh[0], /\.finally\(\(\) => setReadinessBusy\(false\)\)/);
   assert.match(source, /h\(OperationsReadinessView,[\s\S]*?busy: readinessBusy \|\| busy === "readiness"/);
+});
 
-  const settings = source.match(/route === "settings" \? h\(OperationsReadinessView,[\s\S]*?h\(BrokerOnboarding,/);
-  assert.ok(settings);
-  assert.ok(settings[0].indexOf("OperationsReadinessView") < settings[0].indexOf("RiskPolicyPanel"));
-  assert.ok(settings[0].indexOf("RiskPolicyPanel") < settings[0].indexOf("BrokerOnboarding"));
+// ---------------------------------------------------------------------------
+// Live 실행: 승인·전송·취소가 live 계약으로 배선되고, 승인과 전송이 분리돼 있음을 고정한다.
+// ---------------------------------------------------------------------------
+
+// step-up 토큰 캐시 재사용/재발급 규칙(만료 토큰으로 조용히 재시도하지 않는다).
+test("liveStepUpUsable reuses a fresh cached token but forces reissue on expiry or mismatch", () => {
+  const now = 1_000_000;
+  const fresh = { orderId: "o1", token: "tok", expiresAt: new Date(now + 60_000).toISOString() };
+  // 같은 주문 + 미만료 → 재사용.
+  assert.equal(workspace.liveStepUpUsable(fresh, "o1", now), true);
+  // 만료 → 재발급(false).
+  assert.equal(
+    workspace.liveStepUpUsable({ ...fresh, expiresAt: new Date(now - 1).toISOString() }, "o1", now),
+    false);
+  // 다른 주문 → 재발급.
+  assert.equal(workspace.liveStepUpUsable(fresh, "o2", now), false);
+  // 토큰 없음 / 레코드 없음 → 재발급.
+  assert.equal(workspace.liveStepUpUsable({ ...fresh, token: "" }, "o1", now), false);
+  assert.equal(workspace.liveStepUpUsable(null, "o1", now), false);
+  // expiresAt 없음 → 사용 가능(만료 개념 없음).
+  assert.equal(workspace.liveStepUpUsable({ orderId: "o1", token: "tok", expiresAt: null }, "o1", now), true);
+  // expiresAt 파싱 불가 → 안전하게 재발급.
+  assert.equal(workspace.liveStepUpUsable({ orderId: "o1", token: "tok", expiresAt: "nonsense" }, "o1", now), false);
+});
+
+test("live approve, dispatch, and cancel are wired to the live contract helpers", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  assert.match(source, /import \{[\s\S]*?approveLiveOrder[\s\S]*?dispatchLiveOrder[\s\S]*?cancelLiveOrder[\s\S]*?\} from "\.\.\/lib\/api\.js"/);
+  // step-up 토큰은 캐시 후 만료 검사(liveStepUpUsable)를 거쳐 재사용/재발급한다.
+  assert.match(source, /async function ensureLiveStepUp\(orderId\) \{[\s\S]*?liveStepUpUsable\(liveStepUpRef\.current, orderId\)[\s\S]*?issueLiveOrderStepUp\(orderId\)/);
+  // 승인은 사용자가 확인한 표시값으로만 approve 를 호출한다(브로커로 나가지 않는다).
+  assert.match(source, /function submitLiveApproval\(orderId, displayed\) \{[\s\S]*?approveLiveOrder\(orderId, \{[\s\S]*?displayedQuantity: displayed\.quantity/);
+  // 취소는 cancelLiveOrder 로 간다.
+  assert.match(source, /function runLiveCancel\(orderId\) \{[\s\S]*?cancelLiveOrder\(orderId, token\)/);
+  // Live 컨텍스트에서만 분리된 핸들러를 OrdersView 로 넘기고, 전송 핸들러를 배선한다.
+  assert.match(source, /onOrderAction: isLiveContext \? liveOrderAction : orderAction/);
+  assert.match(source, /onDispatch: dispatchLiveOrderAction/);
+});
+
+test("live dispatch is a separate broker send: window.confirm gated and carries a caller-minted Idempotency-Key", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  const dispatch = source.match(/function dispatchLiveOrderAction\(orderId\) \{[\s\S]*?\n  \}/);
+  assert.ok(dispatch);
+  // 전송은 브로커 발주라 반드시 사용자 재확인을 거친다.
+  assert.match(dispatch[0], /window\.confirm\(/);
+  // Idempotency-Key 는 호출부가 crypto.randomUUID() 로 생성해 넘긴다.
+  assert.match(dispatch[0], /dispatchLiveOrder\(orderId, crypto\.randomUUID\(\), token\)/);
+
+  // 승인과 전송은 절대 한 조작으로 합치지 않는다: submitLiveApproval 은 dispatch 를 호출하지 않는다.
+  const approve = source.match(/function submitLiveApproval\(orderId, displayed\) \{[\s\S]*?\n  \}/);
+  assert.ok(approve);
+  assert.doesNotMatch(approve[0], /dispatchLiveOrder/);
+});
+
+test("live approval routes the confirm panel through the live approve flow, not the paper path", async () => {
+  const source = await readFile(new URL("route-workspace.js", root), "utf8");
+
+  // 승인 패널의 확인은 executionMode 로 Live/Paper 를 갈라 각각의 흐름으로 보낸다.
+  assert.match(
+    source,
+    /onConfirm: displayed =>\s*approvalOrder\.executionMode === "LIVE"\s*\?\s*submitLiveApproval\(approvalOrder\.id, displayed\)\s*:\s*runOrderCommand\(approvalOrder\.id, "approve", displayed\)/);
+  // Live 취소는 confirmOrderCancel 이 executionMode 로 갈라 runLiveCancel 로 보낸다.
+  assert.match(source, /order\?\.executionMode === "LIVE"\s*\?\s*runLiveCancel\(orderId\)\s*:\s*runOrderCommand\(orderId, "cancel"\)/);
 });

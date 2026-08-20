@@ -75,6 +75,14 @@ test("renders the confirm button disabled for a non-PROPOSED proposal (D-03)", (
   assert.ok(confirmDisabled, "APPROVED 주문의 확인하고 승인 버튼은 비활성화되어야 한다");
 });
 
+test("kill switch engaged blocks the confirm button and shows the reason (BC-7)", () => {
+  const html = render({ order: FRESH_ORDER, tradingHalted: true });
+  assert.match(html, /거래 중지됨 · 내 계정 기준/);
+  assert.match(html, /data-approval-halted="true"/);
+  const confirmDisabled = /<button[^>]*disabled=""[^>]*>확인하고 승인/.test(html);
+  assert.ok(confirmDisabled, "거래 중지 시 확인하고 승인 버튼은 비활성화되어야 한다");
+});
+
 test("does not leak undefined/NaN/Invalid Date for a bare order", () => {
   const html = render({ order: { id: "o", side: "BUY", symbol: "AAPL" } });
   for (const forbidden of ["undefined", "NaN", "Invalid Date", ">null<"]) {

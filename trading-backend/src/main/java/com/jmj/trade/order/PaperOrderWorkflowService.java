@@ -301,6 +301,54 @@ public final class PaperOrderWorkflowService {
                 commands(userId, orderIntentId));
     }
 
+    /**
+     * 주문 사전 위험 미리보기 (BC-6). 아직 제안되지 않은 주문을 승인 경로와 같은 위험 엔진 코어로
+     * 판정하되 <em>아무것도 저장하지 않는다</em> — intent, 위험 판정 행, outbox/감사 이벤트,
+     * buying power 예약 모두 생기지 않는다.
+     *
+     * <p>인증·소유권 검사는 승인 경로와 동일하다. 미리보기라고 완화하지 않으며, 소유권 검사를
+     * 시세 조회보다 먼저 해서 남의 연결로 브로커를 호출하지 않는다. step-up 토큰을 요구하지도,
+     * 발급하지도 않는다 — 미리보기는 권한 상승 경로가 아니다.
+     *
+     * <p>이 응답은 승인 시점의 재검사를 대체하지 않는다. 승인(APPROVAL)과 제출 직전(FINAL) 재검증은
+     * 그대로 남는 최종 방어선이며, 미리보기 결과가 승인 가능을 보장하지 않는다.
+     */
+    public OrderPreview preview(UUID userId, ProposeCommand command) {
+        requireId(userId);
+        validate(command, userId);
+        requireOwnedConnection(userId, command.connectionId());
+        // 승인 경로와 동일하게 서버 시세로 기준가를 정한다(LIMIT 는 엔진이 limitPrice 를 쓰지만,
+        // 심볼·통화 일치 검증은 승인과 같은 기준으로 걸어야 결과가 갈라지지 않는다).
+        var price = serverPrice(new QuoteTarget(
+                command.connectionId(),
+                command.side(),
+                command.type(),
+                command.symbol(),
+                command.quantity(),
+                command.limitPrice(),
+                command.currency(),
+                OrderIntentStatus.PROPOSED));
+        var decision = riskEngine.preview(new PreTradeRiskEngine.PreviewCommand(
+                userId,
+                command.connectionId(),
+                command.side(),
+                command.type(),
+                command.symbol(),
+                command.quantity(),
+                command.limitPrice(),
+                command.currency(),
+                price,
+                Instant.now()));
+        return new OrderPreview(
+                decision.approved(),
+                decision.reasons(),
+                decision.orderAmount(),
+                decision.currency(),
+                decision.riskPolicyVersion(),
+                decision.snapshotId(),
+                decision.evaluatedAt());
+    }
+
     public ApprovalPreview approvalPreview(UUID userId, UUID orderIntentId) {
         requireId(userId);
         requireId(orderIntentId);
@@ -429,6 +477,16 @@ public final class PaperOrderWorkflowService {
     private OrderIntent lockedIntent(UUID userId, UUID connectionId, UUID orderIntentId) {
         return intentRepository.findOwnedByIdForUpdate(orderIntentId, userId, connectionId)
                 .orElseThrow(PaperOrderWorkflowException::notFound);
+    }
+
+    /** 잠금 없는 소유권 검사. 조건은 {@link #lockConnection} 과 같고 쓰기 경로가 아닐 때만 쓴다. */
+    private void requireOwnedConnection(UUID userId, UUID connectionId) {
+        if (jdbc.queryForList("""
+                SELECT id FROM broker_connections
+                 WHERE id = ? AND user_id = ? AND status = 'ACTIVE' AND deleted_at IS NULL
+                """, UUID.class, connectionId, userId).size() != 1) {
+            throw PaperOrderWorkflowException.notFound();
+        }
     }
 
     private void lockConnection(UUID userId, UUID connectionId) {
@@ -643,6 +701,21 @@ public final class PaperOrderWorkflowService {
             String stepUpToken,
             // E1(TradeProposal) 도입 시 승인 대상 버전 대조에 쓰일 seam. 현재는 미사용.
             Long proposalVersion
+    ) {
+    }
+
+    /**
+     * 비영속 사전 위험 미리보기 결과 (BC-6). 서버가 계산한 사실만 담는다 — 프론트는 여기 없는 값을
+     * 만들어내지 않는다. {@code snapshotId} 는 판정 근거가 된 포트폴리오 스냅샷이다.
+     */
+    public record OrderPreview(
+            boolean approved,
+            List<PreTradeRiskEngine.Reason> reasons,
+            BigDecimal orderAmount,
+            Currency currency,
+            long riskPolicyVersion,
+            UUID snapshotId,
+            Instant evaluatedAt
     ) {
     }
 

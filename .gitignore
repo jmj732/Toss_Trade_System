@@ -21,3 +21,6 @@ client_secret*.json
 graphify-out/
 .superpowers/
 AGENTS.md
+
+# task-observer (로그는 ~/.claude/projects/ 로 가야 정상, 방어용)
+skill-observations/

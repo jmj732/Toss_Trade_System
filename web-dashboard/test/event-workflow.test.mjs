@@ -74,6 +74,80 @@ test("renders manual ingestion, affected symbols, review, and comparison", () =>
   assert.doesNotMatch(html, /News collection|LLM|Automatic order/);
 });
 
+test("promotes the comparison to the top of the detail and demotes the manual form to a bottom <details>", () => {
+  const selectedEvent = {
+    id: "event-1",
+    summary: "Rate decision",
+    reviewStatus: "HELD",
+    reviewVersion: 2,
+    affectedSymbols: ["NVDA"],
+    // BC-5 판단 변화 필드가 있어도 렌더하지 않는다(계약 미구현).
+    portfolioImpact: "SHOULD_NOT_RENDER",
+    thesisChange: "SHOULD_NOT_RENDER",
+    decision: "SHOULD_NOT_RENDER",
+    action: "SHOULD_NOT_RENDER",
+    analysisComparison: {
+      comparison: {
+        baselineAvailable: true,
+        positions: [{
+          symbol: "NVDA", currency: "USD",
+          beforeMarketValue: 100, afterMarketValue: 120, marketValueChange: 20,
+          beforeProfitLoss: 10, afterProfitLoss: 20, profitLossChange: 10,
+          beforeWeight: 0.5, afterWeight: 0.6, weightChange: 0.1
+        }],
+        currencyTotals: []
+      }
+    }
+  };
+  const html = renderToStaticMarkup(createElement(EventWorkflow, {
+    positions: [{ symbol: "NVDA" }],
+    events: [{ id: "event-1", summary: "Rate decision", type: "MACRO", affectedSymbols: ["NVDA"], reviewStatus: "HELD", reviewVersion: 2 }],
+    selectedEvent,
+    connectionId: "connection-1",
+    busyAction: null,
+    onCreate() {}, onSelect() {}, onReanalyze() {}, onReview() {}
+  }));
+
+  // 비교표(최대 자산)가 Detail 본문 최상단으로 승격됐다: 검토 액션보다 먼저 나온다.
+  const impact = html.indexOf("영향받은 포지션");
+  const actions = html.indexOf("event-review-actions");
+  const manual = html.indexOf("manual-event-secondary");
+  assert.ok(impact > -1);
+  assert.ok(impact < actions, "비교표가 검토 액션보다 위");
+  // 수동 등록 폼은 최하단 <details> 로 강등됐다.
+  assert.match(html, /<details class="manual-event-secondary"/);
+  assert.ok(actions < manual, "등록 폼이 검토 액션보다 아래");
+  assert.match(html, /포트폴리오 영향 \(재분석 기준\)/);
+
+  // BC-5(이전→신규 Decision)는 계약이 없어 만들지 않는다.
+  assert.doesNotMatch(html, /SHOULD_NOT_RENDER/);
+  assert.doesNotMatch(html, /Thesis 변화|새 판단|event-impact-facts/);
+});
+
+test("feed filters only expose server-field-backed categories and mark held events", () => {
+  const html = renderToStaticMarkup(createElement(EventWorkflow, {
+    positions: [{ symbol: "NVDA" }],
+    events: [
+      { id: "e1", summary: "SEC filing", type: "SEC_10-K", source: "SEC", affectedSymbols: ["NVDA"] },
+      { id: "e2", summary: "CPI", type: "FRED_OBSERVATION", source: "FRED", affectedSymbols: [], macroScope: [{ provider: "FRED" }] }
+    ],
+    selectedEvent: null,
+    connectionId: "connection-1",
+    busyAction: null,
+    onCreate() {}, onSelect() {}, onReanalyze() {}, onReview() {}
+  }));
+
+  // 서버 필드(source·macroScope)와 보유 교집합에 대응하는 필터만 노출한다.
+  for (const label of ["전체", "보유종목", "공시", "거시"]) {
+    assert.match(html, new RegExp(`<option value="[^"]*"[^>]*>${label}</option>`));
+  }
+  // "실적"·"뉴스"는 대응 서버 필드가 없어 필터를 만들지 않는다.
+  assert.doesNotMatch(html, /<option[^>]*>실적<\/option>/);
+  assert.doesNotMatch(html, /<option[^>]*>뉴스<\/option>/);
+  // 보유 종목과 교집합이 있는 이벤트에만 "보유" 표식이 붙는다.
+  assert.match(html, /data-event-held="true"/);
+});
+
 test("leads event review with status, symbols, time, and next action", () => {
   const html = renderToStaticMarkup(createElement(EventWorkflow, {
     positions: [{ symbol: "NVDA" }],

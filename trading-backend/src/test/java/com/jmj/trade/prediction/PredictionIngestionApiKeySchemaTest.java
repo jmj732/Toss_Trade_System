@@ -49,7 +49,7 @@ class PredictionIngestionApiKeySchemaTest extends PostgresIntegrationTest {
                 ) VALUES (?, ?, 'model-v1', 'contract-v1', ?, 'tpik_12345678', 'ACTIVE', ?, ?)
                 """, firstId, userId, "a".repeat(64), NOW, NOW.plusHours(1));
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("40");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("41");
         assertThatThrownBy(() -> execute("""
                 UPDATE prediction_ingestion_api_keys
                    SET expires_at = ?

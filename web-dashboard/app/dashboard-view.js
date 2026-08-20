@@ -1,7 +1,5 @@
 import { createElement as h } from "react";
 
-import { MarketCandleChart } from "./market-candle-chart.js";
-import { PortfolioHistoryTrend } from "./portfolio-history-view.js";
 import {
   formatAmount,
   formatSignedAmount,
@@ -394,37 +392,9 @@ export function DashboardView({
   onOrderAction,
   includePortfolio = true,
   includeOrders = true,
-  realtimePrices = [],
-  homeLayout = false,
-  portfolioHistory = null,
-  historyBusy = false,
-  riskPolicy = null,
-  marketOverview = null,
-  homeCandles = null,
-  homeCandleSymbol = "",
-  homeCandleInterval = "1m",
-  onHomeCandleIntervalChange,
-  showHomeActionSections = true
+  realtimePrices = []
 }) {
-  const homeOperations = homeLayout === "operations" || homeLayout === true;
   const portfolio = h(Portfolio, { key: "portfolio", section: dashboard.portfolio });
-  const homeOrders = (dashboard.pendingOrderProposals?.data ?? [])
-    .filter(order => order.status === "PROPOSED" || order.status === "MANUAL_REVIEW_REQUIRED");
-  const account = dashboard.portfolio?.data?.account ?? {};
-  const riskLabel = riskPolicy
-    ? `${riskPolicy.customized ? "맞춤 정책" : "기본 정책"} · v${riskPolicy.version ?? UNKNOWN_TEXT} · 제한 ${Object.keys(riskPolicy.limits ?? {}).length}건`
-    : "정책 확인 필요";
-  const homeMarketContext = [
-    h(MarketCandleChart, {
-      key: "home-candles",
-      envelope: homeCandles,
-      symbol: homeCandleSymbol,
-      interval: homeCandleInterval,
-      onIntervalChange: onHomeCandleIntervalChange
-    }),
-    marketOverview ? h("div", { key: "market-overview", className: "home-market-overview" }, marketOverview) : null,
-    h(RealtimePriceTicker, { key: "prices", prices: realtimePrices })
-  ].filter(Boolean);
   const dashboardSections = [
     h(Analysis, { key: "analysis", section: dashboard.analysis }),
     h(Events, { key: "events", section: dashboard.pendingEvents }),
@@ -435,49 +405,6 @@ export function DashboardView({
       onOrderAction
     }) : null
   ];
-  if (homeOperations) {
-    return h("main", { className: "grid dashboard-surface home-operations-shell", "aria-label": "내 자산 홈" },
-      h("section", { className: "panel home-freshness", "data-home-region": "freshness-status" },
-        h("h2", null, "데이터 상태"),
-        h(Quality, { section: dashboard.portfolio, region: "home-portfolio-quality" })),
-      h("section", {
-        className: "panel home-core-metrics",
-        "data-home-region": "core-metrics",
-        "aria-label": "핵심 계좌 지표"
-      },
-        h("div", null,
-          h("span", { className: "metric-label" }, "총 평가금액"),
-          h("strong", { className: "metric-value" }, h(Amounts, { values: account.marketValueAmounts }))),
-        h("div", null,
-          h("span", { className: "metric-label" }, "총 손익"),
-          h("strong", { className: "metric-value" }, h(Amounts, { values: account.profitLossAmounts, signed: true }))),
-        h("div", null,
-          h("span", { className: "metric-label" }, "리스크 정책"),
-          h("strong", { className: "metric-value" }, riskLabel)),
-        h("div", { "data-home-region": "review-summary" },
-          h("span", { className: "metric-label" }, "검토 필요"),
-          h("strong", { className: "metric-value" }, `${homeOrders.length}건`))),
-      h("div", { "data-home-region": "portfolio-trend" },
-        h(PortfolioHistoryTrend, { history: portfolioHistory, busy: historyBusy })),
-      h("div", { "data-home-region": "holdings" },
-        h(Portfolio, { section: dashboard.portfolio, compact: true })),
-      h("div", { "data-home-region": "review-queue", "aria-label": "검토 대기 주문" },
-        showHomeActionSections
-          ? h(Proposals, {
-            section: dashboard.pendingOrderProposals,
-            busyOrderId,
-            onOrderAction,
-            statuses: ["PROPOSED", "MANUAL_REVIEW_REQUIRED"],
-            hideInactiveActions: true
-          })
-          : h("p", { className: "empty" }, "결정 센터에서 주문을 검토합니다.")),
-      h("div", { "data-home-region": "events" },
-        showHomeActionSections ? h(Events, { section: dashboard.pendingEvents }) : null,
-        h(Analysis, { section: dashboard.analysis })),
-      h("details", { className: "home-market-context", open: true, "data-home-region": "market-context", "aria-label": "시장 정보" },
-        h("summary", { className: "panel-summary" }, "시장 정보"),
-        h("div", { className: "home-market-context-body" }, ...homeMarketContext)));
-  }
   return h("main", { className: "grid dashboard-surface" },
     h(RealtimePriceTicker, { key: "prices", prices: realtimePrices }),
     includePortfolio ? portfolio : null,
