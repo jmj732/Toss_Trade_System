@@ -20,6 +20,13 @@ import java.util.UUID;
 
 public class PreTradeRiskEngine {
 
+    /**
+     * 아직 intent 가 없는 평가(미리보기)에서 "제외할 intent 없음"을 나타내는 sentinel. 무작위 UUID 로
+     * 생성되는 실제 intent id 와 절대 충돌하지 않으므로 {@code order_intent_id <> ?} 필터가 아무 행도
+     * 제외하지 않는다 — 미리보기는 기존 예약분을 전부 계산에 넣는 것이 옳다.
+     */
+    private static final UUID NO_INTENT = new UUID(0L, 0L);
+
     private final PortfolioReadService portfolioReadService;
     private final FreshPortfolioReadService freshPortfolioReadService;
     private final PaperTradingBroker paperTradingBroker;
@@ -91,13 +98,52 @@ public class PreTradeRiskEngine {
                 Phase.FINAL,
                 userId,
                 connectionId,
-                intent,
+                Subject.of(intent),
                 referencePrice,
                 evaluatedAt,
                 freshPortfolioReadService.read(userId, connectionId));
         store(decision, userId, connectionId, orderIntentId);
         return decision;
     }
+
+    /**
+     * 비영속 사전 위험 미리보기 (BC-6). 아직 존재하지 않는 주문을 승인 경로와 <em>동일한</em> 평가
+     * 코어({@link #evaluate})로 판정하되, 어떤 상태도 남기지 않는다 — intent 도, 위험 판정 행도,
+     * outbox/감사 이벤트도, buying power 예약도 만들지 않는다.
+     *
+     * <p>{@code readOnly = true} 는 의도 선언이자 방어선이다(Hibernate flush 억제 + 드라이버 힌트).
+     * 다만 이것만으로 쓰기가 물리적으로 불가능해진다고 가정하지 말 것 — 실제 보증은 이 경로가
+     * {@link #store} 를 부르지 않는다는 사실이고, 그 사실은
+     * {@code PaperOrderWorkflowApiIntegrationTest} 가 관련 테이블 행 수 0 으로 검증한다.
+     *
+     * <p>평가 단계는 승인과 같은 {@link Phase#APPROVAL} 이다. 제출 직전 재검증(FINAL)은 미리보기가
+     * 대신할 수 없는 최종 방어선이며, 이 응답은 승인 시점의 재검사를 결코 건너뛰게 하지 않는다.
+     */
+    @Transactional(readOnly = true)
+    public Decision preview(PreviewCommand command) {
+        requirePreviewCommand(command);
+        // 소유권 검사는 승인 경로와 동일한 기준(본인 소유의 ACTIVE 연결)이다. 미리보기라고 완화하지
+        // 않는다. 다만 쓰기가 없으므로 행 잠금(FOR UPDATE)은 잡지 않는다.
+        requireOwnedConnection(command.userId(), command.connectionId());
+        var subject = Subject.preview(
+                command.userId(),
+                command.connectionId(),
+                command.side(),
+                command.type(),
+                command.symbol(),
+                command.quantity(),
+                command.limitPrice(),
+                command.currency());
+        return evaluate(
+                Phase.APPROVAL,
+                command.userId(),
+                command.connectionId(),
+                subject,
+                command.referencePrice(),
+                command.evaluatedAt(),
+                portfolioReadService.read(command.userId(), command.connectionId()));
+    }
+
     private Decision approve(
             ApprovalCommand command,
             OrderExecutionMode expectedMode,
@@ -115,7 +161,7 @@ public class PreTradeRiskEngine {
                 Phase.APPROVAL,
                 command.userId(),
                 command.connectionId(),
-                intent,
+                Subject.of(intent),
                 command.referencePrice(),
                 command.evaluatedAt(),
                 portfolio);
@@ -153,7 +199,7 @@ public class PreTradeRiskEngine {
                 Phase.FINAL,
                 userId,
                 connectionId,
-                intent,
+                Subject.of(intent),
                 command.referencePrice(),
                 command.occurredAt(),
                 portfolio);
@@ -203,7 +249,8 @@ public class PreTradeRiskEngine {
         }
         transitionService.startRevalidation(intent.getId(), actor);
         var portfolio = currentPortfolio(userId, connectionId, syncedPortfolio);
-        var decision = evaluate(Phase.FINAL, userId, connectionId, intent, referencePrice, occurredAt, portfolio);
+        var decision = evaluate(
+                Phase.FINAL, userId, connectionId, Subject.of(intent), referencePrice, occurredAt, portfolio);
         store(decision, userId, connectionId, intent.getId());
         if (!decision.approved()) {
             transitionService.terminate(intent.getId(), OrderIntentStatus.BLOCKED,
@@ -255,11 +302,16 @@ public class PreTradeRiskEngine {
         return latest;
     }
 
+    /**
+     * 위험 판정 코어. 승인(APPROVAL)·제출 직전 재검증(FINAL)·비영속 미리보기가 모두 이 한 곳을 쓴다.
+     * 순수 평가만 하고 아무것도 저장하지 않는다 — 영속화는 호출측의 {@link #store} 책임이다. 규칙이
+     * 두 벌로 갈라지면 미리보기와 실제 승인 결과가 어긋나 사용자를 속이게 되므로 분기시키지 말 것.
+     */
     private Decision evaluate(
             Phase phase,
             UUID userId,
             UUID connectionId,
-            OrderIntent intent,
+            Subject subject,
             BigDecimal referencePrice,
             Instant evaluatedAt,
             PortfolioReadService.PortfolioView portfolio
@@ -276,19 +328,19 @@ public class PreTradeRiskEngine {
             reasons.add(Reason.CASH_UNKNOWN);
         }
 
-        var price = intent.getType() == OrderType.LIMIT ? intent.getLimitPrice() : referencePrice;
-        var orderAmount = price.multiply(intent.getQuantity());
-        if (intent.getQuantity().compareTo(policy.maxQuantity()) > 0) {
+        var price = subject.type() == OrderType.LIMIT ? subject.limitPrice() : referencePrice;
+        var orderAmount = price.multiply(subject.quantity());
+        if (subject.quantity().compareTo(policy.maxQuantity()) > 0) {
             reasons.add(Reason.MAX_QUANTITY_EXCEEDED);
         }
-        if (orderAmount.compareTo(maxOrderAmount(policy, intent.getTradingCurrency())) > 0) {
+        if (orderAmount.compareTo(maxOrderAmount(policy, subject.currency())) > 0) {
             reasons.add(Reason.MAX_ORDER_AMOUNT_EXCEEDED);
         }
-        if (intent.getSide() == OrderSide.BUY) {
+        if (subject.side() == OrderSide.BUY) {
             evaluateBuyLimits(
                     userId,
                     connectionId,
-                    intent,
+                    subject,
                     portfolio,
                     orderAmount,
                     policy.maxConcentration(),
@@ -296,7 +348,7 @@ public class PreTradeRiskEngine {
         }
 
         if (phase == Phase.FINAL) {
-            runPreSubmitRevalidation(userId, connectionId, intent, orderAmount, portfolio, reasons);
+            runPreSubmitRevalidation(userId, connectionId, subject, orderAmount, portfolio, reasons);
         }
 
         return new Decision(
@@ -306,7 +358,7 @@ public class PreTradeRiskEngine {
                 List.copyOf(reasons),
                 portfolio.syncRunId(),
                 orderAmount,
-                intent.getTradingCurrency(),
+                subject.currency(),
                 policy.version(),
                 evaluatedAt);
     }
@@ -314,7 +366,7 @@ public class PreTradeRiskEngine {
     private void evaluateBuyLimits(
             UUID userId,
             UUID connectionId,
-            OrderIntent intent,
+            Subject subject,
             PortfolioReadService.PortfolioView portfolio,
             BigDecimal orderAmount,
             BigDecimal maxConcentration,
@@ -324,10 +376,10 @@ public class PreTradeRiskEngine {
                 userId,
                 connectionId,
                 portfolio.syncRunId(),
-                intent.getTradingCurrency(),
-                intent.getSymbol(),
-                intent.getId());
-        var buyingPower = portfolio.buyingPower().get(intent.getTradingCurrency().name());
+                subject.currency(),
+                subject.symbol(),
+                subject.excludeIntentId());
+        var buyingPower = portfolio.buyingPower().get(subject.currency().name());
         if (buyingPower != null
                 && orderAmount.compareTo(buyingPower.cashBuyingPower().subtract(reserved.total())) > 0) {
             reasons.add(Reason.BUYING_POWER_EXCEEDED);
@@ -337,10 +389,10 @@ public class PreTradeRiskEngine {
         }
 
         var portfolioValue = portfolio.account().marketValueAmounts()
-                .getOrDefault(intent.getTradingCurrency().name(), BigDecimal.ZERO);
+                .getOrDefault(subject.currency().name(), BigDecimal.ZERO);
         var symbolValue = portfolio.positions().stream()
-                .filter(position -> position.currency().equals(intent.getTradingCurrency().name()))
-                .filter(position -> position.symbol().equals(intent.getSymbol()))
+                .filter(position -> position.currency().equals(subject.currency().name()))
+                .filter(position -> position.symbol().equals(subject.symbol()))
                 .map(PortfolioReadService.PositionView::marketValueAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         var projectedTotal = portfolioValue.add(reserved.total()).add(orderAmount);
@@ -355,7 +407,7 @@ public class PreTradeRiskEngine {
     private void runPreSubmitRevalidation(
             UUID userId,
             UUID connectionId,
-            OrderIntent intent,
+            Subject subject,
             BigDecimal orderAmount,
             PortfolioReadService.PortfolioView portfolio,
             List<Reason> reasons
@@ -363,15 +415,15 @@ public class PreTradeRiskEngine {
         var context = new PreSubmitContext(
                 userId,
                 connectionId,
-                intent.getUserId(),
-                intent.getBrokerConnectionId(),
-                intent.getSide(),
-                intent.getSymbol(),
-                intent.getQuantity(),
-                intent.getTradingCurrency(),
+                subject.intentUserId(),
+                subject.intentConnectionId(),
+                subject.side(),
+                subject.symbol(),
+                subject.quantity(),
+                subject.currency(),
                 orderAmount,
                 portfolio,
-                sameSymbolOpenOrderExists(connectionId, intent.getSymbol(), intent.getId()));
+                sameSymbolOpenOrderExists(connectionId, subject.symbol(), subject.excludeIntentId()));
         for (var check : preSubmitChecks) {
             check.evaluate(context).ifPresent(reasons::add);
         }
@@ -477,6 +529,23 @@ public class PreTradeRiskEngine {
         }
     }
 
+    /**
+     * 잠금 없는 소유권 검사. 조건은 {@link #lockConnection} 과 동일하되 {@code FOR UPDATE} 를 잡지
+     * 않는다 — 읽기 전용 트랜잭션에서는 행 잠금을 걸 수 없고, 쓰기가 없으므로 걸 이유도 없다.
+     */
+    private void requireOwnedConnection(UUID userId, UUID connectionId) {
+        if (jdbc.queryForList("""
+                SELECT id
+                  FROM broker_connections
+                 WHERE id = ?
+                   AND user_id = ?
+                   AND status = 'ACTIVE'
+                   AND deleted_at IS NULL
+                """, UUID.class, connectionId, userId).size() != 1) {
+            throw BrokerConnectionException.notFound();
+        }
+    }
+
     private OrderIntent lockedIntent(UUID intentId, UUID userId, UUID connectionId) {
         requireId(intentId, "orderIntentId");
         return intentRepository.findOwnedByIdForUpdate(intentId, userId, connectionId)
@@ -498,6 +567,29 @@ public class PreTradeRiskEngine {
         Objects.requireNonNull(command.evaluatedAt(), "evaluatedAt");
         if (command.actor() == null || command.actor().isBlank()) {
             throw new IllegalArgumentException("actor is required");
+        }
+    }
+
+    private static void requirePreviewCommand(PreviewCommand command) {
+        if (command == null) {
+            throw new IllegalArgumentException("preview command is required");
+        }
+        requireId(command.userId(), "userId");
+        requireId(command.connectionId(), "connectionId");
+        positive(command.referencePrice(), "referencePrice");
+        Objects.requireNonNull(command.evaluatedAt(), "evaluatedAt");
+        if (command.side() == null
+                || command.type() == null
+                || command.symbol() == null
+                || command.symbol().isBlank()
+                || command.currency() == null) {
+            throw new IllegalArgumentException("risk preview requires a complete order subject");
+        }
+        positive(command.quantity(), "quantity");
+        if (command.type() == OrderType.LIMIT) {
+            positive(command.limitPrice(), "limitPrice");
+        } else if (command.limitPrice() != null) {
+            throw new IllegalArgumentException("MARKET order must not have limitPrice");
         }
     }
 
@@ -556,6 +648,68 @@ public class PreTradeRiskEngine {
             Instant evaluatedAt,
             String actor
     ) {
+    }
+
+    /** 아직 존재하지 않는 주문에 대한 미리보기 입력 (BC-6). actor 가 없다 — 상태를 바꾸지 않으므로. */
+    public record PreviewCommand(
+            UUID userId,
+            UUID connectionId,
+            OrderSide side,
+            OrderType type,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal limitPrice,
+            Currency currency,
+            BigDecimal referencePrice,
+            Instant evaluatedAt
+    ) {
+    }
+
+    /**
+     * 평가 코어가 실제로 필요로 하는 주문 속성만 담은 값 객체. 저장된 {@link OrderIntent} 와 아직
+     * 존재하지 않는 미리보기 대상을 같은 코어에 태우기 위한 이음매다.
+     */
+    private record Subject(
+            UUID intentId,
+            UUID intentUserId,
+            UUID intentConnectionId,
+            OrderSide side,
+            OrderType type,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal limitPrice,
+            Currency currency
+    ) {
+        static Subject of(OrderIntent intent) {
+            return new Subject(
+                    intent.getId(),
+                    intent.getUserId(),
+                    intent.getBrokerConnectionId(),
+                    intent.getSide(),
+                    intent.getType(),
+                    intent.getSymbol(),
+                    intent.getQuantity(),
+                    intent.getLimitPrice(),
+                    intent.getTradingCurrency());
+        }
+
+        static Subject preview(
+                UUID userId,
+                UUID connectionId,
+                OrderSide side,
+                OrderType type,
+                String symbol,
+                BigDecimal quantity,
+                BigDecimal limitPrice,
+                Currency currency
+        ) {
+            return new Subject(
+                    null, userId, connectionId, side, type, symbol, quantity, limitPrice, currency);
+        }
+
+        UUID excludeIntentId() {
+            return intentId == null ? NO_INTENT : intentId;
+        }
     }
 
     public record Decision(

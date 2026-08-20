@@ -1,5 +1,6 @@
 package com.jmj.trade.order;
 
+import com.jmj.trade.account.PortfolioReadException;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.security.AuthenticationClaims;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -45,6 +46,30 @@ public class PaperOrderWorkflowController {
                 userId(principal),
                 idempotencyKey,
                 request.channel(),
+                new PaperOrderWorkflowService.ProposeCommand(
+                        request.connectionId(),
+                        request.side(),
+                        request.type(),
+                        request.symbol(),
+                        request.quantity(),
+                        request.limitPrice(),
+                        request.currency()));
+    }
+
+    /**
+     * 주문 사전 위험 미리보기 (BC-6). 아무 상태도 남기지 않으므로 {@code Idempotency-Key} 를
+     * 요구하지 않고, step-up 토큰도 요구하거나 발급하지 않는다. 승인 시점의 재검사는 그대로 남는다.
+     */
+    @PostMapping("/preview")
+    PaperOrderWorkflowService.OrderPreview preview(
+            Principal principal,
+            @RequestBody ProposeRequest request
+    ) {
+        if (request == null) {
+            throw PaperOrderWorkflowException.validationFailed();
+        }
+        return workflow.preview(
+                userId(principal),
                 new PaperOrderWorkflowService.ProposeCommand(
                         request.connectionId(),
                         request.side(),
@@ -130,6 +155,18 @@ public class PaperOrderWorkflowController {
             throw PaperOrderWorkflowException.validationFailed();
         }
         return workflow.withdraw(userId(principal), id, idempotencyKey, request.channel());
+    }
+
+    /**
+     * 포트폴리오 스냅샷이 아직 없으면 위험 판정 자체가 불가능하다. 이 컨트롤러 안에서만 409 로
+     * 명시해, 프론트가 "판정 불가"를 500 이 아닌 파싱 가능한 사실로 받게 한다. 없는 근거를 0 이나
+     * "위험 없음"으로 대체하지 않는다.
+     */
+    @ExceptionHandler(PortfolioReadException.class)
+    ResponseEntity<PaperOrderWorkflowErrorHandler.PublicError> portfolioUnavailable() {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new PaperOrderWorkflowErrorHandler.PublicError(
+                        "PAPER_ORDER_PORTFOLIO_SNAPSHOT_UNAVAILABLE"));
     }
 
     private static UUID userId(Principal principal) {

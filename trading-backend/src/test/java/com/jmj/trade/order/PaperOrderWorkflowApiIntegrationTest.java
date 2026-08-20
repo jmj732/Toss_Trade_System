@@ -43,6 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
@@ -469,6 +470,116 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
                 .stream().findFirst().map(OffsetDateTime::toInstant).orElse(null);
     }
 
+    // --- BC-6: 비영속 사전 위험 미리보기 ---------------------------------------------------
+
+    @Test
+    void previewEvaluatesServerRiskWithoutPersistingAnything() throws Exception {
+        var connectionId = owner(USER_ID);
+        successfulSnapshot(USER_ID, connectionId);
+
+        mockMvc.perform(post("/api/v1/paper-orders/preview")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(previewJson(connectionId, "AAPL", "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.approved").value(true))
+                .andExpect(jsonPath("$.reasons").isEmpty())
+                .andExpect(jsonPath("$.orderAmount").value(100))
+                .andExpect(jsonPath("$.currency").value("USD"))
+                .andExpect(jsonPath("$.riskPolicyVersion").value(0))
+                .andExpect(jsonPath("$.snapshotId").isNotEmpty())
+                .andExpect(jsonPath("$.evaluatedAt").isNotEmpty());
+
+        assertPreviewPersistedNothing();
+    }
+
+    @Test
+    void previewBlocksOverLimitOrderWithServerReasonsAndPersistsNothing() throws Exception {
+        var connectionId = owner(USER_ID);
+        successfulSnapshot(USER_ID, connectionId);
+
+        // 정책 한도: 수량 10, USD 주문금액 1000, 집중도 0.75. 11주 × 100 = 1100 은 네 항목 모두 위반한다.
+        mockMvc.perform(post("/api/v1/paper-orders/preview")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(previewJson(connectionId, "AAPL", "11")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.approved").value(false))
+                .andExpect(jsonPath("$.orderAmount").value(1100))
+                .andExpect(jsonPath("$.reasons", containsInAnyOrder(
+                        "MAX_QUANTITY_EXCEEDED",
+                        "MAX_ORDER_AMOUNT_EXCEEDED",
+                        "BUYING_POWER_EXCEEDED",
+                        "CONCENTRATION_EXCEEDED")));
+
+        assertPreviewPersistedNothing();
+    }
+
+    @Test
+    void previewRefusesAnotherUsersConnectionBeforeTouchingTheBroker() throws Exception {
+        var connectionId = owner(USER_ID);
+        successfulSnapshot(USER_ID, connectionId);
+        owner(OTHER_USER_ID);
+
+        mockMvc.perform(post("/api/v1/paper-orders/preview")
+                        .with(user(OTHER_USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(previewJson(connectionId, "AAPL", "1")))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PAPER_ORDER_NOT_FOUND"));
+
+        // 소유권 검사는 시세 조회보다 먼저다 — 남의 연결로 브로커를 호출하지 않는다.
+        assertThat(broker.quoteCalls()).isZero();
+        assertPreviewPersistedNothing();
+    }
+
+    @Test
+    void previewNeverIssuesOrRequiresStepUpToken() throws Exception {
+        var connectionId = owner(USER_ID);
+        successfulSnapshot(USER_ID, connectionId);
+
+        mockMvc.perform(post("/api/v1/paper-orders/preview")
+                        .with(user(USER_ID.toString()))
+                        .with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(previewJson(connectionId, "AAPL", "1")))
+                .andExpect(status().isOk());
+
+        assertThat(count("SELECT count(*) FROM order_approval_step_up_tokens")).isZero();
+    }
+
+    private void assertPreviewPersistedNothing() {
+        assertThat(count("SELECT count(*) FROM order_intents")).isZero();
+        assertThat(count("SELECT count(*) FROM pre_trade_risk_decisions")).isZero();
+        assertThat(count("SELECT count(*) FROM order_intent_audit_logs")).isZero();
+        assertThat(count("SELECT count(*) FROM order_intent_outbox_events")).isZero();
+        assertThat(count("SELECT count(*) FROM order_submission_outbox_events")).isZero();
+        assertThat(count("SELECT count(*) FROM order_submission_audit_logs")).isZero();
+        assertThat(count("SELECT count(*) FROM paper_order_workflow_commands")).isZero();
+        assertThat(count("SELECT count(*) FROM submission_attempts")).isZero();
+        assertThat(count("SELECT count(*) FROM submission_idempotency_keys")).isZero();
+        assertThat(count("SELECT count(*) FROM broker_orders")).isZero();
+        assertThat(count("SELECT count(*) FROM broker_accounts")).isZero();
+        assertThat(count("SELECT count(*) FROM notification_outbox_events")).isZero();
+    }
+
+    private String previewJson(UUID connectionId, String symbol, String quantity) {
+        return """
+                {
+                  "connectionId":"%s",
+                  "side":"BUY",
+                  "type":"MARKET",
+                  "symbol":"%s",
+                  "quantity":%s,
+                  "limitPrice":null,
+                  "currency":"USD"
+                }
+                """.formatted(connectionId, symbol, quantity);
+    }
+
     private PaperOrderWorkflowService.OrderView approveAfterGate(
             UUID intentId,
             String key,
@@ -625,6 +736,10 @@ class PaperOrderWorkflowApiIntegrationTest extends PostgresIntegrationTest {
 
         void reset() {
             quoteCalls.set(0);
+        }
+
+        int quoteCalls() {
+            return quoteCalls.get();
         }
 
         @Override

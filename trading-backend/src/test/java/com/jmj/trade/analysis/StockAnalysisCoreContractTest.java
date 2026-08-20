@@ -77,6 +77,95 @@ class StockAnalysisCoreContractTest {
     }
 
     @Test
+    void readsV3ResponseWithoutDecisionOrPositionPlanAsNull() throws Exception {
+        var root = contractsRoot();
+        var response = objectMapper.readValue(
+                Files.readString(root.resolve("contracts/analysis/v3/stock-analysis-core-response.json")),
+                StockAnalysisCoreContract.Response.class);
+
+        assertThat(response.decision()).isNull();
+        assertThat(response.positionPlan()).isNull();
+        assertThat(response.analyzers()).hasSize(StockAnalysisCoreContract.ANALYZER_ORDER.size());
+    }
+
+    @Test
+    void ignoresUnknownFieldsSoNewerServiceResponsesStayReadable() throws Exception {
+        var response = objectMapper.readValue("""
+                {
+                  "requestId":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                  "schemaVersion":"1",
+                  "inputSnapshotId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                  "symbol":"AAPL",
+                  "asOf":"2026-08-02T00:00:00Z",
+                  "status":"COMPLETED",
+                  "missingData":[],
+                  "observations":[],
+                  "analyzers":[],
+                  "thesis":{"bull":"unsupported"},
+                  "somethingAddedLater":42
+                }
+                """, StockAnalysisCoreContract.Response.class);
+
+        assertThat(response.symbol()).isEqualTo("AAPL");
+        assertThat(response.decision()).isNull();
+        assertThat(response.positionPlan()).isNull();
+    }
+
+    @Test
+    void readsPinnedV5CompleteFixtureWithDecisionAndPositionPlan() throws Exception {
+        var response = objectMapper.readValue(
+                Files.readString(contractsRoot()
+                        .resolve("contracts/analysis/v5/stock-analysis-core-complete-response.json")),
+                StockAnalysisCoreContract.Response.class);
+
+        assertThat(response.decision().action()).isEqualTo(StockAnalysisCoreContract.Action.BUY);
+        assertThat(response.decision().ruleVersion()).isEqualTo("decision-rule-v1");
+        assertThat(response.decision().confidence()).isEqualByComparingTo("1");
+        assertThat(response.decision().missingData()).isEmpty();
+        assertThat(response.decision().basis())
+                .extracting(StockAnalysisCoreContract.Basis::metric)
+                .contains("technical.rsi14", "valuation.pe", "marketRegime.vix");
+        assertThat(response.decision().basis())
+                .filteredOn(item -> "valuation.pe".equals(item.metric()))
+                .singleElement()
+                .satisfies(item -> {
+                    assertThat(item.contribution())
+                            .isEqualTo(StockAnalysisCoreContract.Contribution.NEGATIVE);
+                    assertThat(item.value()).isEqualByComparingTo("40");
+                });
+
+        var plan = response.positionPlan();
+        assertThat(plan.ruleVersion()).isEqualTo("position-plan-v1");
+        assertThat(plan.currency()).isEqualTo("USD");
+        assertThat(plan.basisPrice()).isEqualByComparingTo("200");
+        assertThat(plan.stop()).isLessThan(plan.entry());
+        assertThat(plan.entry()).isLessThan(plan.target1());
+        assertThat(plan.target1()).isLessThan(plan.target2());
+        assertThat(plan.maxLossPerShare())
+                .isEqualByComparingTo(plan.entry().subtract(plan.stop()));
+        assertThat(plan.invalidation()).contains("USD").contains(plan.stop().toPlainString());
+    }
+
+    @Test
+    void readsPinnedV5PartialAndMissingFixturesWithoutForgingAJudgement() throws Exception {
+        var root = contractsRoot();
+        var partial = objectMapper.readValue(
+                Files.readString(root.resolve("contracts/analysis/v5/stock-analysis-core-partial-response.json")),
+                StockAnalysisCoreContract.Response.class);
+        var missing = objectMapper.readValue(
+                Files.readString(root.resolve("contracts/analysis/v5/stock-analysis-core-missing-response.json")),
+                StockAnalysisCoreContract.Response.class);
+
+        assertThat(partial.decision().action()).isEqualTo(StockAnalysisCoreContract.Action.WAIT);
+        assertThat(partial.decision().missingData())
+                .contains("DECISION_REQUIRED_INPUT_MISSING:technical.rsi14");
+        assertThat(partial.positionPlan()).isNotNull();
+
+        assertThat(missing.decision()).isNull();
+        assertThat(missing.positionPlan()).isNull();
+    }
+
+    @Test
     void readsForecastResponseWithVersionSnapshotAndProvenance() throws Exception {
         var response = objectMapper.readValue("""
                 {
@@ -126,5 +215,10 @@ class StockAnalysisCoreContractTest {
         assertThat(response.status()).isEqualTo(StockAnalysisCoreContract.Status.DEGRADED);
         assertThat(response.forecasts()).extracting(StockForecastCoreContract.Metric::name)
                 .containsExactlyElementsOf(StockForecastCoreContract.FORECAST_ORDER);
+    }
+
+    private static Path contractsRoot() {
+        var root = Path.of("").toAbsolutePath();
+        return Files.isDirectory(root.resolve("contracts")) ? root : root.getParent();
     }
 }

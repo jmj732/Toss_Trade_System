@@ -23,6 +23,8 @@ const MISSING_DATA_LABELS = {
   PROVIDER_UNSUPPORTED: "지원되지 않는 제공자 데이터"
 };
 
+const DECISION_LABELS = { BUY: "매수", ADD: "추가 매수", HOLD: "보유", REDUCE: "축소", SELL: "매도", WAIT: "대기" };
+
 function readableCode(value) {
   return REASON_LABELS[value] ?? value;
 }
@@ -216,17 +218,28 @@ function Panel({ title, state, error, action, children }) {
 }
 
 function PositionPlan({ analysis, position }) {
-  const plan = analysis?.result?.positionPlan ?? analysis?.positionPlan;
-  const value = key => plan?.[key] ?? UNKNOWN_TEXT;
-  return h("section", { className: "position-plan", "data-position-plan": plan ? "available" : "unavailable" },
+  const plan = analysis?.result?.positionPlan;
+  const currency = plan?.currency ?? position?.currency;
+  if (!plan) {
+    return h("section", { className: "position-plan", "data-position-plan": "unavailable" },
+      h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Position Plan"), h("h3", null, "포지션 계획"))),
+      h("p", { className: "empty" }, "포지션 계획 없음"));
+  }
+  return h("section", { className: "position-plan", "data-position-plan": "available" },
     h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Position Plan"), h("h3", null, "포지션 계획"))),
     h("dl", { className: "decision-metrics" },
-      h("div", null, h("dt", null, "진입가"), h("dd", null, formatAmount(position?.currency, value("entryPrice")))),
-      h("div", null, h("dt", null, "손절가"), h("dd", null, formatAmount(position?.currency, value("stopPrice")))),
-      h("div", null, h("dt", null, "목표가"), h("dd", null, formatAmount(position?.currency, value("targetPrice")))),
-      h("div", null, h("dt", null, "R:R"), h("dd", null, value("riskReward"))),
-      h("div", null, h("dt", null, "최대 손실"), h("dd", null, formatAmount(position?.currency, value("maxLoss")))),
-      h("div", null, h("dt", null, "현재 포지션"), h("dd", null, formatAmount(position?.currency, position?.marketValueAmount)))));
+      h("div", null, h("dt", null, "진입가"), h("dd", null, formatAmount(currency, plan.entry))),
+      h("div", null, h("dt", null, "추가 매수가"), h("dd", null, formatAmount(currency, plan.add))),
+      h("div", null, h("dt", null, "손절가"), h("dd", null, formatAmount(currency, plan.stop))),
+      h("div", null, h("dt", null, "1차 목표가"), h("dd", null, formatAmount(currency, plan.target1))),
+      h("div", null, h("dt", null, "2차 목표가"), h("dd", null, formatAmount(currency, plan.target2))),
+      h("div", null, h("dt", null, "R:R"), h("dd", null, plan.riskReward ?? UNKNOWN_TEXT)),
+      h("div", null, h("dt", null, "주당 최대 손실"), h("dd", null, formatAmount(currency, plan.maxLossPerShare))),
+      h("div", null, h("dt", null, "무효화"), h("dd", null, plan.invalidation ?? UNKNOWN_TEXT)),
+      h("div", null, h("dt", null, "규칙"), h("dd", null, plan.ruleVersion ?? UNKNOWN_TEXT)),
+      h("div", null, h("dt", null, "기준가"), h("dd", null, formatAmount(currency, plan.basisPrice))),
+      h("div", null, h("dt", null, "현재 포지션"), h("dd", null, formatAmount(position?.currency, position?.marketValueAmount)))),
+    h(MissingData, { values: plan.missingData }));
 }
 
 function StockSummary({ symbol, analysis, position, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions, onCreateOrder }) {
@@ -235,6 +248,7 @@ function StockSummary({ symbol, analysis, position, realtimePrices, candles, ord
     analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions
   });
   const [risk, riskModifier] = riskSummary(analysis, stockWarnings);
+  const decision = analysis?.result?.decision;
   return h("section", { className: "panel stock-surface-panel stock-surface-summary" },
     h("div", { className: "stock-surface-summary-main" },
       h("p", { className: "eyebrow" }, "종목 분석"),
@@ -249,8 +263,10 @@ function StockSummary({ symbol, analysis, position, realtimePrices, candles, ord
         h("span", { className: `badge-pill badge-pill--${qualityModifier}` }, quality))),
       h("div", null, h("dt", null, "리스크"), h("dd", null,
         h("span", { className: `badge-pill badge-pill--${riskModifier}` }, risk))),
-      h("div", null, h("dt", null, "판단"), h("dd", null, analysis?.result?.decision ?? UNKNOWN_TEXT)),
-      h("div", null, h("dt", null, "신뢰도"), h("dd", null, analysis?.result?.confidence ?? UNKNOWN_TEXT)),
+      h("div", null, h("dt", null, "판단"), h("dd", null,
+        decision?.action ? DECISION_LABELS[decision.action] ?? decision.action : UNKNOWN_TEXT)),
+      h("div", null, h("dt", null, "신뢰도"), h("dd", null, formatRatio(decision?.confidence))),
+      h("div", null, h("dt", null, "판단 규칙"), h("dd", null, decision?.ruleVersion ?? UNKNOWN_TEXT)),
       h("div", null, h("dt", null, "보유 손익"), h("dd", null,
         formatSignedAmount(position?.currency, position?.profitLossAmount))),
       h("div", null, h("dt", null, "포트폴리오 비중"), h("dd", null, formatRatio(position?.weight))),

@@ -11,6 +11,18 @@
 const NOW = "2026-08-05T00:00:00Z";
 const STALE_AS_OF = "2026-05-01T00:00:00Z"; // deliberately old timestamp for `stale`
 
+// Decision-surface fixtures are anchored to the *frozen* page clock, not to NOW.
+// freezeClock pins Date.now() to FROZEN_NOW_ISO (2026-08-06T00:00:00Z) and
+// lib/surface-state.js uses URGENT_EXPIRY_WINDOW_MS = 900000 (15 min), so the
+// PROPOSED URGENT/HIGH boundary sits at frozen-now + 15 min. Both edges are
+// hardcoded here (and asserted against FROZEN_NOW_ISO in states.test.mjs) so a
+// change to either constant breaks the fixture instead of silently reclassifying
+// an order's priority.
+const DECISION_NOW_ISO = "2026-08-06T00:00:00Z"; // must equal FROZEN_NOW_ISO
+const DECISION_URGENT_EDGE_ISO = "2026-08-06T00:15:00Z"; // frozen now + 900000ms
+// Well past the boundary => PROPOSED stays HIGH (never URGENT).
+const DECISION_FAR_EXPIRY_ISO = "2026-08-06T08:00:00Z";
+
 // ---------------------------------------------------------------------------
 // Canonical "healthy" payloads (from test/*.test.mjs)
 // ---------------------------------------------------------------------------
@@ -65,6 +77,72 @@ function surface(data = null, status = "AVAILABLE", extra = {}) {
   };
 }
 
+// BC-4/BC-2: the dashboard read model gained two top-level sections. Both use the
+// same Section<T> envelope as the others; only `data` differs. The app must work
+// without them (they are optional), but the code paths that *read* them have to be
+// covered too, so every healthy dashboard fixture carries them.
+function riskEvaluationSection({ breached = false } = {}) {
+  return section({
+    policyVersion: 1,
+    evaluatedAt: NOW,
+    items: [
+      {
+        key: "CURRENCY_CONCENTRATION:USD",
+        scope: "CURRENCY",
+        subject: "USD",
+        current: 0.18,
+        limit: 0.25,
+        usageRatio: 0.72,
+        breached: false
+      },
+      {
+        key: "POSITION_CONCENTRATION:NVDA",
+        scope: "POSITION",
+        subject: "NVDA",
+        current: breached ? 0.41 : 0.12,
+        limit: 0.25,
+        usageRatio: breached ? 1.64 : 0.48,
+        breached
+      }
+    ]
+  });
+}
+
+// One row per held position. NVDA carries a full decision, and the two null causes
+// stay distinct: MRVL was analysed but had insufficient metrics (decisionRunId set,
+// decision null), AMD was never analysed (decisionRunId null).
+function positionDecisionsSection() {
+  return section([
+    {
+      symbol: "NVDA",
+      riskLevel: "LOW",
+      decision: "HOLD",
+      confidence: 0.72,
+      decisionRuleVersion: "decision-rule-v1",
+      decisionAsOf: NOW,
+      decisionRunId: "decision-run-1"
+    },
+    {
+      symbol: "MRVL",
+      riskLevel: null,
+      decision: null,
+      confidence: null,
+      decisionRuleVersion: null,
+      decisionAsOf: null,
+      decisionRunId: "decision-run-2"
+    },
+    {
+      symbol: "AMD",
+      riskLevel: null,
+      decision: null,
+      confidence: null,
+      decisionRuleVersion: null,
+      decisionAsOf: null,
+      decisionRunId: null
+    }
+  ]);
+}
+
 export function fullDashboard() {
   return {
     portfolio: section(
@@ -104,9 +182,17 @@ export function fullDashboard() {
     // PROPOSED, one about to expire, one already expired (approve must be
     // disabled), and a non-PROPOSED status with null timestamps (legacy row,
     // display-only — approve/cancel are both disabled regardless of expiry).
+    //
+    // executionMode is mandatory here. P2 splits the orders queue by execution
+    // context and quarantines rows whose context is unknown, so a proposal without
+    // executionMode lands in the disabled 구분 미확인 group. Omitting it emptied the
+    // Paper queue on every orders screen in the matrix and disabled the approve
+    // button the orders journey depends on. The unknown-context path is covered
+    // deliberately in orders-execution-context.spec.mjs instead of by accident here.
     pendingOrderProposals: section([
       {
         id: "order-1",
+        executionMode: "PAPER",
         side: "BUY",
         type: "MARKET",
         symbol: "NVDA",
@@ -119,6 +205,7 @@ export function fullDashboard() {
       },
       {
         id: "order-2",
+        executionMode: "PAPER",
         side: "SELL",
         type: "LIMIT",
         symbol: "AAPL",
@@ -131,6 +218,7 @@ export function fullDashboard() {
       },
       {
         id: "order-3",
+        executionMode: "PAPER",
         side: "BUY",
         type: "MARKET",
         symbol: "MSFT",
@@ -143,6 +231,7 @@ export function fullDashboard() {
       },
       {
         id: "order-4",
+        executionMode: "LIVE",
         side: "BUY",
         type: "MARKET",
         symbol: "GOOGL",
@@ -153,7 +242,9 @@ export function fullDashboard() {
         createdAt: null,
         expiresAt: null
       }
-    ])
+    ]),
+    riskEvaluation: riskEvaluationSection(),
+    positionDecisions: positionDecisionsSection()
   };
 }
 
@@ -171,7 +262,10 @@ function emptyDashboard() {
     }),
     analysis: section({ result: { currencyTotals: [], positions: [] } }),
     pendingEvents: section([]),
-    pendingOrderProposals: section([])
+    pendingOrderProposals: section([]),
+    // Empty means "no rows", not "section missing" — the envelope still arrives.
+    riskEvaluation: section({ policyVersion: 1, evaluatedAt: NOW, items: [] }),
+    positionDecisions: section([])
   };
 }
 
@@ -186,12 +280,27 @@ function partialDashboard() {
     unavailable: true,
     unavailableReason: "ORDER_PROPOSALS_UNAVAILABLE"
   });
+  // positionDecisions unavailable => the Risk/판단 columns must disappear entirely
+  // rather than render empty cells, and riskEvaluation must name what it could not
+  // evaluate instead of dropping it silently.
+  dash.positionDecisions = section(null, {
+    unavailable: true,
+    unavailableReason: "POSITION_DECISIONS_UNAVAILABLE"
+  });
+  dash.riskEvaluation = {
+    ...riskEvaluationSection(),
+    unknown: true,
+    unknownFields: ["positions[NVDA].weight"]
+  };
   return dash;
 }
 
 function staleDashboard() {
   const dash = fullDashboard();
-  for (const key of ["portfolio", "analysis", "pendingEvents", "pendingOrderProposals"]) {
+  for (const key of [
+    "portfolio", "analysis", "pendingEvents", "pendingOrderProposals",
+    "riskEvaluation", "positionDecisions"
+  ]) {
     dash[key] = { ...dash[key], stale: true, asOf: STALE_AS_OF };
   }
   return dash;
@@ -208,6 +317,143 @@ function degradedDashboard() {
   }, { unknown: true, unknownFields: ["analysis.provider"] });
   return dash;
 }
+
+// ---------------------------------------------------------------------------
+// Home decision-surface states (extraStates on the home route only)
+//
+// These pin resolveSurfaceState() rather than data quality. Everything that is
+// NOT the state under test is held at a healthy, action-free baseline so exactly
+// one rule fires and the resulting surface state is unambiguous.
+// ---------------------------------------------------------------------------
+
+// Zero-Action baseline. Every DATA_QUALITY rule in lib/action-model.js is held off:
+//   portfolio.stale !== true, portfolio.data.partial !== true,
+//   account.cashBalanceStatus !== "UNKNOWN", analysis result status !== "DEGRADED"
+//   and result.quality.partial !== true.
+// Proposals and pending events are both empty, so buildActions() returns [].
+function decisionBaseDashboard() {
+  return {
+    portfolio: section({
+      account: {
+        displayAccountNumber: "****5678",
+        marketValueAmounts: { USD: 1240 },
+        dailyProfitLossAmounts: { USD: 12 },
+        profitLossAmounts: { USD: 96 },
+        // KNOWN (never "UNKNOWN") — UNKNOWN would add a DATA_QUALITY action.
+        cashBalanceStatus: "KNOWN"
+      },
+      positions: [
+        { symbol: "NVDA", name: "NVIDIA", quantity: 2, currency: "USD", lastPrice: 120, marketValueAmount: 240, profitLossAmount: 20 },
+        { symbol: "MRVL", name: "Marvell", quantity: 3, currency: "USD", lastPrice: 80, marketValueAmount: 240, profitLossAmount: -5 },
+        { symbol: "AMD", name: "AMD", quantity: 5, currency: "USD", lastPrice: 152, marketValueAmount: 760, profitLossAmount: 81 }
+      ],
+      buyingPower: { KRW: { cashBuyingPower: 1350000 }, USD: { cashBuyingPower: 1000 } },
+      completedAt: NOW,
+      partial: false
+    }),
+    analysis: section({
+      result: {
+        // Deliberately NOT "DEGRADED" and without quality.partial.
+        status: "COMPLETED",
+        currencyTotals: [{ currency: "USD", marketValue: 1240, profitLoss: 96 }],
+        positions: [
+          { symbol: "NVDA", currency: "USD", weight: 0.19 },
+          { symbol: "MRVL", currency: "USD", weight: 0.19 },
+          { symbol: "AMD", currency: "USD", weight: 0.62 }
+        ]
+      }
+    }),
+    // Empty list, not unavailable: "no event awaiting review" must be a real answer.
+    pendingEvents: section([]),
+    pendingOrderProposals: section([]),
+    riskEvaluation: riskEvaluationSection(),
+    positionDecisions: positionDecisionsSection()
+  };
+}
+
+// CRITICAL: one MANUAL_REVIEW_REQUIRED proposal. ORDER_URGENT_STATUSES makes it
+// URGENT regardless of expiry, so urgentCount === 1 and no other rule can win.
+function decisionCriticalDashboard() {
+  const dash = decisionBaseDashboard();
+  dash.pendingOrderProposals = section([
+    {
+      id: "order-critical-1",
+      side: "BUY",
+      type: "MARKET",
+      symbol: "NVDA",
+      quantity: 4,
+      limitPrice: null,
+      currency: "USD",
+      executionMode: "PAPER",
+      status: "MANUAL_REVIEW_REQUIRED",
+      createdAt: "2026-08-05T23:30:00Z",
+      expiresAt: null
+    }
+  ]);
+  return dash;
+}
+
+// RISK: no proposals at all (urgentCount 0, actionCount 0) and one breached risk
+// item, so riskBreached is the only rule that can fire.
+function decisionRiskDashboard() {
+  const dash = decisionBaseDashboard();
+  dash.riskEvaluation = riskEvaluationSection({ breached: true });
+  return dash;
+}
+
+// ACTIVE: one PROPOSED proposal whose expiresAt is far beyond frozen-now + 15min,
+// so action-model classifies it HIGH (not URGENT). No breach, so ACTIVE wins.
+function decisionActiveDashboard() {
+  const dash = decisionBaseDashboard();
+  dash.pendingOrderProposals = section([
+    {
+      id: "order-active-1",
+      side: "BUY",
+      type: "LIMIT",
+      symbol: "AMD",
+      quantity: 2,
+      limitPrice: 150.25,
+      currency: "USD",
+      executionMode: "PAPER",
+      status: "PROPOSED",
+      createdAt: DECISION_NOW_ISO,
+      // DECISION_FAR_EXPIRY_ISO - frozen now = 8h > URGENT_EXPIRY_WINDOW_MS.
+      expiresAt: DECISION_FAR_EXPIRY_ISO
+    }
+  ]);
+  return dash;
+}
+
+// BLOCKED: the portfolio section itself is unavailable. isBroken() only exempts
+// ANALYSIS_RESULT_NOT_FOUND, so PORTFOLIO_UNAVAILABLE is real data breakage.
+function decisionBlockedDashboard() {
+  const dash = decisionBaseDashboard();
+  dash.portfolio = section(null, {
+    unavailable: true,
+    unavailableReason: "PORTFOLIO_UNAVAILABLE"
+  });
+  return dash;
+}
+
+// Surface state each fixture must resolve to. The specs assert against this map so
+// the fixture and its expectation can never drift apart.
+export const DECISION_STATE_SURFACES = {
+  "decision-critical": "CRITICAL",
+  "decision-risk": "RISK",
+  "decision-active": "ACTIVE",
+  "decision-calm": "CALM",
+  "decision-blocked": "BLOCKED"
+};
+
+export const DECISION_STATES = Object.keys(DECISION_STATE_SURFACES);
+
+const DECISION_DASHBOARDS = {
+  "decision-critical": decisionCriticalDashboard,
+  "decision-risk": decisionRiskDashboard,
+  "decision-active": decisionActiveDashboard,
+  "decision-calm": decisionBaseDashboard,
+  "decision-blocked": decisionBlockedDashboard
+};
 
 const EVENTS_FULL = [
   {
@@ -494,6 +740,46 @@ const STOCK_EXPLANATION_FULL = {
 
 const STOCK_HISTORY_FULL = [STOCK_ANALYSIS_FULL];
 
+// BC-6 preview response: server-computed pre-trade risk figures. The front end must
+// not recompute any of these.
+const PAPER_ORDER_PREVIEW = {
+  symbol: "AAPL",
+  side: "BUY",
+  type: "MARKET",
+  quantity: 1,
+  currency: "USD",
+  estimatedAmount: 210,
+  maxLoss: 210,
+  decision: "ALLOW",
+  violations: []
+};
+
+// The figures the approval panel shows and then echoes back on approve (D-01).
+const APPROVAL_PREVIEW = {
+  displayedQuantity: 1,
+  displayedMaxLoss: 100,
+  displayedCurrency: "USD",
+  proposalVersion: null
+};
+
+// BC-7: engaged === false is the only "trading allowed" answer. engaged === null
+// means "not configured" and must never be folded into false.
+const KILL_SWITCH_RELEASED = {
+  scope: "USER",
+  targetId: null,
+  engaged: false,
+  reason: null,
+  changedAt: "2026-08-01T00:00:00Z"
+};
+
+export const KILL_SWITCH_ENGAGED = {
+  scope: "USER",
+  targetId: null,
+  engaged: true,
+  reason: "위험 한도 초과로 수동 정지",
+  changedAt: "2026-08-05T12:00:00Z"
+};
+
 // ---------------------------------------------------------------------------
 // Endpoint router: pick the healthy payload for a given URL + method.
 // ---------------------------------------------------------------------------
@@ -599,10 +885,32 @@ function matchEndpoint(pathname, method) {
   // Broker command endpoints (verify/sync/analysis/connection lifecycle).
   if (is(/\/broker-connections\/[^/]+\/verify/)) return { body: { id: "conn-1", status: "ACTIVE" } };
   if (is(/\/broker-connections\/toss/)) return { body: { id: "conn-1", status: "ACTIVE" } };
+  // BC-6: non-persisting pre-trade risk preview. Must be matched BEFORE the generic
+  // /paper-orders/<id>/<action> rule or it collapses into the order-command shape.
+  if (is(/\/paper-orders\/preview$/) && method === "POST") {
+    return { body: PAPER_ORDER_PREVIEW, kind: "paper-order-preview" };
+  }
   if (is(/\/paper-orders$/) && method === "POST") {
     return { body: { id: "order-created", status: "PROPOSED", side: "BUY", type: "MARKET", symbol: "AAPL", quantity: 1, limitPrice: null, currency: "USD" }, kind: "order" };
   }
+  if (is(/\/paper-orders\/[^/]+\/approval-preview$/)) {
+    return { body: APPROVAL_PREVIEW, kind: "approval-preview" };
+  }
   if (is(/\/paper-orders\//)) return { body: { status: "COMPLETED" }, kind: "order" };
+
+  // BC-7: kill switch (USER scope). Reached on EVERY route, so leaving it
+  // unregistered made matchEndpoint throw inside the route handler on every
+  // single combination in the matrix.
+  if (is(/\/trading\/kill-switch$/)) return { body: KILL_SWITCH_RELEASED, kind: "kill-switch" };
+
+  // Live order lifecycle. approve and dispatch are deliberately separate steps:
+  // approve does NOT reach the broker. Both return void (204-style empty body).
+  if (is(/\/live-orders\/[^/]+\/step-up$/)) {
+    return { body: { stepUpToken: "live-step-up-token", expiresAt: "2026-08-06T00:10:00Z" }, kind: "step-up" };
+  }
+  if (is(/\/live-orders\/[^/]+\/(approve|dispatch|cancel|modify)$/)) {
+    return { body: null, kind: "live-order-command" };
+  }
 
   throw new Error(`Unregistered frontend API ${method} ${pathname}`);
 }
@@ -610,6 +918,11 @@ function matchEndpoint(pathname, method) {
 // State-specific transforms applied to the healthy payload.
 function shapeForState(match, state) {
   const { body, kind } = match;
+  // Decision states only repoint the dashboard; every other endpoint stays healthy
+  // so the surface state is the single variable under test.
+  if (Object.prototype.hasOwnProperty.call(DECISION_DASHBOARDS, state)) {
+    return kind === "dashboard" ? DECISION_DASHBOARDS[state]() : body;
+  }
   if (state === "empty") {
     switch (kind) {
       case "dashboard": return emptyDashboard();
@@ -774,13 +1087,17 @@ export function routeStates(routeDef) {
   return [...STATES, ...(routeDef.extraStates ?? [])];
 }
 
+// `/predictions` is intentionally absent. It is now a server component that does
+// redirect("/settings"), so putting it in the matrix would commit 8 states x 8
+// projects of pixel baselines that are byte-for-byte the settings screen and gate
+// nothing extra. The redirect is behaviour, not pixels, so it is asserted once by
+// URL in home-decision-states' sibling spec (settings-sections.spec.mjs).
 export const ROUTES = [
-  { path: "/", name: "home" },
+  { path: "/", name: "home", extraStates: DECISION_STATES },
   { path: "/login", name: "login" },
   { path: "/portfolio", name: "portfolio" },
   { path: "/orders", name: "orders" },
   { path: "/events", name: "events" },
-  { path: "/predictions", name: "predictions" },
   { path: "/settings", name: "settings" },
   { path: "/stocks/AAPL", name: "stocks-AAPL" }
 ];

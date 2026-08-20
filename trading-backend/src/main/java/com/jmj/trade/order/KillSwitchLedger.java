@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -68,6 +69,30 @@ public final class KillSwitchLedger implements KillSwitchStateReader {
                         OR (k.scope = 'USER'    AND k.target_id = ?)
                         OR (k.scope = 'ACCOUNT' AND k.target_id = ?))
                 """, Boolean.class, GLOBAL_TARGET, userId, accountId));
+    }
+
+    /**
+     * (scope, target) 의 최신 상태를 읽는다 (BC-7). 원장에 행이 하나도 없으면 {@link Optional#empty()}
+     * — "미설정"과 "해제됨"은 다른 사실이므로 engaged=false 로 뭉개지 않는다. 대상 해석은 조작
+     * 경로와 같은 {@link #resolveTarget} 을 쓰므로, 남의 USER/ACCOUNT 스위치는 읽을 수 없다.
+     */
+    public Optional<StateRecord> currentState(UUID userId, Scope scope, UUID rawTarget) {
+        var target = resolveTarget(userId, scope, rawTarget);
+        return jdbc.query("""
+                SELECT version, engaged, reason, changed_at
+                  FROM kill_switch_ledger
+                 WHERE scope = ? AND target_id = ?
+                 ORDER BY version DESC
+                 LIMIT 1
+                """, (resultSet, rowNumber) -> new StateRecord(
+                scope,
+                target,
+                resultSet.getLong("version"),
+                resultSet.getBoolean("engaged"),
+                resultSet.getString("reason"),
+                resultSet.getObject("changed_at", OffsetDateTime.class).toInstant()),
+                scope.name(), target)
+                .stream().findFirst();
     }
 
     /** 정지(engage). 비상 정지이므로 step-up 이 없다(SPEC 조작 비대칭). */
@@ -210,6 +235,17 @@ public final class KillSwitchLedger implements KillSwitchStateReader {
         GLOBAL,
         USER,
         ACCOUNT
+    }
+
+    /** 원장에 실제로 존재하는 최신 상태. 이 값이 없다는 것(Optional.empty)이 곧 "미설정"이다. */
+    public record StateRecord(
+            Scope scope,
+            UUID targetId,
+            long version,
+            boolean engaged,
+            String reason,
+            Instant changedAt
+    ) {
     }
 
     public record ChangeRecord(

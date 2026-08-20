@@ -123,7 +123,11 @@ function Comparison({ detail }) {
       : h("p", { className: "empty" }, "통화별 합계 변화가 없습니다"));
 }
 
-function EventList({ events, onSelect }) {
+function isHeldEvent(event, heldSymbols) {
+  return (event?.affectedSymbols ?? []).some(symbol => heldSymbols.has(symbol?.toUpperCase()));
+}
+
+function EventList({ events, heldSymbols, onSelect }) {
   if (events.length === 0) {
     return h("p", { className: "empty" }, "이벤트가 없습니다");
   }
@@ -135,6 +139,10 @@ function EventList({ events, onSelect }) {
         onClick: () => onSelect(item.id)
       },
       h("strong", null, item.summary),
+      // 보유 종목 표식은 영향 종목과 보유 포지션의 교집합이 있을 때만 붙인다.
+      isHeldEvent(item, heldSymbols)
+        ? h("span", { className: "badge-pill badge-pill--info", "data-event-held": "true" }, "보유")
+        : null,
       h(EventSignal, { event: item, compact: true })))));
 }
 
@@ -153,8 +161,17 @@ export function EventWorkflow({
   const [filter, setFilter] = useState("ALL");
   const busy = Boolean(busyAction);
   const selected = Boolean(selectedEvent);
-  const visibleEvents = filter === "ALL" ? events : events.filter(event => event.type === filter);
-  const filters = [...new Set(events.map(event => event.type).filter(Boolean))];
+  const heldSymbols = new Set(positions.map(position => position.symbol?.toUpperCase()).filter(Boolean));
+  // 필터는 서버가 준 필드(source·macroScope)와 보유 심볼 교집합으로만 건다. 프론트에서 새 분류를
+  // 추론하지 않는다. "실적"·"뉴스"는 대응하는 서버 필드가 없어(자유 텍스트 type뿐) 제공하지 않는다.
+  const FILTERS = [
+    ["ALL", "전체", () => true],
+    ["HELD", "보유종목", event => isHeldEvent(event, heldSymbols)],
+    ["FILING", "공시", event => event.source === "SEC"],
+    ["MACRO", "거시", event => Array.isArray(event.macroScope) && event.macroScope.length > 0]
+  ];
+  const activeFilter = FILTERS.find(([key]) => key === filter) ?? FILTERS[0];
+  const visibleEvents = events.filter(event => activeFilter[2](event));
 
   function toggle(symbol, checked) {
     setSelectedSymbols(current => {
@@ -188,52 +205,26 @@ export function EventWorkflow({
         h("p", { className: "eyebrow" }, "Intelligence Feed"),
         h("h2", null, "이벤트 인텔리전스")),
       busyAction ? h("span", { className: "busy", title: `${busyAction}…` }, busyLabel(busyAction)) : null),
+    // Feed(좌) + Detail(우) 2열. Intelligence → Impact → Action 순서로 읽히게 구성한다.
     h("div", { className: "event-layout" },
       h("div", { className: "intelligence-feed" },
         h("div", { className: "feed-filter" },
-          h("label", { htmlFor: "event-type-filter" }, "유형 필터"),
+          h("label", { htmlFor: "event-type-filter" }, "필터"),
           h("select", { id: "event-type-filter", value: filter, onChange: event => setFilter(event.target.value) },
-            h("option", { value: "ALL" }, "전체"),
-            ...filters.map(type => h("option", { key: type, value: type }, type)))),
-        h(EventList, { events: visibleEvents, onSelect })),
-      h("details", { className: "manual-event-secondary" },
-        h("summary", null, "수동 이벤트 등록"),
-        h("form", { className: "event-form", onSubmit: submit },
-        h("label", null, "출처 이벤트 ID",
-          h("input", { name: "sourceEventId", required: true, maxLength: 200 })),
-        h("label", null, "이벤트 유형",
-          h("input", { name: "type", required: true, maxLength: 60 })),
-        h("label", null, "요약",
-          h("textarea", { name: "summary", required: true, maxLength: 1000 })),
-        h("label", null, "발생 시각 (현지 시각으로 입력)",
-          h("input", { name: "occurredAt", type: "datetime-local", required: true })),
-        h("fieldset", { className: "symbol-picker" },
-          h("legend", null, "영향받은 종목"),
-          positions.length
-            ? positions.map(position => h("label", { key: position.symbol },
-              h("input", {
-                type: "checkbox",
-                checked: selectedSymbols.has(position.symbol),
-                onChange: event => toggle(position.symbol, event.target.checked)
-              }),
-              position.symbol))
-            : h("p", { className: "empty" }, "먼저 보유 종목이 있는 포트폴리오를 여세요")),
-        h("button", {
-          type: "submit",
-          disabled: busy || !connectionId || selectedSymbols.size === 0
-        }, "이벤트 등록")))),
-    h("div", { className: "event-detail" },
-      h("header", null,
-        h("div", null,
-          h("h3", null, selectedEvent?.summary ?? "이벤트를 선택하세요"),
-          selectedEvent
-            ? h(EventSignal, { event: selectedEvent })
-            : h("p", { className: "empty" }, "이벤트를 선택하면 상태와 영향 범위를 확인합니다")),
-          selectedEvent ? h("dl", { className: "event-impact-facts" },
-            h("div", null, h("dt", null, "포트폴리오 영향"), h("dd", null, selectedEvent.portfolioImpact ?? UNKNOWN_TEXT)),
-            h("div", null, h("dt", null, "Thesis 변화"), h("dd", null, selectedEvent.thesisChange ?? UNKNOWN_TEXT)),
-            h("div", null, h("dt", null, "새 판단"), h("dd", null, selectedEvent.decision ?? UNKNOWN_TEXT)),
-            h("div", null, h("dt", null, "필요 행동"), h("dd", null, selectedEvent.action ?? UNKNOWN_TEXT))) : null,
+            ...FILTERS.map(([key, label]) => h("option", { key, value: key }, label)))),
+        h(EventList, { events: visibleEvents, heldSymbols, onSelect })),
+      h("div", { className: "event-detail" },
+        h("header", null,
+          h("div", null,
+            h("h3", null, selectedEvent?.summary ?? "이벤트를 선택하세요"),
+            selectedEvent
+              ? h(EventSignal, { event: selectedEvent })
+              : h("p", { className: "empty" }, "이벤트를 선택하면 상태와 영향 범위를 확인합니다"))),
+        // 이 화면의 최대 자산: "내 포트폴리오가 얼마 움직였는가"에 직답하는 before/after 비교표를
+        // Detail 본문 최상단으로 승격한다. 판단 변화(이전→신규 Decision)는 계약이 없어(BC-5) 만들지 않는다.
+        h("div", { className: "event-impact" },
+          h("h3", null, "포트폴리오 영향 (재분석 기준)"),
+          h(Comparison, { detail: selectedEvent })),
         h("div", { className: "event-review-actions" },
           h("button", {
             type: "button",
@@ -256,7 +247,33 @@ export function EventWorkflow({
             ? h("a", { className: "button-link secondary", href: `/stocks/${encodeURIComponent(selectedEvent.affectedSymbols[0])}` }, "영향 종목 보기")
             : null,
           selectedEvent?.affectedSymbols?.[0]
-            ? h("a", { className: "button-link secondary", href: `/orders?symbol=${encodeURIComponent(selectedEvent.affectedSymbols[0])}` }, "주문 작성")
-            : null)),
-      h(Comparison, { detail: selectedEvent })));
+            ? h("a", { className: "button-link secondary", href: `/orders?symbol=${encodeURIComponent(selectedEvent.affectedSymbols[0])}&side=BUY` }, "주문 작성")
+            : null))),
+    // 수동 이벤트 등록은 최하단 <details> 로 강등한다(기능은 유지).
+    h("details", { className: "manual-event-secondary" },
+      h("summary", null, "수동 이벤트 등록"),
+      h("form", { className: "event-form", onSubmit: submit },
+      h("label", null, "출처 이벤트 ID",
+        h("input", { name: "sourceEventId", required: true, maxLength: 200 })),
+      h("label", null, "이벤트 유형",
+        h("input", { name: "type", required: true, maxLength: 60 })),
+      h("label", null, "요약",
+        h("textarea", { name: "summary", required: true, maxLength: 1000 })),
+      h("label", null, "발생 시각 (현지 시각으로 입력)",
+        h("input", { name: "occurredAt", type: "datetime-local", required: true })),
+      h("fieldset", { className: "symbol-picker" },
+        h("legend", null, "영향받은 종목"),
+        positions.length
+          ? positions.map(position => h("label", { key: position.symbol },
+            h("input", {
+              type: "checkbox",
+              checked: selectedSymbols.has(position.symbol),
+              onChange: event => toggle(position.symbol, event.target.checked)
+            }),
+            position.symbol))
+          : h("p", { className: "empty" }, "먼저 보유 종목이 있는 포트폴리오를 여세요")),
+      h("button", {
+        type: "submit",
+        disabled: busy || !connectionId || selectedSymbols.size === 0
+      }, "이벤트 등록"))));
 }

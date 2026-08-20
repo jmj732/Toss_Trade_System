@@ -15,6 +15,9 @@ import {
   issueLiveOrderStepUp,
   liveOrderActionKey,
   modifyLiveOrder,
+  approveLiveOrder,
+  dispatchLiveOrder,
+  cancelLiveOrder,
   deleteBrokerConnection,
   deprecatePredictionModelVersion,
   listEvents,
@@ -43,6 +46,8 @@ import {
   orderActionKey,
   paperOrderProposalKey,
   proposePaperOrder,
+  previewPaperOrder,
+  loadKillSwitch,
   loadSession,
   loadUnreadCount,
   logout,
@@ -128,6 +133,60 @@ test("loads broker connections without exposing credentials and proposes a paper
     connectionId: "connection-1", side: "BUY", type: "MARKET", symbol: "NVDA",
     quantity: 1, limitPrice: null, currency: "USD", channel: "WEB"
   });
+});
+
+test("previews a paper order without an idempotency key or channel (BC-6, non-persistent)", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ approved: true, reasons: [], orderAmount: 100, currency: "USD", evaluatedAt: "2026-08-18T08:07:22Z" });
+  };
+
+  const result = await previewPaperOrder({
+    connectionId: "connection-1", side: "BUY", type: "MARKET", symbol: "AAPL",
+    quantity: 1, limitPrice: null, currency: "USD", channel: "WEB"
+  }, fetcher);
+
+  assert.equal(result.approved, true);
+  assert.equal(calls[0][0], "/api/v1/paper-orders/preview");
+  assert.equal(calls[0][1].method, "POST");
+  assert.equal(calls[0][1].credentials, "same-origin");
+  // 비영속 평가라 Idempotency-Key 를 붙이지 않는다.
+  assert.equal(calls[0][1].headers["Idempotency-Key"], undefined);
+  // 요청 본문은 주문 파라미터만 담고 channel 을 포함하지 않는다.
+  assert.deepEqual(JSON.parse(calls[0][1].body), {
+    connectionId: "connection-1", side: "BUY", type: "MARKET", symbol: "AAPL",
+    quantity: 1, limitPrice: null, currency: "USD"
+  });
+});
+
+test("preview surfaces a 409 snapshot-unavailable code through the error body", async () => {
+  resetAuthForTest("access-token");
+  await assert.rejects(
+    previewPaperOrder(
+      { connectionId: "c1", side: "BUY", type: "MARKET", symbol: "AAPL", quantity: 1, currency: "USD" },
+      async () => json({ code: "PAPER_ORDER_PORTFOLIO_SNAPSHOT_UNAVAILABLE" }, 409)),
+    { message: "PAPER_ORDER_PORTFOLIO_SNAPSHOT_UNAVAILABLE", status: 409 });
+});
+
+test("loads the kill switch with a required scope query and optional targetId (BC-7)", async () => {
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ scope: "USER", targetId: "t1", engaged: null, version: null });
+  };
+
+  await loadKillSwitch("USER", undefined, fetcher);
+  await loadKillSwitch("GLOBAL", "acct/1", fetcher);
+  // targetId 를 생략하면 fetcher 가 2번째 인자로 와도 처리한다.
+  await loadKillSwitch("USER", fetcher);
+
+  assert.deepEqual(calls.map(([url, options]) => [url, options.credentials]), [
+    ["/api/v1/trading/kill-switch?scope=USER", "same-origin"],
+    ["/api/v1/trading/kill-switch?scope=GLOBAL&targetId=acct%2F1", "same-origin"],
+    ["/api/v1/trading/kill-switch?scope=USER", "same-origin"]
+  ]);
 });
 
 test("paper order idempotency keys separate currencies", () => {
@@ -319,6 +378,104 @@ test("live modify uses the live contract, step-up header, and stable idempotency
   assert.equal(calls[1][1].headers["Idempotency-Key"], liveOrderActionKey("order-1", "modify", 179.5));
   assert.equal(calls[1][1].headers["X-Step-Up-Token"], "live-step-up");
   assert.deepEqual(JSON.parse(calls[1][1].body), { newLimitPrice: 179.5 });
+});
+
+test("live approve hits the live contract (not paper), carries the step-up header, and sends no Idempotency-Key", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return new Response(null, { status: 204 });
+  };
+
+  await approveLiveOrder("order 7",
+    { displayedQuantity: 3, displayedMaxLoss: 120, displayedCurrency: "USD" },
+    "live-step-up", fetcher);
+
+  // 정확히 live 엔드포인트로 가고, paper 로 새지 않는다.
+  assert.equal(calls[0][0], "/api/v1/live-orders/order%207/approve");
+  assert.doesNotMatch(calls[0][0], /paper-orders/);
+  // approve 는 사용자가 확인한 표시값을 서버 스키마로 전송한다.
+  assert.deepEqual(JSON.parse(calls[0][1].body), {
+    displayedQuantity: 3, displayedMaxLoss: 120, displayedCurrency: "USD"
+  });
+  assert.equal(calls[0][1].headers["X-Step-Up-Token"], "live-step-up");
+  // approve 에는 Idempotency-Key 를 붙이지 않는다(승인은 전송이 아니다).
+  assert.equal(calls[0][1].headers["Idempotency-Key"], undefined);
+});
+
+test("live approve omits the step-up header when no token is supplied", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return new Response(null, { status: 204 });
+  };
+
+  await approveLiveOrder("order-7",
+    { displayedQuantity: 1, displayedMaxLoss: 10, displayedCurrency: "USD" },
+    undefined, fetcher);
+
+  assert.equal(calls[0][1].headers["X-Step-Up-Token"], undefined);
+});
+
+test("live dispatch requires a caller-supplied Idempotency-Key and is a distinct step from approve", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ status: "DISPATCHED" });
+  };
+
+  await dispatchLiveOrder("order-7", "idem-123", "live-step-up", fetcher);
+
+  assert.equal(calls[0][0], "/api/v1/live-orders/order-7/dispatch");
+  assert.doesNotMatch(calls[0][0], /paper-orders/);
+  // dispatch 는 실제 발주다 — Idempotency-Key(호출부 생성) 필수.
+  assert.equal(calls[0][1].headers["Idempotency-Key"], "idem-123");
+  assert.equal(calls[0][1].headers["X-Step-Up-Token"], "live-step-up");
+  // dispatch 는 본문이 없다.
+  assert.equal(calls[0][1].body, undefined);
+});
+
+test("live cancel hits the live contract, carries step-up, and sends no Idempotency-Key", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return json({ status: "CANCELED" });
+  };
+
+  await cancelLiveOrder("order-7", "live-step-up", fetcher);
+
+  assert.equal(calls[0][0], "/api/v1/live-orders/order-7/cancel");
+  assert.doesNotMatch(calls[0][0], /paper-orders/);
+  assert.equal(calls[0][1].headers["X-Step-Up-Token"], "live-step-up");
+  assert.equal(calls[0][1].headers["Idempotency-Key"], undefined);
+  assert.equal(calls[0][1].body, undefined);
+});
+
+test("approve and dispatch are separate calls to separate endpoints (approval is never a broker send)", async () => {
+  resetAuthForTest("access-token");
+  const calls = [];
+  const fetcher = async (url, options = {}) => {
+    calls.push([url, options]);
+    return url.endsWith("/approve")
+      ? new Response(null, { status: 204 })
+      : json({ status: "DISPATCHED" });
+  };
+
+  await approveLiveOrder("order-7",
+    { displayedQuantity: 1, displayedMaxLoss: 10, displayedCurrency: "USD" },
+    "tok", fetcher);
+  await dispatchLiveOrder("order-7", "idem-1", "tok", fetcher);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], "/api/v1/live-orders/order-7/approve");
+  assert.equal(calls[1][0], "/api/v1/live-orders/order-7/dispatch");
+  // 승인 호출에는 Idempotency-Key 가 없고 전송 호출에만 있다.
+  assert.equal(calls[0][1].headers["Idempotency-Key"], undefined);
+  assert.equal(calls[1][1].headers["Idempotency-Key"], "idem-1");
 });
 
 test("error body is preserved and step-up is promoted to a distinct failure", async () => {

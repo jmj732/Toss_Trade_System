@@ -60,10 +60,12 @@ test("cancel and reject paths require browser confirmation before submit", async
   assert.match(source, /function confirmOrderCancel\(/);
   assert.match(source, /window\.confirm\(/);
   assert.match(source, /return confirmOrderCancel\(orderId\)/);
+  // D-3: OrderApprovalPanel 은 이제 /orders 한 곳에만 마운트한다(홈 ActionQueue 의 승인은
+  // /orders?order=<id> 로 이동). 단일 승인 패널의 reject 는 여전히 confirmOrderCancel 로만 간다.
   assert.equal(
     (source.match(/onReject: \(\) => confirmOrderCancel\(approvalOrder\.id\)/g) ?? []).length,
-    2,
-    "both home and orders approval panels should reject through confirmOrderCancel");
+    1,
+    "the single orders approval panel should reject through confirmOrderCancel");
   assert.doesNotMatch(
     source,
     /onReject: \(\) => runOrderCommand\(approvalOrder\.id, "cancel"\)/);

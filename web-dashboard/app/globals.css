@@ -292,6 +292,8 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .order-timing {
   overflow-wrap: anywhere;
 }
+/* 상태·만료 배지는 grid 칼럼 전폭으로 늘어나지 않고 내용 폭만 차지하며 좌측 정렬한다. */
+.order-row-copy > .badge-pill { justify-self: start; }
 .order-title {
   color: var(--text) !important;
   font-size: inherit !important;
@@ -466,6 +468,10 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   gap: var(--sp-4);
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+/* Feed + Detail 2열은 1280 이상에서만. 그 아래는 1열로 접는다. */
+@media (max-width: 1279px) {
+  .event-layout { grid-template-columns: minmax(0, 1fr); }
+}
 .event-form { display: grid; gap: var(--sp-2); }
 .event-form > label { color: var(--muted); }
 .symbol-picker {
@@ -579,6 +585,18 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .event-impact-facts div { min-width: 0; }
 .event-impact-facts dt { color: var(--muted); font-size: var(--fs-xs); }
 .event-impact-facts dd { margin: var(--sp-1) 0 0; overflow-wrap: anywhere; }
+.event-impact { margin: var(--sp-4) 0; min-width: 0; }
+.position-decision { display: grid; gap: var(--sp-1); min-width: 0; }
+.portfolio-summary { min-width: 0; }
+.portfolio-summary-metrics { margin-top: var(--sp-4); }
+.portfolio-history-secondary { margin-top: var(--sp-4); }
+.portfolio-history-secondary > summary { cursor: pointer; font-weight: var(--fw-bold); list-style-position: inside; padding: var(--sp-4) 0; }
+.settings-sections { display: grid; gap: var(--sp-4); margin-top: var(--sp-4); }
+.settings-section { border: 1px solid var(--line); border-radius: var(--r-md); min-width: 0; }
+.settings-section > summary { cursor: pointer; font-weight: var(--fw-bold); list-style-position: inside; padding: var(--sp-4); }
+.settings-section[open] > summary { border-bottom: 1px solid var(--line); }
+.settings-section-body { display: grid; gap: var(--sp-4); padding: var(--sp-4); }
+.settings-risk, .settings-analysis { display: grid; gap: var(--sp-4); min-width: 0; }
 .notification-center { position: relative; }
 .notification-toggle { align-items: center; display: flex; gap: var(--sp-2); }
 .badge {
@@ -717,6 +735,20 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   padding: 0 var(--sp-8) var(--sp-12);
 }
 .orders-surface { margin-top: var(--sp-4); }
+.orders-workspace { display: grid; gap: var(--sp-4); }
+.order-context-tabs { align-items: center; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: var(--sp-2); padding-bottom: var(--sp-2); }
+.order-context-tabs--live { border-color: var(--danger-line); }
+.order-context-tab { background: var(--panel-raised); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--muted); cursor: pointer; font-weight: var(--fw-bold); padding: var(--sp-2) var(--sp-4); }
+.order-context-tab.is-active { border-color: var(--accent); color: var(--accent-text); }
+.order-context-tab--live { color: var(--danger-text); }
+.order-context-tab--live.is-active { background: var(--danger-line); border-color: var(--danger); color: var(--danger-text); }
+.order-context-unknown-note { color: var(--warning-text); font-size: var(--fs-xs); margin-left: auto; }
+.live-order-notice { border: 1px dashed var(--danger-line); border-radius: var(--r-md); color: var(--danger-text); padding: var(--sp-4); }
+.live-order-hint { color: var(--warning-text); }
+.order-dispatch-note { color: var(--warning-text); font-size: var(--fs-xs); font-weight: var(--fw-bold); }
+.order-dispatch-action { background: var(--danger-line); border-color: var(--danger); color: var(--danger-text); font-weight: var(--fw-bold); }
+.order-dispatch-action:not(:disabled):hover { background: var(--danger); box-shadow: none; }
+.order-unknown-group { border-top: 1px solid var(--warning-line); margin-top: var(--sp-4); padding-top: var(--sp-4); }
 .stock-surface { margin-top: 0; overflow-x: clip; }
 .stock-surface-grid { display: grid; gap: var(--sp-6); grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .stock-surface-panel { box-shadow: var(--shadow-card); margin: 0; }
@@ -778,57 +810,132 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 .disclaimer { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-body); }
 .workspace-content { padding-top: var(--sp-2); }
 
-.home-operations-shell {
+/* Adaptive Decision Center — 상태별 weight 로 region 을 배치하는 12칼럼 홈 그리드. */
+.home-decision-shell {
   align-items: start;
   gap: var(--sp-5);
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   max-width: 1440px;
 }
-.home-operations-shell > [data-home-region] { min-width: 0; }
-.home-operations-shell [data-home-region="freshness-status"],
-.home-operations-shell [data-home-region="core-metrics"],
-.home-operations-shell [data-home-region="portfolio-trend"],
-.home-operations-shell [data-home-region="holdings"],
-.home-operations-shell [data-home-region="market-context"] {
-  grid-column: 1 / -1;
+.home-decision-header { grid-column: 1 / -1; min-width: 0; }
+.home-decision-state { color: var(--muted); font-size: var(--fs-sm); font-weight: var(--fw-bold); }
+.home-region { grid-column: 1 / -1; min-width: 0; }
+.home-region > * { min-width: 0; }
+
+/* Hero card: 화면당 1개, 전폭, 좌측 상태 보더 + 강한 대비. */
+.panel--hero {
+  border-inline-start: var(--sp-1) solid var(--danger);
+  box-shadow: var(--shadow-raised);
 }
-.home-core-metrics {
+.panel--hero > .panel { border: 0; box-shadow: none; padding: 0; }
+/* Compact: 한 줄 요약(리스트·상세 지표 숨김). */
+.panel--compact > .panel { box-shadow: none; padding: var(--sp-4); }
+.panel--compact .action-list,
+.panel--compact .action-item-facts { display: none; }
+/* Collapsed: weight 0 접힘 그룹. */
+.panel--collapsed > summary {
+  cursor: pointer;
+  font-weight: var(--fw-bold);
+  list-style-position: inside;
+}
+.home-region-body { display: grid; gap: var(--sp-5); margin-top: var(--sp-4); min-width: 0; }
+
+.portfolio-summary-grid {
   display: grid;
   gap: var(--sp-3);
-  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
 }
-.home-core-metrics > div {
+.portfolio-summary-grid > div {
   background: var(--panel-raised);
   border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
   min-width: 0;
   padding: var(--sp-3);
 }
-.home-market-context {
+/* 라벨과 값을 항상 세로로 분리한다 — 짧은 라벨+값이 한 줄에 붙는 문제(예: "현금 잔고 상태확인됨") 차단. */
+.portfolio-summary-grid > div .metric-label,
+.portfolio-summary-grid > div .metric-value { display: block; }
+.portfolio-summary-bar .metric-freshness {
+  color: var(--muted);
+  display: block;
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-3);
+}
+
+.action-queue-badges { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.action-item-deadline { color: var(--danger-text); font-size: var(--fs-sm); font-weight: var(--fw-bold); margin-top: var(--sp-3); }
+.action-item-reason { color: var(--muted); font-size: var(--fs-xs); margin-top: var(--sp-2); width: 100%; }
+.action-queue-empty { margin-top: var(--sp-3); }
+
+.risk-eval-list { display: grid; gap: var(--sp-3); }
+/* 위험 항목 li 는 세로로 쌓되(내용 높이만큼), 헤드+지표가 세로 중앙정렬로 벌어지지 않게 상단정렬한다.
+   기존 .list li(가로 space-between + align center)가 짧은 헤드 옆을 빈 공간으로 키우던 문제 차단. */
+.risk-eval-list > li { align-items: stretch; flex-direction: column; gap: var(--sp-2); }
+.risk-eval-head { align-items: center; display: flex; gap: var(--sp-2); justify-content: space-between; }
+/* 현재/한도/사용률 3개 지표는 12rem 최소폭 auto-fit 그리드로 한 칼럼에 접혀 세로로 길어지지 않도록
+   좁은 폭 대응 flex-wrap 행으로 바꾼다(빈 대형 카드 회귀 차단). */
+.risk-eval-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-6);
+  margin-top: var(--sp-2);
+}
+.risk-eval-metrics div { min-width: 0; }
+
+/* BC-6: 주문 사전 위험 검사(preview) 결과 블록. */
+.order-preview {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
   display: grid;
-  gap: var(--sp-5);
-  min-width: 0;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+  padding: var(--sp-4);
 }
-.home-market-context-body {
-  display: grid;
-  gap: var(--sp-5);
-  min-width: 0;
+.order-preview--passed { border-color: var(--line-strong); }
+.order-preview--rejected { border-color: var(--danger-line); }
+.order-preview--error { border-color: var(--danger-line); }
+.order-preview-title { align-items: center; display: flex; flex-wrap: wrap; font-weight: var(--fw-bold); gap: var(--sp-2); margin: 0; }
+.order-preview-metrics { display: grid; gap: var(--sp-3); grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.order-preview-metrics dt { color: var(--muted); font-size: var(--fs-xs); }
+.order-preview-metrics dd { font-weight: var(--fw-bold); margin: 0; }
+.order-preview-reasons { margin: 0; }
+.order-preview-reason { align-items: baseline; color: var(--danger-text); display: flex; gap: var(--sp-2); }
+.order-preview-reason-mark { color: var(--danger-text); font-weight: var(--fw-black); }
+.order-preview-button { grid-column: span 2; min-height: 2.75rem; }
+
+/* BC-7: 거래 중지(kill switch) 차단 배너 · 상태 표시. */
+.kill-switch-banner {
+  align-items: center;
+  background: var(--panel-raised);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--r-md);
+  color: var(--danger-text);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin: 0 auto var(--sp-4);
+  max-width: 1280px;
+  padding: var(--sp-3) var(--sp-4);
 }
-.home-market-context > summary {
-  cursor: pointer;
-  font-weight: 700;
-  list-style-position: inside;
-}
-.home-market-context .market-overview-grid {
+.kill-switch-banner-title { color: var(--danger-text); }
+.kill-switch-banner-time { color: var(--muted); font-size: var(--fs-sm); }
+.kill-switch-status { align-items: center; display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3); }
+.kill-switch-status-reason { color: var(--muted); font-size: var(--fs-sm); }
+
+/* 표의 수치 셀은 우측 정렬 + tabular-nums. */
+.numeric { font-variant-numeric: tabular-nums; text-align: right; }
+.position-see-all { display: inline-block; margin-top: var(--sp-4); }
+
+.home-market-context-body { display: grid; gap: var(--sp-5); min-width: 0; }
+.home-market-context-body .market-overview-grid {
   gap: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   padding-inline: 0;
 }
-.home-market-context .market-widget {
-  border-radius: var(--r-sm);
-  box-shadow: none;
-  min-width: 0;
-}
-.home-market-context .market-candle-chart { min-width: 0; overflow-x: auto; }
+.home-market-context-body .market-widget { border-radius: var(--r-sm); box-shadow: none; min-width: 0; }
+.home-market-context-body .market-candle-chart { min-width: 0; overflow-x: auto; }
 
 @media (max-width: 900px) {
   .topbar { padding: var(--sp-6) var(--sp-5) var(--sp-4); }
@@ -837,13 +944,21 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   .grid { grid-template-columns: minmax(0, 1fr); }
   .grid, .route-stack, .market-overview-grid { padding-inline: var(--sp-5); }
   .market-overview-grid { grid-template-columns: minmax(0, 1fr); }
-  .home-market-context .market-overview-grid { grid-template-columns: minmax(0, 1fr); }
+  .home-market-context-body .market-overview-grid { grid-template-columns: minmax(0, 1fr); }
   .dashboard-surface .portfolio-panel,
   .dashboard-surface .decision-queue,
   .realtime-ticker { grid-column: auto; }
   .portfolio-hero { align-items: flex-start; flex-direction: column; gap: var(--sp-6); }
   .portfolio-hero-secondary { border-left: 0; border-top: 1px solid var(--line); min-width: 0; padding: var(--sp-4) 0 0; width: 100%; }
-  .route-nav { flex-wrap: nowrap; margin-inline: 0; overflow-x: auto; padding-inline: var(--sp-5); white-space: nowrap; }
+  /* 가로 스크롤이 생기는 좁은 폭에서는 우측 끝을 페이드해 "더 있음 · 스크롤 가능"을 시각적으로 알린다. */
+  .route-nav {
+    flex-wrap: nowrap;
+    margin-inline: 0;
+    mask-image: linear-gradient(90deg, var(--text) 88%, transparent);
+    overflow-x: auto;
+    padding-inline: var(--sp-5);
+    white-space: nowrap;
+  }
   .orders-surface > header { flex-direction: column; gap: var(--sp-3); }
   .stock-surface-grid { grid-template-columns: minmax(0, 1fr); }
   .stock-surface-summary { grid-template-columns: minmax(0, 1fr); }
@@ -872,7 +987,7 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 }
 
 @media (max-width: 760px) {
-  .home-operations-shell { grid-template-columns: minmax(0, 1fr); }
+  .home-decision-shell { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 480px) {
@@ -886,10 +1001,16 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 }
 
 @media (max-width: 360px) {
-  .topbar-actions button, .connection-form button { width: 100%; }
-  .topbar-actions, .connection-form > div { width: 100%; }
-  .topbar-actions .global-stock-search button { width: auto; }
-  .account-switcher { width: 100%; }
+  /* 360 topbar 압축: 부차 크롬(설정·로그아웃·알림·시장상태·신선도)을 전폭 스택 대신 인라인 wrap 으로
+     모아, CRITICAL 홈에서 hero 의 행동 버튼("승인 검토")이 첫 뷰포트(800px) 안에 들어오게 한다. */
+  .topbar { gap: var(--sp-2); padding: var(--sp-4) var(--sp-4) var(--sp-3); row-gap: var(--sp-3); }
+  .topbar [data-route-region="title"] { min-width: 100%; }
+  .connection-form button { width: 100%; }
+  .connection-form > div { width: 100%; }
+  .topbar-actions { width: 100%; }
+  .topbar-actions > * { width: auto; }
+  /* 계좌 전환·검색만 주요 동작으로 전폭 유지. */
+  .account-switcher, .topbar-actions .global-stock-search { flex: 1 1 100%; width: 100%; }
   .account-switcher summary { justify-content: space-between; }
   .account-switcher-options { left: 0; right: auto; width: 100%; }
   .account-option { width: 100%; }
@@ -905,11 +1026,13 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 
 @media (min-width: 768px) {
   .topbar { padding-bottom: var(--sp-4); }
-  section[data-route-region="connection"] .connection-form { margin-bottom: var(--sp-5); }
 }
 
 @media (min-width: 1280px) {
   .route-nav { margin-bottom: var(--sp-5); }
+  /* ACTIVE 상태는 actions(8칼럼) + risk(4칼럼) 2열, 나머지 상태·region 은 전폭 1열. */
+  .home-decision-shell[data-home-state="ACTIVE"] [data-home-region="actions"] { grid-column: span 8; }
+  .home-decision-shell[data-home-state="ACTIVE"] [data-home-region="risk"] { grid-column: span 4; }
 }
 
 @media (min-width: 1440px) {

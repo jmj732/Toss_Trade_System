@@ -70,6 +70,7 @@ export function OrderApprovalPanel({
   onReject,
   onClose,
   onReauth,
+  tradingHalted = false,
   fetcher
 }) {
   const [preview, setPreview] = useState(null);
@@ -159,6 +160,14 @@ export function OrderApprovalPanel({
         </div>
       ) : null}
 
+      {tradingHalted ? (
+        // BC-7: kill switch(내 계정 기준) engaged 면 승인을 막고 사유를 노출한다.
+        // 서버 FINAL 재검증이 여전히 최종 방어선이며, 이 UI 게이트는 보조다.
+        <div className="empty" role="alert" data-approval-halted="true">
+          <p>거래 중지됨 · 내 계정 기준</p>
+        </div>
+      ) : null}
+
       {expired ? (
         // D-42: 만료되면 승인 재시도 어포던스를 주지 않고, 닫기/거부만 남긴다.
         <div className="empty" role="alert">
@@ -224,7 +233,7 @@ export function OrderApprovalPanel({
         <button
           type="button"
           onClick={confirm}
-          disabled={!preview || busy || !sideKnown || stepUpRequired || expired || !actionable}
+          disabled={!preview || busy || !sideKnown || stepUpRequired || expired || !actionable || tradingHalted}
         >
           확인하고 승인
         </button>

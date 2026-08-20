@@ -1,0 +1,66 @@
+{
+  "requestId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+  "input": {
+    "snapshotId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    "symbol": "AAPL",
+    "schemaVersion": "1",
+    "collectedAt": "2026-08-02T00:00:00Z",
+    "observations": [
+      {
+        "field": "quote.price",
+        "value": "200",
+        "unit": "USD",
+        "period": null,
+        "identifier": "AAPL",
+        "provider": "FMP",
+        "asOf": "2026-08-01T20:00:00Z",
+        "collectedAt": "2026-08-02T00:00:00Z",
+        "missingData": []
+      },
+      {
+        "field": "technical.sma20",
+        "value": "190",
+        "unit": "ratio",
+        "period": null,
+        "identifier": "AAPL",
+        "provider": "FMP",
+        "asOf": "2026-08-01T20:00:00Z",
+        "collectedAt": "2026-08-02T00:00:00Z",
+        "missingData": []
+      },
+      {
+        "field": "technical.volatility20",
+        "value": "0.2",
+        "unit": "ratio",
+        "period": null,
+        "identifier": "AAPL",
+        "provider": "FMP",
+        "asOf": "2026-08-01T20:00:00Z",
+        "collectedAt": "2026-08-02T00:00:00Z",
+        "missingData": []
+      },
+      {
+        "field": "macro.vix",
+        "value": "18",
+        "unit": "ratio",
+        "period": null,
+        "identifier": "AAPL",
+        "provider": "FRED",
+        "asOf": "2026-08-01T20:00:00Z",
+        "collectedAt": "2026-08-02T00:00:00Z",
+        "missingData": []
+      },
+      {
+        "field": "macro.sp500_return20d",
+        "value": "0.04",
+        "unit": "ratio",
+        "period": null,
+        "identifier": "AAPL",
+        "provider": "FRED",
+        "asOf": "2026-08-01T20:00:00Z",
+        "collectedAt": "2026-08-02T00:00:00Z",
+        "missingData": []
+      }
+    ]
+  }
+}

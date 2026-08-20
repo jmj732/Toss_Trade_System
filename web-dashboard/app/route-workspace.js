@@ -5,26 +5,33 @@ import { usePathname } from "next/navigation.js";
 
 import { AnalysisOutcomeView } from "./analysis-outcome-view.js";
 import { BrokerOnboarding } from "./broker-onboarding.js";
-import { DashboardView } from "./dashboard-view.js";
+import { RealtimePriceTicker } from "./dashboard-view.js";
 import {
   DataFreshnessIndicator,
-  DecisionCenter,
   GlobalStockSearch,
+  KillSwitchBanner,
+  KillSwitchStatus,
   MarketStatusIndicator,
-  PortfolioPositionTable
+  PortfolioPositionTable,
+  PortfolioRiskPanel,
+  PortfolioSummary
 } from "./decision-center.js";
+import { HomeDecisionCenter } from "./home-decision-center.js";
 import { EventWorkflow } from "./event-workflow.js";
 import { MarketOverviewView } from "./market-overview-view.js";
-import { CANDLE_INTERVALS } from "./market-candle-chart.js";
+import { CANDLE_INTERVALS, MarketCandleChart } from "./market-candle-chart.js";
+import { buildActions } from "../lib/action-model.js";
+import { resolveSurfaceState } from "../lib/surface-state.js";
 import { NotificationCenter } from "./notification-center.js";
 import { OrderCreationPanel } from "./order-creation-panel.js";
 import { OrderApprovalPanel } from "./order-approval-panel.jsx";
-import { OrdersView } from "./orders-view.js";
+import { OrdersView, OrderContextTabs } from "./orders-view.js";
 import { OperationsReadinessView } from "./operations-readiness-view.js";
 import { PaperPerformanceView } from "./paper-performance-view.js";
 import { PortfolioHistoryView } from "./portfolio-history-view.js";
 import { PredictionOperationsView } from "./prediction-operations-view.js";
 import { RiskPolicyPanel } from "./risk-policy-view.js";
+import { SettingsSections } from "./settings-sections.js";
 import { StockAnalysisProductSurface } from "./stock-analysis-product-surface.js";
 import { describeError } from "../lib/error-messages.js";
 import {
@@ -87,7 +94,12 @@ import {
   loadAccountBuyingPower,
   issueLiveOrderStepUp,
   modifyLiveOrder,
-  proposePaperOrder
+  approveLiveOrder,
+  dispatchLiveOrder,
+  cancelLiveOrder,
+  proposePaperOrder,
+  previewPaperOrder,
+  loadKillSwitch
 } from "../lib/api.js";
 
 const HISTORY_QUERY = { from: "", to: "", maxPoints: 90 };
@@ -114,6 +126,20 @@ export function needsHomeCandleRequest(previous, next) {
 
 export function readSavedConnectionId(storage) {
   return storage?.getItem("trade.connectionId")?.trim() ?? "";
+}
+
+// Live step-up 토큰은 orderId 별로 캐시하되 expiresAt 을 확인한다. 만료됐거나(파싱 불가 포함)
+// 다른 주문이면 재사용하지 않고 재발급하게 한다 — 만료 토큰으로 조용히 재시도하면 재인증이
+// 누락된 채 실주문이 나갈 수 있다.
+export function liveStepUpUsable(record, orderId, now = Date.now()) {
+  if (!record || record.orderId !== orderId || !record.token) {
+    return false;
+  }
+  if (record.expiresAt == null) {
+    return true;
+  }
+  const expiry = new Date(record.expiresAt).getTime();
+  return Number.isFinite(expiry) && expiry > now;
 }
 
 export function AccountSwitcher({ accountLabel = "계좌", accounts = [], connectionId = "", workspaceStatus = "", busy = false, onSwitch }) {
@@ -204,10 +230,14 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [liveMessage, setLiveMessage] = useState("");
   const [riskPolicy, setRiskPolicy] = useState(null);
   const [riskPolicyHistory, setRiskPolicyHistory] = useState([]);
+  // BC-7: kill switch(USER scope). null = 미확정(로딩/조회 실패). 조회 실패를 삼켜
+  // {engaged:false}("정상")로 접지 않는다 — 거래 차단 상태 오해를 막기 위한 구분이다.
+  const [killSwitch, setKillSwitch] = useState(null);
   const [riskOpen, setRiskOpen] = useState(false);
   const [readiness, setReadiness] = useState(null);
   const [readinessError, setReadinessError] = useState("");
-  const [readinessBusy, setReadinessBusy] = useState(route === "settings");
+  // Settings 는 지연 로딩이라 진입 시 readiness 를 자동 조회하지 않는다(펼칠 때 로드).
+  const [readinessBusy, setReadinessBusy] = useState(false);
   // 홈 상단 액션(알림). 로드 전/실패는 null(미확정)로 둔다.
   // 실패를 삼켜 0("읽지 않음 없음")으로 오인시키지 않는다.
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -219,6 +249,8 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [paperQuery, setPaperQuery] = useState(PAPER_QUERY);
   const [paperBusy, setPaperBusy] = useState(false);
   const [orderDraft, setOrderDraft] = useState({ symbol: "", side: "BUY" });
+  // P2: Orders 화면의 실행 컨텍스트 탭(모의 Paper / 실거래 Live). 큐 필터와 작성 폼 가용성을 함께 바꾼다.
+  const [orderContext, setOrderContext] = useState("PAPER");
 
   // 신규 API 연동용 State
   const [exchangeRate, setExchangeRate] = useState(null);
@@ -243,6 +275,12 @@ export function RouteWorkspace({ route, symbol = "" }) {
   mutationFlight.current ??= createSingleFlight();
   const homeCandleRequest = useRef("");
   const homeHistoryRequest = useRef(0);
+  // Settings 지연 로딩: 이미 로드한 섹션 키를 담아 재요청을 막는다(펼침당 1회만 로드).
+  const settingsLoaded = useRef();
+  settingsLoaded.current ??= new Set();
+  // Live step-up 토큰 캐시: { orderId, token, expiresAt }. 승인 검토 시 발급해 두고
+  // 승인·전송·취소에서 재사용하되, 만료됐으면 재발급한다(liveStepUpUsable).
+  const liveStepUpRef = useRef(null);
 
   useEffect(() => {
     loadSession().then(setSession).catch(value => {
@@ -258,14 +296,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     opened.current = true;
     loadRiskPolicy().then(setRiskPolicy).catch(value => setError(describeError(value.message)));
+    // BC-7: USER scope 만 조회한다. GLOBAL 정지는 별도 계약(후속)이라 여기서 합성하지 않는다.
+    // 실패는 null(미확정)로 유지한다 — 조용히 "정상"으로 만들지 않는다.
+    loadKillSwitch("USER").then(setKillSwitch).catch(() => setKillSwitch(null));
     if (route === "home") {
       loadUnreadCount().then(result => setUnreadCount(result.count)).catch(() => setUnreadCount(null));
-    }
-    if (route === "settings") {
-      setReadinessBusy(true);
-      loadOperationalReadiness().then(setReadiness)
-        .catch(value => setReadinessError(describeError(value.message)))
-        .finally(() => setReadinessBusy(false));
     }
     // 계좌 ID는 내부 복구 키로만 사용한다. 일반 UI 선택은 실제 소유 연결 목록으로 한다.
     const saved = readSavedConnectionId(window.localStorage);
@@ -420,8 +455,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
     setWorkspaceStatus("loading");
     window.localStorage.setItem("trade.connectionId", id);
     // connectionId 를 받는 나머지 API는 소유 연결 dashboard 가 준비된 뒤에만 호출한다.
+    // loadWorkspace 전체에서 방금 로드한 dashboard 를 참조해야 하므로 try 바깥에 선언한다.
+    // (try 블록 안에서 const 로 선언하면 아래 orders 딥링크 등이 클로저의 오래된 state 를 읽는다.)
+    let dashboard;
     try {
-      const dashboard = await loadDashboard(id);
+      dashboard = await loadDashboard(id);
       setDashboard(dashboard);
       setConnection(connections.find(value => value.id === id) ?? { id, status: "ACTIVE" });
       setWorkspaceStatus("ready");
@@ -457,55 +495,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
         setHistoryBusy(false);
       }
     }
-    if (route === "predictions" || route === "stock") {
+    if (route === "stock") {
       loadPredictionModelVersions().then(setModels).catch(value => setPredictionError(describeError(value.message)));
     }
-    if (route === "predictions") {
-      // 네 조회를 개별 정산해 하나가 실패해도 나머지를 거짓 empty 로 만들지 않는다.
-      setPredictionLoading(true);
-      setOperationsBusy(true);
-      Promise.allSettled([
-        loadAnalysisPredictions(id, OUTCOME_QUERY),
-        loadPredictionIngestionApiKeys(),
-        loadPredictionOperations(),
-        loadPaperPerformance(id, PAPER_QUERY)
-      ]).then(([outcomeResult, keysResult, operationsResult, paperResult]) => {
-        if (outcomeResult.status === "fulfilled") {
-          setOutcome(outcomeResult.value);
-        } else {
-          setPredictionError(describeError(outcomeResult.reason.message));
-        }
-        if (keysResult.status === "fulfilled") {
-          setPredictionKeys(keysResult.value);
-        } else {
-          setPredictionError(describeError(keysResult.reason.message));
-        }
-        if (operationsResult.status === "fulfilled") {
-          setPredictionOperations(operationsResult.value);
-        } else {
-          setPredictionError(describeError(operationsResult.reason.message));
-        }
-        if (paperResult.status === "fulfilled") {
-          setPaperPerformance(paperResult.value);
-        } else {
-          setPredictionError(describeError(paperResult.reason.message));
-        }
-      }).finally(() => {
-        setPredictionLoading(false);
-        setOperationsBusy(false);
-      });
-    }
-    if (route === "settings") {
-      setOperationsBusy(true);
-      Promise.allSettled([loadPredictionIngestionApiKeys(), loadPredictionOperations()])
-        .then(([keysResult, operationsResult]) => {
-          if (keysResult.status === "fulfilled") setPredictionKeys(keysResult.value);
-          else setPredictionError(describeError(keysResult.reason.message));
-          if (operationsResult.status === "fulfilled") setPredictionOperations(operationsResult.value);
-          else setPredictionError(describeError(operationsResult.reason.message));
-        })
-        .finally(() => setOperationsBusy(false));
-    }
+    // Settings 는 진입 시 모든 섹션을 한꺼번에 요청하지 않는다. 각 <details> 섹션은
+    // 펼칠 때 loadSettingsSection 이 한 번만 로드한다(아래 lazy 로더 참고).
 
     if (route === "home") {
       const surfaceFailure = value => ({ status: "ERROR", unavailableReason: value.code ?? value.message });
@@ -534,6 +528,22 @@ export function RouteWorkspace({ route, symbol = "" }) {
       setBuyingPower({ status: "LOADING" });
       loadAccountBuyingPower(id, "USD").then(setBuyingPower)
         .catch(value => setBuyingPower({ status: "ERROR", unavailableReason: value.code ?? value.message }));
+      // 홈 ActionQueue 의 "승인 검토" 가 /orders?order=<id> 로 보내는 경우 해당 주문의 승인 패널을 연다.
+      if (typeof window !== "undefined") {
+        const requestedOrderId = new URLSearchParams(window.location.search).get("order");
+        if (requestedOrderId) {
+          const requested = (dashboard?.pendingOrderProposals?.data ?? [])
+            .find(candidate => candidate.id === requestedOrderId);
+          if (requested) {
+            setApprovalError(null);
+            setApprovalOrder(requested);
+            // 딥링크 진입 시 해당 주문의 실행 컨텍스트 탭을 자동 선택한다(미지 executionMode 는 현재 탭 유지).
+            if (requested.executionMode === "LIVE" || requested.executionMode === "PAPER") {
+              setOrderContext(requested.executionMode);
+            }
+          }
+        }
+      }
     }
     if (route === "stock") {
       await loadStockSurface(id);
@@ -609,7 +619,16 @@ export function RouteWorkspace({ route, symbol = "" }) {
       return Promise.resolve();
     }
     const confirmed = window.confirm("이 주문을 취소/거부하시겠습니까? 이 작업은 주문 취소 또는 승인 거부로 기록됩니다.");
-    return confirmed ? runOrderCommand(orderId, "cancel") : Promise.resolve();
+    if (!confirmed) {
+      return Promise.resolve();
+    }
+    // Paper 와 Live 는 취소 엔드포인트가 다르다. 실행은 각각 분리된 함수가 담당하고,
+    // 이 확인 게이트만 공유한다(executionMode 로 endpoint 를 고르는 API 함수는 만들지 않는다).
+    const order = (dashboard?.pendingOrderProposals?.data ?? [])
+      .find(candidate => candidate.id === orderId);
+    return order?.executionMode === "LIVE"
+      ? runLiveCancel(orderId)
+      : runOrderCommand(orderId, "cancel");
   }
 
   function runOrderCommand(orderId, action, displayed) {
@@ -644,6 +663,124 @@ export function RouteWorkspace({ route, symbol = "" }) {
     });
   }
 
+  // Live step-up 토큰을 확보한다. 캐시가 유효하면 재사용하고, 만료됐거나 다른 주문이면
+  // 재발급한다(D-42 동선과 별개인 step-up 만료 처리). 만료 토큰으로 조용히 재시도하지 않는다.
+  async function ensureLiveStepUp(orderId) {
+    if (liveStepUpUsable(liveStepUpRef.current, orderId)) {
+      return liveStepUpRef.current.token;
+    }
+    const issued = await issueLiveOrderStepUp(orderId);
+    liveStepUpRef.current = {
+      orderId,
+      token: issued?.stepUpToken ?? "",
+      expiresAt: issued?.expiresAt ?? null
+    };
+    return liveStepUpRef.current.token;
+  }
+
+  // Live 실행 3종(approve/dispatch/cancel)의 공통 뼈대. single-flight(mutationFlight) +
+  // 주문별 busy Set(D-13) + step-up(만료 시 재발급) + 성공/실패 후 워크스페이스 재조회로
+  // 낙관적 상태를 남기지 않는다.
+  function runLiveOrderMutation(orderId, run, options = {}) {
+    return mutationFlight.current(() => {
+      markOrderBusy(orderId, true);
+      setError("");
+      return ensureLiveStepUp(orderId)
+        .then(token => run(token))
+        .then(() => loadWorkspace(connectionId.trim()))
+        .then(() => {
+          options.onSuccess?.();
+          if (options.successMessage) {
+            setLiveMessage(options.successMessage);
+          }
+        })
+        .catch(value => {
+          options.onFailure?.(value);
+          setError(describeError(value.message));
+          if (options.failureMessage) {
+            setLiveMessage(options.failureMessage);
+          }
+        })
+        .finally(() => markOrderBusy(orderId, false));
+    });
+  }
+
+  // Live "승인 검토": step-up 을 먼저 발급한 뒤 표시값 확인 패널을 연다(아직 approve 아님).
+  function openLiveApproval(orderId) {
+    const order = (dashboard?.pendingOrderProposals?.data ?? [])
+      .find(candidate => candidate.id === orderId);
+    return mutationFlight.current(() => {
+      markOrderBusy(orderId, true);
+      setApprovalError(null);
+      setError("");
+      return ensureLiveStepUp(orderId)
+        .then(() => setApprovalOrder(order ?? { id: orderId }))
+        .catch(value => {
+          setApprovalError(value);
+          setError(describeError(value.message));
+        })
+        .finally(() => markOrderBusy(orderId, false));
+    });
+  }
+
+  // Live 승인: 사용자가 확인한 표시값 + step-up 으로 approve. 브로커로 나가지 않는다(전송은 별도).
+  function submitLiveApproval(orderId, displayed) {
+    return runLiveOrderMutation(orderId,
+      token => approveLiveOrder(orderId, {
+        displayedQuantity: displayed.quantity,
+        displayedMaxLoss: displayed.maxLoss,
+        displayedCurrency: displayed.currency
+      }, token),
+      {
+        successMessage: "승인됨 · 아직 브로커로 전송되지 않았습니다. 전송하려면 별도 '브로커로 전송'이 필요합니다.",
+        failureMessage: "승인 처리가 실패했습니다.",
+        onSuccess: () => {
+          setApprovalOrder(null);
+          setApprovalError(null);
+        },
+        onFailure: value => setApprovalError(value)
+      });
+  }
+
+  // Live 전송: 승인된 주문을 브로커로 실제 발주한다. 승인과 전송은 절대 한 버튼으로 합치지
+  // 않는다 — window.confirm 으로 재확인하고 Idempotency-Key(호출부 생성)를 붙인다.
+  function dispatchLiveOrderAction(orderId) {
+    if (typeof window !== "undefined"
+        && !window.confirm(
+          "이 주문을 브로커로 전송할까요? 전송하면 실제 계좌에서 주문이 실행됩니다. 승인과 전송은 별개 단계입니다.")) {
+      return Promise.resolve();
+    }
+    return runLiveOrderMutation(orderId,
+      token => dispatchLiveOrder(orderId, crypto.randomUUID(), token),
+      {
+        successMessage: "브로커로 전송했습니다.",
+        failureMessage: "브로커 전송이 실패했습니다."
+      });
+  }
+
+  // Live 취소/거부: confirmOrderCancel 의 확인을 통과한 뒤 실행된다.
+  function runLiveCancel(orderId) {
+    return runLiveOrderMutation(orderId,
+      token => cancelLiveOrder(orderId, token),
+      {
+        successMessage: "실거래 주문을 취소했습니다.",
+        failureMessage: "주문 취소가 실패했습니다.",
+        onSuccess: () => {
+          setApprovalOrder(null);
+          setApprovalError(null);
+        }
+      });
+  }
+
+  // Live 컨텍스트의 목록 액션 핸들러(Paper 의 orderAction 과 분리). 승인은 패널을 열고,
+  // 취소는 공유 확인 게이트(confirmOrderCancel)로 보낸다.
+  function liveOrderAction(orderId, action) {
+    if (action === "approve") {
+      return openLiveApproval(orderId);
+    }
+    return confirmOrderCancel(orderId);
+  }
+
   function createOrderProposal(command) {
     return mutation("order-propose", async () => {
       const proposal = await proposePaperOrder(command);
@@ -652,6 +789,12 @@ export function RouteWorkspace({ route, symbol = "" }) {
       const refreshed = await loadDashboard(connectionId);
       setDashboard(refreshed);
     });
+  }
+
+  // BC-6: 비영속 사전 위험 검사. 결과·busy·무효화는 OrderCreationPanel 이 소유하므로
+  // 여기서는 서버 호출만 반환한다(오류도 그대로 전파해 패널이 describeError 로 노출한다).
+  function previewOrder(command) {
+    return previewPaperOrder(command);
   }
 
   function createAnalysis() {
@@ -883,6 +1026,52 @@ export function RouteWorkspace({ route, symbol = "" }) {
 
   const workspaceReady = workspaceStatus === "ready" && Boolean(dashboard);
 
+  // Settings 각 <details> 섹션의 지연 로더. 펼칠 때 호출되고, 이미 로드한 섹션은 재요청하지 않는다.
+  function loadSettingsSection(key) {
+    if (settingsLoaded.current.has(key)) {
+      return;
+    }
+    settingsLoaded.current.add(key);
+    const id = connectionId.trim();
+    if (key === "data") {
+      setReadinessError("");
+      setReadinessBusy(true);
+      loadOperationalReadiness().then(setReadiness)
+        .catch(value => setReadinessError(describeError(value.message)))
+        .finally(() => setReadinessBusy(false));
+      return;
+    }
+    if (key === "analysis") {
+      // 예측 품질·모델 레지스트리·API Key·운영을 개별 정산해 하나가 실패해도 나머지를 거짓 empty 로 만들지 않는다.
+      setPredictionLoading(true);
+      setOperationsBusy(true);
+      loadPredictionModelVersions().then(setModels)
+        .catch(value => setPredictionError(describeError(value.message)));
+      Promise.allSettled([
+        loadAnalysisPredictions(id, OUTCOME_QUERY),
+        loadPredictionIngestionApiKeys(),
+        loadPredictionOperations()
+      ]).then(([outcomeResult, keysResult, operationsResult]) => {
+        if (outcomeResult.status === "fulfilled") setOutcome(outcomeResult.value);
+        else setPredictionError(describeError(outcomeResult.reason.message));
+        if (keysResult.status === "fulfilled") setPredictionKeys(keysResult.value);
+        else setPredictionError(describeError(keysResult.reason.message));
+        if (operationsResult.status === "fulfilled") setPredictionOperations(operationsResult.value);
+        else setPredictionError(describeError(operationsResult.reason.message));
+      }).finally(() => {
+        setPredictionLoading(false);
+        setOperationsBusy(false);
+      });
+      return;
+    }
+    if (key === "strategy") {
+      setPaperBusy(true);
+      loadPaperPerformance(id, PAPER_QUERY).then(setPaperPerformance)
+        .catch(value => setPredictionError(describeError(value.message)))
+        .finally(() => setPaperBusy(false));
+    }
+  }
+
   function predictionOperationsView() {
     return h(PredictionOperationsView, {
       operations: predictionOperations, keys: predictionKeys, issuedKey,
@@ -923,36 +1112,71 @@ export function RouteWorkspace({ route, symbol = "" }) {
       return stockSurface();
     }
     if (route === "portfolio") {
+      // Risk Panel 은 한도 초과 시 Summary 위로 승격한다(서버 breached 값만 사용, 산술 없음).
+      const riskItems = dashboard?.riskEvaluation?.data?.items;
+      const riskBreached = Array.isArray(riskItems) && riskItems.some(item => item.breached);
+      const summary = h(PortfolioSummary, { key: "summary", dashboard });
+      const riskPanel = h(PortfolioRiskPanel, { key: "risk", dashboard });
+      const positions = h(PortfolioPositionTable, {
+        key: "positions", section: dashboard?.portfolio, analysis: dashboard?.analysis,
+        positionDecisions: dashboard?.positionDecisions
+      });
+      // 추세는 하단 <details> 로 강등한다(ActionQueue 는 홈 전용이라 여기 넣지 않는다).
+      const history = h("details", { key: "history", className: "portfolio-history-secondary" },
+        h("summary", null, "추세 · 자산/손익"),
+        h(PortfolioHistoryView, {
+          history: portfolioHistory, query: HISTORY_QUERY, busy: historyBusy,
+          onQuery: query => {
+            setHistoryBusy(true);
+            loadPortfolioHistory(connectionId, query).then(setPortfolioHistory)
+              .catch(value => setError(describeError(value.message))).finally(() => setHistoryBusy(false));
+          }
+        }));
       return workspaceReady
-        ? h("div", null,
-          h(DecisionCenter, { dashboard, onOrder: orderAction },
-            h(PortfolioPositionTable, { section: dashboard.portfolio, analysis: dashboard.analysis })),
-          h(PortfolioHistoryView, {
-            history: portfolioHistory, query: HISTORY_QUERY, busy: historyBusy,
-            onQuery: query => {
-              setHistoryBusy(true);
-              loadPortfolioHistory(connectionId, query).then(setPortfolioHistory)
-                .catch(value => setError(describeError(value.message))).finally(() => setHistoryBusy(false));
-            }
-          }))
+        ? h("main", { className: "route-stack" },
+          ...(riskBreached ? [riskPanel, summary] : [summary, riskPanel]),
+          positions,
+          history)
         : connectionNotice("계좌를 연결하면 포트폴리오를 확인할 수 있습니다.");
     }
     if (route === "orders") {
+      // BC-7: killSwitch.engaged===true 만 거래중지로 본다. null(미설정)·조회실패는 차단하지 않는다.
+      const tradingHalted = killSwitch?.engaged === true;
+      const isLiveContext = orderContext === "LIVE";
       return h("main", { className: "route-stack" },
         workspaceReady
-          ? h("div", null,
-            h(OrderCreationPanel, {
-              connectionId, initialSymbol: orderDraft.symbol, initialSide: orderDraft.side, busy: busy === "order-propose",
-              error: busy === "order-propose" ? "" : error,
-              onCreate: createOrderProposal
+          ? h("div", { className: "orders-workspace" },
+            // P2: 화면 상단 실행 컨텍스트 탭. 큐 필터·작성 폼 가용성을 이 선택이 함께 바꾼다.
+            h(OrderContextTabs, {
+              context: orderContext,
+              orders: dashboard?.pendingOrderProposals?.data ?? [],
+              onSelect: setOrderContext
             }),
+            // P2: 주문 작성은 Paper 컨텍스트에서만. Live 에서는 안내만 노출한다(작성 미지원).
+            // 승인·전송·정정·취소는 이제 연동돼 있고, 주문 생성만 미지원이다(Phase 0 게이트 + credential feature flag).
+            isLiveContext
+              ? h("p", { className: "empty live-order-notice", role: "note", "data-live-order-notice": "" },
+                "실거래 주문 생성은 아직 지원하지 않습니다 · 기존 실거래 주문의 승인·전송·정정·취소만 가능합니다")
+              : h(OrderCreationPanel, {
+                connectionId, initialSymbol: orderDraft.symbol, initialSide: orderDraft.side, busy: busy === "order-propose",
+                error: busy === "order-propose" ? "" : error,
+                onCreate: createOrderProposal,
+                onPreview: previewOrder,
+                tradingHalted: killSwitch?.engaged === true,
+                haltReason: killSwitch?.reason ?? "",
+                buyingPower
+              }),
             approvalOrder
               ? h(OrderApprovalPanel, {
                 order: approvalOrder,
                 busy: busyOrderIds.has(approvalOrder.id),
                 error: approvalError,
+                tradingHalted,
+                // Live 승인은 별도 흐름(step-up + live approve, 브로커 미전송)으로 보낸다.
                 onConfirm: displayed =>
-                  runOrderCommand(approvalOrder.id, "approve", displayed),
+                  approvalOrder.executionMode === "LIVE"
+                    ? submitLiveApproval(approvalOrder.id, displayed)
+                    : runOrderCommand(approvalOrder.id, "approve", displayed),
                 onReject: () => confirmOrderCancel(approvalOrder.id),
                 onClose: () => {
                   setApprovalOrder(null);
@@ -962,10 +1186,13 @@ export function RouteWorkspace({ route, symbol = "" }) {
               : null,
             h(OrdersView, {
               section: dashboard?.pendingOrderProposals,
+              context: orderContext,
               busyOrderId: busyOrderIds,
-              onOrderAction: orderAction,
+              // Live 컨텍스트는 분리된 핸들러를 쓴다(승인 검토→패널, 취소→확인 게이트).
+              onOrderAction: isLiveContext ? liveOrderAction : orderAction,
               onModifyPrice: modifyLiveOrderAction,
-              buyingPower,
+              onDispatch: dispatchLiveOrderAction,
+              tradingHalted,
             }))
           : connectionNotice("계좌를 연결하면 대기 중인 주문을 확인할 수 있습니다."));
     }
@@ -981,37 +1208,62 @@ export function RouteWorkspace({ route, symbol = "" }) {
           })
           : connectionNotice("계좌를 연결하면 이벤트를 확인할 수 있습니다."));
     }
-    if (route === "predictions") {
-      return h("main", { className: "route-stack" },
-        h(AnalysisOutcomeView, {
-          performance: outcome, versions: models, query: outcomeQuery,
-          busy: predictionLoading || outcomeBusy, createBusy: Boolean(busy), createError: predictionError,
-          onQuery: query => {
-            setOutcomeQuery(query);
-            setOutcomeBusy(true);
-            loadAnalysisPredictions(connectionId, query).then(setOutcome)
-              .catch(value => setPredictionError(describeError(value.message)))
-              .finally(() => setOutcomeBusy(false));
-          },
-          onCreate: command => mutation("prediction", async () => {
-            await createAnalysisPrediction(connectionId, command);
-            setOutcome(await loadAnalysisPredictions(connectionId, outcomeQuery));
-          }),
-          registryBusy: Boolean(busy), registryError: predictionError,
-          onRegister: command => mutation("model", async () => {
-            await registerPredictionModelVersion(command);
-            setModels(await loadPredictionModelVersions());
-          }),
-          onDeprecate: id => mutation("model", async () => {
-            await deprecatePredictionModelVersion(id);
-            setModels(await loadPredictionModelVersions());
-          }),
-          onDelete: id => mutation("model", async () => {
-            await deletePredictionModelVersion(id);
-            setModels(await loadPredictionModelVersions());
-          })
+    // Settings: 5개 <details> 섹션(계좌 기본 펼침, 나머지 접힘). 상태는 여기서 소유하고,
+    // 각 섹션 데이터는 펼칠 때 loadSettingsSection 이 한 번만 지연 로드한다.
+    // 예측 관련 기능(AnalysisOutcomeView·PaperPerformanceView·PredictionOperationsView)은
+    // /predictions 리다이렉트 이후 이 Settings 한 곳에서만 도달 가능하다(중복 마운트 없음).
+    return h("main", { className: "route-stack" },
+      h(SettingsSections, {
+        onExpand: loadSettingsSection,
+        account: h(BrokerOnboarding, {
+          connection, connectionId, busyAction: busy,
+          onCredentials: credentialsAction, onCommand: brokerAction
         }),
-        h(PaperPerformanceView, {
+        risk: h("div", { className: "settings-risk" },
+          h(RiskPolicyPanel, {
+            policy: riskPolicy, history: [], open: riskOpen, busy: Boolean(busy),
+            onToggle: () => setRiskOpen(value => !value),
+            onUpdate: input => mutation("risk-policy", async () => setRiskPolicy(await updateRiskPolicy(input))),
+            onLoadHistory() {}
+          }),
+          // BC-7: 거래 중지 상태(내 계정 기준). engaged===null(미설정)을 "정상"과 구분해 노출한다.
+          h(KillSwitchStatus, { killSwitch })),
+        data: h(OperationsReadinessView, {
+          readiness, busy: readinessBusy || busy === "readiness", error: readinessError,
+          onRefresh: () => refreshReadiness().catch(() => {}),
+          onProbe: probeReadiness
+        }),
+        analysis: h("div", { className: "settings-analysis" },
+          h(AnalysisOutcomeView, {
+            performance: outcome, versions: models, query: outcomeQuery,
+            busy: predictionLoading || outcomeBusy, createBusy: Boolean(busy), createError: predictionError,
+            onQuery: query => {
+              setOutcomeQuery(query);
+              setOutcomeBusy(true);
+              loadAnalysisPredictions(connectionId, query).then(setOutcome)
+                .catch(value => setPredictionError(describeError(value.message)))
+                .finally(() => setOutcomeBusy(false));
+            },
+            onCreate: command => mutation("prediction", async () => {
+              await createAnalysisPrediction(connectionId, command);
+              setOutcome(await loadAnalysisPredictions(connectionId, outcomeQuery));
+            }),
+            registryBusy: Boolean(busy), registryError: predictionError,
+            onRegister: command => mutation("model", async () => {
+              await registerPredictionModelVersion(command);
+              setModels(await loadPredictionModelVersions());
+            }),
+            onDeprecate: id => mutation("model", async () => {
+              await deprecatePredictionModelVersion(id);
+              setModels(await loadPredictionModelVersions());
+            }),
+            onDelete: id => mutation("model", async () => {
+              await deletePredictionModelVersion(id);
+              setModels(await loadPredictionModelVersions());
+            })
+          }),
+          predictionOperationsView()),
+        strategy: h(PaperPerformanceView, {
           performance: paperPerformance, query: paperQuery, busy: predictionLoading || paperBusy,
           onQuery: query => {
             setPaperQuery(query);
@@ -1020,27 +1272,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
               .catch(value => setPredictionError(describeError(value.message)))
               .finally(() => setPaperBusy(false));
           }
-        }),
-        predictionOperationsView());
-    }
-    return h("main", { className: "route-stack" },
-      route === "settings" ? h(OperationsReadinessView, {
-        readiness, busy: readinessBusy || busy === "readiness", error: readinessError,
-        onRefresh: () => refreshReadiness().catch(() => {}),
-        onProbe: probeReadiness
-      }) : null,
-      route === "settings" ? h("details", { className: "settings-secondary", open: true },
-        h("summary", null, "시스템 · 모델 운영"),
-        predictionOperationsView()) : null,
-      h(RiskPolicyPanel, {
-        policy: riskPolicy, history: [], open: riskOpen, busy: Boolean(busy),
-        onToggle: () => setRiskOpen(value => !value),
-        onUpdate: input => mutation("risk-policy", async () => setRiskPolicy(await updateRiskPolicy(input))),
-        onLoadHistory() {}
-      }),
-      h(BrokerOnboarding, {
-        connection, connectionId, busyAction: busy,
-        onCredentials: credentialsAction, onCommand: brokerAction
+        })
       }));
   }
 
@@ -1052,6 +1284,42 @@ export function RouteWorkspace({ route, symbol = "" }) {
       overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0
     }
   }, liveMessage);
+
+  // 홈·비-홈 공통 topbar. AccountSwitcher 를 모든 라우트의 상단으로 단일화한다(중복 섹션 제거).
+  function workspaceTopbar({ title, stateText = null }) {
+    const account = dashboard?.portfolio?.data?.account;
+    // 연결 UUID 대신 displayAccountNumber 를 쓰고, 없으면 AccountSwitcher 의 기본 라벨을 유지한다.
+    const accountLabel = account?.displayAccountNumber ?? "계좌";
+    return h("header", { className: "topbar" },
+      h("div", { "data-route-region": "title" },
+        h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
+        h("h1", null, title),
+        stateText ? h("p", { className: "topbar-state", "data-home-state-label": "" }, stateText) : null),
+      h("div", { className: "topbar-actions" },
+        workspaceReady ? h(AccountSwitcher, {
+          accountLabel,
+          accounts: connections,
+          connectionId: connectionId.trim(),
+          workspaceStatus,
+          busy: workspaceStatus === "loading" || Boolean(busy),
+          onSwitch: openWorkspace
+        }) : null,
+        h(GlobalStockSearch, { onSearch: ticker => {
+          window.location.href = `/stocks/${encodeURIComponent(ticker)}`;
+        }}),
+        h(MarketStatusIndicator, { calendar: marketCalendar }),
+        workspaceReady ? h(DataFreshnessIndicator, { section: dashboard?.portfolio }) : null,
+        workspaceReady ? h(NotificationCenter, {
+          unreadCount, notifications, open: notificationsOpen, busy: Boolean(busy),
+          onToggle: notificationsToggle, onMarkRead: notificationMarkRead
+        }) : null,
+        h("a", { className: "button-link secondary", href: "/settings" }, "설정"),
+        h("button", {
+          type: "button", className: "secondary",
+          // 로그아웃이 실패해도 로컬 세션을 반드시 폐기해 탈출구를 보장한다.
+          onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
+        }, "로그아웃")));
+  }
 
   if (session === undefined) {
     return h("main", { className: "center" }, h("p", null, "세션 불러오는 중…"));
@@ -1074,9 +1342,17 @@ export function RouteWorkspace({ route, symbol = "" }) {
       h("a", { className: "button-link", href: loginHref(route, stockSymbol) }, "로그인")));
   }
   if (route === "home") {
-    // 홈은 상단 액션(리스크 정책·알림)과 랜딩/워크스페이스 전환을 갖는 별도 레이아웃이지만
-    // 세션·연결·주문·안전 게이트는 위의 공유 상태/핸들러를 그대로 쓴다(D-36).
+    // 홈은 랜딩/워크스페이스 전환을 갖지만 세션·연결·주문·안전 게이트는 공유 상태/핸들러를 쓴다(D-36).
     const homeSymbol = selectHomeSymbol(dashboard);
+    const now = Date.now();
+    // 순서 준수: buildActions → 그 결과를 resolveSurfaceState 에 주입.
+    const actions = buildActions({ dashboard, now });
+    const surface = resolveSurfaceState({ connectionId: connectionId.trim(), dashboard, killSwitch, actions, now });
+    // BLOCKED(연결 필요 또는 포트폴리오 데이터 파손)에서는 결정 표면을 신뢰할 수 없으므로
+    // HomeDecisionCenter 를 마운트하지 않고 온보딩/랜딩(+파손 안내)을 그린다. dashboard 가
+    // 로드됐어도(workspaceReady) dataBroken 이면 빈 workspace-content 를 남기지 않는다(D-36).
+    const showWorkspace = workspaceReady && surface.state !== "BLOCKED";
+    const stateText = showWorkspace ? `${surface.label} · ${surface.actionCount}건` : null;
     const marketOverview = h(MarketOverviewView, {
       exchangeRate, calendar: marketCalendar, rankings,
       onRankingCategory: category => {
@@ -1085,46 +1361,41 @@ export function RouteWorkspace({ route, symbol = "" }) {
           .catch(value => setRankings({ status: "ERROR", unavailableReason: value.code ?? value.message }));
       }
     });
+    // 기존 캔들·시장 개요·실시간 시세를 묶어 marketContext 로 주입한다(기능·요청 동작 불변).
+    const marketContext = h("div", { className: "home-market-context-body", "data-home-region-content": "market" },
+      h(MarketCandleChart, {
+        envelope: homeCandles, symbol: homeSymbol, interval: homeCandleInterval,
+        onIntervalChange: homeCandleIntervalChange
+      }),
+      h("div", { className: "home-market-overview" }, marketOverview),
+      h(RealtimePriceTicker, { prices: realtimePrices }));
+    // 홈 ActionQueue 의 "승인 검토" 는 /orders?order=<id> 로 이동(승인 패널은 /orders 에만 마운트).
+    const homeOrderAction = (id, action) => {
+      if (action === "approve") {
+        if (typeof window !== "undefined") {
+          window.location.href = `/orders?order=${encodeURIComponent(id)}`;
+        }
+        return Promise.resolve();
+      }
+      return confirmOrderCancel(id);
+    };
     return h("div", null,
       statusRegion,
-      h("header", { className: "topbar" },
-        h("div", { "data-route-region": "title" },
-          h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
-          h("h1", null, workspaceReady ? "Decision Center" : "내 투자, 한눈에")),
-        h("div", { className: "topbar-actions" },
-          workspaceReady ? h(AccountSwitcher, {
-            accountLabel: "계좌",
-            accounts: connections,
-            connectionId: connectionId.trim(),
-            workspaceStatus,
-            busy: workspaceStatus === "loading" || Boolean(busy),
-            onSwitch: openWorkspace
-          }) : null,
-          h(GlobalStockSearch, { onSearch: ticker => {
-            window.location.href = `/stocks/${encodeURIComponent(ticker)}`;
-          }}),
-          h(MarketStatusIndicator, { calendar: marketCalendar }),
-          workspaceReady ? h(DataFreshnessIndicator, { section: dashboard?.portfolio }) : null,
-          workspaceReady ? h(NotificationCenter, {
-            unreadCount,
-            notifications,
-            open: notificationsOpen,
-            busy: Boolean(busy),
-            onToggle: notificationsToggle,
-            onMarkRead: notificationMarkRead
-          }) : null,
-          h("button", {
-            type: "button", className: "secondary",
-            // 로그아웃이 실패해도 로컬 세션을 반드시 폐기해 탈출구를 보장한다.
-            onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
-          }, "로그아웃"))),
-      workspaceReady ? h(RouteNav, { symbol: homeSymbol }) : null,
+      workspaceTopbar({ title: showWorkspace ? "Decision Center" : "내 투자, 한눈에", stateText }),
+      h(KillSwitchBanner, { killSwitch }),
+      showWorkspace ? h(RouteNav, { symbol: homeSymbol }) : null,
       error ? h("p", { className: "error", role: "alert" }, error) : null,
-      !workspaceReady ? h("main", { className: "onboarding-wrap landing-shell" },
+      !showWorkspace ? h("main", { className: "onboarding-wrap landing-shell" },
         h("div", { className: "landing-copy" },
           h("p", { className: "landing-kicker" }, "미국주식 투자 관리"),
-          h("h2", null, "오늘의 투자를\n더 또렷하게"),
-          h("p", null, "토스증권 계좌를 연결하면 자산, 위험, 분석을 필요한 순간에만 보여드립니다.")),
+          // dataBroken(계좌는 연결됐으나 포트폴리오 섹션 파손)은 온보딩이 아니라 복구 안내를 준다.
+          surface.dataBroken
+            ? h("h2", null, "포트폴리오 정보를\n불러오지 못했어요")
+            : h("h2", null, "오늘의 투자를\n더 또렷하게"),
+          surface.dataBroken
+            ? h("p", { className: "error", role: "alert" },
+              "포트폴리오 데이터를 일시적으로 불러올 수 없습니다. 잠시 후 다시 시도하거나 계좌 연결 상태를 확인해 주세요.")
+            : h("p", null, "토스증권 계좌를 연결하면 자산, 위험, 분석을 필요한 순간에만 보여드립니다.")),
         h(BrokerOnboarding, {
           connection,
           connectionId: connectionId.trim(),
@@ -1132,68 +1403,30 @@ export function RouteWorkspace({ route, symbol = "" }) {
           onCredentials: credentialsAction,
           onCommand: brokerAction
         })) : null,
-      workspaceReady ? h("div", { className: "workspace-content" },
-        approvalOrder
-          ? h(OrderApprovalPanel, {
-            order: approvalOrder,
-            busy: busyOrderIds.has(approvalOrder.id),
-            error: approvalError,
-            onConfirm: displayed => runOrderCommand(approvalOrder.id, "approve", displayed),
-            onReject: () => confirmOrderCancel(approvalOrder.id),
-            onClose: () => {
-              setApprovalOrder(null);
-              setApprovalError(null);
-            }
-          })
-          : null,
-        h(DecisionCenter, { dashboard, onOrder: orderAction },
-          h(DashboardView, {
-            dashboard,
-            busyOrderId: busyOrderIds,
-            onOrderAction: orderAction,
-            homeLayout: "operations",
-            portfolioHistory,
-            historyBusy,
-            riskPolicy,
-            realtimePrices,
-            marketOverview,
-            homeCandles,
-            homeCandleSymbol: homeSymbol,
-            homeCandleInterval,
-            onHomeCandleIntervalChange: homeCandleIntervalChange,
-            showHomeActionSections: false
-          }))) : null);
+      showWorkspace ? h("div", { className: "workspace-content" },
+        h(HomeDecisionCenter, {
+          surface,
+          actions,
+          dashboard,
+          riskPolicy,
+          portfolioHistory,
+          historyBusy,
+          marketContext,
+          busyOrderId: busyOrderIds,
+          onOrderAction: homeOrderAction,
+          onRefresh: () => openWorkspace(connectionId)
+        })) : null);
   }
   return h("div", null,
     statusRegion,
-    h("header", { className: "topbar" },
-      h("div", { "data-route-region": "title" },
-        h("p", { className: "eyebrow" }, "TRADE · 미국주식"),
-        h("h1", null, {
-          portfolio: "포트폴리오", stock: stockSymbol || "종목 분석", events: "이벤트",
-          orders: "주문", predictions: "시스템", settings: "설정"
-        }[route] ?? "내 자산")),
-      h("div", { className: "topbar-actions" },
-        h(GlobalStockSearch, { onSearch: ticker => {
-          window.location.href = `/stocks/${encodeURIComponent(ticker)}`;
-        }}),
-        h(MarketStatusIndicator, { calendar: marketCalendar }),
-        workspaceReady ? h(DataFreshnessIndicator, { section: dashboard?.portfolio }) : null,
-        workspaceReady ? h(NotificationCenter, {
-          unreadCount, notifications, open: notificationsOpen, busy: Boolean(busy),
-          onToggle: notificationsToggle, onMarkRead: notificationMarkRead
-        }) : null,
-        h("a", { className: "button-link secondary", href: "/settings" }, "설정"),
-        h("button", {
-          type: "button", className: "secondary",
-          onClick: () => Promise.resolve().then(logout).catch(value => setError(describeError(value.message))).finally(() => setSession(null))
-        }, "로그아웃"))),
+    workspaceTopbar({
+      title: {
+        portfolio: "포트폴리오", stock: stockSymbol || "종목 분석", events: "이벤트",
+        orders: "주문", predictions: "시스템", settings: "설정"
+      }[route] ?? "내 자산"
+    }),
+    h(KillSwitchBanner, { killSwitch }),
     h(RouteNav, { symbol: stockSymbol }),
-    h("section", { "data-route-region": "connection", "aria-label": "계좌 연결" },
-      workspaceReady ? h(AccountSwitcher, {
-        accountLabel: "현재 계좌", accounts: connections, connectionId, workspaceStatus,
-        busy: workspaceStatus === "loading" || Boolean(busy), onSwitch: openWorkspace
-      }) : h("p", { className: "empty" }, "계좌를 선택하면 이 화면을 사용할 수 있습니다.")),
     ErrorMessage({ value: error }),
     routeContent());
 }

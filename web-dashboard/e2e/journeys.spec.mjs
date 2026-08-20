@@ -11,7 +11,8 @@ import {
   jsonResponse,
   primeAuth,
   RISK_POLICY,
-  SESSION
+  SESSION,
+  stateRoute
 } from "./fixtures/states.mjs";
 
 // Core user journeys, driven at the 1280 viewport only. These are audit probes:
@@ -428,4 +429,94 @@ test("journey: error recovery", async ({ page, context }) => {
     pageErrors: diag.pageErrors
   });
   expect.soft(blockedAt, "error-recovery journey completed").toBe("");
+});
+
+// ---------------------------------------------------------------------------
+// 5. Decision hand-off journey: home action queue -> orders approval panel
+// ---------------------------------------------------------------------------
+// The Adaptive Decision Workspace deliberately does NOT mount the approval panel on
+// the home screen. "승인 검토" in the home action queue is a hand-off: it navigates to
+// /orders?order=<id>, and the orders route is responsible for picking that id up,
+// selecting the matching execution context, and opening the approval panel. If the
+// hand-off drops the id, the user lands on a queue and has to find the order again —
+// which is exactly the friction the redesign set out to remove.
+test("journey: home decision hands off to the orders approval panel", async ({ page, context }) => {
+  const diag = collectDiagnostics(page);
+  const steps = [];
+  let blockedAt = "";
+
+  await primeAuth(context, { withConnection: true });
+  // decision-active pins the home surface to ACTIVE with exactly one actionable
+  // PROPOSED order, and the frozen clock keeps it un-expired so 승인 검토 is enabled.
+  await freezeClock(context);
+  await page.route("**/api/v1/**", stateRoute("decision-active", { delayMs: 0 }));
+
+  const ORDER_ID = "order-active-1";
+
+  try {
+    await page.goto("/#access_token=test-token", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    await shot(page, "10-home-action-queue");
+
+    const queue = page.locator('.home-decision-shell > [data-home-region="actions"]');
+    const reviewBtn = queue.getByRole("button", { name: "승인 검토" }).first();
+    const hasReview = (await reviewBtn.count()) > 0 && await reviewBtn.isEnabled();
+    steps.push({ step: "home-review-action-actionable", ok: hasReview });
+    expect.soft(hasReview, "home action queue offers an enabled 승인 검토").toBe(true);
+
+    if (!hasReview) {
+      blockedAt = "home-review-action";
+    } else {
+      await Promise.all([
+        page.waitForURL(/\/orders\?order=/, { timeout: 10000 }).catch(() => {}),
+        reviewBtn.click().catch(() => {})
+      ]);
+      await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+      await shot(page, "11-orders-deeplink");
+
+      const url = new URL(page.url());
+      const routed = url.pathname === "/orders" && url.searchParams.get("order") === ORDER_ID;
+      steps.push({ step: "routes-to-orders-deeplink", ok: routed, url: page.url() });
+      expect.soft(routed, "hand-off routes to /orders?order=<id>").toBe(true);
+      if (!routed) {
+        blockedAt = "orders-deeplink-url";
+      }
+
+      // The deep link must land the user on the approval panel for THAT order, with
+      // the execution-context tab already switched to match it.
+      const panel = page.locator(".order-approval-panel");
+      const panelOpen = await panel
+        .waitFor({ state: "visible", timeout: 8000 })
+        .then(() => true)
+        .catch(() => false);
+      steps.push({ step: "approval-panel-auto-opens", ok: panelOpen });
+      expect.soft(
+        panelOpen,
+        `?order=${ORDER_ID} must auto-open that order's approval panel`
+      ).toBe(true);
+      if (!panelOpen && !blockedAt) {
+        blockedAt = "approval-panel-not-opened";
+      }
+
+      if (panelOpen) {
+        const showsOrder = await panel.innerText().then(text => text.includes("AMD")).catch(() => false);
+        steps.push({ step: "approval-panel-shows-requested-order", ok: showsOrder });
+        expect.soft(showsOrder, "approval panel shows the requested order").toBe(true);
+        if (!showsOrder && !blockedAt) {
+          blockedAt = "approval-panel-wrong-order";
+        }
+      }
+      await shot(page, "12-orders-approval-open");
+    }
+  } catch (err) {
+    blockedAt = blockedAt || (err?.message ?? String(err));
+  }
+
+  writeRecord("journey", "home-to-approval", {
+    steps,
+    blockedAt,
+    consoleErrors: diag.consoleErrors,
+    pageErrors: diag.pageErrors
+  });
+  expect.soft(blockedAt, "home-to-approval journey completed").toBe("");
 });

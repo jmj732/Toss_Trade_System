@@ -1,0 +1,474 @@
+{
+  "requestId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+  "schemaVersion": "1",
+  "inputSnapshotId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "symbol": "AAPL",
+  "asOf": "2026-08-02T00:00:00Z",
+  "status": "DEGRADED",
+  "missingData": [
+    "fundamental:FIELD_MISSING:fundamental.net_income",
+    "fundamental:FIELD_MISSING:fundamental.revenue",
+    "fundamental:FIELD_MISSING:fundamental.equity",
+    "fundamental:FIELD_MISSING:fundamental.total_liabilities",
+    "fundamental:FIELD_MISSING:fundamental.operating_cash_flow",
+    "valuation:FIELD_MISSING:fundamental.eps",
+    "valuation:FIELD_MISSING:fundamental.book_value_per_share",
+    "valuation:FIELD_MISSING:fundamental.revenue_per_share",
+    "valuation:FIELD_MISSING:fundamental.free_cash_flow_per_share",
+    "technical:FIELD_MISSING:technical.sma50",
+    "technical:FIELD_MISSING:technical.rsi14"
+  ],
+  "observations": [
+    {
+      "field": "quote.price",
+      "value": "200",
+      "unit": "USD",
+      "period": null,
+      "identifier": "AAPL",
+      "provider": "FMP",
+      "asOf": "2026-08-01T20:00:00Z",
+      "collectedAt": "2026-08-02T00:00:00Z",
+      "missingData": []
+    },
+    {
+      "field": "technical.sma20",
+      "value": "190",
+      "unit": "ratio",
+      "period": null,
+      "identifier": "AAPL",
+      "provider": "FMP",
+      "asOf": "2026-08-01T20:00:00Z",
+      "collectedAt": "2026-08-02T00:00:00Z",
+      "missingData": []
+    },
+    {
+      "field": "technical.volatility20",
+      "value": "0.2",
+      "unit": "ratio",
+      "period": null,
+      "identifier": "AAPL",
+      "provider": "FMP",
+      "asOf": "2026-08-01T20:00:00Z",
+      "collectedAt": "2026-08-02T00:00:00Z",
+      "missingData": []
+    },
+    {
+      "field": "macro.vix",
+      "value": "18",
+      "unit": "ratio",
+      "period": null,
+      "identifier": "AAPL",
+      "provider": "FRED",
+      "asOf": "2026-08-01T20:00:00Z",
+      "collectedAt": "2026-08-02T00:00:00Z",
+      "missingData": []
+    },
+    {
+      "field": "macro.sp500_return20d",
+      "value": "0.04",
+      "unit": "ratio",
+      "period": null,
+      "identifier": "AAPL",
+      "provider": "FRED",
+      "asOf": "2026-08-01T20:00:00Z",
+      "collectedAt": "2026-08-02T00:00:00Z",
+      "missingData": []
+    }
+  ],
+  "analyzers": [
+    {
+      "analyzer": "fundamental",
+      "confidence": "0",
+      "missingData": [
+        "FIELD_MISSING:fundamental.net_income",
+        "FIELD_MISSING:fundamental.revenue",
+        "FIELD_MISSING:fundamental.equity",
+        "FIELD_MISSING:fundamental.total_liabilities",
+        "FIELD_MISSING:fundamental.operating_cash_flow"
+      ],
+      "metrics": [
+        {
+          "name": "fundamental.profit_margin",
+          "value": null,
+          "unit": "ratio",
+          "asOf": null,
+          "provenance": [],
+          "missingData": [
+            "FIELD_MISSING:fundamental.net_income",
+            "FIELD_MISSING:fundamental.revenue"
+          ]
+        },
+        {
+          "name": "fundamental.roe",
+          "value": null,
+          "unit": "ratio",
+          "asOf": null,
+          "provenance": [],
+          "missingData": [
+            "FIELD_MISSING:fundamental.net_income",
+            "FIELD_MISSING:fundamental.equity"
+          ]
+        },
+        {
+          "name": "fundamental.debt_to_equity",
+          "value": null,
+          "unit": "ratio",
+          "asOf": null,
+          "provenance": [],
+          "missingData": [
+            "FIELD_MISSING:fundamental.total_liabilities",
+            "FIELD_MISSING:fundamental.equity"
+          ]
+        },
+        {
+          "name": "fundamental.operating_cash_flow_margin",
+          "value": null,
+          "unit": "ratio",
+          "asOf": null,
+          "provenance": [],
+          "missingData": [
+            "FIELD_MISSING:fundamental.operating_cash_flow",
+            "FIELD_MISSING:fundamental.revenue"
+          ]
+        }
+      ]
+    },
+    {
+      "analyzer": "valuation",
+      "confidence": "0",
+      "missingData": [
+        "FIELD_MISSING:fundamental.eps",
+        "FIELD_MISSING:fundamental.book_value_per_share",
+        "FIELD_MISSING:fundamental.revenue_per_share",
+        "FIELD_MISSING:fundamental.free_cash_flow_per_share"
+      ],
+      "metrics": [
+        {
+          "name": "valuation.pe",
+          "value": null,
+          "unit": "multiple",
+          "asOf": null,
+          "provenance": [
+            {
+              "provider": "FMP",
+              "field": "quote.price",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": [
+            "FIELD_MISSING:fundamental.eps"
+          ]
+        },
+        {
+          "name": "valuation.price_to_book",
+          "value": null,
+          "unit": "multiple",
+          "asOf": null,
+          "provenance": [
+            {
+              "provider": "FMP",
+              "field": "quote.price",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": [
+            "FIELD_MISSING:fundamental.book_value_per_share"
+          ]
+        },
+        {
+          "name": "valuation.price_to_sales",
+          "value": null,
+          "unit": "multiple",
+          "asOf": null,
+          "provenance": [
+            {
+              "provider": "FMP",
+              "field": "quote.price",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": [
+            "FIELD_MISSING:fundamental.revenue_per_share"
+          ]
+        },
+        {
+          "name": "valuation.fcf_yield",
+          "value": null,
+          "unit": "ratio",
+          "asOf": null,
+          "provenance": [
+            {
+              "provider": "FMP",
+              "field": "quote.price",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": [
+            "FIELD_MISSING:fundamental.free_cash_flow_per_share"
+          ]
+        }
+      ]
+    },
+    {
+      "analyzer": "technical",
+      "confidence": "0.4",
+      "missingData": [
+        "FIELD_MISSING:technical.sma50",
+        "FIELD_MISSING:technical.rsi14"
+      ],
+      "metrics": [
+        {
+          "name": "technical.price_vs_sma20",
+          "value": "0.0526315789",
+          "unit": "ratio",
+          "asOf": "2026-08-02T00:00:00Z",
+          "provenance": [
+            {
+              "provider": "FMP",
+              "field": "quote.price",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            },
+            {
+              "provider": "FMP",
+              "field": "technical.sma20",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": []
+        },
+        {
+          "name": "technical.price_vs_sma50",
+          "value": null,
+          "unit": "ratio",
+          "asOf": null,
+          "provenance": [
+            {
+              "provider": "FMP",
+              "field": "quote.price",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": [
+            "FIELD_MISSING:technical.sma50"
+          ]
+        },
+        {
+          "name": "technical.sma_trend",
+          "value": null,
+          "unit": "ratio",
+          "asOf": null,
+          "provenance": [
+            {
+              "provider": "FMP",
+              "field": "technical.sma20",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": [
+            "FIELD_MISSING:technical.sma50"
+          ]
+        },
+        {
+          "name": "technical.rsi14",
+          "value": null,
+          "unit": "ratio",
+          "asOf": null,
+          "provenance": [],
+          "missingData": [
+            "FIELD_MISSING:technical.rsi14"
+          ]
+        },
+        {
+          "name": "technical.volatility20",
+          "value": "0.2",
+          "unit": "ratio",
+          "asOf": "2026-08-02T00:00:00Z",
+          "provenance": [
+            {
+              "provider": "FMP",
+              "field": "technical.volatility20",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": []
+        }
+      ]
+    },
+    {
+      "analyzer": "marketRegime",
+      "confidence": "1",
+      "missingData": [],
+      "metrics": [
+        {
+          "name": "marketRegime.vix",
+          "value": "18",
+          "unit": "index",
+          "asOf": "2026-08-02T00:00:00Z",
+          "provenance": [
+            {
+              "provider": "FRED",
+              "field": "macro.vix",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": []
+        },
+        {
+          "name": "marketRegime.sp500Return20d",
+          "value": "0.04",
+          "unit": "ratio",
+          "asOf": "2026-08-02T00:00:00Z",
+          "provenance": [
+            {
+              "provider": "FRED",
+              "field": "macro.sp500_return20d",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": []
+        },
+        {
+          "name": "marketRegime.state",
+          "value": "RISK_ON",
+          "unit": "state",
+          "asOf": "2026-08-02T00:00:00Z",
+          "provenance": [
+            {
+              "provider": "FRED",
+              "field": "macro.vix",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            },
+            {
+              "provider": "FRED",
+              "field": "macro.sp500_return20d",
+              "asOf": "2026-08-01T20:00:00Z",
+              "collectedAt": "2026-08-02T00:00:00Z"
+            }
+          ],
+          "missingData": []
+        }
+      ]
+    }
+  ],
+  "decision": {
+    "action": "WAIT",
+    "confidence": "0.2666666667",
+    "ruleVersion": "decision-rule-v1",
+    "basis": [
+      {
+        "metric": "technical.price_vs_sma20",
+        "value": "0.0526315789",
+        "contribution": "POSITIVE"
+      },
+      {
+        "metric": "technical.price_vs_sma50",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "technical.sma_trend",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "technical.rsi14",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "technical.volatility20",
+        "value": "0.2",
+        "contribution": "POSITIVE"
+      },
+      {
+        "metric": "fundamental.profit_margin",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "fundamental.roe",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "fundamental.debt_to_equity",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "fundamental.operating_cash_flow_margin",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "valuation.pe",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "valuation.price_to_book",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "valuation.price_to_sales",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "valuation.fcf_yield",
+        "value": null,
+        "contribution": "NEUTRAL"
+      },
+      {
+        "metric": "marketRegime.vix",
+        "value": "18",
+        "contribution": "POSITIVE"
+      },
+      {
+        "metric": "marketRegime.sp500Return20d",
+        "value": "0.04",
+        "contribution": "POSITIVE"
+      }
+    ],
+    "missingData": [
+      "DECISION_INPUT_MISSING:technical.price_vs_sma50",
+      "DECISION_REQUIRED_INPUT_MISSING:technical.sma_trend",
+      "DECISION_REQUIRED_INPUT_MISSING:technical.rsi14",
+      "DECISION_INPUT_MISSING:fundamental.profit_margin",
+      "DECISION_INPUT_MISSING:fundamental.roe",
+      "DECISION_INPUT_MISSING:fundamental.debt_to_equity",
+      "DECISION_INPUT_MISSING:fundamental.operating_cash_flow_margin",
+      "DECISION_INPUT_MISSING:valuation.pe",
+      "DECISION_INPUT_MISSING:valuation.price_to_book",
+      "DECISION_INPUT_MISSING:valuation.price_to_sales",
+      "DECISION_INPUT_MISSING:valuation.fcf_yield"
+    ]
+  },
+  "positionPlan": {
+    "entry": "200",
+    "add": "193.661925",
+    "stop": "187.32385",
+    "target1": "222.536",
+    "target2": "245.072",
+    "riskReward": "1.7778268638",
+    "maxLossPerShare": "12.67615",
+    "invalidation": "종가가 187.32385 USD 아래로 마감하면 계획 무효",
+    "ruleVersion": "position-plan-v1",
+    "currency": "USD",
+    "basisPrice": "200",
+    "missingData": []
+  }
+}

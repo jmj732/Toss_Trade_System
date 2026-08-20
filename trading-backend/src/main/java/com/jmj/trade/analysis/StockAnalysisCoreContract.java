@@ -56,8 +56,65 @@ public final class StockAnalysisCoreContract {
             Status status,
             List<String> missingData,
             List<StockAnalysisInput.Observation> observations,
-            List<Analyzer> analyzers
+            List<Analyzer> analyzers,
+            Decision decision,
+            PositionPlan positionPlan
     ) {
+    }
+
+    /**
+     * 결정론적 판단 규칙(analysis-service {@code decision-rule-v1})의 결과.
+     * 판단 근거가 없으면 null 이다 — {@code HOLD} 같은 기본값으로 대체하지 않는다.
+     */
+    public record Decision(
+            Action action,
+            BigDecimal confidence,
+            String ruleVersion,
+            List<Basis> basis,
+            List<String> missingData
+    ) {
+    }
+
+    public record Basis(
+            String metric,
+            BigDecimal value,
+            Contribution contribution
+    ) {
+    }
+
+    /**
+     * 결정론적 포지션 계획(analysis-service {@code position-plan-v1}).
+     * {@code quote.price} 와 {@code technical.volatility20} 이 둘 다 있을 때만 존재한다.
+     */
+    public record PositionPlan(
+            BigDecimal entry,
+            BigDecimal add,
+            BigDecimal stop,
+            BigDecimal target1,
+            BigDecimal target2,
+            BigDecimal riskReward,
+            BigDecimal maxLossPerShare,
+            String invalidation,
+            String ruleVersion,
+            String currency,
+            BigDecimal basisPrice,
+            List<String> missingData
+    ) {
+    }
+
+    public enum Action {
+        BUY,
+        ADD,
+        HOLD,
+        REDUCE,
+        SELL,
+        WAIT
+    }
+
+    public enum Contribution {
+        POSITIVE,
+        NEGATIVE,
+        NEUTRAL
     }
 
     public record Analyzer(
