@@ -10,7 +10,8 @@ import {
   formatQuantity,
   formatRatio,
   formatSignedAmount,
-  UNKNOWN_TEXT
+  UNKNOWN_TEXT,
+  buyingPowerAmounts
 } from "../lib/format.js";
 import { ORDER_STATUS_LABELS, orderStatusLabel } from "./dashboard-view.js";
 
@@ -464,6 +465,7 @@ function summaryAmounts(values, signed = false) {
 
 export function PortfolioSummary({ dashboard }) {
   const account = dataOf(dashboard?.portfolio)?.account ?? null;
+  const buyingPower = buyingPowerAmounts(dataOf(dashboard?.portfolio)?.buyingPower);
   return h("section", {
     className: "panel portfolio-summary",
     "data-portfolio-summary": account ? "available" : "empty"
@@ -474,6 +476,7 @@ export function PortfolioSummary({ dashboard }) {
       ? h("dl", { className: "decision-metrics portfolio-summary-metrics" },
         h("div", null, h("dt", null, "총 평가금액"), h("dd", null, summaryAmounts(account.marketValueAmounts))),
         h("div", null, h("dt", null, "오늘 손익"), h("dd", null, summaryAmounts(account.dailyProfitLossAmounts, true))),
-        h("div", null, h("dt", null, "총 손익"), h("dd", null, summaryAmounts(account.profitLossAmounts, true))))
+        h("div", null, h("dt", null, "총 손익"), h("dd", null, summaryAmounts(account.profitLossAmounts, true))),
+        h("div", null, h("dt", null, "주문 가능 현금"), h("dd", null, summaryAmounts(buyingPower))))
       : h("p", { className: "empty" }, "계좌 요약을 불러올 수 없습니다"));
 }

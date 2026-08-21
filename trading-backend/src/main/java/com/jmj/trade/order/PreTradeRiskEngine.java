@@ -324,10 +324,6 @@ public class PreTradeRiskEngine {
         if (portfolio.partial()) {
             reasons.add(Reason.PARTIAL_SNAPSHOT);
         }
-        if (portfolio.unknownFields().contains("account.cashBalance")) {
-            reasons.add(Reason.CASH_UNKNOWN);
-        }
-
         var price = subject.type() == OrderType.LIMIT ? subject.limitPrice() : referencePrice;
         var orderAmount = price.multiply(subject.quantity());
         if (subject.quantity().compareTo(policy.maxQuantity()) > 0) {
@@ -627,7 +623,6 @@ public class PreTradeRiskEngine {
     public enum Reason {
         STALE_SNAPSHOT,
         PARTIAL_SNAPSHOT,
-        CASH_UNKNOWN,
         BUYING_POWER_EXCEEDED,
         MAX_ORDER_AMOUNT_EXCEEDED,
         MAX_QUANTITY_EXCEEDED,

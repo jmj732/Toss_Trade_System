@@ -35,6 +35,16 @@ export function formatAmount(currency, value) {
   return currency ? `${currency} ${formatted}` : formatted;
 }
 
+// buyingPower is the user-facing orderable-cash contract. Keep currencies separate;
+// never convert or sum KRW/USD.
+export function buyingPowerAmounts(buyingPower) {
+  const currencies = new Set(["KRW", "USD", ...Object.keys(buyingPower ?? {})]);
+  return Object.fromEntries([...currencies].map(currency => [
+    currency,
+    buyingPower?.[currency]?.cashBuyingPower ?? null
+  ]));
+}
+
 // 부호를 유지해야 하는 손익 표기.
 export function formatSignedAmount(currency, value) {
   const amount = toFiniteNumber(value);

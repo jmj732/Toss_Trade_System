@@ -3,8 +3,7 @@
 const RISK_REASON_LABELS = {
   STALE_SNAPSHOT: "포트폴리오 스냅샷이 오래됐습니다",
   PARTIAL_SNAPSHOT: "포트폴리오 스냅샷이 일부만 확인됐습니다",
-  CASH_UNKNOWN: "현금 잔고를 확인하지 못했습니다",
-  BUYING_POWER_EXCEEDED: "주문 가능 금액을 초과했습니다",
+  BUYING_POWER_EXCEEDED: "주문 가능 현금을 초과했습니다",
   MAX_ORDER_AMOUNT_EXCEEDED: "최대 주문 금액 한도를 초과했습니다",
   MAX_QUANTITY_EXCEEDED: "최대 주문 수량 한도를 초과했습니다",
   CONCENTRATION_EXCEEDED: "종목 집중도 한도를 초과했습니다",

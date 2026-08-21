@@ -9,7 +9,8 @@ import {
   formatInstant,
   classifyProposalExpiry,
   proposalExpiryBadge,
-  UNKNOWN_TEXT
+  UNKNOWN_TEXT,
+  buyingPowerAmounts
 } from "../lib/format.js";
 import { describeError } from "../lib/error-messages.js";
 
@@ -88,8 +89,6 @@ export function OrderTiming({ order }) {
 
 // D-30: 미지 값이 조용히 "매도" 로 접히지 않도록 명시적으로만 매핑한다.
 const SIDE_LABELS = { BUY: "매수", SELL: "매도" };
-// D-20: 현금 잔고 확인 상태 enum 을 한국어로 매핑한다.
-const CASH_STATUS_LABELS = { KNOWN: "확인됨", UNKNOWN: "확인 필요" };
 // D-05: stale 근거 코드를 한국어 보조 문구로 매핑한다.
 const STALE_REASON_LABELS = {
   SYNC_IN_PROGRESS: "최신 동기화 진행 중",
@@ -99,11 +98,9 @@ const STALE_REASON_LABELS = {
 };
 // D-26/D-06: 백엔드 내부 필드·섹션 경로를 한국어 라벨로 매핑한다. 미등록 키는 노출하지 않는다.
 const FIELD_LABELS = {
-  "account.cashBalance": "현금 잔고",
-  "account.cashBalanceStatus": "현금 잔고 상태",
-  BUYING_POWER: "주문 가능 금액",
-  BUYING_POWER_KRW: "KRW 주문 가능 금액",
-  BUYING_POWER_USD: "USD 주문 가능 금액",
+  BUYING_POWER: "주문 가능 현금",
+  BUYING_POWER_KRW: "KRW 주문 가능 현금",
+  BUYING_POWER_USD: "USD 주문 가능 현금",
   POSITIONS: "보유 종목",
   ACCOUNT: "계좌"
 };
@@ -235,17 +232,12 @@ function Portfolio({ section, compact = false }) {
         h("strong", null, h(Amounts, { values: account?.profitLossAmounts, signed: true })))),
     compact ? null : h("div", { className: "summary" },
       h("div", null, h("span", null, "계좌"), h("strong", null,
-        account?.displayAccountNumber ?? UNKNOWN_TEXT)),
-      // D-20: 현금 잔고 확인 상태를 enum 원문 대신 한국어로, 상태 라벨로 노출한다.
-      h("div", null, h("span", null, "현금 잔고 상태"),
-        h("strong", null,
-          CASH_STATUS_LABELS[account?.cashBalanceStatus] ?? UNKNOWN_TEXT))),
-    compact ? null : h("h3", null, "주문 가능 금액"),
+        account?.displayAccountNumber ?? UNKNOWN_TEXT))),
+    compact ? null : h("h3", null, "주문 가능 현금"),
     compact ? null : h("div", { className: "buying-power" },
-      ...["KRW", "USD"].map(currency => h("div", { key: currency },
+      ...Object.entries(buyingPowerAmounts(portfolio?.buyingPower)).map(([currency, amount]) => h("div", { key: currency },
         h("span", null, currency),
-        h("strong", null, formatAmount(
-          currency, portfolio?.buyingPower?.[currency]?.cashBuyingPower))))),
+        h("strong", null, formatAmount(currency, amount))))),
     h("h3", null, "보유 종목"),
     positions.length
       ? h("div", { className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "보유 종목 표" }, h("table", null,

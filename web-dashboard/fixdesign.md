@@ -135,8 +135,7 @@ Home은 Decision Center다.
 표시:
 
 * 총 평가금액
-* 현금
-* 주문 가능 금액
+* 주문 가능 현금
 * 오늘 손익
 * 총 손익
 * Portfolio Risk

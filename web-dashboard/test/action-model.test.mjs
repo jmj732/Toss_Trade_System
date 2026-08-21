@@ -239,7 +239,7 @@ test("event title 폴백: summary→type→기본값", () => {
 
 // --- DATA_QUALITY ---
 
-test("품질 항목 4종을 각각 생성하고 analysis DEGRADED만 MEDIUM", () => {
+test("품질 항목은 stale/partial을 만들고 analysis DEGRADED만 MEDIUM", () => {
   const stale = buildActions({
     dashboard: dashboard({ portfolio: section({ stale: true, data: { positions: [], account: {}, staleReason: "SYNC_LAG" } }) }),
     now: NOW
@@ -255,12 +255,6 @@ test("품질 항목 4종을 각각 생성하고 analysis DEGRADED만 MEDIUM", ()
     now: NOW
   });
   assert.ok(partial.find(a => a.key === "quality:PORTFOLIO_PARTIAL" && a.priority === "LOW"));
-
-  const cash = buildActions({
-    dashboard: dashboard({ portfolio: section({ data: { positions: [], account: { cashBalanceStatus: "UNKNOWN" } } }) }),
-    now: NOW
-  });
-  assert.ok(cash.find(a => a.key === "quality:CASH_UNKNOWN" && a.priority === "LOW"));
 
   const degradedStatus = buildActions({
     dashboard: dashboard({ analysis: section({ data: { result: { status: "DEGRADED" } } }) }),

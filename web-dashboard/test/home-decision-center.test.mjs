@@ -12,8 +12,7 @@ const DASHBOARD = {
       account: {
         marketValueAmounts: { USD: 120 },
         profitLossAmounts: { USD: 20 },
-        dailyProfitLossAmounts: { USD: 4 },
-        cashBalanceStatus: "KNOWN"
+        dailyProfitLossAmounts: { USD: 4 }
       },
       positions: [{ symbol: "NVDA", currency: "USD", quantity: 1, marketValueAmount: 120, profitLossAmount: 20 }],
       buyingPower: { USD: { cashBuyingPower: 1000 } }
@@ -146,4 +145,11 @@ test("BLOCKED renders nothing (host draws onboarding)", () => {
     surface: surfaceFor("BLOCKED", 0), actions: [], dashboard: DASHBOARD
   }));
   assert.equal(html, "");
+});
+
+test("uses buying power as the only cash metric", () => {
+  const html = render("CALM", []);
+  assert.match(html, /주문 가능 현금/);
+  assert.match(html, /USD 1,000\.00/);
+  assert.doesNotMatch(html, /현금 잔고 상태|주문 가능 금액/);
 });

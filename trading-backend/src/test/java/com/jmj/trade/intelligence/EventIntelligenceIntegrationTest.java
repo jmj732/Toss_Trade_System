@@ -411,7 +411,7 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
                                   "requestId":"{{jsonPath request.body '$.requestId'}}",
                                   "schemaVersion":"1",
                                   "asOf":"{{jsonPath request.body '$.asOf'}}",
-                                  "status":"DEGRADED",
+                                  "status":"COMPLETED",
                                   "quality":{{jsonPath request.body '$.quality'}},
                                   "positions":[{
                                     "symbol":"NVDA",
