@@ -150,8 +150,7 @@ export function fullDashboard() {
         account: {
           displayAccountNumber: "****5678",
           marketValueAmounts: { USD: 120 },
-          profitLossAmounts: { USD: 20 },
-          cashBalanceStatus: "UNKNOWN"
+          profitLossAmounts: { USD: 20 }
         },
         positions: [
           {
@@ -165,7 +164,7 @@ export function fullDashboard() {
         ],
         buyingPower: { KRW: { cashBuyingPower: 1000 } }
       },
-      { unknown: true, unknownFields: ["account.cashBalance"] }
+      { unknown: false, unknownFields: [] }
     ),
     analysis: section({
       result: {
@@ -254,8 +253,7 @@ function emptyDashboard() {
       account: {
         displayAccountNumber: "****0000",
         marketValueAmounts: {},
-        profitLossAmounts: {},
-        cashBalanceStatus: "KNOWN"
+        profitLossAmounts: {}
       },
       positions: [],
       buyingPower: {}
@@ -328,7 +326,7 @@ function degradedDashboard() {
 
 // Zero-Action baseline. Every DATA_QUALITY rule in lib/action-model.js is held off:
 //   portfolio.stale !== true, portfolio.data.partial !== true,
-//   account.cashBalanceStatus !== "UNKNOWN", analysis result status !== "DEGRADED"
+//   analysis result status !== "DEGRADED"
 //   and result.quality.partial !== true.
 // Proposals and pending events are both empty, so buildActions() returns [].
 function decisionBaseDashboard() {
@@ -338,9 +336,7 @@ function decisionBaseDashboard() {
         displayAccountNumber: "****5678",
         marketValueAmounts: { USD: 1240 },
         dailyProfitLossAmounts: { USD: 12 },
-        profitLossAmounts: { USD: 96 },
-        // KNOWN (never "UNKNOWN") — UNKNOWN would add a DATA_QUALITY action.
-        cashBalanceStatus: "KNOWN"
+        profitLossAmounts: { USD: 96 }
       },
       positions: [
         { symbol: "NVDA", name: "NVIDIA", quantity: 2, currency: "USD", lastPrice: 120, marketValueAmount: 240, profitLossAmount: 20 },
@@ -536,7 +532,7 @@ const PORTFOLIO_HISTORY_FULL = section(
       }
     ]
   },
-  { unknown: true, unknownFields: ["account.cashBalance"] }
+  { unknown: true, unknownFields: [] }
 );
 
 const PORTFOLIO_HISTORY_EMPTY = section(null, {
@@ -971,7 +967,7 @@ function shapeForState(match, state) {
     switch (kind) {
       case "dashboard": return degradedDashboard();
       case "portfolio-history":
-        return { ...PORTFOLIO_HISTORY_FULL, unknown: true, unknownFields: ["account.cashBalance"] };
+        return { ...PORTFOLIO_HISTORY_FULL, unknown: true, unknownFields: [] };
       case "analysis-predictions":
         return { ...ANALYSIS_PREDICTIONS_FULL, forecastQuality: null };
       case "readiness": return READINESS_FULL;

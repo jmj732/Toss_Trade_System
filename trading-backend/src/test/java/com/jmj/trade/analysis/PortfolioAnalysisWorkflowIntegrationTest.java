@@ -117,7 +117,7 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.result.status").value("DEGRADED"))
                 .andExpect(jsonPath("$.result.quality.stale").value(true))
                 .andExpect(jsonPath("$.result.quality.partial").value(false))
-                .andExpect(jsonPath("$.result.quality.unknownFields[0]").value("account.cashBalance"))
+                .andExpect(jsonPath("$.result.quality.unknownFields").isEmpty())
                 .andExpect(jsonPath("$.result.positions[0].symbol").value("NVDA"))
                 .andExpect(jsonPath("$.result.currencyTotals[0].currency").value("USD"))
                 .andReturn().getResponse().getContentAsString();
@@ -137,7 +137,7 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                           "quality":{
                             "stale":true,
                             "partial":false,
-                            "unknownFields":["account.cashBalance"]
+                            "unknownFields":[]
                           },
                           "positions":[{
                             "symbol":"NVDA",
@@ -164,7 +164,7 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ANALYSIS_ALREADY_RUNNING"));
 
-        assertThat(first.get(2, TimeUnit.SECONDS)).contains("\"status\":\"DEGRADED\"");
+        assertThat(first.get(2, TimeUnit.SECONDS)).contains("\"status\":\"COMPLETED\"");
         ANALYSIS.verify(1, postRequestedFor(urlEqualTo("/internal/v1/portfolio-analyses")));
     }
 
@@ -193,11 +193,11 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                                   "requestId":"{{jsonPath request.body '$.requestId'}}",
                                   "schemaVersion":"1",
                                   "asOf":"2026-07-28T00:00:01Z",
-                                  "status":"DEGRADED",
+                                  "status":"COMPLETED",
                                   "quality":{
                                     "stale":false,
                                     "partial":false,
-                                    "unknownFields":["account.cashBalance"]
+                                    "unknownFields":[]
                                   },
                                   "positions":[{
                                     "symbol":"NVDA",
@@ -463,11 +463,11 @@ class PortfolioAnalysisWorkflowIntegrationTest extends PostgresIntegrationTest {
                                   "requestId":"{{jsonPath request.body '$.requestId'}}",
                                   "schemaVersion":"1",
                                   "asOf":"2026-07-28T00:00:01Z",
-                                  "status":"DEGRADED",
+                                  "status":"{{#if (jsonPath request.body '$.quality.stale')}}DEGRADED{{else if (jsonPath request.body '$.quality.partial')}}DEGRADED{{else}}COMPLETED{{/if}}",
                                   "quality":{
                                     "stale":{{jsonPath request.body '$.quality.stale'}},
                                     "partial":{{jsonPath request.body '$.quality.partial'}},
-                                    "unknownFields":["account.cashBalance"]
+                                    "unknownFields":[]
                                   },
                                   "positions":[{
                                     "symbol":"NVDA",

@@ -243,7 +243,7 @@ dataBroken   = portfolio.unavailable || analysis.unavailable
 | URGENT | 주문 `status ∈ {MANUAL_REVIEW_REQUIRED, RECONCILIATION_REQUIRED, BLOCKED}` · `PROPOSED && expiresAt-now ≤ 15m` · killSwitch engaged |
 | HIGH | 주문 `status = PROPOSED` · 이벤트 `reviewStatus=PENDING && affectedSymbols ∩ 보유심볼 ≠ ∅` |
 | MEDIUM | 이벤트 `reviewStatus=PENDING && 보유 무관` · 분석 `status=DEGRADED` |
-| LOW | `portfolio.stale` · `partial` · `cashBalanceStatus=UNKNOWN` 등 데이터 품질 항목 |
+| LOW | `portfolio.stale` · `partial` · 주문 가능 현금 확인 불가 등 데이터 품질 항목 |
 
 > `expiresAt - now ≤ 15m`는 서버 타임스탬프 비교이므로 추정이 아니다. 임계값 15분은 **UI 정책 상수**로 문서화하고 `lib/` 한 곳에 둔다.
 

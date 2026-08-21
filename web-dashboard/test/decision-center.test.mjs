@@ -10,7 +10,8 @@ import {
   KillSwitchBanner,
   KillSwitchStatus,
   PortfolioPositionTable,
-  PortfolioRiskPanel
+  PortfolioRiskPanel,
+  PortfolioSummary
 } from "../app/decision-center.js";
 import { buildActions } from "../lib/action-model.js";
 
@@ -234,6 +235,26 @@ test("PortfolioPositionTable drops the unimplemented BC-2 columns", () => {
     assert.doesNotMatch(html, new RegExp(removed));
   }
   assert.match(html, /주문 작성/);
+});
+
+test("PortfolioSummary renders per-currency buying power as orderable cash", () => {
+  const html = render(createElement(PortfolioSummary, {
+    dashboard: dashboard({
+      portfolio: {
+        data: {
+          account: { marketValueAmounts: { KRW: 1000 } },
+          buyingPower: {
+            KRW: { cashBuyingPower: 900 },
+            USD: { cashBuyingPower: 12.5 }
+          }
+        }
+      }
+    })
+  }));
+  assert.match(html, /주문 가능 현금/);
+  assert.match(html, /KRW 900/);
+  assert.match(html, /USD 12\.50/);
+  assert.doesNotMatch(html, /현금 잔고 상태|주문 가능 금액/);
 });
 
 test("PortfolioPositionTable turns on Risk/판단 columns from the positionDecisions contract and keeps null causes distinct", () => {

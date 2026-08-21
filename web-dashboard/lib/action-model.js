@@ -180,15 +180,6 @@ function qualityActions({ dashboard }) {
       []
     ));
   }
-  if (portfolioData?.account?.cashBalanceStatus === "UNKNOWN") {
-    items.push(qualityAction(
-      "quality:CASH_UNKNOWN",
-      "현금 잔고를 확인하지 못했습니다",
-      "LOW",
-      []
-    ));
-  }
-
   const analysisResult = sectionData(dashboard?.analysis)?.result;
   if (analysisResult?.status === "DEGRADED" || analysisResult?.quality?.partial === true) {
     items.push(qualityAction(

@@ -127,7 +127,7 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void stalePartialAndUnknownCashSnapshotsAreBlocked() {
+    void staleAndPartialSnapshotsAreBlockedButAccountingCashStatusDoesNotOverrideBuyingPower() {
         var staleOwner = owner();
         successfulSnapshot(staleOwner, "KNOWN", true, "1000", "1000", "MSFT", "100");
         failedRun(staleOwner, T0.plusSeconds(10));
@@ -137,9 +137,10 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
         successfulSnapshot(partialOwner, "KNOWN", false, "1000", "1000", "MSFT", "100");
         assertBlocked(partialOwner, "PARTIAL_SNAPSHOT");
 
-        var unknownOwner = owner();
-        successfulSnapshot(unknownOwner, "UNKNOWN", true, "1000", "1000", "MSFT", "100");
-        assertBlocked(unknownOwner, "CASH_UNKNOWN");
+        var accountingCashOwner = owner();
+        successfulSnapshot(accountingCashOwner, "UNKNOWN", true, "1000", "1000", "MSFT", "100");
+        var intentId = intent(accountingCashOwner, OrderSide.BUY, OrderType.MARKET, "AAPL", "1", null);
+        assertThat(riskEngine.approve(command(accountingCashOwner, intentId, "100", T0)).approved()).isTrue();
     }
 
     @Test

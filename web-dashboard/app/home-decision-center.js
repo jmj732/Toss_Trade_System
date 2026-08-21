@@ -2,7 +2,13 @@
 
 import { createElement as h } from "react";
 
-import { formatAmount, formatFreshness, formatSignedAmount, UNKNOWN_TEXT } from "../lib/format.js";
+import {
+  buyingPowerAmounts,
+  formatAmount,
+  formatFreshness,
+  formatSignedAmount,
+  UNKNOWN_TEXT
+} from "../lib/format.js";
 import { ActionQueue, PortfolioPositionTable, PortfolioRiskPanel } from "./decision-center.js";
 import { PortfolioHistoryTrend } from "./portfolio-history-view.js";
 
@@ -23,8 +29,6 @@ const REGION_ORDER = ["actions", "risk", "summary", "positions", "trend", "marke
 // (decision 영역인 actions/risk/summary/positions 는 weight 1 에서 panel--compact 로 처리한다.)
 const CONTEXT_REGIONS = new Set(["trend", "market"]);
 
-const CASH_STATUS_LABELS = { KNOWN: "확인됨", UNKNOWN: "확인 필요" };
-
 function Amounts({ values, signed = false }) {
   const entries = Object.entries(values ?? {});
   const format = signed ? formatSignedAmount : formatAmount;
@@ -41,7 +45,6 @@ function PortfolioSummaryBar({ dashboard }) {
   const section = dashboard?.portfolio;
   const portfolio = section?.data;
   const account = portfolio?.account ?? {};
-  const buyingPower = portfolio?.buyingPower ?? {};
   return h("section", { className: "panel portfolio-summary-bar", "aria-label": "포트폴리오 요약" },
     h("div", { className: "portfolio-summary-grid" },
       h("div", null,
@@ -54,13 +57,11 @@ function PortfolioSummaryBar({ dashboard }) {
         h("span", { className: "metric-label" }, "총 손익"),
         h("strong", { className: "metric-value" }, h(Amounts, { values: account.profitLossAmounts, signed: true }))),
       h("div", null,
-        h("span", { className: "metric-label" }, "현금 잔고 상태"),
-        h("strong", { className: "metric-value" }, CASH_STATUS_LABELS[account.cashBalanceStatus] ?? UNKNOWN_TEXT)),
-      h("div", null,
-        h("span", { className: "metric-label" }, "주문 가능 금액"),
-        h("strong", { className: "metric-value" },
-          ...["KRW", "USD"].map(currency => h("span", { className: "amount", key: currency },
-            formatAmount(currency, buyingPower?.[currency]?.cashBuyingPower)))))),
+        h("span", { className: "metric-label" }, "주문 가능 현금"),
+        h("strong", { className: "metric-value" }, h(Amounts, {
+          values: buyingPowerAmounts(portfolio?.buyingPower)
+        }))),
+    ),
     h("small", { className: "metric-freshness" },
       `기준 ${formatFreshness(portfolio?.completedAt ?? section?.asOf)}`));
 }

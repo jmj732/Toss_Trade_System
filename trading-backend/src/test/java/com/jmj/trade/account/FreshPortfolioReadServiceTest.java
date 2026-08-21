@@ -115,7 +115,7 @@ class FreshPortfolioReadServiceTest {
         return new PortfolioReadService.AccountView(
                 "GENERAL", "****5678", Map.of("USD", BigDecimal.TEN),
                 Map.of("USD", BigDecimal.TEN), Map.of(), Map.of(), Map.of(), Map.of(),
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "KNOWN", OBSERVED_AT);
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, OBSERVED_AT);
     }
 
     @SuppressWarnings("unchecked")

@@ -86,9 +86,6 @@ public final class PortfolioReadService {
             missing.add("BUYING_POWER_USD");
         }
         var staleReason = staleReason(selection);
-        var unknown = account != null && "UNKNOWN".equals(account.cashBalanceStatus())
-                ? List.of("account.cashBalance")
-                : List.<String>of();
         return new PortfolioView(
                 selection.successRunId(),
                 selection.completedAt().toInstant(),
@@ -96,7 +93,7 @@ public final class PortfolioReadService {
                 staleReason,
                 !missing.isEmpty(),
                 List.copyOf(missing),
-                unknown,
+                List.of(),
                 account,
                 positions,
                 buyingPower);
@@ -146,8 +143,7 @@ public final class PortfolioReadService {
                        market_value_amounts, market_value_after_cost_amounts,
                        profit_loss_amounts, profit_loss_after_cost_amounts,
                        daily_profit_loss_amounts, profit_loss_rate,
-                       profit_loss_rate_after_cost, daily_profit_loss_rate,
-                       cash_balance_status, observed_at
+                       profit_loss_rate_after_cost, daily_profit_loss_rate, observed_at
                   FROM account_snapshots
                  WHERE sync_run_id = ?
                    AND user_id = ?
@@ -164,7 +160,6 @@ public final class PortfolioReadService {
                 resultSet.getBigDecimal("profit_loss_rate"),
                 resultSet.getBigDecimal("profit_loss_rate_after_cost"),
                 resultSet.getBigDecimal("daily_profit_loss_rate"),
-                resultSet.getString("cash_balance_status"),
                 instant(resultSet.getObject("observed_at", OffsetDateTime.class))
         ), runId, userId, connectionId).stream().findFirst().orElse(null);
     }
@@ -306,7 +301,6 @@ public final class PortfolioReadService {
             BigDecimal profitLossRate,
             BigDecimal profitLossRateAfterCost,
             BigDecimal dailyProfitLossRate,
-            String cashBalanceStatus,
             Instant observedAt
     ) {
     }

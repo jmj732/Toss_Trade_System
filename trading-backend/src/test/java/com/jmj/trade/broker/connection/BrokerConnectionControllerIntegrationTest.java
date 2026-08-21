@@ -328,7 +328,7 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
     }
 
     @Test
-    void readsLatestSuccessfulPortfolioWithSeparatedBuyingPowerAndExplicitUnknowns() throws Exception {
+    void readsLatestSuccessfulPortfolioWithBuyingPowerAsOrderableCash() throws Exception {
         var connectionId = insertActiveConnection(UUID.fromString(USER_ID));
         var previousRunId = insertSuccessfulPortfolio(connectionId, UUID.fromString(USER_ID), true);
 
@@ -341,11 +341,11 @@ class BrokerConnectionControllerIntegrationTest extends PostgresIntegrationTest 
                 .andExpect(jsonPath("$.partial").value(false))
                 .andExpect(jsonPath("$.missingSections").isEmpty())
                 .andExpect(jsonPath("$.account.displayAccountNumber").value("****5678"))
-                .andExpect(jsonPath("$.account.cashBalanceStatus").value("UNKNOWN"))
+                .andExpect(jsonPath("$.account.cashBalanceStatus").doesNotExist())
                 .andExpect(jsonPath("$.positions").isEmpty())
                 .andExpect(jsonPath("$.buyingPower.KRW.cashBuyingPower").value(1000))
                 .andExpect(jsonPath("$.buyingPower.USD.cashBuyingPower").value(1000))
-                .andExpect(jsonPath("$.unknownFields[0]").value("account.cashBalance"));
+                .andExpect(jsonPath("$.unknownFields").isEmpty());
         assertThat(brokerAdapter.connectionRefs()).containsExactly(new BrokerConnectionRef(connectionId));
     }
 

@@ -13,7 +13,7 @@ const QUALITY_BADGES = {
   available: ["neutral", "최신"]
 };
 
-const FIELD_LABELS = { "account.cashBalance": "현금 잔고" };
+const FIELD_LABELS = {};
 
 function unknownFieldSummary(fields) {
   const labels = fields.filter(field => FIELD_LABELS[field]).map(field => FIELD_LABELS[field]);

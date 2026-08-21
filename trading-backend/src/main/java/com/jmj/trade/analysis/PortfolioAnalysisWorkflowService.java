@@ -244,13 +244,13 @@ public final class PortfolioAnalysisWorkflowService {
             throw new PortfolioAnalysisException(PortfolioAnalysisException.Code.ALREADY_RUNNING);
         }
 
-        var accountStatuses = jdbc.queryForList("""
-                SELECT cash_balance_status
+        var accountCount = jdbc.queryForObject("""
+                SELECT count(*)
                   FROM account_snapshots
                  WHERE sync_run_id = ?
                    AND user_id = ?
                    AND broker_connection_id = ?
-                """, String.class, selection.successId(), userId, connectionId);
+                """, Integer.class, selection.successId(), userId, connectionId);
         var capacityCount = jdbc.queryForObject("""
                 SELECT count(DISTINCT currency)
                   FROM account_capacity_snapshots
@@ -261,10 +261,8 @@ public final class PortfolioAnalysisWorkflowService {
                 """, Integer.class, selection.successId(), userId, connectionId);
         var quality = new PortfolioAnalysisContract.Quality(
                 !selection.successId().equals(selection.latestId()),
-                accountStatuses.size() != 1 || capacityCount == null || capacityCount != 2,
-                accountStatuses.size() == 1 && "UNKNOWN".equals(accountStatuses.getFirst())
-                        ? List.of("account.cashBalance")
-                        : List.of());
+                accountCount == null || accountCount != 1 || capacityCount == null || capacityCount != 2,
+                List.of());
         var positions = jdbc.query("""
                 SELECT symbol, currency, market_value_amount, profit_loss_amount
                   FROM position_snapshots

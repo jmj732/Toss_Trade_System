@@ -153,7 +153,7 @@ test("decision-calm produces zero actions, including every DATA_QUALITY rule", a
   // Spelled out so a fixture edit that reintroduces one of them is obvious.
   assert.notEqual(dashboard.portfolio.stale, true);
   assert.notEqual(dashboard.portfolio.data.partial, true);
-  assert.notEqual(dashboard.portfolio.data.account.cashBalanceStatus, "UNKNOWN");
+  assert.equal("cashBalanceStatus" in dashboard.portfolio.data.account, false);
   assert.notEqual(dashboard.analysis.data.result.status, "DEGRADED");
   assert.notEqual(dashboard.analysis.data.result.quality?.partial, true);
   assert.deepEqual(dashboard.pendingOrderProposals.data, []);

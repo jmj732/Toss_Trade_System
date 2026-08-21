@@ -11,8 +11,8 @@ test("renders separate KRW/USD trend lines, quality, and formatted points", () =
   const html = renderToStaticMarkup(createElement(PortfolioHistoryView, {
     history: {
       stale: false,
-      unknown: true,
-      unknownFields: ["account.cashBalance"],
+      unknown: false,
+      unknownFields: [],
       unavailable: false,
       unavailableReason: null,
       data: {
@@ -48,9 +48,9 @@ test("renders separate KRW/USD trend lines, quality, and formatted points", () =
 
   assert.match(html, /자산 · P\/L 추세/);
   // V-37: DashboardView 와 동일한 한국어 어휘. V-36: 공통 .badge-pill modifier.
-  assert.match(html, /badge-pill badge-pill--warn[^>]*>확인 필요/);
+  assert.match(html, /badge-pill badge-pill--neutral[^>]*>최신/);
   assert.doesNotMatch(html, /UNKNOWN/);
-  assert.match(html, /현금 잔고/);
+  assert.doesNotMatch(html, /현금 잔고/);
   assert.doesNotMatch(html, /account\.cashBalance/);
   assert.equal((html.match(/class="trend-krw"/g) ?? []).length, 2);
   assert.equal((html.match(/class="trend-usd"/g) ?? []).length, 2);

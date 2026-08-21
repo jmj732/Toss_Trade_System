@@ -137,15 +137,15 @@ class PortfolioHistoryIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void surfacesUnknownWhenTheLatestSnapshotHasUnknownCashBalance() throws Exception {
+    void doesNotSurfaceAccountingCashAsAnUnknownPortfolioField() throws Exception {
         var connectionId = insertConnection(USER_ID);
         insertSuccess(connectionId, USER_ID, TIME, "100", "10");
 
         mockMvc.perform(get("/api/v1/broker-connections/{connectionId}/portfolio-history", connectionId)
                         .with(user(USER_ID.toString())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.unknown").value(true))
-                .andExpect(jsonPath("$.unknownFields[0]").value("account.cashBalance"));
+                .andExpect(jsonPath("$.unknown").value(false))
+                .andExpect(jsonPath("$.unknownFields").isEmpty());
     }
 
     @Test

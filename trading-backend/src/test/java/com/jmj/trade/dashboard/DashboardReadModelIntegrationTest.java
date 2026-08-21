@@ -107,14 +107,13 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.portfolio.data.syncRunId")
                         .value(latestSnapshot.toString()))
                 .andExpect(jsonPath("$.portfolio.stale").value(true))
-                .andExpect(jsonPath("$.portfolio.unknown").value(true))
-                .andExpect(jsonPath("$.portfolio.unknownFields[0]")
-                        .value("account.cashBalance"))
+                .andExpect(jsonPath("$.portfolio.unknown").value(false))
+                .andExpect(jsonPath("$.portfolio.unknownFields").isEmpty())
                 .andExpect(jsonPath("$.portfolio.unavailable").value(false))
                 .andExpect(jsonPath("$.analysis.data.inputSnapshotId")
                         .value(analyzedSnapshot.toString()))
                 .andExpect(jsonPath("$.analysis.stale").value(true))
-                .andExpect(jsonPath("$.analysis.unknown").value(true))
+                .andExpect(jsonPath("$.analysis.unknown").value(false))
                 .andExpect(jsonPath("$.analysis.unavailable").value(false))
                 .andExpect(jsonPath("$.pendingEvents.data[*].id", containsInAnyOrder(
                         pendingEventA.toString(), pendingEventB.toString())))
@@ -404,7 +403,7 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
     void riskEvaluationPropagatesDegradedAnalysisAsStaleAndUnknown() throws Exception {
         var connectionId = insertConnection(USER_ID);
         var snapshotId = insertPortfolio(connectionId, USER_ID, TIME, true);
-        // 기존 픽스처: status=DEGRADED, quality.unknownFields=["account.cashBalance"], weight=1
+        // 기존 픽스처: status=DEGRADED, quality has no accounting-cash field.
         insertAnalysis(connectionId, USER_ID, snapshotId, TIME.plusSeconds(2));
 
         mockMvc.perform(get(
@@ -414,9 +413,8 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.riskEvaluation.unavailable").value(false))
                 .andExpect(jsonPath("$.riskEvaluation.stale").value(true))
-                .andExpect(jsonPath("$.riskEvaluation.unknown").value(true))
-                .andExpect(jsonPath("$.riskEvaluation.unknownFields",
-                        containsInAnyOrder("account.cashBalance")))
+                .andExpect(jsonPath("$.riskEvaluation.unknown").value(false))
+                .andExpect(jsonPath("$.riskEvaluation.unknownFields").isEmpty())
                 .andExpect(jsonPath("$.riskEvaluation.data.items[0].breached").value(true));
     }
 
@@ -957,7 +955,7 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                   "quality":{
                     "stale":false,
                     "partial":false,
-                    "unknownFields":["account.cashBalance"]
+                    "unknownFields":[]
                   },
                   "positions":[{
                     "symbol":"NVDA",
