@@ -1,21 +1,21 @@
 # UI Audit — Raw Findings
 
-Generated: 2026-08-20T13:55:42.801Z
+Generated: 2026-08-19T11:56:00.032Z
 
 ## Summary
 
-- State-matrix combinations recorded: **488**
+- State-matrix combinations recorded: **336**
 - Combinations with assertion failures: **0**
-- Combinations with console errors / page exceptions: **96**
-- Total axe violations (all combos): **0**
+- Combinations with console errors / page exceptions: **80**
+- Total axe violations (all combos): **112**
 - Journeys recorded: **5**
 
 ## Light vs dark
 
 | scheme | combos | assertion failures | horizontal overflow | axe violations |
 |---|---|---|---|---|
-| light | 244 | 0 | 0 | 0 |
-| dark | 244 | 0 | 0 | 0 |
+| light | 168 | 0 | 0 | 56 |
+| dark | 168 | 0 | 0 | 56 |
 
 ## State matrix
 
@@ -85,102 +85,6 @@ Generated: 2026-08-20T13:55:42.801Z
 | events | unauthorized | vp-360-dark | dark | 0 | 2 | 0 | 0 | - |
 | events | unauthorized | vp-768 | light | 0 | 2 | 0 | 0 | - |
 | events | unauthorized | vp-768-dark | dark | 0 | 2 | 0 | 0 | - |
-| home | decision-active | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-active | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-active | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-active | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-active | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-active | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-active | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-active | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-blocked | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-blocked | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-blocked | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-blocked | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-blocked | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-blocked | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-blocked | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-blocked | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-calm | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-calm | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-calm | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-calm | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-calm | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-calm | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-calm | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-calm | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-critical | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-critical | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-critical | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-critical | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-critical | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-critical | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-critical | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-critical | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-risk | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-risk | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-risk | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-risk | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-risk | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-risk | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | decision-risk | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | decision-risk | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | degraded | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | degraded | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | degraded | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | degraded | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | degraded | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | degraded | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | degraded | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | degraded | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | empty | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | empty | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | empty | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | empty | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | empty | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | empty | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | empty | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | empty | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | error | vp-1280 | light | 0 | 5 | 0 | 0 | - |
-| home | error | vp-1280-dark | dark | 0 | 5 | 0 | 0 | - |
-| home | error | vp-1440 | light | 0 | 5 | 0 | 0 | - |
-| home | error | vp-1440-dark | dark | 0 | 5 | 0 | 0 | - |
-| home | error | vp-360 | light | 0 | 5 | 0 | 0 | - |
-| home | error | vp-360-dark | dark | 0 | 5 | 0 | 0 | - |
-| home | error | vp-768 | light | 0 | 5 | 0 | 0 | - |
-| home | error | vp-768-dark | dark | 0 | 5 | 0 | 0 | - |
-| home | loading | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | loading | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | loading | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | loading | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | loading | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | loading | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | loading | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | loading | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | partial | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | partial | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | partial | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | partial | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | partial | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | partial | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | partial | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | partial | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | refreshing | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | refreshing | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | refreshing | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | refreshing | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | refreshing | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | refreshing | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | refreshing | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | refreshing | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | stale | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| home | stale | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | stale | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| home | stale | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | stale | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| home | stale | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| home | stale | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| home | stale | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
 | home | unauthorized | vp-1280 | light | 0 | 2 | 0 | 0 | - |
 | home | unauthorized | vp-1280-dark | dark | 0 | 2 | 0 | 0 | - |
 | home | unauthorized | vp-1440 | light | 0 | 2 | 0 | 0 | - |
@@ -317,62 +221,6 @@ Generated: 2026-08-20T13:55:42.801Z
 | orders | unauthorized | vp-360-dark | dark | 0 | 2 | 0 | 0 | - |
 | orders | unauthorized | vp-768 | light | 0 | 2 | 0 | 0 | - |
 | orders | unauthorized | vp-768-dark | dark | 0 | 2 | 0 | 0 | - |
-| portfolio | degraded | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | degraded | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | degraded | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | degraded | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | degraded | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | degraded | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | degraded | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | degraded | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | empty | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | empty | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | empty | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | empty | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | empty | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | empty | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | empty | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | empty | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | error | vp-1280 | light | 0 | 4 | 0 | 0 | - |
-| portfolio | error | vp-1280-dark | dark | 0 | 4 | 0 | 0 | - |
-| portfolio | error | vp-1440 | light | 0 | 4 | 0 | 0 | - |
-| portfolio | error | vp-1440-dark | dark | 0 | 4 | 0 | 0 | - |
-| portfolio | error | vp-360 | light | 0 | 4 | 0 | 0 | - |
-| portfolio | error | vp-360-dark | dark | 0 | 4 | 0 | 0 | - |
-| portfolio | error | vp-768 | light | 0 | 4 | 0 | 0 | - |
-| portfolio | error | vp-768-dark | dark | 0 | 4 | 0 | 0 | - |
-| portfolio | loading | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | loading | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | loading | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | loading | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | loading | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | loading | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | loading | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | loading | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | partial | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | partial | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | partial | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | partial | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | partial | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | partial | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | partial | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | partial | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | refreshing | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | refreshing | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | refreshing | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | refreshing | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | refreshing | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | refreshing | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | refreshing | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | refreshing | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | stale | vp-1280 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | stale | vp-1280-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | stale | vp-1440 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | stale | vp-1440-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | stale | vp-360 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | stale | vp-360-dark | dark | 0 | 0 | 0 | 0 | - |
-| portfolio | stale | vp-768 | light | 0 | 0 | 0 | 0 | - |
-| portfolio | stale | vp-768-dark | dark | 0 | 0 | 0 | 0 | - |
 | portfolio | unauthorized | vp-1280 | light | 0 | 2 | 0 | 0 | - |
 | portfolio | unauthorized | vp-1280-dark | dark | 0 | 2 | 0 | 0 | - |
 | portfolio | unauthorized | vp-1440 | light | 0 | 2 | 0 | 0 | - |
@@ -566,46 +414,6 @@ _No assertion failures recorded._
 | events | unauthorized | vp-768 | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
 | events | unauthorized | vp-768-dark | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
 | events | unauthorized | vp-768-dark | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
-| home | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| home | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
 | home | unauthorized | vp-1280 | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
 | home | unauthorized | vp-1280 | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
 | home | unauthorized | vp-1280-dark | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
@@ -670,38 +478,6 @@ _No assertion failures recorded._
 | orders | unauthorized | vp-768 | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
 | orders | unauthorized | vp-768-dark | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
 | orders | unauthorized | vp-768-dark | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
-| portfolio | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1280 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1280-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1440 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-1440-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-360 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-360-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-768 | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
-| portfolio | error | vp-768-dark | Failed to load resource: the server responded with a status of 500 (Internal Server Error) |
 | portfolio | unauthorized | vp-1280 | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
 | portfolio | unauthorized | vp-1280 | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
 | portfolio | unauthorized | vp-1280-dark | Failed to load resource: the server responded with a status of 401 (Unauthorized) |
@@ -817,7 +593,10 @@ _No assertion failures recorded._
 
 ## Accessibility (axe) — violations by rule
 
-_No axe violations recorded (or axe did not run)._
+| rule id | impact | combos | total nodes | sample selector |
+|---|---|---|---|---|
+| document-title | serious | 56 | 56 | #__next_error__ |
+| html-has-lang | serious | 56 | 56 | #__next_error__ |
 
 ## User journeys
 
@@ -828,30 +607,27 @@ _No axe violations recorded (or axe did not run)._
   - PASS result-rendered
 
 ### error-recovery
-- blockedAt: (none)
-- dashboardAttempts=2
-- consoleErrors: 1
-  - PASS error-visible
-  - PASS retry-control-present
-  - PASS recovered-after-retry
+- blockedAt: error-not-shown
+- dashboardAttempts=0
+  - FAIL error-visible
+  - FAIL retry-control-present
 
 ### home-to-approval
-- blockedAt: (none)
+- blockedAt: approval-panel-not-opened
   - PASS home-review-action-actionable
-  - PASS routes-to-orders-deeplink (http://localhost:3107/orders?order=order-active-1)
-  - PASS approval-panel-auto-opens
-  - PASS approval-panel-shows-requested-order
+  - PASS routes-to-orders-deeplink (http://localhost:3311/orders?order=order-active-1)
+  - FAIL approval-panel-auto-opens
 
 ### login
 - blockedAt: (none)
 - consoleErrors: 3
   - PASS home-shows-login-prompt
-  - PASS redirects-to-oauth (http://localhost:3107/oauth2/authorization/oidc?returnTo=%2F)
+  - PASS redirects-to-oauth (http://localhost:3311/oauth2/authorization/oidc?returnTo=%2F)
 
 ### orders
 - blockedAt: (none)
 - approvePostCount=1
   - PASS approve-button-present
   - PASS approval-figures-rendered
-- PASS single-approve-post (actual: 1)
-- PASS approve-body-matches-displayed
+  - PASS single-approve-post (actual: 1)
+  - PASS approve-body-matches-displayed

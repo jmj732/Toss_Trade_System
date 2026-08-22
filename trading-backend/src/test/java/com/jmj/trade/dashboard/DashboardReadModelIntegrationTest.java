@@ -261,8 +261,8 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
 
         service.read(USER_ID, connectionId);
 
-        // 9 = 기존 섹션들 + 1 = 최신 판단 + 1 = 다음 catalyst. 둘 다 보유 심볼 전체를 한 번에 가져온다.
-        org.assertj.core.api.Assertions.assertThat(oneRowQueries).isEqualTo(11);
+        // 9 = 기존 섹션들 + 1 = 보유 심볼 전체의 최신 판단을 한 번에 가져오는 BC-2 조인 쿼리.
+        org.assertj.core.api.Assertions.assertThat(oneRowQueries).isEqualTo(10);
         org.assertj.core.api.Assertions.assertThat(countingJdbc.count())
                 .isEqualTo(oneRowQueries);
     }
@@ -451,45 +451,6 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void positionDecisionIncludesTheNextCatalystFromServer() throws Exception {
-        var connectionId = insertConnection(USER_ID);
-        var otherConnectionId = insertDeletedConnection(USER_ID);
-        var otherUserConnectionId = insertConnection(OTHER_USER_ID);
-        var snapshotId = insertPortfolio(connectionId, USER_ID, TIME, true);
-        insertAnalysisResponse(connectionId, USER_ID, snapshotId, TIME.plusSeconds(2), "COMPLETED",
-                cleanQuality(), positions("0.10"), currencyTotals("0.10"));
-        insertEvent(connectionId, USER_ID, "past", "EARNINGS", "NVDA",
-                TIME.minusDays(1), TIME);
-        var reviewedNext = insertEvent(connectionId, USER_ID, "reviewed-next", "DIVIDEND", "NVDA",
-                OffsetDateTime.of(2099, 1, 1, 12, 0, 0, 0, ZoneOffset.UTC), TIME);
-        jdbc.update("""
-                INSERT INTO event_reviews (
-                    event_id, user_id, broker_connection_id, status, version, reviewed_at
-                ) VALUES (?, ?, ?, 'CONFIRMED', 1, ?)
-                """, reviewedNext, USER_ID, connectionId, TIME.plusSeconds(3));
-        insertEvent(connectionId, USER_ID, "later", "FED", "NVDA",
-                OffsetDateTime.of(2099, 1, 3, 0, 0, 0, 0, ZoneOffset.UTC), TIME);
-        insertEvent(connectionId, USER_ID, "next", "EARNINGS", "NVDA",
-                OffsetDateTime.of(2099, 1, 2, 0, 0, 0, 0, ZoneOffset.UTC), TIME);
-        insertEvent(otherUserConnectionId, OTHER_USER_ID, "other-user", "SPLIT", "NVDA",
-                OffsetDateTime.of(2099, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC), TIME);
-        insertEvent(otherConnectionId, USER_ID, "other-connection", "SPLIT", "NVDA",
-                OffsetDateTime.of(2099, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC), TIME);
-        insertEvent(connectionId, USER_ID, "other-symbol", "SPLIT", "AAPL",
-                OffsetDateTime.of(2099, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC), TIME);
-
-        mockMvc.perform(get(
-                                "/api/v1/broker-connections/{connectionId}/dashboard",
-                                connectionId)
-                        .with(user(USER_ID.toString())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.positionDecisions.data[0].nextCatalystAt")
-                        .value("2099-01-01T12:00:00Z"))
-                .andExpect(jsonPath("$.positionDecisions.data[0].nextCatalystType")
-                        .value("DIVIDEND"));
-    }
-
-    @Test
     void positionRiskLevelIsHighWhenConcentrationItemIsBreached() throws Exception {
         var connectionId = insertConnection(USER_ID);
         var snapshotId = insertPortfolio(connectionId, USER_ID, TIME, true);
@@ -577,9 +538,7 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                 .andExpect(jsonPath("$.positionDecisions.data[0].decisionRuleVersion")
                         .doesNotExist())
                 .andExpect(jsonPath("$.positionDecisions.data[0].decisionAsOf").doesNotExist())
-                .andExpect(jsonPath("$.positionDecisions.data[0].decisionRunId").doesNotExist())
-                .andExpect(jsonPath("$.positionDecisions.data[0].nextCatalystAt").doesNotExist())
-                .andExpect(jsonPath("$.positionDecisions.data[0].nextCatalystType").doesNotExist());
+                .andExpect(jsonPath("$.positionDecisions.data[0].decisionRunId").doesNotExist());
     }
 
     @Test
@@ -829,18 +788,6 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
         return connectionId;
     }
 
-    private UUID insertDeletedConnection(UUID userId) {
-        var connectionId = UUID.randomUUID();
-        jdbc.update("INSERT INTO users (id) VALUES (?) ON CONFLICT DO NOTHING", userId);
-        jdbc.update("""
-                INSERT INTO broker_connections (
-                    id, user_id, broker_type, status, credential_revision,
-                    created_at, updated_at, deleted_at, version
-                ) VALUES (?, ?, 'TOSS_INVEST', 'DELETED', 1, ?, ?, ?, 0)
-                """, connectionId, userId, TIME, TIME, TIME);
-        return connectionId;
-    }
-
     private UUID insertPortfolio(
             UUID connectionId,
             UUID userId,
@@ -988,27 +935,6 @@ class DashboardReadModelIntegrationTest extends PostgresIntegrationTest {
                 ) VALUES (?, ?, ?, 'manual', ?, 'EARNINGS', 'summary',
                           '["NVDA"]'::jsonb, ?, ?)
                 """, eventId, userId, connectionId, sourceEventId, time, time);
-        return eventId;
-    }
-
-    private UUID insertEvent(
-            UUID connectionId,
-            UUID userId,
-            String sourceEventId,
-            String type,
-            String symbol,
-            OffsetDateTime occurredAt,
-            OffsetDateTime collectedAt
-    ) {
-        var eventId = UUID.randomUUID();
-        jdbc.update("""
-                INSERT INTO intelligence_events (
-                    id, user_id, broker_connection_id, source, source_event_id,
-                    event_type, summary, affected_symbols, occurred_at, collected_at
-                ) VALUES (?, ?, ?, 'manual', ?, ?, 'summary',
-                          CAST(? AS jsonb), ?, ?)
-                """, eventId, userId, connectionId, sourceEventId, type,
-                "[\"" + symbol + "\"]", occurredAt, collectedAt);
         return eventId;
     }
 

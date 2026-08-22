@@ -114,32 +114,6 @@ test("CALM keeps the ActionQueue as a single compact line", () => {
   assert.doesNotMatch(html, /action-list/);
 });
 
-test("Home positions render the server position decision contract", () => {
-  const html = renderToStaticMarkup(createElement(HomeDecisionCenter, {
-    surface: surfaceFor("ACTIVE", 1),
-    actions: [HIGH_ACTION],
-    dashboard: {
-      ...DASHBOARD,
-      positionDecisions: { data: [{
-        symbol: "NVDA",
-        riskLevel: "LOW",
-        decision: "BUY",
-        confidence: 0.72,
-        decisionRuleVersion: "decision-rule-v1",
-        decisionAsOf: "2026-08-18T00:31:00Z",
-        decisionRunId: "run-1",
-        nextCatalystAt: "2099-01-02T00:00:00Z",
-        nextCatalystType: "EARNINGS"
-      }] }
-    }
-  }));
-
-  assert.match(html, /Risk/);
-  assert.match(html, /EARNINGS/);
-  assert.match(html, /규칙 판단: 매수/);
-  assert.match(html, /신뢰도 72\.0%/);
-});
-
 test("BLOCKED renders nothing (host draws onboarding)", () => {
   const html = renderToStaticMarkup(createElement(HomeDecisionCenter, {
     surface: surfaceFor("BLOCKED", 0), actions: [], dashboard: DASHBOARD
@@ -147,9 +121,10 @@ test("BLOCKED renders nothing (host draws onboarding)", () => {
   assert.equal(html, "");
 });
 
-test("uses buying power as the only cash metric", () => {
+test("shows cash status and buying power as separate server metrics", () => {
   const html = render("CALM", []);
+  assert.match(html, /현금 잔고 상태/);
   assert.match(html, /주문 가능 현금/);
   assert.match(html, /USD 1,000\.00/);
-  assert.doesNotMatch(html, /현금 잔고 상태|주문 가능 금액/);
+  assert.doesNotMatch(html, /주문 가능 금액/);
 });

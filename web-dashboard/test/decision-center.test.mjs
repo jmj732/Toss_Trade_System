@@ -231,7 +231,7 @@ test("PortfolioPositionTable drops the unimplemented BC-2 columns", () => {
   for (const label of ["종목", "현재가", "수량", "평가금액", "비중", "손익", "행동"]) {
     assert.match(html, new RegExp(label));
   }
-  for (const removed of ["Risk", "Catalyst", "판단"]) {
+  for (const removed of ["Risk", "Next Catalyst", "판단"]) {
     assert.doesNotMatch(html, new RegExp(removed));
   }
   assert.match(html, /주문 작성/);
@@ -267,26 +267,20 @@ test("PortfolioPositionTable turns on Risk/판단 columns from the positionDecis
     analysis: { data: { result: { positions: [{ symbol: "NVDA", weight: 1 }] } } },
     positionDecisions: { data: [
       { symbol: "NVDA", riskLevel: "LOW", decision: "BUY", confidence: 0.72,
-        decisionRuleVersion: "decision-rule-v1", decisionAsOf: "2026-07-28T00:03:00Z", decisionRunId: "run-1",
-        nextCatalystAt: "2099-01-02T00:00:00Z", nextCatalystType: "EARNINGS" },
+        decisionRuleVersion: "decision-rule-v1", decisionAsOf: "2026-07-28T00:03:00Z", decisionRunId: "run-1" },
       // 분석했으나 지표 부족으로 판단 없음(decisionRunId 있음, decision null).
       { symbol: "MRVL", riskLevel: null, decision: null, confidence: null,
-        decisionRuleVersion: null, decisionAsOf: null, decisionRunId: "run-2",
-        nextCatalystAt: null, nextCatalystType: null },
+        decisionRuleVersion: null, decisionAsOf: null, decisionRunId: "run-2" },
       // 분석한 적 없음(decisionRunId null).
       { symbol: "AMD", riskLevel: null, decision: null, confidence: null,
-        decisionRuleVersion: null, decisionAsOf: null, decisionRunId: null,
-        nextCatalystAt: null, nextCatalystType: null }
+        decisionRuleVersion: null, decisionAsOf: null, decisionRunId: null }
     ] }
   }));
 
-  // 계약이 있으면 Risk·Next Catalyst·판단 열이 켜진다.
+  // 계약이 있으면 Risk·판단 열이 켜진다. Next Catalyst 는 데이터 소스가 없어 만들지 않는다.
   assert.match(html, /Risk/);
-  assert.match(html, /Next Catalyst/);
   assert.match(html, /판단/);
-  assert.match(html, /EARNINGS/);
-  assert.match(html, /2099-01-02 09:00 KST/);
-  assert.match(html, /예정 이벤트 없음/);
+  assert.doesNotMatch(html, /Next Catalyst/);
 
   // 판단은 확정 표현이 아니라 규칙 산출물로 노출한다(규칙 버전·신뢰도·기준 시각 동반).
   assert.match(html, /규칙 판단: 매수/);
@@ -305,16 +299,6 @@ test("PortfolioPositionTable turns on Risk/판단 columns from the positionDecis
   assert.ok(html.indexOf("판단 보류 · 지표 부족") !== html.indexOf("분석 없음"));
 });
 
-test("PortfolioPositionTable labels the backend WAIT decision", () => {
-  const html = render(createElement(PortfolioPositionTable, {
-    section: { data: { positions: [{ symbol: "NVDA", currency: "USD", quantity: 1 }] } },
-    positionDecisions: { data: [{ symbol: "NVDA", decision: "WAIT", decisionRunId: "run-1" }] }
-  }));
-
-  assert.match(html, /규칙 판단: 대기/);
-  assert.doesNotMatch(html, /규칙 판단: WAIT/);
-});
-
 test("PortfolioPositionTable hides Risk/판단 columns when the positionDecisions contract is absent", () => {
   const html = render(createElement(PortfolioPositionTable, {
     section: { data: { positions: [{ symbol: "NVDA", currency: "USD", quantity: 1, marketValueAmount: 120, profitLossAmount: 20 }] } },
@@ -323,24 +307,6 @@ test("PortfolioPositionTable hides Risk/판단 columns when the positionDecision
   for (const removed of ["Risk", "Next Catalyst", "판단"]) {
     assert.doesNotMatch(html, new RegExp(removed));
   }
-});
-
-test("PortfolioPositionTable hides Next Catalyst when the server has no catalyst fields", () => {
-  const html = render(createElement(PortfolioPositionTable, {
-    section: { data: { positions: [
-      { symbol: "NVDA", currency: "USD", quantity: 1, marketValueAmount: 120, profitLossAmount: 20 }
-    ] } },
-    analysis: { data: { result: { positions: [{ symbol: "NVDA", weight: 1 }] } } },
-    positionDecisions: { data: [
-      { symbol: "NVDA", riskLevel: "LOW", decision: "HOLD", confidence: 0.5,
-        decisionRuleVersion: "decision-rule-v1", decisionAsOf: "2026-07-28T00:03:00Z",
-        decisionRunId: "run-1", nextCatalystAt: null, nextCatalystType: null }
-    ] }
-  }));
-  assert.match(html, /Risk/);
-  assert.match(html, /판단/);
-  assert.doesNotMatch(html, /Next Catalyst/);
-  assert.doesNotMatch(html, /예정 이벤트 없음/);
 });
 
 test("PortfolioPositionTable limits rows and links to the full portfolio", () => {

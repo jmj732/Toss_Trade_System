@@ -520,3 +520,42 @@ test("journey: home decision hands off to the orders approval panel", async ({ p
   });
   expect.soft(blockedAt, "home-to-approval journey completed").toBe("");
 });
+
+// Stock Decision Header and Position Plan must render the analysis-service contract
+// fields directly. The fixture intentionally omits riskLevel: that backend gap stays
+// visible as 확인 필요 instead of being inferred from another API.
+test("journey: stock decision header and position plan render contract fields", async ({ page, context }) => {
+  await primeAuth(context, { withConnection: true });
+  await freezeClock(context);
+  await page.route("**/api/v1/**", stateRoute("partial", { delayMs: 0 }));
+
+  const analysisResponse = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith("/api/v1/stock-analyses/AAPL") && response.ok();
+  });
+  await page.goto("/stocks/AAPL#access_token=test-token", { waitUntil: "domcontentloaded" });
+  const contract = await analysisResponse.then(response => response.json());
+  await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+
+  expect(contract.result.decision).toMatchObject({ action: "WAIT", confidence: "0.2666666667" });
+  expect(contract.result.positionPlan).toMatchObject({ entry: "200", add: "193.661925", stop: "187.32385" });
+  expect(contract.result.riskLevel).toBeUndefined();
+
+  const summary = page.locator(".stock-surface-summary");
+  await expect(summary).toContainText("대기");
+  await expect(summary).toContainText("26.7%");
+  await expect(summary.locator("dt").filter({ hasText: "리스크" }).locator("..").locator("dd"))
+    .toContainText("확인 필요");
+
+  const plan = page.locator('[data-position-plan="available"]');
+  await expect(plan).toBeVisible();
+  await expect(plan).toContainText("진입가");
+  await expect(plan).toContainText("추가 진입가");
+  await expect(plan).toContainText("손절가");
+  await expect(plan).toContainText("목표가1");
+  await expect(plan).toContainText("목표가2");
+  await expect(plan).toContainText("R:R");
+  await expect(plan).toContainText("최대 손실");
+  await expect(plan.locator(".position-plan-range-track")).toHaveAttribute("aria-label", /가격 범위/);
+  await expect(plan.locator(".position-plan-range-legend")).toContainText("추가");
+});

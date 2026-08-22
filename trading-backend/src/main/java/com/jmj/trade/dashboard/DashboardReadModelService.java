@@ -22,7 +22,6 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
-import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -62,7 +61,6 @@ public final class DashboardReadModelService {
     private final FreshPortfolioReadService portfolios;
     private final PortfolioAnalysisWorkflowService analyses;
     private final RiskPolicyService riskPolicies;
-    private final Clock clock;
 
     DashboardReadModelService(
             JdbcTemplate jdbc,
@@ -76,7 +74,6 @@ public final class DashboardReadModelService {
         this.portfolios = Objects.requireNonNull(portfolios, "portfolios");
         this.analyses = Objects.requireNonNull(analyses, "analyses");
         this.riskPolicies = Objects.requireNonNull(riskPolicies, "riskPolicies");
-        this.clock = Clock.systemUTC();
     }
 
     DashboardView read(UUID userId, UUID connectionId) {
@@ -106,7 +103,7 @@ public final class DashboardReadModelService {
                 portfolioSection(portfolio),
                 analysisSection(analysis, portfolio),
                 riskEvaluation,
-                positionDecisionSection(userId, connectionId, portfolio, riskEvaluation),
+                positionDecisionSection(userId, portfolio, riskEvaluation),
                 available(pendingEvents(userId, connectionId), false, List.of()),
                 available(pendingProposals(userId, connectionId, proposalStatuses), false, List.of()));
     }
@@ -244,7 +241,6 @@ public final class DashboardReadModelService {
      */
     private Section<List<PositionDecisionView>> positionDecisionSection(
             UUID userId,
-            UUID connectionId,
             PortfolioReadService.PortfolioView portfolio,
             Section<RiskEvaluationView> riskEvaluation
     ) {
@@ -254,7 +250,6 @@ public final class DashboardReadModelService {
         var symbols = heldSymbols(portfolio);
         var riskLevels = positionRiskLevels(riskEvaluation);
         var decisions = latestDecisions(userId, symbols);
-        var catalysts = nextCatalysts(userId, connectionId, symbols);
         var unknownFields = new ArrayList<String>();
         var views = new ArrayList<PositionDecisionView>(symbols.size());
         for (var symbol : symbols) {
@@ -264,7 +259,6 @@ public final class DashboardReadModelService {
             }
             var stored = decisions.get(symbol.toUpperCase(Locale.ROOT));
             var decision = stored == null ? null : stored.decision();
-            var catalyst = catalysts.get(symbol.toUpperCase(Locale.ROOT));
             views.add(new PositionDecisionView(
                     symbol,
                     riskLevel,
@@ -272,9 +266,7 @@ public final class DashboardReadModelService {
                     decision == null ? null : decision.confidence(),
                     decision == null ? null : decision.ruleVersion(),
                     stored == null ? null : stored.asOf(),
-                    stored == null ? null : stored.runId(),
-                    catalyst == null ? null : catalyst.occurredAt(),
-                    catalyst == null ? null : catalyst.type()));
+                    stored == null ? null : stored.runId()));
         }
         return available(List.copyOf(views), portfolio.stale(), unknownFields);
     }
@@ -386,53 +378,6 @@ public final class DashboardReadModelService {
             UUID runId,
             Instant asOf,
             StockAnalysisCoreContract.Decision decision
-    ) {
-    }
-
-    private Map<String, StoredCatalyst> nextCatalysts(
-            UUID userId,
-            UUID connectionId,
-            List<String> symbols
-    ) {
-        if (symbols.isEmpty()) {
-            return Map.of();
-        }
-        var normalized = symbols.stream()
-                .map(symbol -> symbol.toUpperCase(Locale.ROOT))
-                .distinct()
-                .toArray(String[]::new);
-        var catalysts = new HashMap<String, StoredCatalyst>();
-        jdbc.query("""
-                SELECT DISTINCT ON (UPPER(symbol.value))
-                       UPPER(symbol.value) AS symbol,
-                       event.event_type,
-                       event.occurred_at
-                  FROM intelligence_events event
-                  CROSS JOIN LATERAL jsonb_array_elements_text(event.affected_symbols) symbol(value)
-                 WHERE event.user_id = ?
-                   AND event.broker_connection_id = ?
-                   AND UPPER(symbol.value) = ANY(?)
-                   AND event.occurred_at > ?
-                 ORDER BY UPPER(symbol.value), event.occurred_at ASC, event.id ASC
-                """,
-                (PreparedStatementSetter) ps -> {
-                    ps.setObject(1, userId);
-                    ps.setObject(2, connectionId);
-                    ps.setArray(3, ps.getConnection().createArrayOf("text", normalized));
-                    ps.setObject(4, OffsetDateTime.now(clock));
-                },
-                (resultSet, rowNumber) -> new StoredCatalyst(
-                        resultSet.getString("symbol"),
-                        resultSet.getString("event_type"),
-                        instant(resultSet.getObject("occurred_at", OffsetDateTime.class))))
-                .forEach(catalyst -> catalysts.put(catalyst.symbol(), catalyst));
-        return catalysts;
-    }
-
-    private record StoredCatalyst(
-            String symbol,
-            String type,
-            Instant occurredAt
     ) {
     }
 
@@ -576,9 +521,7 @@ public final class DashboardReadModelService {
             BigDecimal confidence,
             String decisionRuleVersion,
             Instant decisionAsOf,
-            UUID decisionRunId,
-            Instant nextCatalystAt,
-            String nextCatalystType
+            UUID decisionRunId
     ) {
     }
 
