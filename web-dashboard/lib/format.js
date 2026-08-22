@@ -56,12 +56,51 @@ export function formatSignedAmount(currency, value) {
   return currency ? magnitude.replace(`${currency} `, `${currency} ${sign}`) : `${sign}${magnitude}`;
 }
 
+// 손익 한 줄 표기. "부호+금액 (비율%)" 한 덩어리로 읽히게 합친다 — 예: `USD +31.19 (2.95%)`.
+// 괄호 안 비율은 부호를 반복하지 않는다(방향은 금액 부호와 색이 이미 전달한다).
+// 통화 접두는 formatAmount 규약 그대로 유지한다(통화를 모르는 금액은 단독 노출하지 않는다).
+// rate 가 없으면 금액만 반환한다 — 비율을 금액에서 역산하지 않는다.
+export function formatSignedAmountWithRate(currency, value, rate, digits = 2) {
+  const amountText = formatSignedAmount(currency, value);
+  const ratio = toFiniteNumber(rate);
+  if (amountText === UNKNOWN_TEXT || ratio === null) {
+    return amountText;
+  }
+  return `${amountText} (${formatRatio(Math.abs(ratio), digits)})`;
+}
+
+// 손익 부호에서 방향 클래스/낱말을 뽑는다. 0 과 null 은 색을 입히지 않는다(변동 없음/미확인).
+// 방향 기호(▲/▼)는 쓰지 않는다 — 부호와 색, 그리고 접근성 낱말이 방향을 전달한다.
+export function directionOf(value) {
+  const amount = toFiniteNumber(value);
+  if (amount === null) {
+    return { className: "", word: null };
+  }
+  if (amount > 0) {
+    return { className: "positive", word: "상승" };
+  }
+  if (amount < 0) {
+    return { className: "negative", word: "하락" };
+  }
+  return { className: "", word: "보합" };
+}
+
 export function formatQuantity(value) {
   const quantity = toFiniteNumber(value);
   if (quantity === null) {
     return UNKNOWN_TEXT;
   }
   return new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 8 }).format(quantity);
+}
+
+// R:R(손익비) 같은 순수 배수는 통화도 %도 아니다 — 원시 float 를 그대로 노출하지 않도록
+// 소수 자리를 고정한다(기본 2자리). 값이 없으면 다른 표기와 동일하게 UNKNOWN_TEXT 로 떨어진다.
+export function formatDecimal(value, digits = 2) {
+  const number = toFiniteNumber(value);
+  if (number === null) {
+    return UNKNOWN_TEXT;
+  }
+  return number.toFixed(digits);
 }
 
 // 비중·집중도는 0~1 소수로 내려온다. 금액 열 옆에서 오독되지 않도록 항상 % 로 환산한다.

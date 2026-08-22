@@ -4,6 +4,7 @@ import { createElement as h } from "react";
 
 import {
   buyingPowerAmounts,
+  directionOf,
   formatAmount,
   formatFreshness,
   formatRatio,
@@ -44,71 +45,22 @@ function Amounts({ values, signed = false }) {
 
 // account.dailyProfitLossRate / account.profitLossRate 는 서버가 내려주는 단일 스칼라
 // 비율(통화별이 아니다) — Amounts 처럼 통화별 span 옆에 붙이면 다통화 계좌에서 "이 통화의
-// 비율"처럼 오독될 수 있어 금액 줄과 분리한 자체 줄로 렌더한다. rate 가 0 또는 null 이면
-// "–" 글리프만 쓰고 .positive/.negative 클래스는 붙이지 않는다(변동 없음/미확인은 색이 없다).
+// 비율"처럼 오독될 수 있어 금액 줄과 분리한 자체 줄로 렌더한다. ▲/▼/– 방향 기호는 쓰지 않고
+// directionOf() 로 색 클래스와 접근성 낱말(상승/하락/보합)만 남긴다 — 0·null 은 무색이다.
 function RateChange({ rate }) {
   const text = formatRatio(rate);
-  const positive = rate != null && rate > 0;
-  const negative = rate != null && rate < 0;
-  const glyph = positive ? "▲" : negative ? "▼" : "–";
-  const word = positive ? "상승" : negative ? "하락" : rate === 0 ? "보합" : null;
-  const cls = positive ? "positive" : negative ? "negative" : "";
+  const { className, word } = directionOf(rate);
   return h("span", { className: "rate-change", "aria-label": word ? `${word} ${text}` : text },
-    h("span", { "aria-hidden": "true" }, `${glyph} `),
-    h("span", { className: cls }, text));
+    h("span", { className }, text));
 }
 
-const SUMMARY_SPARK_WIDTH = 72;
-const SUMMARY_SPARK_HEIGHT = 22;
-
-// portfolio-history-view.js 의 currencyPath() 와 동일한 산식이다. 그 파일은 이 작업 범위 밖(수정 금지
-// 대상)이라 export 추가 대신 요약 바 전용 소형 변형으로 이 파일 안에 그대로 옮겨 적었다 — 값을
-// 새로 계산하는 게 아니라 이미 존재하는 실좌표 점들을 SVG 좌표로 변환만 한다.
-function summarySparkPath(points, field, currency) {
-  const present = points
-    .map((point, index) => ({ index, value: point[field]?.[currency] }))
-    .filter(entry => entry.value != null);
-  if (present.length < 2) return "";
-  const values = present.map(entry => Number(entry.value));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const lastIndex = points.length - 1;
-  return present.map((entry, i) => {
-    const x = lastIndex === 0 ? SUMMARY_SPARK_WIDTH / 2 : (entry.index / lastIndex) * SUMMARY_SPARK_WIDTH;
-    const y = SUMMARY_SPARK_HEIGHT - ((Number(entry.value) - min) / span) * SUMMARY_SPARK_HEIGHT;
-    return `${i === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(" ");
-}
-
-// 총 손익(profitLossAmounts) 추이만 그린다 — portfolioHistory 포인트는 시점별 누적값이라
-// "오늘 손익"(하루 변화분)에 대응하는 계열이 없다. 데이터가 없으면 기존 Trend 와 같은 패턴으로
-// 아무것도 렌더하지 않는다(빈 상태를 카드로 만들지 않는다).
-function SummaryTrendSparkline({ portfolioHistory }) {
-  const points = portfolioHistory?.data?.points ?? [];
-  if (points.length < 2) return null;
-  const krwPath = summarySparkPath(points, "profitLossAmounts", "KRW");
-  const usdPath = summarySparkPath(points, "profitLossAmounts", "USD");
-  if (!krwPath && !usdPath) return null;
-  // 두 통화 선은 각각 다른 스케일로 정규화되어 서로 비교 가능한 값이 아니다(범례 없이 겹쳐 그리지
-  // 않음). 어떤 통화가 그려졌는지 aria-label 에 명시해 스크린리더 사용자가 오독하지 않게 한다.
-  const drawnCurrencies = [krwPath ? "KRW" : null, usdPath ? "USD" : null].filter(Boolean).join("·");
-  return h("svg", {
-    className: "summary-sparkline",
-    width: SUMMARY_SPARK_WIDTH,
-    height: SUMMARY_SPARK_HEIGHT,
-    viewBox: `0 0 ${SUMMARY_SPARK_WIDTH} ${SUMMARY_SPARK_HEIGHT}`,
-    preserveAspectRatio: "none",
-    role: "img",
-    "aria-label": `총 손익 추세 ${drawnCurrencies}(참고용, 수치는 위 텍스트 기준)`
-  },
-    krwPath ? h("path", { className: "trend-krw", d: krwPath }) : null,
-    usdPath ? h("path", { className: "trend-usd", d: usdPath }) : null);
-}
+// SummaryTrendSparkline / summarySparkPath 는 삭제했다. 72×22 안에 축·범례 없이 두 통화를 서로
+// 다른 스케일로 정규화해 겹쳐 그린 장식용 그래프였고, 파일 자체 주석이 "서로 비교 가능한 값이
+// 아니다"라고 인정했다 — 오독 위험만 있고 정보 가치가 없어 제거한다.
 
 // 요약 지표는 존재하는 계약이므로 없는 값은 UNKNOWN_TEXT 로 표기해도 된다.
 // 리스크 정책 문자열("제한 N건")은 렌더하지 않는다.
-function PortfolioSummaryBar({ dashboard, portfolioHistory }) {
+function PortfolioSummaryBar({ dashboard }) {
   const section = dashboard?.portfolio;
   const portfolio = section?.data;
   const account = portfolio?.account ?? {};
@@ -124,8 +76,7 @@ function PortfolioSummaryBar({ dashboard, portfolioHistory }) {
       h("div", null,
         h("span", { className: "metric-label" }, "총 손익"),
         h("strong", { className: "metric-value" }, h(Amounts, { values: account.profitLossAmounts, signed: true })),
-        h(RateChange, { rate: account.profitLossRate }),
-        h(SummaryTrendSparkline, { portfolioHistory })),
+        h(RateChange, { rate: account.profitLossRate })),
       h("div", null,
         h("span", { className: "metric-label" }, "현금 잔고 상태"),
         h("strong", { className: "metric-value" }, CASH_STATUS_LABELS[account.cashBalanceStatus] ?? UNKNOWN_TEXT)),
@@ -188,7 +139,8 @@ export function HomeDecisionCenter({
       items: actions, state, busyOrderId, onOrderAction, onRefresh, lastChecked
     }),
     risk: h(PortfolioRiskPanel, { dashboard }),
-    summary: h(PortfolioSummaryBar, { dashboard, portfolioHistory }),
+    summary: h(PortfolioSummaryBar, { dashboard }),
+    // positions 는 detail 을 넘기지 않는다 — positionDecisions 미전달로 compact 밀도로 파생된다.
     positions: h(PortfolioPositionTable, {
       section: dashboard?.portfolio, analysis: dashboard?.analysis, limit: 5, caption: "보유 포지션"
     }),

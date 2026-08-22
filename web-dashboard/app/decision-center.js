@@ -1,15 +1,17 @@
 "use client";
 
-import { cloneElement, createElement as h } from "react";
+import { createElement as h } from "react";
 
 import {
   classifyProposalExpiry,
+  directionOf,
   formatAmount,
   formatFreshness,
   formatInstant,
   formatQuantity,
   formatRatio,
   formatSignedAmount,
+  formatSignedAmountWithRate,
   proposalExpiryBadge,
   UNKNOWN_TEXT,
   buyingPowerAmounts
@@ -402,91 +404,124 @@ function renderDecisionCell(entry) {
     footnote ? h("small", { className: "metric-freshness" }, footnote) : null);
 }
 
-// position.profitLossRate 는 서버가 내려주는 실제 0..1 비율(BC 계약, PositionView.profitLossRate) —
-// 프론트는 손익 금액에서 비율을 계산하지 않고 이 필드를 그대로 ▲/▼ + % 로만 표기한다.
-function renderProfitLossRate(rate) {
-  if (rate == null) return null;
-  const positive = rate > 0;
-  const negative = rate < 0;
-  const glyph = positive ? "▲" : negative ? "▼" : "–";
-  const word = positive ? "상승" : negative ? "하락" : "보합";
-  const cls = positive ? "positive" : negative ? "negative" : "";
-  return h("small", {
-    className: "metric-freshness",
-    "aria-label": `손익률 ${word} ${formatRatio(rate)}`
-  },
-    h("span", { "aria-hidden": "true" }, `${glyph} `),
-    h("span", { className: cls }, formatRatio(rate)));
+// 종목 아바타. 리포에 종목 이미지 asset/필드가 없어(backend Position.java 에 logo/image 필드
+// 없음, public/ 디렉터리 없음) <img>+onError 폴백을 만들지 않고 항상 ticker initials 폴백만
+// 렌더한다. 외부 URL·스크래핑·새 provider 추가 없음. 배경색은 심볼 문자 코드 합 → 고정 팔레트
+// 인덱스로 결정론적으로 고른다(globals.css 의 --avatar-* 토큰). 티커 텍스트가 바로 옆에 있으므로
+// aria-hidden 으로 중복 낭독을 막는다.
+const AVATAR_PALETTE_SIZE = 4;
+
+function avatarInitials(symbol) {
+  if (!symbol) return "?";
+  return symbol.slice(0, 2).toUpperCase();
 }
 
-// 열 정의를 배열 상수로 두고, Risk·판단 열은 positionDecisions 계약 존재 여부로 켠다.
-// Next Catalyst 는 데이터 소스가 없어(BC-9 미결) 만들지 않는다.
-const POSITION_COLUMNS = [
-  { key: "symbol", label: "종목", always: true,
-    cell: (position) => h("th", { scope: "row" },
-      h("a", { href: `/stocks/${encodeURIComponent(position.symbol ?? "")}` }, position.symbol ?? UNKNOWN_TEXT)) },
-  { key: "lastPrice", label: "현재가", always: true, numeric: true,
-    cell: (position) => h("td", { className: "numeric" }, formatAmount(position.currency, position.lastPrice)) },
-  { key: "quantity", label: "수량", always: true, numeric: true,
-    cell: (position) => h("td", { className: "numeric" }, formatQuantity(position.quantity)) },
-  { key: "marketValue", label: "평가금액", always: true, numeric: true,
-    cell: (position) => h("td", { className: "numeric" }, formatAmount(position.currency, position.marketValueAmount)) },
-  { key: "weight", label: "비중", always: true, numeric: true,
-    cell: (position, ctx) => {
-      const weight = ctx.weights.get(position.symbol);
-      return h("td", { className: "numeric" },
-        h("div", null, formatRatio(weight)),
-        h(Meter, {
-          value: weight, max: 1, tone: "ok",
-          label: `${position.symbol ?? UNKNOWN_TEXT} 비중 ${formatRatio(weight)}`
-        }));
-    } },
-  { key: "profitLoss", label: "손익", always: true, numeric: true,
-    cell: (position) => h("td", { className: "numeric" },
-      h("div", null, formatSignedAmount(position.currency, position.profitLossAmount)),
-      renderProfitLossRate(position.profitLossRate)) },
-  // BC-2 계약 필드 — positionDecisions 섹션이 있으면 켜진다.
-  { key: "risk", label: "Risk", decisionColumn: true,
-    cell: (position, ctx) => h("td", { "data-position-risk": position.symbol },
-      renderRiskCell(ctx.decisions.get(position.symbol))) },
-  { key: "decision", label: "판단", decisionColumn: true,
-    cell: (position, ctx) => h("td", { "data-position-decision": position.symbol },
-      renderDecisionCell(ctx.decisions.get(position.symbol))) },
-  { key: "action", label: "행동", always: true,
-    cell: (position) => h("td", null, h("a", {
-      className: "button-link secondary",
-      href: `/orders?symbol=${encodeURIComponent(position.symbol ?? "")}`
-    }, "주문 작성")) }
-];
-
-function enabledColumns(hasDecisions) {
-  return POSITION_COLUMNS.filter(column =>
-    column.always || (column.decisionColumn && hasDecisions));
+function avatarPaletteIndex(symbol) {
+  if (!symbol) return 0;
+  let sum = 0;
+  for (let i = 0; i < symbol.length; i += 1) {
+    sum += symbol.charCodeAt(i);
+  }
+  return sum % AVATAR_PALETTE_SIZE;
 }
 
-export function PortfolioPositionTable({ section, analysis, positionDecisions, limit, caption = "보유 포지션" }) {
+export function PositionAvatar({ symbol, name }) {
+  void name;
+  return h("span", {
+    className: `position-avatar position-avatar--${avatarPaletteIndex(symbol)}`,
+    "aria-hidden": "true"
+  }, avatarInitials(symbol));
+}
+
+// 손익 한 줄. 색은 directionOf().className(positive/negative), 0·null 은 무색이다. ▲/▼ 방향 기호는
+// 쓰지 않으므로 색만으로 방향을 전달하지 않도록 접근성 이름에 방향 낱말(상승/하락/보합)을 남긴다.
+// 금액·비율은 lib/format.js 경유로만 만든다(프론트에서 비율을 금액으로 역산하지 않는다).
+function positionValueBlock(position) {
+  const { className, word } = directionOf(position.profitLossAmount);
+  const plText = formatSignedAmountWithRate(
+    position.currency, position.profitLossAmount, position.profitLossRate);
+  return h("div", { className: "position-row-values" },
+    h("span", { className: "position-row-market" },
+      formatAmount(position.currency, position.marketValueAmount)),
+    h("span", {
+      className: `position-row-pl ${className}`.trim(),
+      "aria-label": word ? `손익 ${word} ${plText}` : `손익 ${plText}`
+    }, plText));
+}
+
+// full 밀도에서만 노출하는 secondary 정보. 비중은 formatRatio 텍스트만 남긴다(Meter 삭제 —
+// weight/1 은 서버 한도가 아니라 전체 대비 몫이라 meter 규칙에 맞지 않는다). BC-2 Risk/판단은
+// renderRiskCell / renderDecisionCell 로직·문구·data 속성을 그대로 살린다.
+// 주문 링크는 우측 금액 열이 아니라 secondary line 에 둔다 — 우측 끝을 버튼이 차지하면 평가금액·
+// 손익이 오른쪽 정렬을 잃고 row 가 버튼 중심으로 읽힌다. 링크 이름은 행마다 반복되므로 접근성
+// 이름에 종목을 붙여 목록에서 구분되게 한다.
+function positionRowAction(position) {
+  const symbol = position.symbol ?? UNKNOWN_TEXT;
+  return h("a", {
+    className: "position-row-action",
+    href: `/orders?symbol=${encodeURIComponent(position.symbol ?? "")}`,
+    "aria-label": `${symbol} 주문 작성`
+  }, "주문 작성");
+}
+
+function positionRowSecondary(position, ctx, density) {
+  // 수량과 현재가는 두 밀도 모두에서 secondary line 에 함께 둔다 — 평가금액·손익만 우측 큰 숫자로
+  // 남겨 row 높이를 낮게 유지하기 위해서다(현재가를 우측 3번째 줄로 쌓지 않는다).
+  const quantity = h("span", { className: "position-row-qty" }, `수량 ${formatQuantity(position.quantity)}`);
+  const lastPrice = position.lastPrice == null
+    ? null
+    : h("span", { className: "position-row-last" }, `현재가 ${formatAmount(position.currency, position.lastPrice)}`);
+  if (density !== "full") {
+    return h("div", { className: "position-row-secondary" }, quantity, lastPrice, positionRowAction(position));
+  }
+  const weight = ctx.weights.get(position.symbol);
+  const entry = ctx.hasDecisions ? ctx.decisions.get(position.symbol) : undefined;
+  return h("div", { className: "position-row-secondary position-row-secondary--full" },
+    quantity,
+    lastPrice,
+    h("span", { className: "position-row-weight" }, `비중 ${formatRatio(weight)}`),
+    ctx.hasDecisions
+      ? h("span", { className: "position-row-risk", "data-position-risk": position.symbol },
+        h("span", { className: "position-row-tag-label" }, "Risk"), renderRiskCell(entry))
+      : null,
+    ctx.hasDecisions
+      ? h("span", { className: "position-row-decision", "data-position-decision": position.symbol },
+        renderDecisionCell(entry))
+      : null,
+    positionRowAction(position));
+}
+
+function PositionRow({ position, ctx, density }) {
+  return h("li", { className: "position-row", "data-position-row": position.symbol },
+    h(PositionAvatar, { symbol: position.symbol, name: position.name }),
+    h("div", { className: "position-row-identity" },
+      h("div", { className: "position-row-title" },
+        h("a", { href: `/stocks/${encodeURIComponent(position.symbol ?? "")}` }, position.symbol ?? UNKNOWN_TEXT),
+        position.name ? h("span", { className: "position-row-name" }, position.name) : null),
+      positionRowSecondary(position, ctx, density)),
+    positionValueBlock(position));
+}
+
+export function PortfolioPositionTable({ section, analysis, positionDecisions, limit, caption = "보유 포지션", detail }) {
   const portfolio = dataOf(section);
   const allPositions = portfolio?.positions ?? [];
   const limited = typeof limit === "number" && limit > 0 && allPositions.length > limit;
   const positions = limited ? allPositions.slice(0, limit) : allPositions;
   const weights = new Map((dataOf(analysis)?.result?.positions ?? []).map(item => [item.symbol, item.weight]));
-  // 섹션이 있고 조회 가능할 때만 판단 열을 켠다(unavailable 이면 열 자체를 숨긴다).
+  // 섹션이 있고 조회 가능할 때만 판단 정보를 켠다(unavailable 이면 숨긴다).
   const decisionRows = dataOf(positionDecisions);
   const hasDecisions = Array.isArray(decisionRows);
   const decisions = new Map((decisionRows ?? []).map(item => [item.symbol, item]));
-  const columns = enabledColumns(hasDecisions);
-  const ctx = { weights, decisions };
+  // detail 미지정 시 밀도는 positionDecisions 배열 존재 여부에서 파생한다. route-workspace(/portfolio)
+  // 는 positionDecisions 섹션을 넘기므로 full, Home 은 넘기지 않으므로 compact 로 남는다.
+  const density = detail ?? (hasDecisions ? "full" : "compact");
+  const ctx = { weights, decisions, hasDecisions };
   return h("section", { className: "panel position-management" },
     h("header", null, h("div", null,
       h("p", { className: "eyebrow" }, "Position management"), h("h2", null, caption))),
     positions.length
-      ? h("div", { className: "table-wrap", tabIndex: 0, role: "region", "aria-label": "보유 포지션 표" },
-        h("table", null,
-          h("thead", null, h("tr", null, ...columns.map(column =>
-            h("th", { key: column.key, scope: "col", className: column.numeric ? "numeric" : undefined }, column.label)))),
-          h("tbody", null, ...positions.map(position =>
-            h("tr", { key: position.symbol }, ...columns.map(column =>
-              cloneElement(column.cell(position, ctx), { key: column.key })))))))
+      ? h("ul", { className: "position-list" }, ...positions.map(position =>
+        h(PositionRow, { key: position.symbol, position, ctx, density })))
       : h("p", { className: "empty" }, "보유 포지션이 없습니다"),
     limited
       ? h("a", { className: "button-link secondary position-see-all", href: "/portfolio" }, "전체 보기")
