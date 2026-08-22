@@ -24,7 +24,7 @@ const SCHEMES = [
   { suffix: "-dark", colorScheme: "dark" }
 ];
 
-const E2E_PORT = Number(process.env.TRADE_E2E_PORT ?? 3107);
+const E2E_PORT = Number(process.env.TRADE_E2E_PORT ?? 3000);
 
 export default defineConfig({
   testDir: "e2e",
@@ -51,9 +51,9 @@ export default defineConfig({
     }
   }))),
   webServer: {
-    command: `npm run dev -- --port ${E2E_PORT}`,
+    command: "npm run dev",
     port: E2E_PORT,
-    reuseExistingServer: false,
+    reuseExistingServer: true,
     timeout: 120000
   }
 });

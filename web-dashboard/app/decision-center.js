@@ -10,10 +10,12 @@ import {
   formatQuantity,
   formatRatio,
   formatSignedAmount,
+  proposalExpiryBadge,
   UNKNOWN_TEXT,
   buyingPowerAmounts
 } from "../lib/format.js";
 import { ORDER_STATUS_LABELS, orderStatusLabel } from "./dashboard-view.js";
+import { Meter } from "./ui-meter.js";
 
 function dataOf(section) {
   if (!section || section.unavailable || section.status === "ERROR") return null;
@@ -37,6 +39,17 @@ const PRIORITY_META = {
 };
 const TYPE_LABELS = { ORDER: "주문", EVENT: "이벤트", DATA_QUALITY: "데이터 품질" };
 const PRIORITY_ORDER = ["URGENT", "HIGH", "MEDIUM", "LOW"];
+
+// D-XX: 만료 임박 뱃지 톤 — classifyProposalExpiry() 기존 tier 를 재사용한다(새 시간 임계값 없음).
+const EXPIRY_BADGE_TONE = { expiring: "badge-pill--warn", expired: "badge-pill--danger" };
+const TONE_RANK = { "badge-pill--neutral": 0, "badge-pill--info": 1, "badge-pill--warn": 2, "badge-pill--danger": 3 };
+
+// 우선순위 톤은 항상 base(우선순위) 톤에서 시작하고, 만료 임박/만료 tier 가 더 급하면 그쪽으로만
+// 올린다(낮추지 않는다) — URGENT(danger)가 expiring(warn)에 의해 다시 완화되는 일이 없도록.
+function escalatedPriorityTone(baseTone, expiryState) {
+  const escalated = EXPIRY_BADGE_TONE[expiryState];
+  return escalated && (TONE_RANK[escalated] ?? -1) > (TONE_RANK[baseTone] ?? -1) ? escalated : baseTone;
+}
 
 // 서버 timestamp − now 만으로 만드는 카운트다운 텍스트(값 계산 아님, 시간 차 표기만).
 const ISO_PREFIX = /^\d{4}-\d{2}-\d{2}T/;
@@ -131,6 +144,14 @@ function qualityButtons(onRefresh) {
 function ActionQueueItem({ item, onOrderAction, onRefresh, busyOrderId }) {
   const busy = isOrderBusy(busyOrderId, item.id);
   const meta = PRIORITY_META[item.priority] ?? PRIORITY_META.LOW;
+  // item.occurredAt(ORDER 는 order.createdAt)·item.deadline(order.expiresAt) 은 실제 생성/만료
+  // 쌍이다(dashboard-view.js·orders-view.js 가 동일 쌍을 classifyProposalExpiry 에 넘긴다).
+  // EVENT/DATA_QUALITY 는 deadline 이 항상 null 이라 아래 분기를 타지 않는다.
+  const expiryState = item.deadline
+    ? classifyProposalExpiry({ createdAt: item.occurredAt, expiresAt: item.deadline })
+    : null;
+  const priorityTone = escalatedPriorityTone(meta.badge, expiryState);
+  const expiryLabel = expiryState ? proposalExpiryBadge(expiryState) : null;
   const countdown = deadlineCountdown(item.deadline);
   return h("li", {
     className: "action-item",
@@ -138,7 +159,10 @@ function ActionQueueItem({ item, onOrderAction, onRefresh, busyOrderId }) {
     "data-action-type": item.type
   },
     h("div", { className: "action-item-heading" },
-      h("span", { className: `badge-pill ${meta.badge}` }, meta.label),
+      h("span", { className: `badge-pill ${priorityTone}` }, meta.label),
+      expiryLabel
+        ? h("span", { className: `badge-pill ${EXPIRY_BADGE_TONE[expiryState] ?? "badge-pill--neutral"}` }, expiryLabel)
+        : null,
       h("span", { className: "badge-pill badge-pill--neutral" }, TYPE_LABELS[item.type] ?? item.type),
       h("strong", null, item.title),
       item.symbol ? h("span", { className: "metric-label" }, item.symbol) : null),
@@ -280,7 +304,11 @@ export function PortfolioRiskPanel({ dashboard }) {
       h("dl", { className: "decision-metrics risk-eval-metrics" },
         h("div", null, h("dt", null, "현재"), h("dd", null, formatRatio(item.current))),
         h("div", null, h("dt", null, "한도"), h("dd", null, formatRatio(item.limit))),
-        h("div", null, h("dt", null, "사용률"), h("dd", null, formatRatio(item.usageRatio))))))),
+        h("div", null, h("dt", null, "사용률"), h("dd", null, formatRatio(item.usageRatio)))),
+      h(Meter, {
+        value: item.usageRatio, max: 1, tone: item.breached ? "danger" : "ok",
+        label: `${item.subject ?? item.scope ?? UNKNOWN_TEXT} 사용률 ${formatRatio(item.usageRatio)}`
+      })))),
     footnote ? h("small", { className: "metric-freshness" }, footnote) : null);
 }
 
@@ -338,7 +366,7 @@ export function KillSwitchStatus({ killSwitch }) {
 // 보유 포지션이며, 분석이 없는 종목도 행이 있고 판단 필드만 비어 있다. 판정 근거(riskLevel/
 // decision/confidence)는 프론트에서 계산하지 않고 서버 값만 노출한다(DESIGN 원칙 4).
 const RISK_LEVEL_LABELS = { LOW: "낮음", MEDIUM: "보통", HIGH: "높음" };
-const DECISION_LABELS = { BUY: "매수", ADD: "추가 매수", HOLD: "보유", REDUCE: "축소", SELL: "매도", WAIT: "대기" };
+const DECISION_LABELS = { BUY: "매수", ADD: "추가 매수", HOLD: "보유", REDUCE: "축소", SELL: "매도" };
 
 // riskLevel === null 은 "안전"이 아니라 판정 근거 없음이다. LOW 로 접거나 빈칸으로 뭉개지
 // 않고 "확인 불가" 로 명시한다.
@@ -374,19 +402,25 @@ function renderDecisionCell(entry) {
     footnote ? h("small", { className: "metric-freshness" }, footnote) : null);
 }
 
-function renderCatalystCell(entry) {
-  if (!entry?.nextCatalystAt && !entry?.nextCatalystType) {
-    return h("span", { className: "metric-label", "data-catalyst-state": "none" }, "예정 이벤트 없음");
-  }
-  return h("div", { className: "position-catalyst", "data-catalyst-state": "scheduled" },
-    h("span", null, entry.nextCatalystType ?? UNKNOWN_TEXT),
-    entry.nextCatalystAt
-      ? h("small", { className: "metric-freshness" }, formatInstant(entry.nextCatalystAt))
-      : null);
+// position.profitLossRate 는 서버가 내려주는 실제 0..1 비율(BC 계약, PositionView.profitLossRate) —
+// 프론트는 손익 금액에서 비율을 계산하지 않고 이 필드를 그대로 ▲/▼ + % 로만 표기한다.
+function renderProfitLossRate(rate) {
+  if (rate == null) return null;
+  const positive = rate > 0;
+  const negative = rate < 0;
+  const glyph = positive ? "▲" : negative ? "▼" : "–";
+  const word = positive ? "상승" : negative ? "하락" : "보합";
+  const cls = positive ? "positive" : negative ? "negative" : "";
+  return h("small", {
+    className: "metric-freshness",
+    "aria-label": `손익률 ${word} ${formatRatio(rate)}`
+  },
+    h("span", { "aria-hidden": "true" }, `${glyph} `),
+    h("span", { className: cls }, formatRatio(rate)));
 }
 
 // 열 정의를 배열 상수로 두고, Risk·판단 열은 positionDecisions 계약 존재 여부로 켠다.
-// Catalyst 도 positionDecisions 서버 계약 값만 노출한다. 날짜나 위험도는 여기서 추정하지 않는다.
+// Next Catalyst 는 데이터 소스가 없어(BC-9 미결) 만들지 않는다.
 const POSITION_COLUMNS = [
   { key: "symbol", label: "종목", always: true,
     cell: (position) => h("th", { scope: "row" },
@@ -398,16 +432,23 @@ const POSITION_COLUMNS = [
   { key: "marketValue", label: "평가금액", always: true, numeric: true,
     cell: (position) => h("td", { className: "numeric" }, formatAmount(position.currency, position.marketValueAmount)) },
   { key: "weight", label: "비중", always: true, numeric: true,
-    cell: (position, ctx) => h("td", { className: "numeric" }, formatRatio(ctx.weights.get(position.symbol))) },
+    cell: (position, ctx) => {
+      const weight = ctx.weights.get(position.symbol);
+      return h("td", { className: "numeric" },
+        h("div", null, formatRatio(weight)),
+        h(Meter, {
+          value: weight, max: 1, tone: "ok",
+          label: `${position.symbol ?? UNKNOWN_TEXT} 비중 ${formatRatio(weight)}`
+        }));
+    } },
   { key: "profitLoss", label: "손익", always: true, numeric: true,
-    cell: (position) => h("td", { className: "numeric" }, formatSignedAmount(position.currency, position.profitLossAmount)) },
+    cell: (position) => h("td", { className: "numeric" },
+      h("div", null, formatSignedAmount(position.currency, position.profitLossAmount)),
+      renderProfitLossRate(position.profitLossRate)) },
   // BC-2 계약 필드 — positionDecisions 섹션이 있으면 켜진다.
   { key: "risk", label: "Risk", decisionColumn: true,
     cell: (position, ctx) => h("td", { "data-position-risk": position.symbol },
       renderRiskCell(ctx.decisions.get(position.symbol))) },
-  { key: "catalyst", label: "Next Catalyst", enabled: (ctx) => ctx.hasCatalysts,
-    cell: (position, ctx) => h("td", { "data-position-catalyst": position.symbol },
-      renderCatalystCell(ctx.decisions.get(position.symbol))) },
   { key: "decision", label: "판단", decisionColumn: true,
     cell: (position, ctx) => h("td", { "data-position-decision": position.symbol },
       renderDecisionCell(ctx.decisions.get(position.symbol))) },
@@ -418,9 +459,9 @@ const POSITION_COLUMNS = [
     }, "주문 작성")) }
 ];
 
-function enabledColumns(ctx) {
+function enabledColumns(hasDecisions) {
   return POSITION_COLUMNS.filter(column =>
-    column.always || (column.decisionColumn && ctx.hasDecisions) || column.enabled?.(ctx));
+    column.always || (column.decisionColumn && hasDecisions));
 }
 
 export function PortfolioPositionTable({ section, analysis, positionDecisions, limit, caption = "보유 포지션" }) {
@@ -433,9 +474,8 @@ export function PortfolioPositionTable({ section, analysis, positionDecisions, l
   const decisionRows = dataOf(positionDecisions);
   const hasDecisions = Array.isArray(decisionRows);
   const decisions = new Map((decisionRows ?? []).map(item => [item.symbol, item]));
-  const hasCatalysts = (decisionRows ?? []).some(item => item.nextCatalystAt || item.nextCatalystType);
-  const ctx = { weights, decisions, hasDecisions, hasCatalysts };
-  const columns = enabledColumns(ctx);
+  const columns = enabledColumns(hasDecisions);
+  const ctx = { weights, decisions };
   return h("section", { className: "panel position-management" },
     h("header", null, h("div", null,
       h("p", { className: "eyebrow" }, "Position management"), h("h2", null, caption))),

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 // Route-interception state factory for the UI audit.
 //
 // Every data request in the app goes to /api/v1/** (next.config.js proxies to a
@@ -683,6 +685,27 @@ const STOCK_ANALYSIS_FULL = {
     status: "DEGRADED",
     asOf: "2026-08-02T00:00:00Z",
     missingData: ["marketRegime:FIELD_MISSING:macro.vix"],
+    decision: {
+      action: "BUY",
+      confidence: "0.72",
+      ruleVersion: "decision-rule-v1",
+      basis: [],
+      missingData: []
+    },
+    positionPlan: {
+      entry: "200",
+      add: "193.661925",
+      stop: "187.32385",
+      target1: "222.536",
+      target2: "245.072",
+      riskReward: "1.7778268638",
+      maxLossPerShare: "12.67615",
+      invalidation: "종가가 187.32385 USD 아래로 마감하면 계획 무효",
+      ruleVersion: "position-plan-v1",
+      currency: "USD",
+      basisPrice: "200",
+      missingData: []
+    },
     observations: [
       {
         provider: "FMP",
@@ -732,6 +755,19 @@ const STOCK_EXPLANATION_FULL = {
   explanation: {
     evidence: [{ text: "Grounded evidence", citationIds: ["citation-1"] }]
   }
+};
+
+const STOCK_ANALYSIS_PARTIAL_CONTRACT = JSON.parse(readFileSync(
+  new URL("../../../contracts/analysis/v5/stock-analysis-core-partial-response.json", import.meta.url),
+  "utf8"
+));
+
+const STOCK_ANALYSIS_PARTIAL = {
+  runId: "run-partial-1",
+  inputSnapshotId: STOCK_ANALYSIS_PARTIAL_CONTRACT.inputSnapshotId,
+  symbol: STOCK_ANALYSIS_PARTIAL_CONTRACT.symbol,
+  completedAt: "2026-08-03T00:00:00Z",
+  result: STOCK_ANALYSIS_PARTIAL_CONTRACT
 };
 
 const STOCK_HISTORY_FULL = [STOCK_ANALYSIS_FULL];
@@ -939,6 +975,7 @@ function shapeForState(match, state) {
       case "portfolio-history": return PORTFOLIO_HISTORY_EMPTY;
       case "analysis-predictions":
         return { ...ANALYSIS_PREDICTIONS_FULL, forecastQuality: null };
+      case "stock-analysis": return STOCK_ANALYSIS_PARTIAL;
       case "surface": return body.status === "UNAVAILABLE"
         ? body
         : { ...body, status: "DEGRADED", unknown: true, unknownFields: ["provider.partial"] };

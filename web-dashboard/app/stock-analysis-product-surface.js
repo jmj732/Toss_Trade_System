@@ -4,6 +4,12 @@ import { createElement as h } from "react";
 
 import { formatAmount, formatInstant, formatRatio, formatSignedAmount, UNKNOWN_TEXT } from "../lib/format.js";
 import { MarketCandleChart } from "./market-candle-chart.js";
+import { Meter } from "./ui-meter.js";
+
+// 판단 라벨은 decision-center.js 의 DECISION_LABELS 와 동일한 어휘를 쓴다(두 표면이
+// 서로 다른 말을 쓰지 않도록). decision-center.js 는 이 상수를 export 하지 않으므로
+// (BC-2 판단 계약과 무관한 stock-analysis 쪽 decision.action 어휘라) 여기서 그대로 복제한다.
+const DECISION_LABELS = { BUY: "매수", ADD: "추가 매수", HOLD: "보유", REDUCE: "축소", SELL: "매도", WAIT: "대기" };
 
 const REASON_LABELS = {
   UNAUTHORIZED: "권한 확인 필요",
@@ -22,8 +28,6 @@ const MISSING_DATA_LABELS = {
   GEMINI_UPSTREAM_ERROR: "설명 제공자 오류",
   PROVIDER_UNSUPPORTED: "지원되지 않는 제공자 데이터"
 };
-
-const DECISION_LABELS = { BUY: "매수", ADD: "추가 매수", HOLD: "보유", REDUCE: "축소", SELL: "매도", WAIT: "대기" };
 
 function readableCode(value) {
   return REASON_LABELS[value] ?? value;
@@ -119,10 +123,20 @@ function surfaceProvenance(value) {
   return `출처 ${item.provider}${item.asOf ? ` · 기준 ${formatInstant(item.asOf)}` : ""}${item.observedAt ? ` · 수집 ${formatInstant(item.observedAt)}` : ""}`;
 }
 
-function latestQuote(symbol, realtimePrices) {
+function toFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function findQuote(symbol, realtimePrices) {
   const data = surfaceData(realtimePrices);
   const items = Array.isArray(data) ? data : data?.data ?? [];
-  const quote = items.find(item => item?.symbol?.toUpperCase() === symbol?.toUpperCase());
+  return items.find(item => item?.symbol?.toUpperCase() === symbol?.toUpperCase());
+}
+
+function latestQuote(symbol, realtimePrices) {
+  const quote = findQuote(symbol, realtimePrices);
   const price = quote?.lastPrice ?? quote?.price;
   return {
     price: formatAmount(quote?.currency ?? "USD", price),
@@ -130,6 +144,14 @@ function latestQuote(symbol, realtimePrices) {
     referenceTime: quote?.brokerTimestamp || quote?.observedAt
       ? instantCell(quote.brokerTimestamp ?? quote.observedAt) : UNKNOWN_TEXT
   };
+}
+
+// Position Plan 가격대 시각화의 "현재가" 마커 전용 — 화면 표시용 문자열이 아니라
+// 트랙 위치 계산에 쓸 수 있는 실수값이 필요하다. quote 조회 자체는 latestQuote 와 동일한
+// realtimePrices 페이로드를 쓴다(별도 값을 새로 만들지 않는다).
+function latestQuotePrice(symbol, realtimePrices) {
+  const quote = findQuote(symbol, realtimePrices);
+  return toFiniteNumber(quote?.lastPrice ?? quote?.price);
 }
 
 function providerStatus(value, hasData) {
@@ -165,12 +187,22 @@ function qualitySummary({ analysis, realtimePrices, candles, orderbook, investor
   return [UNKNOWN_TEXT, "neutral"];
 }
 
-function riskSummary(analysis, stockWarnings) {
-  const warnings = surfaceData(stockWarnings)?.warnings ?? surfaceData(stockWarnings)?.data ?? [];
-  if (warnings.some(item => item.severity === "DANGER" || item.severity === "WARNING")) return ["높음", "danger"];
-  if (warnings.length || analysis?.result?.status === "DEGRADED" || analysis?.result?.missingData?.length) return ["주의", "warn"];
-  if (analysis?.result) return ["보통", "ok"];
+function riskSummary(analysis) {
+  const level = analysis?.result?.riskLevel ?? analysis?.riskLevel;
+  if (level === "HIGH") return ["높음", "danger"];
+  if (level === "MEDIUM") return ["보통", "warn"];
+  if (level === "LOW") return ["낮음", "ok"];
   return [UNKNOWN_TEXT, "neutral"];
+}
+
+function decisionAction(decision) {
+  return decision && typeof decision === "object" ? decision.action : decision;
+}
+
+function decisionConfidence(decision, analysis) {
+  return decision && typeof decision === "object"
+    ? decision.confidence
+    : analysis?.result?.confidence ?? analysis?.confidence;
 }
 
 function MissingData({ values = [] }) {
@@ -217,29 +249,90 @@ function Panel({ title, state, error, action, children }) {
     children);
 }
 
-function PositionPlan({ analysis, position }) {
-  const plan = analysis?.result?.positionPlan;
+// 스톱/진입/추가/현재가/목표가1/목표가2 중 실제 값이 있는 마커만 골라 가격순으로 정렬한다.
+// 값이 없는 마커는 추정/기본값으로 채우지 않고 그냥 목록에서 빠진다(DESIGN 원칙 3).
+function positionPlanMarkers(plan, currentPrice) {
+  if (!plan) return [];
+  return [
+    { key: "stop", label: "손절", price: toFiniteNumber(plan.stop) },
+    { key: "entry", label: "진입", price: toFiniteNumber(plan.entry) },
+    { key: "add", label: "추가", price: toFiniteNumber(plan.add) },
+    { key: "current", label: "현재가", price: currentPrice },
+    { key: "target1", label: "목표가1", price: toFiniteNumber(plan.target1) },
+    { key: "target2", label: "목표가2", price: toFiniteNumber(plan.target2) }
+  ].filter(marker => marker.price !== null).sort((a, b) => a.price - b.price);
+}
+
+// 매수/매도 구도와 무관하게 가격 오름차순으로만 배치한다(숏 포지션이면 손절이 오른쪽에
+// 올 수도 있다) — currencyPath(portfolio-history-view.js)와 같은 "실측값에서 축 범위를
+// 뽑아낸다" 방식. 마커가 2개 미만이면(예: WAIT 이고 plan 자체가 없는 경우) 값을 지어내는
+// 대신 아무것도 그리지 않고 기존 텍스트 필드만 남긴다.
+function PositionPlanRange({ plan, currentPrice, currency }) {
+  const markers = positionPlanMarkers(plan, currentPrice);
+  if (markers.length < 2) return null;
+  const prices = markers.map(marker => marker.price);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const span = max - min || 1;
+  const placed = markers.map(marker => ({
+    ...marker,
+    percent: Math.min(98, Math.max(2, ((marker.price - min) / span) * 100))
+  }));
+  const summary = placed.map(marker => `${marker.label} ${formatAmount(currency, marker.price)}`).join(", ");
+  return h("div", { className: "position-plan-range" },
+    h("div", {
+      className: "position-plan-range-track", role: "img", "aria-label": `가격 범위: ${summary}`
+    },
+    ...placed.map(marker => h("span", {
+      key: marker.key,
+      "aria-hidden": "true",
+      className: marker.key === "current"
+        ? "position-plan-range-tick position-plan-range-tick--current"
+        : "position-plan-range-tick",
+      style: { left: `${marker.percent}%` }
+    }))),
+    // 트랙의 점 위치는 시각 보조이고, 실제 접근성 텍스트는 이 범례가 담당한다
+    // (WCAG 2.2 AA — 위치·색만으로 정보를 전달하지 않는다).
+    h("ul", { className: "position-plan-range-legend" },
+      ...placed.map(marker => h("li", {
+        key: marker.key,
+        className: marker.key === "current" ? "position-plan-range-legend-current" : undefined
+      }, `${marker.label} ${formatAmount(currency, marker.price)}`))));
+}
+
+function PositionPlan({ analysis, position, symbol, realtimePrices }) {
+  const plan = analysis?.result?.positionPlan ?? analysis?.positionPlan;
+  // decision 은 analyzer 판단 오브젝트({action, confidence, ruleVersion, basis, missingData}) 다.
+  // 리스크 등급(riskLevel)은 이 계약에는 없다 — home 판단 센터(decision-center.js)의
+  // ctx.decisions 맵(다른 API·다른 prop)에만 있고 StockAnalysisProductSurface 에는
+  // 내려오지 않으므로, 실제 필드가 없는 리스크 미터는 지어내지 않고 생략한다.
+  const decision = analysis?.result?.decision ?? analysis?.decision;
+  const action = decisionAction(decision);
+  const confidence = toFiniteNumber(decision?.confidence);
   const currency = plan?.currency ?? position?.currency;
-  if (!plan) {
-    return h("section", { className: "position-plan", "data-position-plan": "unavailable" },
-      h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Position Plan"), h("h3", null, "포지션 계획"))),
-      h("p", { className: "empty" }, "포지션 계획 없음"));
-  }
-  return h("section", { className: "position-plan", "data-position-plan": "available" },
+  const value = key => plan?.[key] ?? UNKNOWN_TEXT;
+  const currentPrice = latestQuotePrice(symbol, realtimePrices);
+  return h("section", { className: "position-plan", "data-position-plan": plan ? "available" : "unavailable" },
     h("header", null, h("div", null, h("p", { className: "eyebrow" }, "Position Plan"), h("h3", null, "포지션 계획"))),
     h("dl", { className: "decision-metrics" },
-      h("div", null, h("dt", null, "진입가"), h("dd", null, formatAmount(currency, plan.entry))),
-      h("div", null, h("dt", null, "추가 매수가"), h("dd", null, formatAmount(currency, plan.add))),
-      h("div", null, h("dt", null, "손절가"), h("dd", null, formatAmount(currency, plan.stop))),
-      h("div", null, h("dt", null, "1차 목표가"), h("dd", null, formatAmount(currency, plan.target1))),
-      h("div", null, h("dt", null, "2차 목표가"), h("dd", null, formatAmount(currency, plan.target2))),
-      h("div", null, h("dt", null, "R:R"), h("dd", null, plan.riskReward ?? UNKNOWN_TEXT)),
-      h("div", null, h("dt", null, "주당 최대 손실"), h("dd", null, formatAmount(currency, plan.maxLossPerShare))),
-      h("div", null, h("dt", null, "무효화"), h("dd", null, plan.invalidation ?? UNKNOWN_TEXT)),
-      h("div", null, h("dt", null, "규칙"), h("dd", null, plan.ruleVersion ?? UNKNOWN_TEXT)),
-      h("div", null, h("dt", null, "기준가"), h("dd", null, formatAmount(currency, plan.basisPrice))),
-      h("div", null, h("dt", null, "현재 포지션"), h("dd", null, formatAmount(position?.currency, position?.marketValueAmount)))),
-    h(MissingData, { values: plan.missingData }));
+      h("div", null, h("dt", null, "진입가"), h("dd", null, formatAmount(currency, value("entry")))),
+      h("div", null, h("dt", null, "추가 진입가"), h("dd", null, formatAmount(currency, value("add")))),
+      h("div", null, h("dt", null, "손절가"), h("dd", null, formatAmount(currency, value("stop")))),
+      h("div", null, h("dt", null, "목표가1"), h("dd", null, formatAmount(currency, value("target1")))),
+      h("div", null, h("dt", null, "목표가2"), h("dd", null, formatAmount(currency, value("target2")))),
+      h("div", null, h("dt", null, "R:R"), h("dd", null, value("riskReward"))),
+      h("div", null, h("dt", null, "최대 손실"), h("dd", null, formatAmount(currency, value("maxLossPerShare")))),
+      h("div", null, h("dt", null, "현재 포지션"), h("dd", null, formatAmount(position?.currency, position?.marketValueAmount))),
+      action
+        ? h("div", null, h("dt", null, "판단"),
+          h("dd", null, h("span", { className: "badge-pill badge-pill--neutral" },
+            DECISION_LABELS[action] ?? action)))
+        : null,
+      confidence !== null
+        ? h("div", null, h("dt", null, "신뢰도"),
+          h("dd", null, formatRatio(decision.confidence), h(Meter, { value: confidence, max: 1, label: "신뢰도" })))
+        : null),
+    h(PositionPlanRange, { plan, currentPrice, currency }));
 }
 
 function StockSummary({ symbol, analysis, position, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions, onCreateOrder }) {
@@ -247,16 +340,18 @@ function StockSummary({ symbol, analysis, position, realtimePrices, candles, ord
   const [quality, qualityModifier] = qualitySummary({
     analysis, realtimePrices, candles, orderbook, investorTrading, stockWarnings, commissions
   });
-  const [risk, riskModifier] = riskSummary(analysis, stockWarnings);
-  const decision = analysis?.result?.decision;
+  const [risk, riskModifier] = riskSummary(analysis);
+  const decision = analysis?.result?.decision ?? analysis?.decision;
+  const action = decisionAction(decision);
+  const confidence = decisionConfidence(decision, analysis);
   return h("section", { className: "panel stock-surface-panel stock-surface-summary" },
     h("div", { className: "stock-surface-summary-main" },
       h("p", { className: "eyebrow" }, "종목 분석"),
       h("h2", null, symbol),
       h("span", { className: "metric-label" }, "현재가"),
       h("span", { className: "metric-value-large" }, quote.price),
-      h("span", { className: `stock-surface-change ${quote.change.startsWith("-") ? "negative" : "positive"}` },
-        quote.change)),
+      h("span", { className: "stock-surface-change" },
+        h("span", { className: quote.change.startsWith("-") ? "negative" : "positive" }, quote.change))),
     h("dl", { className: "stock-surface-summary-meta" },
       h("div", null, h("dt", null, "기준 시각"), h("dd", null, quote.referenceTime)),
       h("div", null, h("dt", null, "데이터 품질"), h("dd", null,
@@ -264,16 +359,16 @@ function StockSummary({ symbol, analysis, position, realtimePrices, candles, ord
       h("div", null, h("dt", null, "리스크"), h("dd", null,
         h("span", { className: `badge-pill badge-pill--${riskModifier}` }, risk))),
       h("div", null, h("dt", null, "판단"), h("dd", null,
-        decision?.action ? DECISION_LABELS[decision.action] ?? decision.action : UNKNOWN_TEXT)),
-      h("div", null, h("dt", null, "신뢰도"), h("dd", null, formatRatio(decision?.confidence))),
-      h("div", null, h("dt", null, "판단 규칙"), h("dd", null, decision?.ruleVersion ?? UNKNOWN_TEXT)),
+        action ? DECISION_LABELS[action] ?? action : UNKNOWN_TEXT)),
+      h("div", null, h("dt", null, "신뢰도"), h("dd", null,
+        confidence === null ? UNKNOWN_TEXT : formatRatio(confidence))),
       h("div", null, h("dt", null, "보유 손익"), h("dd", null,
         formatSignedAmount(position?.currency, position?.profitLossAmount))),
       h("div", null, h("dt", null, "포트폴리오 비중"), h("dd", null, formatRatio(position?.weight))),
       h("div", null, h("dt", null, "주문"), h("dd", null,
         h("button", { type: "button", className: "secondary", onClick: onCreateOrder }, "이 종목 주문 작성"))),
       ),
-    h(PositionPlan, { analysis, position }));
+    h(PositionPlan, { analysis, position, symbol, realtimePrices }));
 }
 
 function AnalysisPanel({ analysis, state, error, busy, onCreate }) {

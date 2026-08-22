@@ -146,6 +146,26 @@ test("feed filters only expose server-field-backed categories and mark held even
   assert.doesNotMatch(html, /<option[^>]*>뉴스<\/option>/);
   // 보유 종목과 교집합이 있는 이벤트에만 "보유" 표식이 붙는다.
   assert.match(html, /data-event-held="true"/);
+  // 이벤트 종류 표식은 event.source 값을 그대로 노출한다(SEC/FRED는 자동 수집 공급자 enum).
+  assert.match(html, /badge-pill badge-pill--ok" data-event-source="SEC">SEC</);
+  assert.match(html, /badge-pill badge-pill--ok" data-event-source="FRED">FRED</);
+});
+
+test("marks manually-registered events with a distinct source tone from provider-fed events", () => {
+  const html = renderToStaticMarkup(createElement(EventWorkflow, {
+    positions: [{ symbol: "NVDA" }],
+    events: [
+      { id: "e1", summary: "Manual note", type: "NOTE", source: "MANUAL", affectedSymbols: ["NVDA"] }
+    ],
+    selectedEvent: null,
+    connectionId: "connection-1",
+    busyAction: null,
+    onCreate() {}, onSelect() {}, onReanalyze() {}, onReview() {}
+  }));
+
+  assert.match(html, /badge-pill badge-pill--neutral" data-event-source="MANUAL">MANUAL</);
+  // review-status 배지(warn)와는 다른 축이라 neutral/ok 톤을 재사용하고 warn 은 겹치지 않는다.
+  assert.doesNotMatch(html, /badge-pill--warn" data-event-source/);
 });
 
 test("leads event review with status, symbols, time, and next action", () => {

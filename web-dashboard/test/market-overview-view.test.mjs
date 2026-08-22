@@ -57,3 +57,22 @@ test("renders degraded provider values while showing missing-field scope and pro
   assert.match(html, /기준/);
   assert.match(html, /수집/);
 });
+
+test("elevates visual weight for degraded/unavailable/stale widgets and keeps nominal ones plain", () => {
+  const html = renderToStaticMarkup(createElement(MarketOverviewView, {
+    // stale=true even though status is AVAILABLE — unavailable() alone never surfaced this.
+    exchangeRate: { status: "AVAILABLE", stale: true, data: { rate: 1390.25, basisPoint: 1.2 } },
+    calendar: { status: "UNAVAILABLE", unavailable: true, unavailableReason: "PROVIDER_UNSUPPORTED" },
+    // 정상 상태: 배지도 강조 테두리도 없어야 한다.
+    rankings: { status: "AVAILABLE", data: { items: [{ symbol: "NVDA", price: 120, currency: "USD", changePercent: 0.01 }] } },
+    onRankingCategory() {}
+  }));
+
+  // stale이 AVAILABLE과 함께 와도 warn 배지 + market-widget--warn 로 드러난다.
+  assert.match(html, /market-widget--warn"[^>]*>[\s\S]*?class="quality"[^>]*>[\s\S]*?지연/);
+  assert.match(html, /₩1,390\.25/);
+  // unavailable은 danger 배지 + market-widget--danger.
+  assert.match(html, /market-widget--danger/);
+  // 정상 랭킹 위젯은 어떤 강조 modifier 도 붙지 않는다.
+  assert.doesNotMatch(html, /market-widget rankings-widget market-widget--/);
+});

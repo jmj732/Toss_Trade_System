@@ -32,6 +32,19 @@ function eventStatus(event) {
   return `${event?.reviewStatus ?? "UNKNOWN"} · v${event?.reviewVersion ?? UNKNOWN_TEXT}`;
 }
 
+// 이벤트 종류 표식은 서버가 준 event.source 값만 그대로 보여준다(FILING 필터가 이미 쓰는
+// event.source === "SEC" 와 같은 근거). 실제로 관측되는 값은 자동 수집 공급자 enum
+// (SEC/IR/FED/FRED/BLS/BEA — MarketEventProviderId)과 수동 등록 시 프론트가 보내는
+// "MANUAL"(이 파일의 submit() 참고) 뿐이라 그 외 카테고리는 만들지 않는다. 검토 상태 배지와는
+// 다른 축이라 별도 배지로 둔다.
+function eventSourceBadge(event) {
+  const source = event?.source;
+  if (!source) return null;
+  const label = String(source).toUpperCase();
+  const tone = label === "MANUAL" ? "neutral" : "ok";
+  return h("span", { className: `badge-pill badge-pill--${tone}`, "data-event-source": label }, label);
+}
+
 function affectedSymbols(event) {
   return event?.affectedSymbols?.length ? event.affectedSymbols.join(", ") : UNKNOWN_TEXT;
 }
@@ -52,6 +65,7 @@ function EventSignal({ event, compact = false }) {
   const tag = compact ? "span" : "p";
   return h(tag, { className: compact ? "event-signal event-signal--compact" : "event-signal" },
     h("span", { className: "badge-pill badge-pill--warn" }, eventStatus(event)),
+    eventSourceBadge(event),
     h("span", null, "영향 ", affectedSymbols(event)),
     h("span", null, "시각 ", formatInstant(event?.occurredAt)),
     h("span", null, "다음 작업: ", nextAction(event)),

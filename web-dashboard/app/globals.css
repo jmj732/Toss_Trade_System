@@ -22,6 +22,23 @@
   --danger-line: #ffc7cc;
   --focus: 0 0 0 2px var(--panel), 0 0 0 4px #1b4fb8;
 
+  /* Direction roles — single source for up/down across the product. Aliases, not new
+     hues: 상승 reuses --accent(blue), 하락 reuses --danger(red). Never hardcode
+     --accent-text/--danger-text directly for a value change; use these two instead so a
+     future palette change only touches this block. */
+  --positive-text: var(--accent-text);
+  --positive-line: var(--accent);
+  --negative-text: var(--danger-text);
+  --negative-line: var(--danger);
+
+  /* Meter/progress fill roles — current-value-vs-limit bars (order risk check, weight,
+     cash mix, stop distance). Track is always --line on --panel-raised; fill color
+     communicates how close to the limit, never on its own (pair with % text/label). */
+  --meter-track: var(--line);
+  --meter-fill-ok: var(--accent);
+  --meter-fill-warn: var(--warning);
+  --meter-fill-danger: var(--danger);
+
   /* Spacing — 4px base scale */
   --sp-1: 4px;
   --sp-2: 8px;
@@ -196,6 +213,34 @@ textarea {
 .list .badge-pill--danger { color: var(--danger-text); }
 .list .badge-pill--neutral { color: var(--muted); }
 
+/* Canonical direction utilities. Every surface showing a price/P&L/rate change applies
+   one of these to its sign glyph + number — never color alone (pair with ▲/▼ text). */
+.positive, .change-positive { color: var(--positive-text); }
+.negative, .change-negative { color: var(--negative-text); }
+
+/* Generic current-value/limit meter. Track is a flat bar; fill width is set inline via
+   style (`--meter-percent`) by the caller from a server-provided current/limit pair —
+   never fabricated. Pass tone="warn"/"danger" as usage nears/breaches the limit. */
+.meter {
+  background: var(--meter-track);
+  border-radius: var(--r-sm);
+  display: flex;
+  height: 6px;
+  overflow: hidden;
+  width: 100%;
+}
+.meter-fill {
+  background: var(--meter-fill-ok);
+  border-radius: var(--r-sm);
+  height: 100%;
+  transition: width 160ms ease-out;
+  width: var(--meter-percent, 0%);
+}
+.meter-fill--warn { background: var(--meter-fill-warn); }
+.meter-fill--danger { background: var(--meter-fill-danger); }
+.meter-row { align-items: center; display: grid; gap: var(--sp-2); grid-template-columns: 1fr auto; }
+.meter-row .metric-label { grid-column: 1 / -1; }
+
 /* Legacy quality-badge classes, scoped to the explicit states DashboardView still emits
    (stale/unknown/unavailable/available/partial). Kept until that view migrates to
    .badge-pill; the class list avoids leaking onto .badge-pill spans inside .quality. */
@@ -362,8 +407,13 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   max-width: 1280px;
   padding: 0 var(--sp-8);
 }
-.market-widget { padding: var(--sp-5); }
+.market-widget { padding: var(--sp-5); transition: border-color 160ms ease-out; }
 .market-widget > header { gap: var(--sp-3); margin-bottom: var(--sp-4); }
+/* market-overview-view.js 전용 데이터 품질 강조. 정상 상태는 기본 .market-widget 그대로 두고,
+   DEGRADED/UNAVAILABLE/stale 일 때만 테두리를 굵게 해 눈에 띄게 한다(색상만으로 전달하지 않도록
+   .badge-pill 텍스트와 함께 사용). */
+.market-widget--warn { border-color: var(--warning-line); border-width: 2px; }
+.market-widget--danger { border-color: var(--danger-line); border-width: 2px; }
 .exchange-rate-hero { display: grid; gap: var(--sp-1); }
 .ranking-tabs {
   display: flex;
@@ -571,6 +621,44 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .position-management { min-width: 0; }
 .position-management .table-wrap { margin-top: var(--sp-4); }
 .position-plan { border-top: 1px solid var(--line); grid-column: 1 / -1; margin-top: var(--sp-4); padding-top: var(--sp-4); }
+/* Position Plan 가격대 시각화 — 손절/진입/추가/현재가/목표가1/목표가2 를 실측값 비율로 배치한
+   트랙 + 항상 보이는 텍스트 범례. 360px 폭에서도 가로 스크롤이 생기지 않도록 트랙은
+   %기반 절대 위치, 범례는 flex-wrap 로만 배치한다(고정 px 폭 없음). */
+.position-plan-range { margin-top: var(--sp-4); min-width: 0; }
+.position-plan-range-track {
+  background: var(--meter-track);
+  border-radius: var(--r-sm);
+  height: 8px;
+  margin: var(--sp-2) 0;
+  position: relative;
+  width: 100%;
+}
+.position-plan-range-tick {
+  background: var(--line-strong);
+  border-radius: var(--r-sm);
+  height: 100%;
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  width: 3px;
+}
+.position-plan-range-tick--current {
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  height: 14px;
+  top: -3px;
+  width: 14px;
+}
+.position-plan-range-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+}
+.position-plan-range-legend li { color: var(--muted); font-size: var(--fs-xs); }
+.position-plan-range-legend-current { color: var(--accent-text); font-weight: var(--fw-bold); }
 .order-creation-panel { margin: 0 auto; max-width: 1280px; }
 .order-creation-form { align-items: end; display: grid; gap: var(--sp-3); grid-template-columns: repeat(6, minmax(0, 1fr)); margin-top: var(--sp-4); }
 .order-creation-form label { color: var(--muted); display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
@@ -763,7 +851,6 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
 .stock-surface-summary h2 { font-size: var(--fs-display); overflow-wrap: anywhere; }
 .stock-surface-summary-main { min-width: 0; }
 .stock-surface-change { color: var(--accent-text); display: inline-block; font-weight: var(--fw-bold); margin-top: var(--sp-1); }
-.stock-surface-change.negative { color: var(--danger-text); }
 .stock-surface-summary-meta {
   display: grid;
   gap: var(--sp-2);
