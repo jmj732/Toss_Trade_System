@@ -39,6 +39,18 @@
   --meter-fill-warn: var(--warning);
   --meter-fill-danger: var(--danger);
 
+  /* Position avatar palette — ticker-initials 폴백 아바타 배경. 심볼 문자 코드 합 → 인덱스로
+     결정론적으로 고르는 고정 4색이다(종목 이미지 asset 이 없어 만든 유일한 신규 hue 세트).
+     흰 initials 와 대비되는 중간 톤만 쓴다. */
+  --avatar-text: #ffffff;
+  /* 아바타 배경은 흰 글자(--avatar-text)를 얹으므로 모두 WCAG 2.2 AA 4.5:1 이상이어야 한다.
+     현재 대비: 6.67 / 7.67 / 6.01 / 6.33. 라이트·다크 공통 값이다(대비는 페이지 배경이 아니라
+     아바타 배경 대 글자색으로만 결정된다) — 다크 전용 오버라이드를 두지 않는다. */
+  --avatar-0: #2f5d99;
+  --avatar-1: #5a4790;
+  --avatar-2: #1f6f5e;
+  --avatar-3: #8f4f28;
+
   /* Spacing — 4px base scale */
   --sp-1: 4px;
   --sp-2: 8px;
@@ -214,7 +226,8 @@ textarea {
 .list .badge-pill--neutral { color: var(--muted); }
 
 /* Canonical direction utilities. Every surface showing a price/P&L/rate change applies
-   one of these to its sign glyph + number — never color alone (pair with ▲/▼ text). */
+   one of these to its number. 방향 기호(▲/▼)는 쓰지 않는다 — 색만으로 방향을 전달하지 않도록
+   금액의 +/- 부호와 접근성 이름의 방향 낱말(상승/하락/보합)이 함께 붙는다(lib/format.js directionOf). */
 .positive, .change-positive { color: var(--positive-text); }
 .negative, .change-negative { color: var(--negative-text); }
 
@@ -223,9 +236,9 @@ textarea {
    never fabricated. Pass tone="warn"/"danger" as usage nears/breaches the limit. */
 .meter {
   background: var(--meter-track);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-pill);
   display: flex;
-  height: 6px;
+  height: 4px;
   overflow: hidden;
   width: 100%;
 }
@@ -431,17 +444,26 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .market-candle-chart .market-candle-svg {
   display: block;
   height: auto;
+  /* viewBox 좌표는 그대로 두고(스케일 계산 불변), 박스 안쪽 패딩으로만 캔들이 패널
+     상하단에 바짝 붙지 않게 여백을 만든다. */
   margin-top: var(--sp-4);
   max-width: 100%;
   overflow: visible;
+  padding-block: var(--sp-3);
 }
 .market-candle-chart .candle-up { fill: var(--danger); stroke: var(--danger-text); }
 .market-candle-chart .candle-down { fill: var(--accent); stroke: var(--accent-text); }
+/* 작은 viewBox(360×184)가 넓은 컨테이너로 확대되면서 stroke 도 함께 두꺼워졌다.
+   non-scaling-stroke 로 확대 배율과 무관하게 실제 픽셀 두께를 얇게 고정한다. */
 .market-candle-chart .candle-wick {
   stroke-linecap: round;
-  stroke-width: 2;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
 }
-.market-candle-chart .candle-body { stroke-width: 1; }
+.market-candle-chart .candle-body {
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
 .market-candle-chart .volume-bar { fill: var(--panel-raised); }
 .center {
   align-items: center;
@@ -619,7 +641,59 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .portfolio-risk-panel { min-width: 0; }
 .position-summary { margin-bottom: var(--sp-5); }
 .position-management { min-width: 0; }
-.position-management .table-wrap { margin-top: var(--sp-4); }
+/* Compact position list — spreadsheet 표를 대체한다. 강한 grid line 없이 row 는 --line 1px
+   hairline 으로만 구분하고(마지막 row 는 없음), 금액·손익 블록은 우측 정렬한다. */
+.position-list { list-style: none; margin: var(--sp-4) 0 0; padding: 0; }
+.position-row {
+  /* 위쪽 정렬 — secondary line 이 여러 줄로 늘어나는 좁은 화면·full 밀도에서도 아바타·티커·평가금액이
+     같은 첫 줄에 맞춰 읽힌다(가운데 정렬이면 금액이 본문 중간에 떠 보인다). */
+  align-items: flex-start;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-4) 0;
+}
+.position-row:last-child { border-bottom: none; }
+.position-avatar {
+  align-items: center;
+  border-radius: var(--r-pill);
+  color: var(--avatar-text);
+  display: flex;
+  flex: none;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  height: 2.25rem;
+  justify-content: center;
+  letter-spacing: .01em;
+  width: 2.25rem;
+}
+.position-avatar--0 { background: var(--avatar-0); }
+.position-avatar--1 { background: var(--avatar-1); }
+.position-avatar--2 { background: var(--avatar-2); }
+.position-avatar--3 { background: var(--avatar-3); }
+.position-row-identity { display: flex; flex: 1 1 8rem; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+.position-row-title { align-items: baseline; display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-2); min-width: 0; }
+.position-row-title a { font-weight: var(--fw-bold); }
+.position-row-name { color: var(--muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.position-row-secondary { color: var(--muted); display: flex; flex-wrap: wrap; font-size: var(--fs-xs); gap: var(--sp-1) var(--sp-3); }
+.position-row-secondary--full { align-items: baseline; }
+.position-row-risk, .position-row-decision { align-items: baseline; display: inline-flex; flex-wrap: wrap; gap: var(--sp-1); }
+.position-row-tag-label { color: var(--muted); }
+.position-row-values {
+  align-items: flex-end;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-left: auto;
+  text-align: right;
+}
+.position-row-market { color: var(--text); font-size: var(--fs-lg); font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; }
+.position-row-pl { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.position-row-qty, .position-row-last, .position-row-weight { font-variant-numeric: tabular-nums; }
+/* 주문 링크는 filled 버튼이 아니라 secondary line 의 조용한 텍스트 링크다 — row 의 시선 우선순위는
+   종목·금액·손익이고 액션은 그 뒤다. */
+.position-row-action { color: var(--accent-text); font-weight: var(--fw-bold); white-space: nowrap; }
 .position-plan { border-top: 1px solid var(--line); grid-column: 1 / -1; margin-top: var(--sp-4); padding-top: var(--sp-4); }
 /* Position Plan 가격대 시각화 — 손절/진입/추가/현재가/목표가1/목표가2 를 실측값 비율로 배치한
    트랙 + 항상 보이는 텍스트 범례. 360px 폭에서도 가로 스크롤이 생기지 않도록 트랙은
@@ -628,8 +702,8 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .position-plan-range-track {
   background: var(--meter-track);
   border-radius: var(--r-sm);
-  height: 8px;
-  margin: var(--sp-2) 0;
+  height: 4px;
+  margin: var(--sp-3) 0;
   position: relative;
   width: 100%;
 }
@@ -640,14 +714,14 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
   position: absolute;
   top: 0;
   transform: translateX(-50%);
-  width: 3px;
+  width: 2px;
 }
 .position-plan-range-tick--current {
   background: var(--accent);
   border-radius: var(--r-pill);
-  height: 14px;
+  height: 10px;
   top: -3px;
-  width: 14px;
+  width: 10px;
 }
 .position-plan-range-legend {
   display: flex;
@@ -677,6 +751,8 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .position-decision { display: grid; gap: var(--sp-1); min-width: 0; }
 .portfolio-summary { min-width: 0; }
 .portfolio-summary-metrics { margin-top: var(--sp-4); }
+/* 자산 요약의 값은 화면의 핵심 숫자다 — 라벨보다 확실히 큰 단계로 올린다. */
+.portfolio-summary-metrics dd { font-size: var(--fs-lg); font-variant-numeric: tabular-nums; font-weight: var(--fw-bold); }
 .portfolio-history-secondary { margin-top: var(--sp-4); }
 .portfolio-history-secondary > summary { cursor: pointer; font-weight: var(--fw-bold); list-style-position: inside; padding: var(--sp-4) 0; }
 .settings-sections { display: grid; gap: var(--sp-4); margin-top: var(--sp-4); }
@@ -713,10 +789,16 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .history-filter { align-items: flex-end; display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
 .history-filter label { color: var(--muted); display: flex; flex-direction: column; gap: var(--sp-1); }
 .history-filter input { width: auto; }
-.trend { margin-top: var(--sp-4); }
-.sparkline { background: var(--panel-raised); border-radius: var(--r-sm); height: 6rem; width: 100%; }
-.trend-krw { fill: none; stroke: var(--accent); stroke-width: 2; }
-.trend-usd { fill: none; stroke: var(--warning-text); stroke-dasharray: 6 4; stroke-width: 2; }
+.trend { margin-top: var(--sp-5); }
+.sparkline {
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  height: 5rem;
+  padding: var(--sp-3) 0;
+  width: 100%;
+}
+.trend-krw { fill: none; stroke: var(--accent); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; }
+.trend-usd { fill: none; stroke: var(--warning-text); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; }
 .trend-legend { display: flex; gap: var(--sp-4); margin-top: var(--sp-2); }
 .trend-legend span { align-items: center; color: var(--muted); display: flex; font-size: var(--fs-xs); gap: var(--sp-1); }
 .trend-legend span::before { border-radius: var(--r-pill); content: ""; height: .5rem; width: .5rem; }
@@ -757,7 +839,7 @@ th { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .035em; text-
 .issued-api-key code { overflow-wrap: anywhere; }
 .key-rotation-form { align-items: center; display: inline-flex; flex-wrap: wrap; gap: var(--sp-2); margin-right: var(--sp-2); }
 .key-rotation-form input { min-width: 12rem; }
-.trend-pnl { fill: none; stroke: var(--accent); stroke-width: 2; }
+.trend-pnl { fill: none; stroke: var(--accent); stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; }
 .analysis-outcome { margin-top: var(--sp-4); }
 .prediction-lead {
   display: grid;
@@ -1085,6 +1167,11 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   .operations-readiness > header { display: grid; }
   .operations-readiness > header button,
   .readiness-probe-form button { width: 100%; }
+
+  /* 좁은 화면에서는 평가금액을 한 단계 낮춘다 — 우측 금액 열이 고정폭이라 --fs-lg 그대로면
+     종목명이 눌린다. 우측 정렬과 손익 한 줄 표기는 그대로 유지한다. */
+  .position-row { gap: var(--sp-2); padding: var(--sp-3) 0; }
+  .position-row-market { font-size: var(--fs-base); }
 }
 
 @media (max-width: 360px) {
@@ -1154,7 +1241,7 @@ section[data-route-region="connection"] .connection-form { margin-bottom: var(--
   button.danger { background: #2a1518; }
   button:disabled { background: var(--panel-raised); color: var(--muted); }
   .summary > div, .buying-power > div, .list li, .realtime-ticker-item { background: #20252c; border-color: #2a2f37; }
-  .sparkline { background: var(--panel-raised); }
+  .sparkline { background: transparent; }
   .login-error { background: #2a1518; }
   .issued-api-key { background: #241d10; }
   .badge { background: var(--danger-text); color: #0f1216; }

@@ -2,9 +2,8 @@
 
 import { createElement as h } from "react";
 
-import { formatAmount, formatInstant, formatRatio, formatSignedAmount, UNKNOWN_TEXT } from "../lib/format.js";
+import { formatAmount, formatDecimal, formatInstant, formatRatio, formatSignedAmount, UNKNOWN_TEXT } from "../lib/format.js";
 import { MarketCandleChart } from "./market-candle-chart.js";
-import { Meter } from "./ui-meter.js";
 
 // 판단 라벨은 decision-center.js 의 DECISION_LABELS 와 동일한 어휘를 쓴다(두 표면이
 // 서로 다른 말을 쓰지 않도록). decision-center.js 는 이 상수를 export 하지 않으므로
@@ -320,7 +319,7 @@ function PositionPlan({ analysis, position, symbol, realtimePrices }) {
       h("div", null, h("dt", null, "손절가"), h("dd", null, formatAmount(currency, value("stop")))),
       h("div", null, h("dt", null, "목표가1"), h("dd", null, formatAmount(currency, value("target1")))),
       h("div", null, h("dt", null, "목표가2"), h("dd", null, formatAmount(currency, value("target2")))),
-      h("div", null, h("dt", null, "R:R"), h("dd", null, value("riskReward"))),
+      h("div", null, h("dt", null, "R:R"), h("dd", null, formatDecimal(plan?.riskReward))),
       h("div", null, h("dt", null, "최대 손실"), h("dd", null, formatAmount(currency, value("maxLossPerShare")))),
       h("div", null, h("dt", null, "현재 포지션"), h("dd", null, formatAmount(position?.currency, position?.marketValueAmount))),
       action
@@ -330,7 +329,9 @@ function PositionPlan({ analysis, position, symbol, realtimePrices }) {
         : null,
       confidence !== null
         ? h("div", null, h("dt", null, "신뢰도"),
-          h("dd", null, formatRatio(decision.confidence), h(Meter, { value: confidence, max: 1, label: "신뢰도" })))
+          // 신뢰도는 0..1 점수이지 "현재값 / 서버가 준 한도" 가 아니다 — meter 규칙에 맞지 않아
+          // 막대를 걷어내고 비율 텍스트만 남긴다(장식용 progress bar 금지).
+          h("dd", null, formatRatio(decision.confidence)))
         : null),
     h(PositionPlanRange, { plan, currentPrice, currency }));
 }
