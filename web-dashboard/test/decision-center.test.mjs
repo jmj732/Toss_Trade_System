@@ -223,18 +223,23 @@ test("KillSwitchStatus distinguishes unknown, unset, engaged, and released", () 
   assert.match(render(createElement(KillSwitchStatus, { killSwitch: { engaged: false } })), /정상 \(거래 가능\)/);
 });
 
-test("PortfolioPositionTable drops the unimplemented BC-2 columns", () => {
+test("PortfolioPositionTable renders each position as a compact row without BC-2 fields", () => {
   const html = render(createElement(PortfolioPositionTable, {
-    section: { data: { positions: [{ symbol: "NVDA", currency: "USD", quantity: 1, marketValueAmount: 120, profitLossAmount: 20 }] } },
+    section: { data: { positions: [{ symbol: "NVDA", currency: "USD", quantity: 1, lastPrice: 118.5, marketValueAmount: 120, profitLossAmount: 20 }] } },
     analysis: { data: { result: { positions: [{ symbol: "NVDA", weight: 1 }] } } }
   }));
-  for (const label of ["종목", "현재가", "수량", "평가금액", "비중", "손익", "행동"]) {
-    assert.match(html, new RegExp(label));
-  }
-  for (const removed of ["Risk", "Next Catalyst", "판단"]) {
+  // 헤더 행을 없앴으므로 값 기준으로 검증한다: 티커·수량·현재가·평가금액·손익이 그대로 렌더된다.
+  assert.match(html, /data-position-row="NVDA"/);
+  assert.match(html, /\/stocks\/NVDA/);
+  assert.match(html, /수량 1/);
+  assert.match(html, /현재가 USD 118\.50/);
+  assert.match(html, /USD 120\.00/);
+  assert.match(html, /USD \+20\.00/);
+  assert.match(html, /주문 작성/);
+  // positionDecisions 미전달 → compact 밀도. Risk/판단/비중/Next Catalyst 는 렌더되지 않는다.
+  for (const removed of ["Risk", "Next Catalyst", "판단", "비중"]) {
     assert.doesNotMatch(html, new RegExp(removed));
   }
-  assert.match(html, /주문 작성/);
 });
 
 test("PortfolioSummary renders per-currency buying power as orderable cash", () => {
@@ -318,5 +323,31 @@ test("PortfolioPositionTable limits rows and links to the full portfolio", () =>
   }));
   assert.match(html, /전체 보기/);
   assert.match(html, /href="\/portfolio"/);
-  assert.equal((html.match(/scope="row"/g) ?? []).length, 5);
+  assert.equal((html.match(/data-position-row=/g) ?? []).length, 5);
+});
+
+test("PortfolioPositionTable renders profit/loss as one signed amount-with-rate string", () => {
+  const html = render(createElement(PortfolioPositionTable, {
+    section: { data: { positions: [
+      { symbol: "NVDA", currency: "USD", quantity: 1, marketValueAmount: 120, profitLossAmount: 20, profitLossRate: 0.0295 },
+      { symbol: "MRVL", currency: "USD", quantity: 3, marketValueAmount: 240, profitLossAmount: -28.58, profitLossRate: 0.0381 }
+    ] } },
+    analysis: {}
+  }));
+  // 부호+금액 (비율%) 한 덩어리로 읽힌다 — 프론트에서 비율을 금액으로 역산하지 않는다.
+  assert.match(html, /USD \+20\.00 \(2\.95%\)/);
+  assert.match(html, /USD -28\.58 \(3\.81%\)/);
+  // 색만으로 방향을 전달하지 않도록 접근성 이름에 방향 낱말을 남긴다.
+  assert.match(html, /aria-label="손익 상승 USD \+20\.00 \(2\.95%\)"/);
+  assert.match(html, /aria-label="손익 하락 USD -28\.58 \(3\.81%\)"/);
+});
+
+test("PositionAvatar falls back to ticker initials and hides itself from screen readers", () => {
+  const html = render(createElement(PortfolioPositionTable, {
+    section: { data: { positions: [{ symbol: "NVDA", currency: "USD", quantity: 1, marketValueAmount: 120, profitLossAmount: 20 }] } },
+    analysis: {}
+  }));
+  // 종목 이미지가 없어 항상 initials 폴백 아바타만 렌더한다(외부 <img> 없음).
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /class="position-avatar position-avatar--\d"[^>]*aria-hidden="true"[^>]*>NV</);
 });
