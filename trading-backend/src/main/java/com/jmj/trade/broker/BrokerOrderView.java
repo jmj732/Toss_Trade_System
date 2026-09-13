@@ -1,6 +1,7 @@
 package com.jmj.trade.broker;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Objects;
 
 /**
@@ -17,7 +18,27 @@ public record BrokerOrderView(
         BigDecimal filledQuantity,
         BigDecimal limitPrice,
         Currency currency,
-        BrokerOrderLifecycle status) {
+        BrokerOrderLifecycle status,
+        Instant filledAt,
+        BigDecimal averageFilledPrice,
+        BigDecimal commission,
+        BigDecimal tax) {
+
+    public BrokerOrderView(
+            String brokerOrderId,
+            String idempotencyKey,
+            BrokerOrderSide side,
+            BrokerOrderType type,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal filledQuantity,
+            BigDecimal limitPrice,
+            Currency currency,
+            BrokerOrderLifecycle status
+    ) {
+        this(brokerOrderId, idempotencyKey, side, type, symbol, quantity, filledQuantity,
+                limitPrice, currency, status, null, null, null, null);
+    }
 
     public BrokerOrderView {
         brokerOrderId = BrokerPreconditions.nonBlank(brokerOrderId, "brokerOrderId");
@@ -29,6 +50,10 @@ public record BrokerOrderView(
         Objects.requireNonNull(filledQuantity, "filledQuantity");
         Objects.requireNonNull(currency, "currency");
         Objects.requireNonNull(status, "status");
+        if (filledQuantity.signum() < 0 || (averageFilledPrice != null && averageFilledPrice.signum() < 0)
+                || (commission != null && commission.signum() < 0) || (tax != null && tax.signum() < 0)) {
+            throw new IllegalArgumentException("order execution values must be non-negative");
+        }
     }
 
     public BrokerOrderGroup group() {

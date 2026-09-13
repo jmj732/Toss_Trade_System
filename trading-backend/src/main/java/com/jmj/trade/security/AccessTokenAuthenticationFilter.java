@@ -25,7 +25,16 @@ final class AccessTokenAuthenticationFilter extends OncePerRequestFilter {
         return !path.startsWith("/api/")
                 || path.equals("/api/v1/auth/refresh")
                 || path.equals("/api/v1/auth/logout")
+                || isConnectorApiKeyRequest(request)
                 || isApiKeyBatchRequest(request);
+    }
+
+    private static boolean isConnectorApiKeyRequest(HttpServletRequest request) {
+        var authorization = request.getHeader("Authorization");
+        return "GET".equals(request.getMethod())
+                && request.getRequestURI().startsWith("/api/v1/connector/")
+                && authorization != null
+                && authorization.startsWith("Bearer ");
     }
 
     private static boolean isApiKeyBatchRequest(HttpServletRequest request) {

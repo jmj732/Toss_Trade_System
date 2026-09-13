@@ -1,5 +1,6 @@
 package com.jmj.trade.security;
 
+import com.jmj.trade.connector.ConnectorApiKeyAuthenticationFilter;
 import com.jmj.trade.prediction.PredictionIngestionApiKeyAuthenticationFilter;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,6 +31,7 @@ public class SecurityConfiguration {
             ObjectProvider<ClientRegistrationRepository> registrations,
             ObjectProvider<InternalOidcUserService> oidcUsers,
             ObjectProvider<PredictionIngestionApiKeyAuthenticationFilter> apiKeyFilter,
+            ObjectProvider<ConnectorApiKeyAuthenticationFilter> connectorApiKeyFilter,
             ObjectProvider<AccessTokenService> accessTokens,
             ObjectProvider<RefreshTokenService> refreshTokens,
             ObjectProvider<CookieAuthorizationRequestRepository> authorizationRequests,
@@ -38,6 +40,7 @@ public class SecurityConfiguration {
     ) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/api/v1/auth/refresh", "/api/v1/auth/logout").permitAll()
+                .requestMatchers("/api/v1/connector/**").hasAuthority("SCOPE_CONNECTOR_READ")
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll());
         http.httpBasic(httpBasic -> httpBasic.disable());
@@ -46,6 +49,10 @@ public class SecurityConfiguration {
         var filter = apiKeyFilter.getIfAvailable();
         if (filter != null) {
             http.addFilterBefore(filter, AnonymousAuthenticationFilter.class);
+        }
+        var connectorFilter = connectorApiKeyFilter.getIfAvailable();
+        if (connectorFilter != null) {
+            http.addFilterBefore(connectorFilter, AnonymousAuthenticationFilter.class);
         }
         var accessTokenService = accessTokens.getIfAvailable();
         if (accessTokenService != null) {
