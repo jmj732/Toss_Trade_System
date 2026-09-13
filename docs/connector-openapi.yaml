@@ -167,6 +167,7 @@ components:
             $ref: '#/components/schemas/Position'
         buyingPower:
           type: object
+          properties: {}
           additionalProperties:
             $ref: '#/components/schemas/BuyingPower'
     Account:
