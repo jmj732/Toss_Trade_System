@@ -7,7 +7,7 @@ info:
     Authorization value must be `Bearer ckey_...`. No order mutation endpoint
     is exposed by this contract.
 servers:
-  - url: https://YOUR_CONNECTOR_HOST
+  - url: https://web-dashboard-phi-lac.vercel.app
 security:
   - connectorApiKey: []
 paths:
@@ -247,5 +247,6 @@ components:
         observedAt: {type: [string, "null"], format: date-time}
     DecimalMap:
       type: object
+      properties: {}
       additionalProperties:
         type: number
