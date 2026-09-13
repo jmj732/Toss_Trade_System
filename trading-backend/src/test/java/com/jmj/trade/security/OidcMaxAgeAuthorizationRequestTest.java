@@ -28,14 +28,14 @@ class OidcMaxAgeAuthorizationRequestTest {
                 .build();
         var resolver = new DefaultOAuth2AuthorizationRequestResolver(
                 new InMemoryClientRegistrationRepository(registration), "/oauth2/authorization");
-        resolver.setAuthorizationRequestCustomizer(builder ->
-                builder.additionalParameters(parameters -> parameters.put("max_age", "300")));
+        resolver.setAuthorizationRequestCustomizer(SecurityConfiguration.oidcAuthorizationCustomizer("300"));
 
         var request = new MockHttpServletRequest("GET", "/oauth2/authorization/oidc");
         var authorization = resolver.resolve(request);
 
         assertThat(authorization).isNotNull();
         assertThat(authorization.getAdditionalParameters()).containsEntry("max_age", "300");
+        assertThat(authorization.getAdditionalParameters()).containsEntry("prompt", "login");
     }
 
     @Test

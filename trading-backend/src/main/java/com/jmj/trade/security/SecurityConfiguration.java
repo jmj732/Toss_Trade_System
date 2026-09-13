@@ -21,6 +21,7 @@ import org.springframework.security.web.context.NullSecurityContextRepository;
 import java.time.Instant;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 @Configuration(proxyBeanMethods = false)
 public class SecurityConfiguration {
@@ -75,8 +76,7 @@ public class SecurityConfiguration {
                             .authorizationRequestRepository(authorizationRequests.getObject())
                             .authorizationRequestResolver(new DashboardAuthorizationRequestResolver(
                                     registrationRepository,
-                                    builder -> builder.additionalParameters(
-                                            parameters -> parameters.put("max_age", oidcMaxAge)))))
+                                    oidcAuthorizationCustomizer(oidcMaxAge))))
                     .successHandler(dashboardSuccessHandler(
                             dashboardRedirects, accessTokens.getObject(), refreshTokens.getObject()))
                     .failureHandler(dashboardFailureHandler(dashboardRedirects))
@@ -84,6 +84,14 @@ public class SecurityConfiguration {
                             userInfo.oidcUserService(oidcUsers.getObject())));
         }
         return http.build();
+    }
+
+    static Consumer<org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest.Builder>
+    oidcAuthorizationCustomizer(String oidcMaxAge) {
+        return builder -> builder.additionalParameters(parameters -> {
+            parameters.put("max_age", oidcMaxAge);
+            parameters.put("prompt", "login");
+        });
     }
 
     @Bean
