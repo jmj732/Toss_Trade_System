@@ -230,7 +230,11 @@ final class TossResponseMapper {
                 nonNegativeDecimal(order.execution().filledQuantity()),
                 order.price() == null ? null : nonNegativeDecimal(order.price()),
                 currency(order.currency()),
-                lifecycle(order.status()));
+                lifecycle(order.status()),
+                instant(order.execution().filledAt()),
+                nullableNonNegativeDecimal(order.execution().averageFilledPrice()),
+                nullableNonNegativeDecimal(order.execution().commission()),
+                nullableNonNegativeDecimal(order.execution().tax()));
     }
 
     private BrokerOrderSide orderSide(String raw) {

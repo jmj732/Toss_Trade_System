@@ -1,0 +1,251 @@
+openapi: 3.1.0
+info:
+  title: Investment OS read-only broker connector
+  version: 1.0.0
+  description: >-
+    Read-only Toss Invest account surface for a Custom GPT Action. The
+    Authorization value must be `Bearer ckey_...`. No order mutation endpoint
+    is exposed by this contract.
+servers:
+  - url: https://YOUR_CONNECTOR_HOST
+security:
+  - connectorApiKey: []
+paths:
+  /api/v1/connector/portfolio:
+    get:
+      operationId: getPortfolioSnapshot
+      summary: Read the latest portfolio snapshot
+      description: >-
+        Performs a request-time broker sync when the credentialed broker
+        profile is enabled. If sync fails, the last snapshot is returned with
+        stale=true and a reason.
+      x-openai-isConsequential: false
+      responses:
+        '200':
+          description: Portfolio snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Portfolio'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/v1/connector/orders:
+    get:
+      operationId: getOrders
+      summary: Read open or closed broker orders
+      x-openai-isConsequential: false
+      parameters:
+        - name: group
+          in: query
+          required: false
+          description: OPEN for working orders, CLOSED for completed/canceled orders.
+          schema:
+            type: string
+            enum: [OPEN, CLOSED]
+            default: OPEN
+      responses:
+        '200':
+          description: Broker orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /api/v1/connector/fills:
+    get:
+      operationId: getRecentFills
+      summary: Read filled quantities from broker orders
+      description: Returns fills derived from both OPEN and CLOSED order groups.
+      x-openai-isConsequential: false
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: Inclusive ISO-8601 instant filter on filledAt.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Broker fills
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Fill'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  securitySchemes:
+    connectorApiKey:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Enter `Bearer ckey_...` exactly as issued by the human-authenticated key endpoint.
+  responses:
+    BadRequest:
+      description: Invalid query parameter
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing, invalid, expired, or revoked connector key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: Connector key rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: Broker read surface unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+    Portfolio:
+      type: object
+      required: [completedAt, stale, partial, missingSections, unknownFields, positions, buyingPower]
+      properties:
+        completedAt:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+        staleReason:
+          type: [string, "null"]
+        partial:
+          type: boolean
+        missingSections:
+          type: array
+          items: {type: string}
+        unknownFields:
+          type: array
+          items: {type: string}
+        account:
+          oneOf:
+            - $ref: '#/components/schemas/Account'
+            - type: "null"
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Position'
+        buyingPower:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/BuyingPower'
+    Account:
+      type: object
+      properties:
+        accountType: {type: [string, "null"]}
+        displayAccountNumber: {type: [string, "null"]}
+        totalPurchaseAmounts: {$ref: '#/components/schemas/DecimalMap'}
+        marketValueAmounts: {$ref: '#/components/schemas/DecimalMap'}
+        marketValueAfterCostAmounts: {$ref: '#/components/schemas/DecimalMap'}
+        profitLossAmounts: {$ref: '#/components/schemas/DecimalMap'}
+        profitLossAfterCostAmounts: {$ref: '#/components/schemas/DecimalMap'}
+        dailyProfitLossAmounts: {$ref: '#/components/schemas/DecimalMap'}
+        profitLossRate: {type: [number, "null"]}
+        profitLossRateAfterCost: {type: [number, "null"]}
+        dailyProfitLossRate: {type: [number, "null"]}
+        observedAt: {type: [string, "null"], format: date-time}
+    Position:
+      type: object
+      properties:
+        symbol: {type: string}
+        name: {type: [string, "null"]}
+        marketCountry: {type: [string, "null"]}
+        quantity: {type: number}
+        currency: {type: string}
+        averagePrice: {type: [number, "null"]}
+        lastPrice: {type: [number, "null"]}
+        purchaseAmount: {type: [number, "null"]}
+        marketValueAmount: {type: [number, "null"]}
+        marketValueAfterCost: {type: [number, "null"]}
+        profitLossAmount: {type: [number, "null"]}
+        profitLossAfterCost: {type: [number, "null"]}
+        profitLossRate: {type: [number, "null"]}
+        profitLossRateAfterCost: {type: [number, "null"]}
+        dailyProfitLossAmount: {type: [number, "null"]}
+        dailyProfitLossRate: {type: [number, "null"]}
+        commission: {type: [number, "null"]}
+        tax: {type: [number, "null"]}
+        sellableQuantity: {type: [number, "null"]}
+        observedAt: {type: [string, "null"], format: date-time}
+    BuyingPower:
+      type: object
+      properties:
+        cashBuyingPower: {type: [number, "null"]}
+        observedAt: {type: [string, "null"], format: date-time}
+      description: cashBuyingPower is the account cash/order-available balance in this integration.
+    Order:
+      type: object
+      properties:
+        brokerOrderId: {type: string}
+        side: {type: string, enum: [BUY, SELL]}
+        type: {type: string, enum: [MARKET, LIMIT]}
+        symbol: {type: string}
+        quantity: {type: number}
+        filledQuantity: {type: number}
+        limitPrice: {type: [number, "null"]}
+        currency: {type: string}
+        status:
+          type: string
+          enum: [PENDING, PARTIALLY_FILLED, CANCELING, REPLACING, FILLED, CANCELED, REJECTED, CANCEL_REJECTED, REPLACE_REJECTED, REPLACED]
+        group: {type: string, enum: [OPEN, CLOSED]}
+        filledAt: {type: [string, "null"], format: date-time}
+        averageFilledPrice: {type: [number, "null"]}
+        commission: {type: [number, "null"]}
+        tax: {type: [number, "null"]}
+    Fill:
+      type: object
+      properties:
+        brokerOrderId: {type: string}
+        symbol: {type: string}
+        side: {type: string, enum: [BUY, SELL]}
+        currency: {type: string}
+        quantity: {type: number}
+        averagePrice: {type: [number, "null"]}
+        commission: {type: [number, "null"]}
+        tax: {type: [number, "null"]}
+        filledAt: {type: [string, "null"], format: date-time}
+        observedAt: {type: [string, "null"], format: date-time}
+    DecimalMap:
+      type: object
+      additionalProperties:
+        type: number

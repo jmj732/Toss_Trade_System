@@ -54,7 +54,7 @@ public final class PredictionIngestionApiKeyRateLimiter {
         this.window = window;
     }
 
-    Decision acquire(UUID keyId, int weight) {
+    public Decision acquire(UUID keyId, int weight) {
         Objects.requireNonNull(keyId, "keyId");
         if (weight < 0) {
             throw new IllegalArgumentException("weight must not be negative");
@@ -81,9 +81,9 @@ public final class PredictionIngestionApiKeyRateLimiter {
         }
     }
 
-    record Decision(boolean allowed, Duration retryAfter, Instant retryAt) {
+    public record Decision(boolean allowed, Duration retryAfter, Instant retryAt) {
     }
 
-    static final class RateLimitUnavailableException extends RuntimeException {
+    public static final class RateLimitUnavailableException extends RuntimeException {
     }
 }

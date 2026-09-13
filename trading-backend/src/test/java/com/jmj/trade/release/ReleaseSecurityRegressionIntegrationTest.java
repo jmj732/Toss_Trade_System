@@ -257,6 +257,31 @@ class ReleaseSecurityRegressionIntegrationTest extends PostgresIntegrationTest {
                 .isZero();
     }
 
+    @Test
+    void connectorKeyCannotAuthenticateOrderMutation() throws Exception {
+        var owner = bootstrapSession(USER_ID);
+        var connectionId = UUID.fromString(field(mockMvc.perform(owner.post(
+                        "/api/v1/broker-connections/toss")
+                        .content(credentialsJson("connector-client", "connector-secret")))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(), "id"));
+        jdbc.update("UPDATE broker_connections SET status = 'ACTIVE', last_validated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                connectionId);
+
+        var issued = mockMvc.perform(owner.post("/api/v1/connector-api-keys")
+                        .content("{\"connectionId\":\"%s\"}".formatted(connectionId)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        var connectorKey = field(issued, "apiKey");
+
+        mockMvc.perform(MockMvcRequestBuilders.post("/api/v1/paper-orders")
+                        .header("Authorization", "Bearer " + connectorKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Idempotency-Key", "connector-mutation-attempt")
+                        .content(proposalJson(connectionId)))
+                .andExpect(status().isUnauthorized());
+    }
+
     private Bearer bootstrapSession(UUID userId) throws Exception {
         var access = accessTokens.issue(userId, UUID.randomUUID(), java.time.Instant.now());
         mockMvc.perform(get("/api/v1/session").header(

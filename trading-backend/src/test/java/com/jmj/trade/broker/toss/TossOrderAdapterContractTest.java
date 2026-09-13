@@ -110,6 +110,9 @@ class TossOrderAdapterContractTest {
         assertThat(response.value()).singleElement().satisfies(order -> {
             assertThat(order.brokerOrderId()).isEqualTo("o-1");
             assertThat(order.filledQuantity()).isEqualByComparingTo("2");
+            assertThat(order.averageFilledPrice()).isEqualByComparingTo("180.5");
+            assertThat(order.commission()).isEqualByComparingTo("1");
+            assertThat(order.filledAt()).isEqualTo(java.time.Instant.parse("2026-03-29T01:00:01Z"));
             assertThat(order.idempotencyKey()).isNull();
         });
         server.verify(1, getRequestedFor(urlEqualTo("/api/v1/orders?status=CLOSED&limit=100")));
