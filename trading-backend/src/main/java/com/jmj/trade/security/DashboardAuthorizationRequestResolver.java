@@ -56,6 +56,15 @@ final class DashboardAuthorizationRequestResolver implements OAuth2Authorization
         return value instanceof String string ? string : null;
     }
 
+    static boolean isForcedReauthentication(OAuth2AuthorizationRequest authorization) {
+        return authorization != null
+                && "login".equals(authorization.getAdditionalParameters().get("prompt"));
+    }
+
+    static boolean consumeForcedReauthentication(HttpServletRequest request) {
+        return isForcedReauthentication(CookieAuthorizationRequestRepository.request(request));
+    }
+
     private OAuth2AuthorizationRequest remember(
             HttpServletRequest request,
             OAuth2AuthorizationRequest authorizationRequest

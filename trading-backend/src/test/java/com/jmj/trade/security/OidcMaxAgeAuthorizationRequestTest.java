@@ -36,6 +36,7 @@ class OidcMaxAgeAuthorizationRequestTest {
         assertThat(authorization).isNotNull();
         assertThat(authorization.getAdditionalParameters()).containsEntry("max_age", "300");
         assertThat(authorization.getAdditionalParameters()).containsEntry("prompt", "login");
+        assertThat(DashboardAuthorizationRequestResolver.isForcedReauthentication(authorization)).isTrue();
     }
 
     @Test
