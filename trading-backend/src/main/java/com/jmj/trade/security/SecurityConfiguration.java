@@ -125,6 +125,9 @@ public class SecurityConfiguration {
         return (request, response, authentication) -> {
             var userId = UUID.fromString(authentication.getName());
             var authTime = authenticatedAt(authentication);
+            if (authTime == null && DashboardAuthorizationRequestResolver.consumeForcedReauthentication(request)) {
+                authTime = Instant.now();
+            }
             var refresh = refreshTokens.issue(userId, authTime);
             var access = accessTokens.issue(userId, refresh.sessionId(), authTime);
             AuthCookieSupport.setRefreshCookie(response, refresh.refreshToken(),
