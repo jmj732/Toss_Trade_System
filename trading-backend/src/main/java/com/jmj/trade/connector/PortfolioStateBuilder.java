@@ -2,6 +2,8 @@ package com.jmj.trade.connector;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -19,7 +21,7 @@ public final class PortfolioStateBuilder {
             List<ConnectorResponse.Order> openOrders
     ) {
         Objects.requireNonNull(portfolio, "portfolio");
-        Objects.requireNonNull(openOrders, "openOrders");
+        var openOrdersUnknown = openOrders == null;
 
         var currency = primaryCurrency(portfolio);
         var marketValue = amount(portfolio.account(), currency);
@@ -28,37 +30,85 @@ public final class PortfolioStateBuilder {
         var positions = portfolio.positions().stream()
                 .map(position -> position(position, currency, totalValue))
                 .toList();
-        var largestPositionPct = totalValue == null ? null : positions.stream()
-                .map(ConnectorResponse.StatePosition::weightPct)
-                .filter(Objects::nonNull)
-                .max(BigDecimal::compareTo)
-                .orElse(BigDecimal.ZERO);
+        var largestPositionPct = largestPositionPct(positions, totalValue);
 
         var missing = new LinkedHashSet<>(portfolio.missingSections());
         var unknown = new LinkedHashSet<>(portfolio.unknownFields());
         if (marketValue == null) unknown.add("account.totalValue");
         if (cash == null) missing.add("CASH");
         if (totalValue == null) unknown.add("account.totalValue");
-        var partial = portfolio.partial() || totalValue == null;
+        portfolio.positions().stream()
+                .filter(position -> currency != null && position.currency() != null
+                        && !currency.equalsIgnoreCase(position.currency()))
+                .map(ConnectorResponse.Position::symbol)
+                .map(symbol -> "positions[" + symbol + "].weightPct")
+                .forEach(unknown::add);
+        if (openOrdersUnknown) unknown.add("openOrders");
+        var partial = portfolio.partial() || totalValue == null || openOrdersUnknown;
+        var sourceAccount = portfolio.account();
+        var stale = portfolio.stale() || openOrdersUnknown;
+        var staleReason = portfolio.staleReason() == null && openOrdersUnknown
+                ? "OPEN_ORDERS_UNAVAILABLE" : portfolio.staleReason();
 
         return new ConnectorResponse.PortfolioState(
+                portfolio.completedAt(),
+                sourceAsOf(portfolio),
                 portfolio.completedAt(),
                 currency,
                 new ConnectorResponse.StateAccount(
                         totalValue,
                         cash,
-                        percentage(cash, totalValue)),
+                        percentage(cash, totalValue),
+                        sourceAccount == null ? null : sourceAccount.profitLossAmounts(),
+                        sourceAccount == null ? null : sourceAccount.dailyProfitLossAmounts(),
+                        sourceAccount == null ? null : sourceAccount.profitLossRate(),
+                        sourceAccount == null ? null : sourceAccount.dailyProfitLossRate()),
                 positions,
-                List.copyOf(openOrders),
+                openOrdersUnknown ? null : List.copyOf(openOrders),
                 new ConnectorResponse.Risk(
                         largestPositionPct,
                         percentage(marketValue, totalValue),
-                        percentage(cash, totalValue)),
-                portfolio.stale(),
-                portfolio.staleReason(),
+                        percentage(cash, totalValue),
+                        positions.size()),
+                stale,
+                staleReason,
                 partial,
                 List.copyOf(missing),
                 List.copyOf(unknown));
+    }
+
+    /** Returns zero only for a known empty position set; unknown weights never become zero. */
+    private static BigDecimal largestPositionPct(
+            List<ConnectorResponse.StatePosition> positions,
+            BigDecimal totalValue
+    ) {
+        if (totalValue == null) return null;
+        if (positions.isEmpty()) return BigDecimal.ZERO;
+        return positions.stream()
+                .map(ConnectorResponse.StatePosition::weightPct)
+                .filter(Objects::nonNull)
+                .max(BigDecimal::compareTo)
+                .orElse(null);
+    }
+
+    /**
+     * The aggregate is conservative: it is valid only as of the oldest constituent broker
+     * observation. A persisted sync completion remains the separate {@code syncedAt} timestamp.
+     */
+    private static Instant sourceAsOf(ConnectorResponse.Portfolio portfolio) {
+        var observed = new ArrayList<Instant>();
+        if (portfolio.account() != null && portfolio.account().observedAt() != null) {
+            observed.add(portfolio.account().observedAt());
+        }
+        portfolio.positions().stream()
+                .map(ConnectorResponse.Position::observedAt)
+                .filter(Objects::nonNull)
+                .forEach(observed::add);
+        portfolio.buyingPower().values().stream()
+                .map(ConnectorResponse.BuyingPower::observedAt)
+                .filter(Objects::nonNull)
+                .forEach(observed::add);
+        return observed.stream().min(Instant::compareTo).orElse(null);
     }
 
     private static ConnectorResponse.StatePosition position(

@@ -217,17 +217,33 @@ export function DataFreshnessIndicator({ section }) {
       : section.stale ? "STALE · 지연 데이터" : partial ? "PARTIAL · 일부 누락"
         : section.unknown ? "데이터 확인 필요" : "LIVE";
   const modifier = state === "LIVE" ? "ok" : state.includes("불가") ? "danger" : "warn";
-  const qualityFields = [
-    ...(Array.isArray(section?.unknownFields) ? section.unknownFields : []),
-    ...(Array.isArray(section?.data?.missingSections) ? section.data.missingSections : [])
-  ];
+  const unknownFields = Array.isArray(section?.unknownFields) ? section.unknownFields : [];
+  const missingSections = Array.isArray(section?.data?.missingSections) ? section.data.missingSections : [];
+  const qualityFields = [...new Set([...unknownFields, ...missingSections])];
   const qualityDetail = qualityFields.length ? ` · 누락: ${qualityFields.join(", ")}` : "";
-  return h("span", {
-    className: `badge-pill badge-pill--${modifier}`,
-    "data-freshness": state,
-    title: qualityDetail ? `${state}${qualityDetail}` : state,
-    "aria-label": qualityDetail ? `${state}${qualityDetail}` : state
-  }, state);
+  const unknownDetail = unknownFields.length ? ` · 확인 불가 필드: ${unknownFields.join(", ")}` : "";
+  const timestamps = portfolioTimeDetails(section);
+  const accessibleLabel = `${state}${qualityDetail}${unknownDetail}${timestamps ? ` · ${timestamps}` : ""}`;
+  return h("span", { className: "data-freshness" },
+    h("span", {
+      className: `badge-pill badge-pill--${modifier}`,
+      "data-freshness": state,
+      title: accessibleLabel,
+      "aria-label": accessibleLabel
+    }, state),
+    timestamps ? h("small", { className: "metric-freshness data-freshness-details" }, timestamps) : null);
+}
+
+export function portfolioTimeDetails(section) {
+  const data = section?.data ?? section ?? {};
+  const asOf = data.asOf ?? data.completedAt ?? section?.asOf ?? section?.completedAt;
+  const sourceAsOf = data.sourceAsOf ?? section?.sourceAsOf;
+  const syncedAt = data.syncedAt ?? section?.syncedAt;
+  return [
+    asOf ? `기준 ${formatFreshness(asOf)}` : null,
+    sourceAsOf ? `원본 ${formatFreshness(sourceAsOf)}` : null,
+    syncedAt ? `동기화 ${formatFreshness(syncedAt)}` : null
+  ].filter(Boolean).join(" · ");
 }
 
 export function GlobalStockSearch({ onSearch }) {
@@ -275,6 +291,10 @@ function formatServerPercent(value) {
   return formatted === UNKNOWN_TEXT ? formatted : `${formatted}%`;
 }
 
+function formatServerCount(value) {
+  return value == null || value === "" ? UNKNOWN_TEXT : String(value);
+}
+
 // BC-4: 서버 riskEvaluation 섹션(있으면)만 렌더한다. usageRatio 등 판정값은 프론트에서 만들지 않는다.
 export function PortfolioRiskPanel({ dashboard }) {
   const section = dashboard?.riskEvaluation;
@@ -286,7 +306,8 @@ export function PortfolioRiskPanel({ dashboard }) {
     ? h("dl", { className: "decision-metrics portfolio-state-risk" },
       h("div", null, h("dt", null, "최대 포지션"), h("dd", null, formatServerPercent(stateRisk.largestPositionPct))),
       h("div", null, h("dt", null, "투자 비중"), h("dd", null, formatServerPercent(stateRisk.investedPct))),
-      h("div", null, h("dt", null, "현금 비중"), h("dd", null, formatServerPercent(stateRisk.cashPct))))
+      h("div", null, h("dt", null, "현금 비중"), h("dd", null, formatServerPercent(stateRisk.cashPct))),
+      h("div", null, h("dt", null, "보유 종목 수"), h("dd", null, formatServerCount(stateRisk.positionCount))))
     : null;
 
   if (!items || items.length === 0) {
@@ -539,7 +560,8 @@ function PositionRow({ position, ctx, density }) {
 
 export function PortfolioPositionTable({ section, analysis, positionDecisions, limit, caption = "보유 포지션", detail }) {
   const portfolio = dataOf(section);
-  const allPositions = portfolio?.positions ?? [];
+  const positionsKnown = Array.isArray(portfolio?.positions);
+  const allPositions = positionsKnown ? portfolio.positions : [];
   const limited = typeof limit === "number" && limit > 0 && allPositions.length > limit;
   const positions = limited ? allPositions.slice(0, limit) : allPositions;
   const weights = new Map((dataOf(analysis)?.result?.positions ?? []).map(item => [item.symbol, item.weight]));
@@ -555,11 +577,15 @@ export function PortfolioPositionTable({ section, analysis, positionDecisions, l
   return h("section", { className: "panel position-management" },
     h("header", null, h("div", null,
       h("p", { className: "eyebrow" }, "Position management"), h("h2", null, caption))),
-    positions.length
+    !positionsKnown
+      ? h("p", { className: "empty" }, "보유 포지션 확인 필요")
+      : positions.length
       ? h("ul", { className: "position-list" }, ...positions.map(position =>
         h(PositionRow, { key: position.symbol, position, ctx, density })))
       : h("p", { className: "empty" }, "보유 포지션이 없습니다"),
-    openOrders.length
+    !Array.isArray(portfolio?.openOrders)
+      ? h("p", { className: "empty" }, "미체결 주문 확인 필요")
+      : openOrders.length
       ? h("div", { className: "portfolio-open-orders", "data-portfolio-open-orders": "true" },
         h("h3", null, "미체결 주문"),
         h("ul", { className: "list" }, ...openOrders.map(order => h("li", { key: order.brokerOrderId ?? order.symbol },
@@ -581,8 +607,11 @@ function summaryAmounts(values, signed = false) {
 }
 
 export function PortfolioSummary({ dashboard }) {
-  const account = dataOf(dashboard?.portfolio)?.account ?? null;
-  const buyingPower = buyingPowerAmounts(dataOf(dashboard?.portfolio)?.buyingPower);
+  const section = dashboard?.portfolio;
+  const portfolio = dataOf(section);
+  const account = portfolio?.account ?? null;
+  const buyingPower = buyingPowerAmounts(portfolio?.buyingPower);
+  const timestamps = portfolioTimeDetails(section);
   return h("section", {
     className: "panel portfolio-summary",
     "data-portfolio-summary": account ? "available" : "empty"
@@ -595,5 +624,6 @@ export function PortfolioSummary({ dashboard }) {
         h("div", null, h("dt", null, "오늘 손익"), h("dd", null, summaryAmounts(account.dailyProfitLossAmounts, true))),
         h("div", null, h("dt", null, "총 손익"), h("dd", null, summaryAmounts(account.profitLossAmounts, true))),
         h("div", null, h("dt", null, "주문 가능 현금"), h("dd", null, summaryAmounts(buyingPower))))
-      : h("p", { className: "empty" }, "계좌 요약을 불러올 수 없습니다"));
+      : h("p", { className: "empty" }, "계좌 요약을 불러올 수 없습니다"),
+    timestamps ? h("small", { className: "metric-freshness" }, timestamps) : null);
 }

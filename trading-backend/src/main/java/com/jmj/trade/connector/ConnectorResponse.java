@@ -77,6 +77,8 @@ public final class ConnectorResponse {
 
     public record PortfolioState(
             Instant asOf,
+            Instant sourceAsOf,
+            Instant syncedAt,
             String currency,
             StateAccount account,
             List<StatePosition> positions,
@@ -88,13 +90,43 @@ public final class ConnectorResponse {
             List<String> missingSections,
             List<String> unknownFields
     ) {
+
+        /**
+         * Backward-compatible constructor for consumers that only supplied the original state
+         * fields. {@code asOf} remains the persisted sync completion time; source observation time
+         * is unknown when it is not supplied by the builder.
+         */
+        public PortfolioState(
+                Instant asOf,
+                String currency,
+                StateAccount account,
+                List<StatePosition> positions,
+                List<Order> openOrders,
+                Risk risk,
+                boolean stale,
+                String staleReason,
+                boolean partial,
+                List<String> missingSections,
+                List<String> unknownFields
+        ) {
+            this(asOf, null, asOf, currency, account, positions, openOrders, risk, stale,
+                    staleReason, partial, missingSections, unknownFields);
+        }
     }
 
     public record StateAccount(
             BigDecimal totalValue,
             BigDecimal cash,
-            BigDecimal cashPct
+            BigDecimal cashPct,
+            Map<String, BigDecimal> profitLossAmounts,
+            Map<String, BigDecimal> dailyProfitLossAmounts,
+            BigDecimal profitLossRate,
+            BigDecimal dailyProfitLossRate
     ) {
+
+        public StateAccount(BigDecimal totalValue, BigDecimal cash, BigDecimal cashPct) {
+            this(totalValue, cash, cashPct, Map.of(), Map.of(), null, null);
+        }
     }
 
     public record StatePosition(
@@ -112,8 +144,13 @@ public final class ConnectorResponse {
     public record Risk(
             BigDecimal largestPositionPct,
             BigDecimal investedPct,
-            BigDecimal cashPct
+            BigDecimal cashPct,
+            Integer positionCount
     ) {
+
+        public Risk(BigDecimal largestPositionPct, BigDecimal investedPct, BigDecimal cashPct) {
+            this(largestPositionPct, investedPct, cashPct, null);
+        }
     }
 
     public record Order(

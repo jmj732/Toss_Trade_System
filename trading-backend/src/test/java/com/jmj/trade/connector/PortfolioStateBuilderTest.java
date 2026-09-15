@@ -59,12 +59,98 @@ class PortfolioStateBuilderTest {
         assertThat(state.missingSections()).contains("CASH");
     }
 
+    @Test
+    void exposesSyncMetadataAndPositionCountFromSourceObservations() {
+        var completedAt = Instant.parse("2026-09-15T00:00:30Z");
+        var portfolio = new ConnectorResponse.Portfolio(
+                completedAt, false, null, false, List.of(), List.of(),
+                new ConnectorResponse.Account(
+                        null, null, Map.of(), Map.of("USD", new BigDecimal("900")), Map.of(),
+                        Map.of("USD", new BigDecimal("50")), Map.of(), Map.of(),
+                        new BigDecimal("0.05"), null, null,
+                        Instant.parse("2026-09-15T00:00:10Z")),
+                List.of(
+                        position("AAPL", "600", "0.10", Instant.parse("2026-09-15T00:00:05Z")),
+                        position("MSFT", "300", "0.165", Instant.parse("2026-09-15T00:00:20Z"))),
+                Map.of("USD", new ConnectorResponse.BuyingPower(
+                        new BigDecimal("100"), Instant.parse("2026-09-15T00:00:07Z"))));
+
+        var state = PortfolioStateBuilder.build(portfolio, List.of());
+
+        assertThat(state.asOf()).isEqualTo(completedAt);
+        assertThat(state.syncedAt()).isEqualTo(completedAt);
+        assertThat(state.sourceAsOf()).isEqualTo(Instant.parse("2026-09-15T00:00:05Z"));
+        assertThat(state.risk().positionCount()).isEqualTo(2);
+        assertThat(state.account().profitLossAmounts()).containsEntry("USD", new BigDecimal("50"));
+        assertThat(state.account().profitLossRate()).isEqualByComparingTo("0.05");
+    }
+
+    @Test
+    void doesNotTreatCrossCurrencyWeightAsZero() {
+        var portfolio = new ConnectorResponse.Portfolio(
+                Instant.parse("2026-09-15T00:00:30Z"), false, null, false, List.of(), List.of(),
+                new ConnectorResponse.Account(
+                        null, null, Map.of(), Map.of("USD", new BigDecimal("900")), Map.of(),
+                        Map.of(), Map.of(), Map.of(), null, null, null, Instant.now()),
+                List.of(position("005930", "800", "0.10", Instant.now(), "KRW")),
+                Map.of("USD", new ConnectorResponse.BuyingPower(new BigDecimal("100"), Instant.now())));
+
+        var state = PortfolioStateBuilder.build(portfolio, List.of());
+
+        assertThat(state.positions().getFirst().weightPct()).isNull();
+        assertThat(state.risk().largestPositionPct()).isNull();
+        assertThat(state.risk().positionCount()).isEqualTo(1);
+        assertThat(state.partial()).isFalse();
+        assertThat(state.unknownFields()).contains("positions[005930].weightPct");
+    }
+
+    @Test
+    void reportsZeroLargestPositionOnlyWhenThereAreNoPositions() {
+        var portfolio = new ConnectorResponse.Portfolio(
+                Instant.parse("2026-09-15T00:00:30Z"), false, null, false, List.of(), List.of(),
+                new ConnectorResponse.Account(
+                        null, null, Map.of(), Map.of("USD", BigDecimal.ZERO), Map.of(),
+                        Map.of(), Map.of(), Map.of(), null, null, null, Instant.now()),
+                List.of(),
+                Map.of("USD", new ConnectorResponse.BuyingPower(new BigDecimal("100"), Instant.now())));
+
+        var state = PortfolioStateBuilder.build(portfolio, List.of());
+
+        assertThat(state.risk().largestPositionPct()).isZero();
+        assertThat(state.risk().positionCount()).isZero();
+    }
+
+    @Test
+    void keepsLegacyStateConstructorUsable() {
+        var completedAt = Instant.parse("2026-09-15T00:00:30Z");
+
+        var state = new ConnectorResponse.PortfolioState(
+                completedAt, "USD", new ConnectorResponse.StateAccount(null, null, null),
+                List.of(), List.of(), new ConnectorResponse.Risk(null, null, null),
+                false, null, false, List.of(), List.of());
+
+        assertThat(state.asOf()).isEqualTo(completedAt);
+        assertThat(state.sourceAsOf()).isNull();
+        assertThat(state.syncedAt()).isEqualTo(completedAt);
+        assertThat(state.risk().positionCount()).isNull();
+    }
+
     private static ConnectorResponse.Position position(String symbol, String marketValue, String pnlRate) {
+        return position(symbol, marketValue, pnlRate, null);
+    }
+
+    private static ConnectorResponse.Position position(
+            String symbol, String marketValue, String pnlRate, Instant observedAt) {
+        return position(symbol, marketValue, pnlRate, observedAt, "USD");
+    }
+
+    private static ConnectorResponse.Position position(
+            String symbol, String marketValue, String pnlRate, Instant observedAt, String currency) {
         return new ConnectorResponse.Position(
-                symbol, symbol, "US", BigDecimal.ONE, "USD", new BigDecimal("10"),
+                symbol, symbol, "US", BigDecimal.ONE, currency, new BigDecimal("10"),
                 new BigDecimal("10"), new BigDecimal(marketValue), new BigDecimal(marketValue),
                 new BigDecimal(marketValue), BigDecimal.ZERO, BigDecimal.ZERO,
                 new BigDecimal(pnlRate), new BigDecimal(pnlRate), BigDecimal.ZERO,
-                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ONE, null);
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ONE, observedAt);
     }
 }
