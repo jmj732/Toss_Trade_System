@@ -25,6 +25,43 @@ test("maps the shared portfolio state without recalculating server metrics", () 
   assert.deepEqual(section.data.risk, { largestPositionPct: 11, investedPct: 90, cashPct: 10 });
 });
 
+test("preserves canonical account P/L maps, rates, and state timestamps", () => {
+  const section = portfolioStateSection({
+    asOf: "2026-08-05T00:00:00Z",
+    sourceAsOf: "2026-08-04T23:59:58Z",
+    syncedAt: "2026-08-05T00:00:03Z",
+    currency: "USD",
+    account: {
+      totalValue: 1000,
+      cash: 100,
+      totalPurchaseAmounts: { USD: 800 },
+      marketValueAmounts: { USD: 900 },
+      marketValueAfterCostAmounts: { USD: 899 },
+      profitLossAmounts: { USD: 100 },
+      profitLossAfterCostAmounts: { USD: 99 },
+      dailyProfitLossAmounts: { USD: 5 },
+      profitLossRate: 0.125,
+      profitLossRateAfterCost: 0.123,
+      dailyProfitLossRate: 0.006,
+      observedAt: "2026-08-04T23:59:58Z"
+    },
+    positions: [], openOrders: [], risk: null,
+    stale: false, partial: false, missingSections: [], unknownFields: []
+  });
+
+  assert.equal(section.asOf, "2026-08-05T00:00:00Z");
+  assert.equal(section.sourceAsOf, "2026-08-04T23:59:58Z");
+  assert.equal(section.syncedAt, "2026-08-05T00:00:03Z");
+  assert.equal(section.data.completedAt, "2026-08-05T00:00:03Z");
+  assert.deepEqual(section.data.account.totalPurchaseAmounts, { USD: 800 });
+  assert.deepEqual(section.data.account.marketValueAmounts, { USD: 900 });
+  assert.deepEqual(section.data.account.profitLossAmounts, { USD: 100 });
+  assert.deepEqual(section.data.account.dailyProfitLossAmounts, { USD: 5 });
+  assert.equal(section.data.account.profitLossRate, 0.125);
+  assert.equal(section.data.account.profitLossRateAfterCost, 0.123);
+  assert.equal(section.data.account.dailyProfitLossRate, 0.006);
+});
+
 test("unavailable state stays explicit for the dashboard", () => {
   const section = unavailablePortfolioStateSection({}, "SYNC_FAILED");
 

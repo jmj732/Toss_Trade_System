@@ -15,6 +15,10 @@ function percentRatio(value) {
   return value == null || value === "" || !Number.isFinite(number) ? null : number / 100;
 }
 
+function objectMap(value, fallback = {}) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+}
+
 function statePosition(position, previous) {
   return {
     ...previous,
@@ -36,12 +40,18 @@ export function portfolioStateSection(state, previous = {}) {
   const currency = state?.currency ?? null;
   const account = state?.account ?? {};
   const previousData = previous?.data ?? {};
+  const asOf = state?.asOf ?? previousData.asOf ?? previous?.asOf;
+  const sourceAsOf = state?.sourceAsOf ?? previousData.sourceAsOf ?? previous?.sourceAsOf;
+  const syncedAt = state?.syncedAt ?? previousData.syncedAt ?? previous?.syncedAt;
   const previousPositions = new Map(list(previousData.positions).map(position => [position.symbol, position]));
   const positions = list(state?.positions).map(position =>
     statePosition(position, previousPositions.get(position.symbol)));
   const unknownFields = list(state?.unknownFields);
   return {
     ...previous,
+    asOf,
+    sourceAsOf,
+    syncedAt,
     stale: state?.stale === true,
     unknown: unknownFields.length > 0,
     unknownFields,
@@ -49,18 +59,25 @@ export function portfolioStateSection(state, previous = {}) {
     unavailableReason: null,
     data: {
       ...previousData,
-      asOf: state?.asOf ?? previousData.asOf,
-      completedAt: state?.asOf ?? previousData.completedAt,
+      asOf,
+      sourceAsOf,
+      syncedAt,
+      completedAt: syncedAt ?? asOf ?? previousData.completedAt,
       staleReason: state?.staleReason ?? null,
       partial: state?.partial === true,
       missingSections: list(state?.missingSections),
       account: {
         ...previousData.account,
-        marketValueAmounts: amountMap(currency, account.totalValue),
-        dailyProfitLossAmounts: {},
-        dailyProfitLossRate: null,
-        profitLossAmounts: {},
-        profitLossRate: null,
+        ...account,
+        totalPurchaseAmounts: objectMap(account.totalPurchaseAmounts),
+        marketValueAmounts: objectMap(account.marketValueAmounts, amountMap(currency, account.totalValue)),
+        marketValueAfterCostAmounts: objectMap(account.marketValueAfterCostAmounts),
+        profitLossAmounts: objectMap(account.profitLossAmounts),
+        profitLossAfterCostAmounts: objectMap(account.profitLossAfterCostAmounts),
+        dailyProfitLossAmounts: objectMap(account.dailyProfitLossAmounts),
+        profitLossRate: account.profitLossRate ?? null,
+        profitLossRateAfterCost: account.profitLossRateAfterCost ?? null,
+        dailyProfitLossRate: account.dailyProfitLossRate ?? null,
         cashBalanceStatus: account.cash == null ? "UNKNOWN" : "KNOWN"
       },
       positions,

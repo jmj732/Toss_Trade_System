@@ -136,6 +136,27 @@ test("freshness distinguishes stale partial portfolio state", () => {
   assert.match(html, /누락: account\.cash, CASH/);
 });
 
+test("freshness exposes state/source/sync timestamps and unknown fields accessibly", () => {
+  const html = render(createElement(DataFreshnessIndicator, {
+    section: {
+      stale: true,
+      unknownFields: ["account.profitLossRate"],
+      sourceAsOf: "2026-08-17T23:59:58Z",
+      syncedAt: "2026-08-18T00:00:03Z",
+      data: {
+        asOf: "2026-08-18T00:00:00Z",
+        partial: true,
+        missingSections: ["CASH"]
+      }
+    }
+  }));
+  assert.match(html, /기준 2026-08-18 09:00 KST/);
+  assert.match(html, /원본 2026-08-18 08:59 KST/);
+  assert.match(html, /동기화 2026-08-18 09:00 KST/);
+  assert.match(html, /확인 불가 필드: account\.profitLossRate/);
+  assert.match(html, /title="[^"]*account\.profitLossRate[^"]*CASH/);
+});
+
 test("global stock search is an accessible symbol route entry", () => {
   const html = render(createElement(GlobalStockSearch, { onSearch() {} }));
   assert.match(html, /종목 검색/);
@@ -216,6 +237,23 @@ test("PortfolioRiskPanel surfaces unknownFields instead of dropping them silentl
   }));
   assert.match(html, /일부 항목 확인 불가/);
   assert.match(html, /positions\[NVDA\]\.weight/);
+});
+
+test("PortfolioSummary shows canonical portfolio source and sync times", () => {
+  const html = render(createElement(PortfolioSummary, {
+    dashboard: dashboard({ portfolio: {
+      asOf: "2026-08-18T00:00:00Z",
+      sourceAsOf: "2026-08-17T23:59:58Z",
+      syncedAt: "2026-08-18T00:00:03Z",
+      data: {
+        account: { marketValueAmounts: { USD: 100 }, profitLossAmounts: {}, dailyProfitLossAmounts: {} },
+        buyingPower: {}
+      }
+    } })
+  }));
+  assert.match(html, /기준 2026-08-18 09:00 KST/);
+  assert.match(html, /원본 2026-08-18 08:59 KST/);
+  assert.match(html, /동기화 2026-08-18 09:00 KST/);
 });
 
 test("KillSwitchBanner renders only when engaged is true", () => {

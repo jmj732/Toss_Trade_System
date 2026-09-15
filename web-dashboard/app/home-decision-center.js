@@ -6,12 +6,16 @@ import {
   buyingPowerAmounts,
   directionOf,
   formatAmount,
-  formatFreshness,
   formatRatio,
   formatSignedAmount,
   UNKNOWN_TEXT
 } from "../lib/format.js";
-import { ActionQueue, PortfolioPositionTable, PortfolioRiskPanel } from "./decision-center.js";
+import {
+  ActionQueue,
+  portfolioTimeDetails,
+  PortfolioPositionTable,
+  PortfolioRiskPanel
+} from "./decision-center.js";
 import { PortfolioHistoryTrend } from "./portfolio-history-view.js";
 
 // 상태별 region weight. 0=미렌더/접힘, 1=한 줄, 2=기본, 3=주요, 4=HERO 전폭.
@@ -64,6 +68,7 @@ function PortfolioSummaryBar({ dashboard }) {
   const section = dashboard?.portfolio;
   const portfolio = section?.data;
   const account = portfolio?.account ?? {};
+  const timestamps = portfolioTimeDetails(section);
   return h("section", { className: "panel portfolio-summary-bar", "aria-label": "포트폴리오 요약" },
     h("div", { className: "portfolio-summary-grid" },
       h("div", null,
@@ -86,8 +91,7 @@ function PortfolioSummaryBar({ dashboard }) {
           values: buyingPowerAmounts(portfolio?.buyingPower)
         }))),
     ),
-    h("small", { className: "metric-freshness" },
-      `기준 ${formatFreshness(portfolio?.completedAt ?? section?.asOf)}`));
+    timestamps ? h("small", { className: "metric-freshness" }, timestamps) : null);
 }
 
 function regionWrapper(name, weight, node) {
