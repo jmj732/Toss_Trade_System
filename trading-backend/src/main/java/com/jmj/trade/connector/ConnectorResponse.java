@@ -75,6 +75,47 @@ public final class ConnectorResponse {
     public record BuyingPower(BigDecimal cashBuyingPower, Instant observedAt) {
     }
 
+    public record PortfolioState(
+            Instant asOf,
+            String currency,
+            StateAccount account,
+            List<StatePosition> positions,
+            List<Order> openOrders,
+            Risk risk,
+            boolean stale,
+            String staleReason,
+            boolean partial,
+            List<String> missingSections,
+            List<String> unknownFields
+    ) {
+    }
+
+    public record StateAccount(
+            BigDecimal totalValue,
+            BigDecimal cash,
+            BigDecimal cashPct
+    ) {
+    }
+
+    public record StatePosition(
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal avgPrice,
+            BigDecimal currentPrice,
+            BigDecimal marketValue,
+            BigDecimal weightPct,
+            BigDecimal unrealizedPnlPct,
+            String currency
+    ) {
+    }
+
+    public record Risk(
+            BigDecimal largestPositionPct,
+            BigDecimal investedPct,
+            BigDecimal cashPct
+    ) {
+    }
+
     public record Order(
             String brokerOrderId,
             BrokerOrderSide side,

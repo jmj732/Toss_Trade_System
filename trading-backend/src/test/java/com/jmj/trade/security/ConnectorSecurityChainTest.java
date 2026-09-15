@@ -101,7 +101,7 @@ class ConnectorSecurityChainTest {
 
     @RestController
     static class TestEndpoint {
-        @GetMapping("/api/v1/connector/portfolio")
+        @GetMapping({"/api/v1/connector/portfolio", "/api/v1/connector/portfolio/state"})
         void portfolio() {
         }
     }
