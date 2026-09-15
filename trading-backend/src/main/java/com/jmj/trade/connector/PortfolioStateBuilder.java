@@ -21,7 +21,7 @@ public final class PortfolioStateBuilder {
             List<ConnectorResponse.Order> openOrders
     ) {
         Objects.requireNonNull(portfolio, "portfolio");
-        Objects.requireNonNull(openOrders, "openOrders");
+        var openOrdersUnknown = openOrders == null;
 
         var currency = primaryCurrency(portfolio);
         var marketValue = amount(portfolio.account(), currency);
@@ -43,8 +43,12 @@ public final class PortfolioStateBuilder {
                 .map(ConnectorResponse.Position::symbol)
                 .map(symbol -> "positions[" + symbol + "].weightPct")
                 .forEach(unknown::add);
-        var partial = portfolio.partial() || totalValue == null;
+        if (openOrdersUnknown) unknown.add("openOrders");
+        var partial = portfolio.partial() || totalValue == null || openOrdersUnknown;
         var sourceAccount = portfolio.account();
+        var stale = portfolio.stale() || openOrdersUnknown;
+        var staleReason = portfolio.staleReason() == null && openOrdersUnknown
+                ? "OPEN_ORDERS_UNAVAILABLE" : portfolio.staleReason();
 
         return new ConnectorResponse.PortfolioState(
                 portfolio.completedAt(),
@@ -60,14 +64,14 @@ public final class PortfolioStateBuilder {
                         sourceAccount == null ? null : sourceAccount.profitLossRate(),
                         sourceAccount == null ? null : sourceAccount.dailyProfitLossRate()),
                 positions,
-                List.copyOf(openOrders),
+                openOrdersUnknown ? null : List.copyOf(openOrders),
                 new ConnectorResponse.Risk(
                         largestPositionPct,
                         percentage(marketValue, totalValue),
                         percentage(cash, totalValue),
                         positions.size()),
-                portfolio.stale(),
-                portfolio.staleReason(),
+                stale,
+                staleReason,
                 partial,
                 List.copyOf(missing),
                 List.copyOf(unknown));
