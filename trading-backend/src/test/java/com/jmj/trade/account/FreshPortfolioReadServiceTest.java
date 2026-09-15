@@ -66,6 +66,23 @@ class FreshPortfolioReadServiceTest {
     }
 
     @Test
+    void brokerFailureReplacesAnOlderStaleReasonWithTheCurrentFailure() {
+        var reads = mock(PortfolioReadService.class);
+        var sync = mock(AccountSyncService.class);
+        var old = view(OBSERVED_AT, true, "SNAPSHOT_TOO_OLD");
+        when(reads.read(USER_ID, CONNECTION_ID)).thenReturn(old);
+        doAnswer(invocation -> {
+            throw new IllegalStateException("Toss timeout");
+        }).when(sync).sync(USER_ID, CONNECTION_ID);
+
+        var result = new FreshPortfolioReadService(reads, provider(sync)).read(USER_ID, CONNECTION_ID);
+
+        assertThat(result).isNotSameAs(old);
+        assertThat(result.stale()).isTrue();
+        assertThat(result.staleReason()).isEqualTo("LIVE_SYNC_FAILED");
+    }
+
+    @Test
     void concurrentReadsShareOneBrokerSync() throws Exception {
         var reads = mock(PortfolioReadService.class);
         var sync = mock(AccountSyncService.class);

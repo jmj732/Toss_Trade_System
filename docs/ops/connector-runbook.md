@@ -51,3 +51,28 @@ integration. No separate cash-balance field or second cash ledger is exposed.
 - Keys do not expire by default. Revoke with
   `DELETE /api/v1/connector-api-keys/{id}` using recent human authentication;
   rotate/revoke if the key may have leaked.
+
+## Canonical `PortfolioState` contract
+
+`GET /api/v1/connector/portfolio/state` and the human dashboard route return the
+same state. Consumers must not call Toss directly or recompute money/risk fields.
+
+- `asOf`: state snapshot completion time. Kept for compatibility with existing
+  consumers; it is not a Toss quote timestamp.
+- `sourceAsOf`: earliest non-null `observedAt` among account, position, and
+  buying-power data. `null` means no broker value is known.
+- `syncedAt`: sync-run completion time. Fallback snapshots retain their original
+  timestamps; a failed first sync leaves them `null`.
+- `null` means unknown. An empty list means the source explicitly reported no
+  items. Missing values are never replaced with zero.
+- `stale=true` means the values may be old or the live sync failed. `partial=true`
+  means one or more sections are unavailable. `unknownFields` and
+  `missingSections` are authoritative field paths, not display hints.
+- Percentage fields (`weightPct`, `cashPct`, `investedPct`, `unrealizedPnlPct`)
+  are percentage points (`16.5` = 16.5%), not ratios. Amounts remain in their
+  native `currency`; no silent FX conversion occurs.
+- `account.profitLossRate` and `account.dailyProfitLossRate` retain Toss's decimal
+  ratio (`0.05` = 5%); position `unrealizedPnlPct` is already percentage points.
+- `account.totalValue`, cash, and risk percentages are calculated only for the
+  selected primary currency. A multi-currency account keeps non-primary weights
+  unknown until an explicit FX policy exists.
