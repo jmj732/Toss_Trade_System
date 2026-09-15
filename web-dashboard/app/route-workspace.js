@@ -34,6 +34,7 @@ import { RiskPolicyPanel } from "./risk-policy-view.js";
 import { SettingsSections } from "./settings-sections.js";
 import { StockAnalysisProductSurface } from "./stock-analysis-product-surface.js";
 import { describeError } from "../lib/error-messages.js";
+import { portfolioStateSection, unavailablePortfolioStateSection } from "../lib/portfolio-state.js";
 import {
   actOnProposal,
   orderActionKey,
@@ -61,6 +62,7 @@ import {
   loadPredictionModelVersions,
   loadPredictionOperations,
   loadOperationalReadiness,
+  loadPortfolioState,
   loadRiskPolicy,
   loadRiskPolicyHistory,
   loadSession,
@@ -460,6 +462,18 @@ export function RouteWorkspace({ route, symbol = "" }) {
     let dashboard;
     try {
       dashboard = await loadDashboard(id);
+      try {
+        dashboard = {
+          ...dashboard,
+          portfolio: portfolioStateSection(await loadPortfolioState(id), dashboard?.portfolio)
+        };
+      } catch (value) {
+        dashboard = {
+          ...dashboard,
+          portfolio: unavailablePortfolioStateSection(
+            dashboard?.portfolio, value.code ?? "PORTFOLIO_STATE_UNAVAILABLE")
+        };
+      }
       setDashboard(dashboard);
       setConnection(connections.find(value => value.id === id) ?? { id, status: "ACTIVE" });
       setWorkspaceStatus("ready");
@@ -547,6 +561,22 @@ export function RouteWorkspace({ route, symbol = "" }) {
     }
     if (route === "stock") {
       await loadStockSurface(id);
+    }
+  }
+
+  async function loadDashboardWithPortfolioState(id) {
+    const loadedDashboard = await loadDashboard(id);
+    try {
+      return {
+        ...loadedDashboard,
+        portfolio: portfolioStateSection(await loadPortfolioState(id), loadedDashboard?.portfolio)
+      };
+    } catch (value) {
+      return {
+        ...loadedDashboard,
+        portfolio: unavailablePortfolioStateSection(
+          loadedDashboard?.portfolio, value.code ?? "PORTFOLIO_STATE_UNAVAILABLE")
+      };
     }
   }
 
@@ -639,7 +669,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       options.displayed = displayed;
     }
     return actOnProposal(orderId, action, options)
-      .then(() => loadDashboard(connectionId.trim()).then(setDashboard))
+      .then(() => loadDashboardWithPortfolioState(connectionId.trim()).then(setDashboard))
       .then(() => {
         setApprovalOrder(null);
         setApprovalError(null);
@@ -786,7 +816,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       const proposal = await proposePaperOrder(command);
       setApprovalOrder(proposal);
       setApprovalError(null);
-      const refreshed = await loadDashboard(connectionId);
+      const refreshed = await loadDashboardWithPortfolioState(connectionId);
       setDashboard(refreshed);
     });
   }

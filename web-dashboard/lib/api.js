@@ -49,6 +49,11 @@ export async function loadDashboard(connectionId, fetcher = fetch) {
   return body(response);
 }
 
+export function loadPortfolioState(connectionId, fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/portfolio/state`, fetcher);
+}
+
 function stockPath(prefix, symbol, suffix = "") {
   return `/api/v1/${prefix}/${encodeURIComponent(symbol)}${suffix}`;
 }

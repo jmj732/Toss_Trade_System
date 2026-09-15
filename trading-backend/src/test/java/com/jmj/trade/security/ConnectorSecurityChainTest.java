@@ -62,6 +62,10 @@ class ConnectorSecurityChainTest {
                             .andExpect(status().isOk());
                     verify(accessTokens, never()).parse("ckey_secret");
 
+                    mvc.perform(get("/api/v1/broker-connections/{connectionId}/portfolio/state", CONNECTION)
+                                    .header("Authorization", "Bearer ckey_secret"))
+                            .andExpect(status().isUnauthorized());
+
                     mvc.perform(post("/api/v1/paper-orders")
                                     .header("Authorization", "Bearer ckey_secret"))
                             .andExpect(status().isUnauthorized());
@@ -101,7 +105,8 @@ class ConnectorSecurityChainTest {
 
     @RestController
     static class TestEndpoint {
-        @GetMapping({"/api/v1/connector/portfolio", "/api/v1/connector/portfolio/state"})
+        @GetMapping({"/api/v1/connector/portfolio", "/api/v1/connector/portfolio/state",
+                "/api/v1/broker-connections/{connectionId}/portfolio/state"})
         void portfolio() {
         }
     }

@@ -29,6 +29,9 @@ and the one-time connector key. Do not put the key in chat, Git, or logs.
 
 ## Read surface
 
+- Dashboard reads the same contract at
+  `GET /api/v1/broker-connections/{connectionId}/portfolio/state` with the
+  human-authenticated session.
 - `GET /api/v1/connector/portfolio` — request-time Toss sync, then persisted snapshot.
 - `GET /api/v1/connector/portfolio/state` — the same sync plus calculation-ready account,
   positions, risk percentages, and open orders.

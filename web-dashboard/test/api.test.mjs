@@ -24,6 +24,7 @@ import {
   listNotifications,
   loadAnalysisPredictions,
   loadDashboard,
+  loadPortfolioState,
   listBrokerConnections,
   loadEvent,
   loadPaperPerformance,
@@ -107,6 +108,22 @@ test("loads bearer metadata and owned dashboard with same-origin cookies", async
     ["/api/v1/broker-connections/connection%2F1/dashboard",
       { credentials: "same-origin" }]
   ]);
+});
+
+test("loads the shared portfolio state contract for the selected connection", async () => {
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push([url, options]);
+    return json({ currency: "USD", account: { totalValue: 1000 } });
+  };
+
+  const state = await loadPortfolioState("connection/1", fetcher);
+
+  assert.equal(state.account.totalValue, 1000);
+  assert.deepEqual(calls, [[
+    "/api/v1/broker-connections/connection%2F1/portfolio/state",
+    { credentials: "same-origin" }
+  ]]);
 });
 
 test("loads broker connections without exposing credentials and proposes a paper order", async () => {

@@ -94,6 +94,17 @@ test("healthy dashboards carry the riskEvaluation and positionDecisions sections
   assert.ok(Array.isArray(dashboard.body.positionDecisions.data));
 });
 
+test("dashboard portfolio state route is registered as the shared Toss contract", async () => {
+  const response = await responseFor(
+    "/api/v1/broker-connections/audit-connection/portfolio/state", "degraded");
+  assert.equal(response.status, 200);
+  assert.equal(response.body.currency, "USD");
+  assert.equal(response.body.account.totalValue, 1120);
+  assert.ok(Array.isArray(response.body.openOrders));
+  assert.equal(response.body.risk.cashPct, 89.2857);
+  assert.deepEqual(response.body.unknownFields, ["provider.partial"]);
+});
+
 // ---------------------------------------------------------------------------
 // Decision surface states
 // ---------------------------------------------------------------------------

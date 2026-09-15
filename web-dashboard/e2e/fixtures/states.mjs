@@ -249,6 +249,25 @@ export function fullDashboard() {
   };
 }
 
+export function fullPortfolioState() {
+  return {
+    asOf: NOW,
+    currency: "USD",
+    account: { totalValue: 1120, cash: 1000, cashPct: 89.2857 },
+    positions: [{
+      symbol: "NVDA", quantity: 1, avgPrice: 100, currentPrice: 120,
+      marketValue: 120, weightPct: 10.7143, unrealizedPnlPct: 20, currency: "USD"
+    }],
+    openOrders: [{
+      brokerOrderId: "broker-open-1", side: "BUY", type: "LIMIT", symbol: "AAPL",
+      quantity: 1, filledQuantity: 0, limitPrice: 200, currency: "USD", status: "PENDING",
+      group: "OPEN", filledAt: null, averageFilledPrice: null, commission: null, tax: null
+    }],
+    risk: { largestPositionPct: 10.7143, investedPct: 10.7143, cashPct: 89.2857 },
+    stale: false, staleReason: null, partial: false, missingSections: [], unknownFields: []
+  };
+}
+
 function emptyDashboard() {
   return {
     portfolio: section({
@@ -829,6 +848,9 @@ function matchEndpoint(pathname, method) {
   if (is(/\/broker-connections$/) && method === "GET") {
     return { body: CONNECTIONS_FULL, kind: "connections" };
   }
+  if (is(/\/broker-connections\/[^/]+\/portfolio\/state$/)) {
+    return { body: fullPortfolioState(), kind: "portfolio-state" };
+  }
   if (is(/\/dashboard$/)) return { body: fullDashboard(), kind: "dashboard" };
   if (is(/\/portfolio-history/)) return { body: PORTFOLIO_HISTORY_FULL, kind: "portfolio-history" };
   if (is(/\/paper-performance/)) {
@@ -958,6 +980,13 @@ function shapeForState(match, state) {
   if (state === "empty") {
     switch (kind) {
       case "dashboard": return emptyDashboard();
+      case "portfolio-state": return {
+        ...fullPortfolioState(),
+        account: { totalValue: null, cash: null, cashPct: null },
+        positions: [], openOrders: [],
+        risk: { largestPositionPct: null, investedPct: null, cashPct: null },
+        partial: true, missingSections: ["ACCOUNT", "CASH"], unknownFields: ["account.totalValue"]
+      };
       case "portfolio-history": return PORTFOLIO_HISTORY_EMPTY;
       case "paper-performance": return section({ byCurrency: {} });
       case "analysis-predictions": return ANALYSIS_PREDICTIONS_EMPTY;
@@ -972,6 +1001,12 @@ function shapeForState(match, state) {
   if (state === "partial") {
     switch (kind) {
       case "dashboard": return partialDashboard();
+      case "portfolio-state": return {
+        ...fullPortfolioState(),
+        account: { ...fullPortfolioState().account, cash: null, cashPct: null },
+        risk: { ...fullPortfolioState().risk, cashPct: null, investedPct: null },
+        partial: true, missingSections: ["CASH"], unknownFields: ["account.cash"]
+      };
       case "portfolio-history": return PORTFOLIO_HISTORY_EMPTY;
       case "analysis-predictions":
         return { ...ANALYSIS_PREDICTIONS_FULL, forecastQuality: null };
@@ -985,6 +1020,9 @@ function shapeForState(match, state) {
   if (state === "stale") {
     switch (kind) {
       case "dashboard": return staleDashboard();
+      case "portfolio-state": return {
+        ...fullPortfolioState(), stale: true, staleReason: "LIVE_SYNC_FAILED", asOf: STALE_AS_OF
+      };
       case "portfolio-history":
         return { ...PORTFOLIO_HISTORY_FULL, stale: true, asOf: STALE_AS_OF };
       case "paper-performance":
@@ -1003,6 +1041,9 @@ function shapeForState(match, state) {
   if (state === "degraded") {
     switch (kind) {
       case "dashboard": return degradedDashboard();
+      case "portfolio-state": return {
+        ...fullPortfolioState(), partial: true, unknownFields: ["provider.partial"]
+      };
       case "portfolio-history":
         return { ...PORTFOLIO_HISTORY_FULL, unknown: true, unknownFields: [] };
       case "analysis-predictions":
