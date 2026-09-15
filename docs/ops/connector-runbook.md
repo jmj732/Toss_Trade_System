@@ -11,7 +11,7 @@ the GPT Action configuration, not in source control.
 curl -X POST "$BASE_URL/api/v1/connector-api-keys" \
   -H "Authorization: Bearer $HUMAN_SESSION" \
   -H 'Content-Type: application/json' \
-  -d '{"connectionId":"<broker-connection-id>","expiresAt":"2026-12-31T23:59:59Z"}'
+  -d '{"connectionId":"<broker-connection-id>"}'
 ```
 
 Configure `docs/connector-openapi.yaml` in the Custom GPT Action and set the
@@ -45,5 +45,6 @@ integration. No separate cash-balance field or second cash ledger is exposed.
 - `currency` is the calculation currency (USD first, then KRW); values are not silently FX-converted.
 - Connector keys can only authenticate `GET /api/v1/connector/**` and carry
   `SCOPE_CONNECTOR_READ`; they cannot call order mutation APIs.
-- Revoke with `DELETE /api/v1/connector-api-keys/{id}` using recent human
-  authentication. Rotate before expiry.
+- Keys do not expire by default. Revoke with
+  `DELETE /api/v1/connector-api-keys/{id}` using recent human authentication;
+  rotate/revoke if the key may have leaked.
