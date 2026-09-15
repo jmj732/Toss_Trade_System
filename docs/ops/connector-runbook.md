@@ -30,6 +30,8 @@ and the one-time connector key. Do not put the key in chat, Git, or logs.
 ## Read surface
 
 - `GET /api/v1/connector/portfolio` — request-time Toss sync, then persisted snapshot.
+- `GET /api/v1/connector/portfolio/state` — the same sync plus calculation-ready account,
+  positions, risk percentages, and open orders.
 - `GET /api/v1/connector/orders?group=OPEN|CLOSED` — broker order list.
 - `GET /api/v1/connector/fills?since=<ISO-8601>` — filled quantities from both groups.
 
@@ -40,6 +42,7 @@ integration. No separate cash-balance field or second cash ledger is exposed.
 
 - `stale=true` or `partial=true`: do not size or submit; request a resync/review.
 - `unknownFields` and `missingSections` are authoritative uncertainty signals.
+- `currency` is the calculation currency (USD first, then KRW); values are not silently FX-converted.
 - Connector keys can only authenticate `GET /api/v1/connector/**` and carry
   `SCOPE_CONNECTOR_READ`; they cannot call order mutation APIs.
 - Revoke with `DELETE /api/v1/connector-api-keys/{id}` using recent human

@@ -33,6 +33,30 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /api/v1/connector/portfolio/state:
+    get:
+      operationId: getPortfolioState
+      summary: Read the calculation-ready portfolio state
+      description: >-
+        Performs the same request-time Toss sync as the portfolio endpoint and
+        returns account value, orderable cash, position weights, risk summary,
+        and open orders in one response. Percentages are 0-100. The selected
+        currency is USD when available, otherwise KRW or the first available
+        currency; currencies are never silently converted.
+      x-openai-isConsequential: false
+      responses:
+        '200':
+          description: Calculation-ready portfolio state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /api/v1/connector/orders:
     get:
       operationId: getOrders
@@ -170,6 +194,68 @@ components:
           properties: {}
           additionalProperties:
             $ref: '#/components/schemas/BuyingPower'
+    PortfolioState:
+      type: object
+      required: [asOf, currency, account, positions, openOrders, risk, stale, partial, missingSections, unknownFields]
+      properties:
+        asOf:
+          type: string
+          format: date-time
+        currency:
+          type: [string, "null"]
+        account:
+          oneOf:
+            - $ref: '#/components/schemas/StateAccount'
+            - type: "null"
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/StatePosition'
+        openOrders:
+          type: array
+          items:
+            $ref: '#/components/schemas/Order'
+        risk:
+          $ref: '#/components/schemas/Risk'
+        stale:
+          type: boolean
+        staleReason:
+          type: [string, "null"]
+        partial:
+          type: boolean
+        missingSections:
+          type: array
+          items: {type: string}
+        unknownFields:
+          type: array
+          items: {type: string}
+    StateAccount:
+      type: object
+      required: [totalValue, cash, cashPct]
+      properties:
+        totalValue: {type: [number, "null"]}
+        cash: {type: [number, "null"]}
+        cashPct: {type: [number, "null"]}
+      description: totalValue is invested market value plus cashBuyingPower in the selected currency.
+    StatePosition:
+      type: object
+      required: [symbol, quantity, avgPrice, currentPrice, marketValue, weightPct, unrealizedPnlPct, currency]
+      properties:
+        symbol: {type: string}
+        quantity: {type: [number, "null"]}
+        avgPrice: {type: [number, "null"]}
+        currentPrice: {type: [number, "null"]}
+        marketValue: {type: [number, "null"]}
+        weightPct: {type: [number, "null"]}
+        unrealizedPnlPct: {type: [number, "null"]}
+        currency: {type: [string, "null"]}
+    Risk:
+      type: object
+      required: [largestPositionPct, investedPct, cashPct]
+      properties:
+        largestPositionPct: {type: [number, "null"]}
+        investedPct: {type: [number, "null"]}
+        cashPct: {type: [number, "null"]}
     Account:
       type: object
       properties:

@@ -45,6 +45,12 @@ public final class ConnectorService {
                                 entry.getValue().cashBuyingPower(), entry.getValue().observedAt()))));
     }
 
+    public ConnectorResponse.PortfolioState portfolioState(UUID userId, UUID connectionId) {
+        return PortfolioStateBuilder.build(
+                portfolio(userId, connectionId),
+                orders(userId, connectionId, "OPEN"));
+    }
+
     public List<ConnectorResponse.Order> orders(UUID userId, UUID connectionId, String rawGroup) {
         requireOrderPort();
         var group = parseGroup(rawGroup);

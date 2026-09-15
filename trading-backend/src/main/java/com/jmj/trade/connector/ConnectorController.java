@@ -27,6 +27,12 @@ public final class ConnectorController {
         return service.portfolio(key.userId(), key.connectionId());
     }
 
+    @GetMapping("/portfolio/state")
+    ConnectorResponse.PortfolioState portfolioState(Authentication authentication) {
+        var key = key(authentication);
+        return service.portfolioState(key.userId(), key.connectionId());
+    }
+
     @GetMapping("/orders")
     List<ConnectorResponse.Order> orders(Authentication authentication,
                                          @RequestParam(defaultValue = "OPEN") String group) {
