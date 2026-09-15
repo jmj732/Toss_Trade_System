@@ -128,6 +128,14 @@ test("unknown freshness stays explicit", () => {
   assert.doesNotMatch(html, /LIVE/);
 });
 
+test("freshness distinguishes stale partial portfolio state", () => {
+  const html = render(createElement(DataFreshnessIndicator, {
+    section: { stale: true, unknownFields: ["account.cash"], data: { partial: true, missingSections: ["CASH"] } }
+  }));
+  assert.match(html, /STALE · 일부 누락/);
+  assert.match(html, /누락: account\.cash, CASH/);
+});
+
 test("global stock search is an accessible symbol route entry", () => {
   const html = render(createElement(GlobalStockSearch, { onSearch() {} }));
   assert.match(html, /종목 검색/);
@@ -138,6 +146,17 @@ test("PortfolioRiskPanel stays a compact one-liner when the server omits the sec
   const html = render(createElement(PortfolioRiskPanel, { dashboard: dashboard() }));
   assert.match(html, /포트폴리오 위험/);
   assert.match(html, /서버 위험 평가 없음/);
+});
+
+test("PortfolioRiskPanel renders shared state risk metrics", () => {
+  const html = render(createElement(PortfolioRiskPanel, {
+    dashboard: dashboard({ portfolio: {
+      data: { positions: [], account: {}, risk: { largestPositionPct: 12.5, investedPct: 80, cashPct: 20 } }
+    } })
+  }));
+  assert.match(html, /최대 포지션/);
+  assert.match(html, /12\.50%/);
+  assert.match(html, /현금 비중/);
 });
 
 test("PortfolioRiskPanel surfaces the reason when the section is unavailable", () => {
@@ -240,6 +259,21 @@ test("PortfolioPositionTable renders each position as a compact row without BC-2
   for (const removed of ["Risk", "Next Catalyst", "판단", "비중"]) {
     assert.doesNotMatch(html, new RegExp(removed));
   }
+});
+
+test("PortfolioPositionTable renders state percentages and open orders", () => {
+  const html = render(createElement(PortfolioPositionTable, {
+    section: { data: {
+      positions: [{ symbol: "NVDA", currency: "USD", quantity: 1, currentPrice: 120,
+        marketValue: 120, unrealizedPnlPct: 20, weight: 0.1 }],
+      openOrders: [{ symbol: "AAPL", side: "BUY", quantity: 1, status: "PENDING" }]
+    } },
+    analysis: {}, detail: "full"
+  }));
+  assert.match(html, /\+20\.00%/);
+  assert.match(html, /비중 10.0%/);
+  assert.match(html, /미체결 주문/);
+  assert.match(html, /BUY AAPL/);
 });
 
 test("PortfolioSummary renders per-currency buying power as orderable cash", () => {

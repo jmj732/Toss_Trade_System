@@ -139,6 +139,7 @@ class BeanInventoryCredentialedProfileTest extends PostgresIntegrationTest {
             "portfolioHistoryController : com.jmj.trade.account.PortfolioHistoryController",
             "portfolioHistoryService : com.jmj.trade.account.PortfolioHistoryService",
             "portfolioReadService : com.jmj.trade.account.PortfolioReadService",
+            "portfolioStateController : com.jmj.trade.connector.PortfolioStateController",
             "preTradeRiskEngine : com.jmj.trade.order.PreTradeRiskEngine",
             "predictionEvaluationLease : com.jmj.trade.prediction.PredictionEvaluationLease",
             "predictionEvaluationMetrics : com.jmj.trade.prediction.PredictionEvaluationMetrics",

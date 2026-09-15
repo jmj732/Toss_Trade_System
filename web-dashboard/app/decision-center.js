@@ -6,6 +6,7 @@ import {
   classifyProposalExpiry,
   directionOf,
   formatAmount,
+  formatDecimal,
   formatFreshness,
   formatInstant,
   formatQuantity,
@@ -210,10 +211,23 @@ export function ActionQueue({ items = [], state, onOrderAction, busyOrderId, onR
 }
 
 export function DataFreshnessIndicator({ section }) {
+  const partial = section?.data?.partial === true;
   const state = !section ? "데이터 확인 중" : section.unavailable || section.status === "ERROR"
-    ? "데이터 사용 불가" : section.stale ? "STALE · 지연 데이터" : section.unknown ? "데이터 확인 필요" : "LIVE";
+    ? "데이터 사용 불가" : section.stale && partial ? "STALE · 일부 누락"
+      : section.stale ? "STALE · 지연 데이터" : partial ? "PARTIAL · 일부 누락"
+        : section.unknown ? "데이터 확인 필요" : "LIVE";
   const modifier = state === "LIVE" ? "ok" : state.includes("불가") ? "danger" : "warn";
-  return h("span", { className: `badge-pill badge-pill--${modifier}`, "data-freshness": state }, state);
+  const qualityFields = [
+    ...(Array.isArray(section?.unknownFields) ? section.unknownFields : []),
+    ...(Array.isArray(section?.data?.missingSections) ? section.data.missingSections : [])
+  ];
+  const qualityDetail = qualityFields.length ? ` · 누락: ${qualityFields.join(", ")}` : "";
+  return h("span", {
+    className: `badge-pill badge-pill--${modifier}`,
+    "data-freshness": state,
+    title: qualityDetail ? `${state}${qualityDetail}` : state,
+    "aria-label": qualityDetail ? `${state}${qualityDetail}` : state
+  }, state);
 }
 
 export function GlobalStockSearch({ onSearch }) {
@@ -256,12 +270,24 @@ function riskScopeLabel(scope) {
   return RISK_SCOPE_LABELS[scope] ?? scope ?? "";
 }
 
+function formatServerPercent(value) {
+  const formatted = formatDecimal(value);
+  return formatted === UNKNOWN_TEXT ? formatted : `${formatted}%`;
+}
+
 // BC-4: 서버 riskEvaluation 섹션(있으면)만 렌더한다. usageRatio 등 판정값은 프론트에서 만들지 않는다.
 export function PortfolioRiskPanel({ dashboard }) {
   const section = dashboard?.riskEvaluation;
   const data = section && !section.unavailable ? section.data : null;
   const items = Array.isArray(data?.items) ? data.items : null;
   const unknownFields = Array.isArray(section?.unknownFields) ? section.unknownFields : [];
+  const stateRisk = dataOf(dashboard?.portfolio)?.risk;
+  const stateRiskSummary = stateRisk
+    ? h("dl", { className: "decision-metrics portfolio-state-risk" },
+      h("div", null, h("dt", null, "최대 포지션"), h("dd", null, formatServerPercent(stateRisk.largestPositionPct))),
+      h("div", null, h("dt", null, "투자 비중"), h("dd", null, formatServerPercent(stateRisk.investedPct))),
+      h("div", null, h("dt", null, "현금 비중"), h("dd", null, formatServerPercent(stateRisk.cashPct))))
+    : null;
 
   if (!items || items.length === 0) {
     const reason = section?.unavailableReason
@@ -273,6 +299,7 @@ export function PortfolioRiskPanel({ dashboard }) {
     },
       h("header", null, h("div", null,
         h("p", { className: "eyebrow" }, "Risk impact"), h("h2", null, "포트폴리오 위험"))),
+      stateRiskSummary,
       h("p", { className: "empty" }, `서버 위험 평가 없음${reason}`));
   }
 
@@ -293,6 +320,7 @@ export function PortfolioRiskPanel({ dashboard }) {
       ? h("p", { className: "disclaimer", "data-risk-unknown": "true" },
         `일부 항목 확인 불가 · ${unknownFields.join(", ")}`)
       : null,
+    stateRiskSummary,
     h("ul", { className: "list risk-eval-list" }, ...ordered.map(item => h("li", {
       key: item.key ?? item.subject ?? item.scope,
       "data-risk-breached": item.breached ? "true" : "false"
@@ -437,12 +465,18 @@ export function PositionAvatar({ symbol, name }) {
 // 쓰지 않으므로 색만으로 방향을 전달하지 않도록 접근성 이름에 방향 낱말(상승/하락/보합)을 남긴다.
 // 금액·비율은 lib/format.js 경유로만 만든다(프론트에서 비율을 금액으로 역산하지 않는다).
 function positionValueBlock(position) {
-  const { className, word } = directionOf(position.profitLossAmount);
-  const plText = formatSignedAmountWithRate(
-    position.currency, position.profitLossAmount, position.profitLossRate);
+  const directPnl = position.unrealizedPnlPct;
+  const directPnlNumber = directPnl == null ? null : Number(directPnl);
+  const directPnlKnown = Number.isFinite(directPnlNumber);
+  const directionValue = directPnl == null || !directPnlKnown ? position.profitLossAmount : directPnlNumber;
+  const { className, word } = directionOf(directionValue);
+  const plText = directPnl == null || !directPnlKnown
+    ? formatSignedAmountWithRate(position.currency, position.profitLossAmount, position.profitLossRate)
+    : `${directPnlNumber > 0 ? "+" : directPnlNumber < 0 ? "-" : ""}`
+      + `${formatDecimal(Math.abs(directPnlNumber), 2)}%`;
   return h("div", { className: "position-row-values" },
     h("span", { className: "position-row-market" },
-      formatAmount(position.currency, position.marketValueAmount)),
+      formatAmount(position.currency, position.marketValue ?? position.marketValueAmount)),
     h("span", {
       className: `position-row-pl ${className}`.trim(),
       "aria-label": word ? `손익 ${word} ${plText}` : `손익 ${plText}`
@@ -468,13 +502,14 @@ function positionRowSecondary(position, ctx, density) {
   // 수량과 현재가는 두 밀도 모두에서 secondary line 에 함께 둔다 — 평가금액·손익만 우측 큰 숫자로
   // 남겨 row 높이를 낮게 유지하기 위해서다(현재가를 우측 3번째 줄로 쌓지 않는다).
   const quantity = h("span", { className: "position-row-qty" }, `수량 ${formatQuantity(position.quantity)}`);
-  const lastPrice = position.lastPrice == null
+  const lastPriceValue = position.currentPrice ?? position.lastPrice;
+  const lastPrice = lastPriceValue == null
     ? null
-    : h("span", { className: "position-row-last" }, `현재가 ${formatAmount(position.currency, position.lastPrice)}`);
+    : h("span", { className: "position-row-last" }, `현재가 ${formatAmount(position.currency, lastPriceValue)}`);
   if (density !== "full") {
     return h("div", { className: "position-row-secondary" }, quantity, lastPrice, positionRowAction(position));
   }
-  const weight = ctx.weights.get(position.symbol);
+  const weight = ctx.weights.get(position.symbol) ?? position.weight;
   const entry = ctx.hasDecisions ? ctx.decisions.get(position.symbol) : undefined;
   return h("div", { className: "position-row-secondary position-row-secondary--full" },
     quantity,
@@ -516,6 +551,7 @@ export function PortfolioPositionTable({ section, analysis, positionDecisions, l
   // 는 positionDecisions 섹션을 넘기므로 full, Home 은 넘기지 않으므로 compact 로 남는다.
   const density = detail ?? (hasDecisions ? "full" : "compact");
   const ctx = { weights, decisions, hasDecisions };
+  const openOrders = Array.isArray(portfolio?.openOrders) ? portfolio.openOrders : [];
   return h("section", { className: "panel position-management" },
     h("header", null, h("div", null,
       h("p", { className: "eyebrow" }, "Position management"), h("h2", null, caption))),
@@ -523,6 +559,12 @@ export function PortfolioPositionTable({ section, analysis, positionDecisions, l
       ? h("ul", { className: "position-list" }, ...positions.map(position =>
         h(PositionRow, { key: position.symbol, position, ctx, density })))
       : h("p", { className: "empty" }, "보유 포지션이 없습니다"),
+    openOrders.length
+      ? h("div", { className: "portfolio-open-orders", "data-portfolio-open-orders": "true" },
+        h("h3", null, "미체결 주문"),
+        h("ul", { className: "list" }, ...openOrders.map(order => h("li", { key: order.brokerOrderId ?? order.symbol },
+          `${order.side ?? UNKNOWN_TEXT} ${order.symbol ?? UNKNOWN_TEXT} · ${formatQuantity(order.quantity)} · ${order.status ?? UNKNOWN_TEXT}`))))
+      : null,
     limited
       ? h("a", { className: "button-link secondary position-see-all", href: "/portfolio" }, "전체 보기")
       : null);
