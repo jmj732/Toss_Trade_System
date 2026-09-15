@@ -60,6 +60,9 @@ public final class FreshPortfolioReadService {
             SyncOutcome outcome
     ) {
         var current = reads.read(userId, connectionId);
+        if (current.stale()) {
+            return current;
+        }
         return new PortfolioReadService.PortfolioView(
                 current.syncRunId(),
                 current.completedAt(),
