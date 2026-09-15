@@ -44,8 +44,9 @@ export function portfolioStateSection(state, previous = {}) {
   const sourceAsOf = state?.sourceAsOf ?? previousData.sourceAsOf ?? previous?.sourceAsOf;
   const syncedAt = state?.syncedAt ?? previousData.syncedAt ?? previous?.syncedAt;
   const previousPositions = new Map(list(previousData.positions).map(position => [position.symbol, position]));
-  const positions = list(state?.positions).map(position =>
-    statePosition(position, previousPositions.get(position.symbol)));
+  const positions = Array.isArray(state?.positions)
+    ? state.positions.map(position => statePosition(position, previousPositions.get(position.symbol)))
+    : null;
   const unknownFields = list(state?.unknownFields);
   return {
     ...previous,
@@ -82,7 +83,7 @@ export function portfolioStateSection(state, previous = {}) {
       },
       positions,
       buyingPower: buyingPowerMap(currency, account.cash),
-      openOrders: list(state?.openOrders),
+      openOrders: Array.isArray(state?.openOrders) ? state.openOrders : null,
       risk: state?.risk ?? null
     }
   };

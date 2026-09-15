@@ -291,6 +291,10 @@ function formatServerPercent(value) {
   return formatted === UNKNOWN_TEXT ? formatted : `${formatted}%`;
 }
 
+function formatServerCount(value) {
+  return value == null || value === "" ? UNKNOWN_TEXT : String(value);
+}
+
 // BC-4: 서버 riskEvaluation 섹션(있으면)만 렌더한다. usageRatio 등 판정값은 프론트에서 만들지 않는다.
 export function PortfolioRiskPanel({ dashboard }) {
   const section = dashboard?.riskEvaluation;
@@ -302,7 +306,8 @@ export function PortfolioRiskPanel({ dashboard }) {
     ? h("dl", { className: "decision-metrics portfolio-state-risk" },
       h("div", null, h("dt", null, "최대 포지션"), h("dd", null, formatServerPercent(stateRisk.largestPositionPct))),
       h("div", null, h("dt", null, "투자 비중"), h("dd", null, formatServerPercent(stateRisk.investedPct))),
-      h("div", null, h("dt", null, "현금 비중"), h("dd", null, formatServerPercent(stateRisk.cashPct))))
+      h("div", null, h("dt", null, "현금 비중"), h("dd", null, formatServerPercent(stateRisk.cashPct))),
+      h("div", null, h("dt", null, "보유 종목 수"), h("dd", null, formatServerCount(stateRisk.positionCount))))
     : null;
 
   if (!items || items.length === 0) {
@@ -555,7 +560,8 @@ function PositionRow({ position, ctx, density }) {
 
 export function PortfolioPositionTable({ section, analysis, positionDecisions, limit, caption = "보유 포지션", detail }) {
   const portfolio = dataOf(section);
-  const allPositions = portfolio?.positions ?? [];
+  const positionsKnown = Array.isArray(portfolio?.positions);
+  const allPositions = positionsKnown ? portfolio.positions : [];
   const limited = typeof limit === "number" && limit > 0 && allPositions.length > limit;
   const positions = limited ? allPositions.slice(0, limit) : allPositions;
   const weights = new Map((dataOf(analysis)?.result?.positions ?? []).map(item => [item.symbol, item.weight]));
@@ -571,11 +577,15 @@ export function PortfolioPositionTable({ section, analysis, positionDecisions, l
   return h("section", { className: "panel position-management" },
     h("header", null, h("div", null,
       h("p", { className: "eyebrow" }, "Position management"), h("h2", null, caption))),
-    positions.length
+    !positionsKnown
+      ? h("p", { className: "empty" }, "보유 포지션 확인 필요")
+      : positions.length
       ? h("ul", { className: "position-list" }, ...positions.map(position =>
         h(PositionRow, { key: position.symbol, position, ctx, density })))
       : h("p", { className: "empty" }, "보유 포지션이 없습니다"),
-    openOrders.length
+    !Array.isArray(portfolio?.openOrders)
+      ? h("p", { className: "empty" }, "미체결 주문 확인 필요")
+      : openOrders.length
       ? h("div", { className: "portfolio-open-orders", "data-portfolio-open-orders": "true" },
         h("h3", null, "미체결 주문"),
         h("ul", { className: "list" }, ...openOrders.map(order => h("li", { key: order.brokerOrderId ?? order.symbol },

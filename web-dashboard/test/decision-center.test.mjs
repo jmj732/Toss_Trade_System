@@ -180,6 +180,18 @@ test("PortfolioRiskPanel renders shared state risk metrics", () => {
   assert.match(html, /현금 비중/);
 });
 
+test("PortfolioRiskPanel renders server position count without client calculation", () => {
+  const html = render(createElement(PortfolioRiskPanel, {
+    dashboard: dashboard({ portfolio: {
+      data: { positions: [], account: {}, risk: {
+        largestPositionPct: 12.5, investedPct: 80, cashPct: 20, positionCount: 3
+      } }
+    } })
+  }));
+  assert.match(html, /보유 종목 수/);
+  assert.match(html, />3<\/dd>/);
+});
+
 test("PortfolioRiskPanel surfaces the reason when the section is unavailable", () => {
   const html = render(createElement(PortfolioRiskPanel, {
     dashboard: dashboard({ riskEvaluation: { unavailable: true, unavailableReason: "RISK_EVALUATION_UNAVAILABLE", data: null } })
@@ -312,6 +324,15 @@ test("PortfolioPositionTable renders state percentages and open orders", () => {
   assert.match(html, /비중 10.0%/);
   assert.match(html, /미체결 주문/);
   assert.match(html, /BUY AAPL/);
+});
+
+test("PortfolioPositionTable labels unknown collections instead of claiming they are empty", () => {
+  const html = render(createElement(PortfolioPositionTable, {
+    section: { data: { positions: null, openOrders: null } }
+  }));
+  assert.match(html, /보유 포지션 확인 필요/);
+  assert.match(html, /미체결 주문 확인 필요/);
+  assert.doesNotMatch(html, /보유 포지션이 없습니다/);
 });
 
 test("PortfolioSummary renders per-currency buying power as orderable cash", () => {

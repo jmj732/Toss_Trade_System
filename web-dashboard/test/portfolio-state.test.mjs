@@ -72,3 +72,15 @@ test("unavailable state stays explicit for the dashboard", () => {
   assert.deepEqual(section.data.missingSections, ["PORTFOLIO_STATE"]);
   assert.equal(section.data.staleReason, "SYNC_FAILED");
 });
+
+test("null collections stay unknown instead of becoming empty provider results", () => {
+  const section = portfolioStateSection({
+    asOf: null, sourceAsOf: null, syncedAt: null, currency: null,
+    account: null, positions: null, openOrders: null, risk: null,
+    stale: true, partial: true, missingSections: ["ACCOUNT"], unknownFields: ["PORTFOLIO_STATE"]
+  });
+
+  assert.equal(section.data.positions, null);
+  assert.equal(section.data.openOrders, null);
+  assert.equal(section.unknown, true);
+});
