@@ -52,6 +52,7 @@ class InvestmentOsSheetSyncServiceTest {
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
         verify(sync).sync(USER_ID, CONNECTION_ID);
+        verify(connector).fills(eq(USER_ID), eq(CONNECTION_ID), any());
         verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4));
         verify(lease).release(any());
     }
