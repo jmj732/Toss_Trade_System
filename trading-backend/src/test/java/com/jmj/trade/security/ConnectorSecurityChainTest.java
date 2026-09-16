@@ -69,6 +69,10 @@ class ConnectorSecurityChainTest {
                     mvc.perform(post("/api/v1/paper-orders")
                                     .header("Authorization", "Bearer ckey_secret"))
                             .andExpect(status().isUnauthorized());
+
+                    mvc.perform(post("/api/v1/investment-os/sheet-sync")
+                                    .header("Authorization", "Bearer ckey_secret"))
+                            .andExpect(status().isUnauthorized());
                 });
     }
 
