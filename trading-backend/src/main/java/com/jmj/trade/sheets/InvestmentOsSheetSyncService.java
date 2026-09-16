@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -98,6 +99,7 @@ public final class InvestmentOsSheetSyncService {
         ConnectorResponse.Portfolio portfolio = null;
         List<ConnectorResponse.Order> open = null;
         List<ConnectorResponse.Order> closed = null;
+        List<ConnectorResponse.Fill> fills = null;
         String failure = null;
 
         try {
@@ -128,6 +130,16 @@ public final class InvestmentOsSheetSyncService {
                 LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
                         .addKeyValue("failure_reason", safeError(exception)).log("Toss closed orders fetch failed");
             }
+            try {
+                fills = connector.fills(userId, connectionId, syncedAt.minus(Duration.ofDays(1)));
+                LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", InvestmentOsSheetModel.ACCOUNT_1)
+                        .addKeyValue("broker_fetch_result", "success").addKeyValue("fills", fills.size())
+                        .log("Toss recent fills fetch completed");
+            } catch (RuntimeException exception) {
+                failure = failure == null ? "FILLS_FETCH_FAILED" : failure + "+FILLS_FETCH_FAILED";
+                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "fills")
+                        .addKeyValue("failure_reason", safeError(exception)).log("Toss recent fills fetch failed");
+            }
         } else if (failure == null) {
             failure = portfolio == null ? "EMPTY_PORTFOLIO" : "NON_AUTHORITATIVE_PORTFOLIO";
         }
@@ -144,12 +156,13 @@ public final class InvestmentOsSheetSyncService {
             var nextAggregate = authoritative
                     ? InvestmentOsSheetModel.aggregate(aggregate, nextAccount, syncedAt) : aggregate;
             var allOrderReadsSucceeded = open != null && closed != null;
-            var status = reconciliationStatus(authoritative, portfolio, open, closed);
+            var status = reconciliationStatus(authoritative, portfolio, open, closed, fills);
             var nextRecon = InvestmentOsSheetModel.reconciliation(
                     current.reconciliation(), syncId.toString(), InvestmentOsSheetModel.ACCOUNT_1, "" + status.holdings,
                     status.cash, status.orders, status.fills,
                     rowDelta(account, nextAccount) + rowDelta(orders, nextOrders) + rowDelta(aggregate, nextAggregate),
-                    failure == null ? "NONE" : failure, failure == null && authoritative && allOrderReadsSucceeded,
+                    failure == null ? "NONE" : failure,
+                    failure == null && authoritative && allOrderReadsSucceeded && fills != null,
                     syncedAt, failure);
             var updates = new ArrayList<GoogleSheetsClient.SheetValueRange>();
             if (authoritative) {
@@ -166,12 +179,12 @@ public final class InvestmentOsSheetSyncService {
             var result = new InvestmentOsSheetSyncResult(
                     failure == null && authoritative ? InvestmentOsSheetSyncResult.Outcome.SUCCEEDED
                             : InvestmentOsSheetSyncResult.Outcome.FAILED,
-                    syncId, rowsChanged, ordersChanged, ordersChanged, failure);
+                    syncId, rowsChanged, ordersChanged, fills == null ? 0 : fills.size(), failure);
             LOG.atInfo().addKeyValue("operation", OPERATION)
                     .addKeyValue("outcome", result.outcome().name().toLowerCase())
                     .addKeyValue("rows_changed", rowsChanged)
                     .addKeyValue("orders_changed", ordersChanged)
-                    .addKeyValue("fills_changed", ordersChanged)
+                    .addKeyValue("fills_changed", fills == null ? 0 : fills.size())
                     .addKeyValue("aggregate_recalculation", authoritative)
                     .addKeyValue("reconciliation_result", status.resolved)
                     .addKeyValue("duration_ms", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
@@ -232,13 +245,13 @@ public final class InvestmentOsSheetSyncService {
     }
 
     private static Status reconciliationStatus(boolean authoritative, ConnectorResponse.Portfolio portfolio,
-                                               List<?> open, List<?> closed) {
+                                               List<?> open, List<?> closed, List<?> fills) {
         var holdings = authoritative ? "OK" : "FAILED";
         var cash = authoritative && portfolio.buyingPower().keySet().containsAll(List.of("USD", "KRW")) ? "OK" : "PARTIAL";
         var orders = open != null && closed != null ? "OK" : "PARTIAL";
-        var fills = orders;
-        return new Status(holdings, cash, orders, fills, authoritative && "OK".equals(cash)
-                && "OK".equals(orders));
+        var fillStatus = fills != null ? "OK" : "PARTIAL";
+        return new Status(holdings, cash, orders, fillStatus, authoritative && "OK".equals(cash)
+                && "OK".equals(orders) && "OK".equals(fillStatus));
     }
 
     private static int rowDelta(InvestmentOsSheetModel.SheetTable before, InvestmentOsSheetModel.SheetTable after) {
