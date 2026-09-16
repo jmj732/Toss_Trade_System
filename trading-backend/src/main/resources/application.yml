@@ -46,6 +46,16 @@ production:
 portfolio:
   snapshot:
     max-age: ${PORTFOLIO_SNAPSHOT_MAX_AGE:PT15M}
+investment-os:
+  sheet:
+    enabled: ${INVESTMENT_OS_SHEET_ENABLED:false}
+    spreadsheet-id: ${GOOGLE_SHEETS_SPREADSHEET_ID:14GkxnY1zubBjTwtp2NB7pSDFJ4TKeYj3_3YVBzMzBQY}
+    user-id: ${INVESTMENT_OS_SHEET_USER_ID:}
+    connection-id: ${INVESTMENT_OS_SHEET_CONNECTION_ID:}
+    service-account-json: ${GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON:}
+    interval: ${INVESTMENT_OS_SHEET_INTERVAL:PT5M}
+    initial-delay: ${INVESTMENT_OS_SHEET_INITIAL_DELAY:PT1M}
+    lock-ttl: ${INVESTMENT_OS_SHEET_LOCK_TTL:PT10M}
 market-events:
   scheduler:
     enabled: ${MARKET_EVENTS_SCHEDULER_ENABLED:false}
