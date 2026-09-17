@@ -1,5 +1,6 @@
 package com.jmj.trade.security;
 
+import com.jmj.trade.connector.ConnectorApiKeyAuthenticationFilter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -30,11 +31,7 @@ final class AccessTokenAuthenticationFilter extends OncePerRequestFilter {
     }
 
     private static boolean isConnectorApiKeyRequest(HttpServletRequest request) {
-        var authorization = request.getHeader("Authorization");
-        return "GET".equals(request.getMethod())
-                && request.getRequestURI().startsWith("/api/v1/connector/")
-                && authorization != null
-                && authorization.startsWith("Bearer ");
+        return ConnectorApiKeyAuthenticationFilter.isConnectorRequest(request);
     }
 
     private static boolean isApiKeyBatchRequest(HttpServletRequest request) {
