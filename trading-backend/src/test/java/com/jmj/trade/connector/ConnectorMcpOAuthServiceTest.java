@@ -27,13 +27,27 @@ class ConnectorMcpOAuthServiceTest {
 
     private final BrokerConnectionService connections = mock(BrokerConnectionService.class);
     private final ConnectorApiKeyService keys = mock(ConnectorApiKeyService.class);
+    private final ConnectorOAuthClientStore clients = new InMemoryConnectorOAuthClientStore();
     private final ConnectorMcpOAuthService service = new ConnectorMcpOAuthService(
             connections,
             keys,
             new java.security.SecureRandom(),
             Clock.fixed(NOW, ZoneOffset.UTC),
             "https://dashboard.example",
-            "oidc");
+            "oidc", clients);
+
+    @Test
+    void registeredClientSurvivesServiceRecreationAndStillRejectsWrongRedirect() {
+        var client = service.register(List.of(REDIRECT));
+        var restarted = new ConnectorMcpOAuthService(connections, keys, new java.security.SecureRandom(),
+                Clock.fixed(NOW, ZoneOffset.UTC), "https://dashboard.example", "oidc", clients);
+        assertThat(restarted.beginAuthorization(authorizationParams(client.clientId(), REDIRECT), null))
+                .startsWith("/oauth2/authorization/oidc?");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> restarted.beginAuthorization(
+                authorizationParams(client.clientId(), "https://attacker.example/callback"), null))
+                .isInstanceOf(ConnectorMcpOAuthService.OAuthException.class)
+                .hasMessage("redirect_uri does not match the client");
+    }
 
     @Test
     void authorizationRedirectPreservesPkceRequestForOidcLogin() {

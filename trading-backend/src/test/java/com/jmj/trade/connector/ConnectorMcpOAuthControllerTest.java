@@ -26,7 +26,7 @@ class ConnectorMcpOAuthControllerTest {
             new java.security.SecureRandom(),
             Clock.fixed(Instant.EPOCH, ZoneOffset.UTC),
             "https://dashboard.example",
-            "oidc");
+            "oidc", new InMemoryConnectorOAuthClientStore());
 
     private final MockMvc mvc = standaloneSetup(new ConnectorMcpOAuthController(service)).build();
 
