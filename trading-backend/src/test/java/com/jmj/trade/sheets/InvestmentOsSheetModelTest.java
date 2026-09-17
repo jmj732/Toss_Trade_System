@@ -52,6 +52,26 @@ class InvestmentOsSheetModelTest {
     }
 
     @Test
+    void replacesConfiguredAccount2AndPreservesAccount1() {
+        var existing = table(
+                row("ACCOUNT_1", "KEEP", "HOLDING", "USD", "2", "10"),
+                row("ACCOUNT_2", "OLD", "HOLDING", "USD", "3", "20"));
+
+        var updated = InvestmentOsSheetModel.accountState(
+                existing,
+                portfolio(position("NEW", "4", "12"), cash("USD", "100")),
+                SYNCED_AT,
+                InvestmentOsSheetModel.ACCOUNT_2);
+
+        assertThat(updated.rows()).extracting(row -> row.get(updated.column("Account")))
+                .containsExactly("ACCOUNT_1", "ACCOUNT_2", "ACCOUNT_2");
+        assertThat(updated.rows()).anySatisfy(row ->
+                assertThat(row.get(updated.column("Ticker"))).isEqualTo("NEW"));
+        assertThat(updated.rows()).anySatisfy(row ->
+                assertThat(row.get(updated.column("Ticker"))).isEqualTo("KEEP"));
+    }
+
+    @Test
     void aggregatesSameTickerWithQuantityWeightedAverageAndCash() {
         var account = table(
                 row("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "40"),
