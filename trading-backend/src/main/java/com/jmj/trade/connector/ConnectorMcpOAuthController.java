@@ -48,7 +48,7 @@ final class ConnectorMcpOAuthController {
         }
     }
 
-    @GetMapping(value = "/authorize", produces = MediaType.TEXT_HTML_VALUE)
+    @GetMapping("/authorize")
     ResponseEntity<?> authorize(
             @RequestParam MultiValueMap<String, String> parameters,
             Authentication authentication
