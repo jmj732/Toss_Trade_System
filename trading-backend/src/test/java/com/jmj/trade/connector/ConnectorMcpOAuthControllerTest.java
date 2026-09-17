@@ -2,6 +2,7 @@ package com.jmj.trade.connector;
 
 import com.jmj.trade.broker.connection.BrokerConnectionService;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Clock;
@@ -11,6 +12,7 @@ import java.time.ZoneOffset;
 import static org.mockito.Mockito.mock;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -50,5 +52,20 @@ class ConnectorMcpOAuthControllerTest {
                 .andExpect(status().isFound())
                 .andExpect(header().string("Location", org.hamcrest.Matchers.containsString(
                         "/oauth2/authorization/oidc")));
+    }
+
+    @Test
+    void returnsJsonErrorForStaleClientInsteadOfWhitelabel500() throws Exception {
+        mvc.perform(get("/api/v1/connector/oauth/authorize")
+                        .param("response_type", "code")
+                        .param("client_id", "mcp_client_stale")
+                        .param("redirect_uri", "https://chatgpt.com/connector/oauth/callback")
+                        .param("state", "state-1")
+                        .param("code_challenge", "challenge")
+                        .param("code_challenge_method", "S256")
+                        .param("scope", "connector:read"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.error").value("invalid_client"));
     }
 }
