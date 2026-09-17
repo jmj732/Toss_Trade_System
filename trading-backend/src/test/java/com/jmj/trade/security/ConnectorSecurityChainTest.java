@@ -14,6 +14,7 @@ import org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfig
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Optional;
@@ -61,6 +62,10 @@ class ConnectorSecurityChainTest {
                                     .header("Authorization", "Bearer ckey_secret"))
                             .andExpect(status().isOk());
                     verify(accessTokens, never()).parse("ckey_secret");
+
+                    mvc.perform(post("/api/v1/connector/mcp/messages")
+                                    .header("Authorization", "Bearer ckey_secret"))
+                            .andExpect(status().isOk());
 
                     mvc.perform(get("/api/v1/broker-connections/{connectionId}/portfolio/state", CONNECTION)
                                     .header("Authorization", "Bearer ckey_secret"))
@@ -112,6 +117,10 @@ class ConnectorSecurityChainTest {
         @GetMapping({"/api/v1/connector/portfolio", "/api/v1/connector/portfolio/state",
                 "/api/v1/broker-connections/{connectionId}/portfolio/state"})
         void portfolio() {
+        }
+
+        @PostMapping("/api/v1/connector/mcp/messages")
+        void mcpMessage() {
         }
     }
 }

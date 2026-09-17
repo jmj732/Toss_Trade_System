@@ -81,8 +81,12 @@ public final class ConnectorApiKeyAuthenticationFilter extends OncePerRequestFil
 
     public static boolean isConnectorRequest(HttpServletRequest request) {
         var authorization = request.getHeader("Authorization");
-        return "GET".equals(request.getMethod())
-                && request.getRequestURI().startsWith("/api/v1/connector/")
+        var path = request.getRequestURI();
+        var readApi = "GET".equals(request.getMethod())
+                && path.startsWith("/api/v1/connector/");
+        var mcpApi = ("GET".equals(request.getMethod()) || "POST".equals(request.getMethod()))
+                && path.startsWith("/api/v1/connector/mcp/");
+        return (readApi || mcpApi)
                 && authorization != null && authorization.startsWith(BEARER);
     }
 }
