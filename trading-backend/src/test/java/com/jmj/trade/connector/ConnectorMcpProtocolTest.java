@@ -29,6 +29,7 @@ class ConnectorMcpProtocolTest {
 
         assertThat(response.path("result").path("protocolVersion").asText()).isEqualTo("2024-11-05");
         assertThat(response.path("result").path("capabilities").path("tools").isObject()).isTrue();
+        assertThat(response.path("result").path("instructions").asText()).contains("read-only");
     }
 
     @Test
@@ -41,6 +42,9 @@ class ConnectorMcpProtocolTest {
         assertThat(tools.get(1).path("name").asText()).isEqualTo("get_orders");
         assertThat(tools.get(2).path("name").asText()).isEqualTo("get_recent_fills");
         assertThat(tools.get(1).path("inputSchema").path("type").asText()).isEqualTo("object");
+        assertThat(tools.get(0).path("title").asText()).isEqualTo("Get portfolio");
+        assertThat(tools.get(0).path("outputSchema").path("type").asText()).isEqualTo("object");
+        assertThat(tools.get(1).path("outputSchema").path("type").asText()).isEqualTo("array");
     }
 
     @Test
@@ -53,6 +57,8 @@ class ConnectorMcpProtocolTest {
         var text = response.path("result").path("content").get(0).path("text").asText();
 
         assertThat(text).contains("\"stale\":false", "\"buyingPower\"");
+        assertThat(response.path("result").path("structuredContent").path("stale").asBoolean())
+                .isFalse();
         verify(service).portfolio(USER, CONNECTION);
     }
 
