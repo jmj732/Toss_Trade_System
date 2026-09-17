@@ -36,11 +36,12 @@ by the ChatGPT custom-app setup screen:
 https://web-dashboard-phi-lac.vercel.app/api/v1/connector/mcp/sse
 ```
 
-In the app setup dialog, select the API-key/Bearer authentication option if it
-is available, and use the one-time connector key as `Bearer ckey_...`. Do not
-select OAuth for this server: the existing connector key is bound to one broker
-connection and the MCP endpoint intentionally does not implement an OAuth
-authorization server.
+In the app setup dialog, select `OAuth` (or `혼합` if the UI presents both
+choices). The server publishes MCP protected-resource and authorization-server
+metadata, then redirects the browser through the existing OIDC login. OAuth
+authorization requires exactly one active Toss connection for the signed-in
+user; it issues a one-hour, read-only bearer backed by the existing connector
+key lifecycle. No connector key needs to be copied into ChatGPT.
 
 After tool scanning, test with prompts such as:
 

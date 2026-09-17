@@ -36,11 +36,13 @@ public class SecurityConfiguration {
             ObjectProvider<AccessTokenService> accessTokens,
             ObjectProvider<RefreshTokenService> refreshTokens,
             ObjectProvider<CookieAuthorizationRequestRepository> authorizationRequests,
+            ObjectProvider<com.jmj.trade.connector.ConnectorMcpOAuthService> connectorMcpOAuth,
             @Value("${security.oidc.max-age:300}") String oidcMaxAge,
             DashboardRedirects dashboardRedirects
     ) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/api/v1/auth/refresh", "/api/v1/auth/logout").permitAll()
+                .requestMatchers("/.well-known/**", "/api/v1/connector/oauth/**").permitAll()
                 .requestMatchers("/api/v1/connector/**").hasAuthority("SCOPE_CONNECTOR_READ")
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll());
@@ -65,9 +67,21 @@ public class SecurityConfiguration {
                 .securityContextRepository(new NullSecurityContextRepository()));
         http.requestCache(requestCache -> requestCache.disable());
         http.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+        var mcpOAuth = connectorMcpOAuth.getIfAvailable();
         http.logout(logout -> logout.disable());
         http.exceptionHandling(exceptions -> exceptions
-                .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)));
+                .authenticationEntryPoint((request, response, ignored) -> {
+                    if (mcpOAuth != null
+                            && request.getRequestURI().startsWith("/api/v1/connector/mcp/")) {
+                        response.setHeader("WWW-Authenticate",
+                                "Bearer resource_metadata=\""
+                                        + mcpOAuth.publicUrl("/.well-known/oauth-protected-resource"
+                                        + com.jmj.trade.connector.ConnectorMcpOAuthService.RESOURCE_PATH)
+                                        + "\", scope=\""
+                                        + com.jmj.trade.connector.ConnectorMcpOAuthService.READ_SCOPE + "\"");
+                    }
+                    response.setStatus(HttpStatus.UNAUTHORIZED.value());
+                }));
         var registrationRepository = registrations.getIfAvailable();
         if (registrationRepository != null) {
             http.oauth2Login(oauth2 -> oauth2
@@ -78,8 +92,8 @@ public class SecurityConfiguration {
                                     registrationRepository,
                                     oidcAuthorizationCustomizer(oidcMaxAge))))
                     .successHandler(dashboardSuccessHandler(
-                            dashboardRedirects, accessTokens.getObject(), refreshTokens.getObject()))
-                    .failureHandler(dashboardFailureHandler(dashboardRedirects))
+                            dashboardRedirects, accessTokens.getObject(), refreshTokens.getObject(), mcpOAuth))
+                    .failureHandler(dashboardFailureHandler(dashboardRedirects, mcpOAuth))
                     .userInfoEndpoint(userInfo ->
                             userInfo.oidcUserService(oidcUsers.getObject())));
         }
@@ -120,9 +134,19 @@ public class SecurityConfiguration {
     private static AuthenticationSuccessHandler dashboardSuccessHandler(
             DashboardRedirects redirects,
             AccessTokenService accessTokens,
-            RefreshTokenService refreshTokens
+            RefreshTokenService refreshTokens,
+            com.jmj.trade.connector.ConnectorMcpOAuthService mcpOAuth
     ) {
         return (request, response, authentication) -> {
+            var returnTo = DashboardAuthorizationRequestResolver.consumeReturnTo(request);
+            if (mcpOAuth != null && mcpOAuth.isContinuation(returnTo)) {
+                try {
+                    response.sendRedirect(mcpOAuth.completeAfterLogin(returnTo, authentication));
+                } catch (com.jmj.trade.connector.ConnectorMcpOAuthService.OAuthException exception) {
+                    response.sendRedirect(mcpOAuth.loginFailureRedirect(returnTo, exception.code()));
+                }
+                return;
+            }
             var userId = UUID.fromString(authentication.getName());
             var authTime = authenticatedAt(authentication);
             if (authTime == null && DashboardAuthorizationRequestResolver.consumeForcedReauthentication(request)) {
@@ -132,9 +156,7 @@ public class SecurityConfiguration {
             var access = accessTokens.issue(userId, refresh.sessionId(), authTime);
             AuthCookieSupport.setRefreshCookie(response, refresh.refreshToken(),
                     Duration.between(Instant.now(), refresh.expiresAt()));
-            response.sendRedirect(redirects.dashboardUrl(
-                    DashboardAuthorizationRequestResolver.consumeReturnTo(request),
-                    access.value(), access.expiresAt()));
+            response.sendRedirect(redirects.dashboardUrl(returnTo, access.value(), access.expiresAt()));
         };
     }
 
@@ -148,13 +170,27 @@ public class SecurityConfiguration {
     }
 
     static AuthenticationFailureHandler dashboardFailureHandler(String publicDashboardUrl) {
-        return dashboardFailureHandler(new DashboardRedirects(publicDashboardUrl));
+        return dashboardFailureHandler(new DashboardRedirects(publicDashboardUrl), null);
     }
 
-    private static AuthenticationFailureHandler dashboardFailureHandler(DashboardRedirects redirects) {
+    private static AuthenticationFailureHandler dashboardFailureHandler(
+            DashboardRedirects redirects,
+            com.jmj.trade.connector.ConnectorMcpOAuthService mcpOAuth
+    ) {
         return (request, response, exception) -> response.sendRedirect(
-                redirects.loginUrl(
-                        DashboardRedirects.errorCode(exception),
-                        DashboardAuthorizationRequestResolver.consumeReturnTo(request)));
+                failureRedirect(redirects, mcpOAuth, request, exception));
+    }
+
+    private static String failureRedirect(
+            DashboardRedirects redirects,
+            com.jmj.trade.connector.ConnectorMcpOAuthService mcpOAuth,
+            jakarta.servlet.http.HttpServletRequest request,
+            org.springframework.security.core.AuthenticationException exception
+    ) {
+        var returnTo = DashboardAuthorizationRequestResolver.consumeReturnTo(request);
+        if (mcpOAuth != null && mcpOAuth.isContinuation(returnTo)) {
+            return mcpOAuth.loginFailureRedirect(returnTo, DashboardRedirects.errorCode(exception));
+        }
+        return redirects.loginUrl(DashboardRedirects.errorCode(exception), returnTo);
     }
 }
