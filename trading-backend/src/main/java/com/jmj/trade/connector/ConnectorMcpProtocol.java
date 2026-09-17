@@ -78,12 +78,12 @@ public final class ConnectorMcpProtocol {
                 "get_orders",
                 "Get orders",
                 "Read Toss Invest broker orders. Use OPEN for working orders or CLOSED for completed and canceled orders.",
-                ordersSchema(), arraySchema()));
+                ordersSchema(), listEnvelopeSchema("orders")));
         tools.add(tool(
                 "get_recent_fills",
                 "Get recent fills",
                 "Read filled quantities derived from Toss Invest open and closed orders. Optionally filter by an ISO-8601 instant.",
-                fillsSchema(), arraySchema()));
+                fillsSchema(), listEnvelopeSchema("fills")));
         return result(request, result);
     }
 
@@ -96,10 +96,10 @@ public final class ConnectorMcpProtocol {
             var arguments = params.path("arguments");
             return switch (name) {
                 case "get_portfolio" -> toolResult(request, service.portfolio(userId, connectionId));
-                case "get_orders" -> toolResult(request, service.orders(userId, connectionId,
-                        optionalText(arguments, "group", "OPEN")));
-                case "get_recent_fills" -> toolResult(request, service.fills(userId, connectionId,
-                        optionalInstant(arguments, "since")));
+                case "get_orders" -> toolResult(request, envelope("orders", service.orders(userId, connectionId,
+                        optionalText(arguments, "group", "OPEN"))));
+                case "get_recent_fills" -> toolResult(request, envelope("fills", service.fills(userId, connectionId,
+                        optionalInstant(arguments, "since"))));
                 default -> error(request, -32601, "Tool not found: " + name);
             };
         } catch (RuntimeException exception) {
@@ -168,10 +168,24 @@ public final class ConnectorMcpProtocol {
         return objectMapper.createObjectNode().put("type", "object");
     }
 
+    private ObjectNode listEnvelopeSchema(String field) {
+        var properties = objectMapper.createObjectNode();
+        properties.set(field, arraySchema());
+        var schema = objectMapper.createObjectNode()
+                .put("type", "object")
+                .set("properties", properties);
+        schema.putArray("required").add(field);
+        return schema;
+    }
+
     private ObjectNode arraySchema() {
         return objectMapper.createObjectNode()
                 .put("type", "array")
                 .set("items", objectMapper.createObjectNode().put("type", "object"));
+    }
+
+    private ObjectNode envelope(String field, Object value) {
+        return objectMapper.createObjectNode().set(field, objectMapper.valueToTree(value));
     }
 
     private static String optionalText(JsonNode arguments, String field, String fallback) {

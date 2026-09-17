@@ -44,7 +44,14 @@ class ConnectorMcpProtocolTest {
         assertThat(tools.get(1).path("inputSchema").path("type").asText()).isEqualTo("object");
         assertThat(tools.get(0).path("title").asText()).isEqualTo("Get portfolio");
         assertThat(tools.get(0).path("outputSchema").path("type").asText()).isEqualTo("object");
-        assertThat(tools.get(1).path("outputSchema").path("type").asText()).isEqualTo("array");
+        assertThat(tools.get(1).path("outputSchema").path("type").asText()).isEqualTo("object");
+        assertThat(tools.get(1).path("outputSchema").path("properties").path("orders")
+                .path("type").asText()).isEqualTo("array");
+        assertThat(tools.get(1).path("outputSchema").path("required").toString()).contains("orders");
+        assertThat(tools.get(2).path("outputSchema").path("type").asText()).isEqualTo("object");
+        assertThat(tools.get(2).path("outputSchema").path("properties").path("fills")
+                .path("type").asText()).isEqualTo("array");
+        assertThat(tools.get(2).path("outputSchema").path("required").toString()).contains("fills");
     }
 
     @Test
@@ -67,8 +74,21 @@ class ConnectorMcpProtocolTest {
         when(service.orders(USER, CONNECTION, "CLOSED")).thenReturn(List.of());
         when(service.fills(USER, CONNECTION, Instant.parse("2026-09-01T00:00:00Z"))).thenReturn(List.of());
 
-        protocol.handle(toolCall("4", "get_orders", "{\"group\":\"CLOSED\"}"), USER, CONNECTION);
-        protocol.handle(toolCall("5", "get_recent_fills", "{\"since\":\"2026-09-01T00:00:00Z\"}"), USER, CONNECTION);
+        var ordersResponse = protocol.handle(
+                toolCall("4", "get_orders", "{\"group\":\"CLOSED\"}"), USER, CONNECTION);
+        var fillsResponse = protocol.handle(
+                toolCall("5", "get_recent_fills", "{\"since\":\"2026-09-01T00:00:00Z\"}"), USER, CONNECTION);
+
+        assertThat(ordersResponse.path("result").path("structuredContent").isObject()).isTrue();
+        assertThat(ordersResponse.path("result").path("structuredContent").path("orders").isArray())
+                .isTrue();
+        assertThat(ordersResponse.path("result").path("content").get(0).path("text").asText())
+                .isEqualTo("{\"orders\":[]}");
+        assertThat(fillsResponse.path("result").path("structuredContent").isObject()).isTrue();
+        assertThat(fillsResponse.path("result").path("structuredContent").path("fills").isArray())
+                .isTrue();
+        assertThat(fillsResponse.path("result").path("content").get(0).path("text").asText())
+                .isEqualTo("{\"fills\":[]}");
 
         verify(service).orders(USER, CONNECTION, "CLOSED");
         verify(service).fills(USER, CONNECTION, Instant.parse("2026-09-01T00:00:00Z"));

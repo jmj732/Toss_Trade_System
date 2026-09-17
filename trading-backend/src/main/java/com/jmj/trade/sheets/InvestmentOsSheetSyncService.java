@@ -73,7 +73,7 @@ public final class InvestmentOsSheetSyncService {
         var syncId = UUID.randomUUID();
         var syncedAt = now.get();
         LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("outcome", "started")
-                .addKeyValue("account", InvestmentOsSheetModel.ACCOUNT_1)
+                .addKeyValue("account", properties.accountLabel())
                 .addKeyValue("connection_id", connectionId).log("investment os sheet sync started");
         try {
             return run(syncId, userId, connectionId, syncedAt, started);
@@ -105,12 +105,12 @@ public final class InvestmentOsSheetSyncService {
         try {
             accountSync.sync(userId, connectionId);
             portfolio = connector.portfolio(userId, connectionId);
-            LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", InvestmentOsSheetModel.ACCOUNT_1)
+            LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                     .addKeyValue("broker_fetch_result", portfolio == null ? "empty" : "success")
                     .log("Toss portfolio fetch completed");
         } catch (RuntimeException exception) {
             failure = safeError(exception);
-            LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("account", InvestmentOsSheetModel.ACCOUNT_1)
+            LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                     .addKeyValue("broker_fetch_result", "failure").addKeyValue("failure_reason", failure)
                     .log("Toss portfolio fetch failed; existing sheet state preserved");
         }
@@ -132,7 +132,7 @@ public final class InvestmentOsSheetSyncService {
             }
             try {
                 fills = connector.fills(userId, connectionId, syncedAt.minus(Duration.ofDays(1)));
-                LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", InvestmentOsSheetModel.ACCOUNT_1)
+                LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                         .addKeyValue("broker_fetch_result", "success").addKeyValue("fills", fills.size())
                         .log("Toss recent fills fetch completed");
             } catch (RuntimeException exception) {
@@ -150,15 +150,15 @@ public final class InvestmentOsSheetSyncService {
             var aggregate = current.aggregate();
             var authoritative = portfolio != null && authoritative(portfolio);
             var nextAccount = authoritative
-                    ? InvestmentOsSheetModel.accountState(account, portfolio, syncedAt) : account;
+                    ? InvestmentOsSheetModel.accountState(account, portfolio, syncedAt, properties.accountLabel()) : account;
             var nextOrders = authoritative
-                    ? InvestmentOsSheetModel.orders(orders, open, closed, syncedAt) : orders;
+                    ? InvestmentOsSheetModel.orders(orders, open, closed, syncedAt, properties.accountLabel()) : orders;
             var nextAggregate = authoritative
                     ? InvestmentOsSheetModel.aggregate(aggregate, nextAccount, syncedAt) : aggregate;
             var allOrderReadsSucceeded = open != null && closed != null;
             var status = reconciliationStatus(authoritative, portfolio, open, closed, fills);
             var nextRecon = InvestmentOsSheetModel.reconciliation(
-                    current.reconciliation(), syncId.toString(), InvestmentOsSheetModel.ACCOUNT_1, "" + status.holdings,
+                    current.reconciliation(), syncId.toString(), properties.accountLabel(), "" + status.holdings,
                     status.cash, status.orders, status.fills,
                     rowDelta(account, nextAccount) + rowDelta(orders, nextOrders) + rowDelta(aggregate, nextAggregate),
                     failure == null ? "NONE" : failure,

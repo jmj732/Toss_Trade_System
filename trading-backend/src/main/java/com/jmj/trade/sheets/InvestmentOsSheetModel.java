@@ -43,16 +43,26 @@ public final class InvestmentOsSheetModel {
             ConnectorResponse.Portfolio portfolio,
             Instant syncedAt
     ) {
+        return accountState(current, portfolio, syncedAt, ACCOUNT_1);
+    }
+
+    public static SheetTable accountState(
+            SheetTable current,
+            ConnectorResponse.Portfolio portfolio,
+            Instant syncedAt,
+            String accountLabel
+    ) {
         var table = current.withHeaders(ACCOUNT_HEADERS);
         if (portfolio == null) return table;
+        var managedAccount = normalizedAccountLabel(accountLabel);
 
         var rows = table.rows().stream()
-                .filter(row -> !ACCOUNT_1.equalsIgnoreCase(value(table, row, "Account")))
+                .filter(row -> !managedAccount.equalsIgnoreCase(value(table, row, "Account")))
                 .collect(Collectors.toCollection(ArrayList::new));
         var observed = syncedAt == null ? portfolio.completedAt() : syncedAt;
         for (var position : safe(portfolio.positions())) {
             var row = table.emptyRow();
-            put(table, row, "Account", ACCOUNT_1);
+            put(table, row, "Account", managedAccount);
             put(table, row, "Ticker", position.symbol());
             put(table, row, "Asset Type", "HOLDING");
             put(table, row, "Currency", position.currency());
@@ -71,7 +81,7 @@ public final class InvestmentOsSheetModel {
                     .sorted(Map.Entry.comparingByKey())
                     .forEach(entry -> {
                         var row = table.emptyRow();
-                        put(table, row, "Account", ACCOUNT_1);
+                        put(table, row, "Account", managedAccount);
                         put(table, row, "Ticker", "CASH_" + entry.getKey());
                         put(table, row, "Asset Type", "CASH");
                         put(table, row, "Currency", entry.getKey());
@@ -91,11 +101,22 @@ public final class InvestmentOsSheetModel {
             List<ConnectorResponse.Order> closed,
             Instant syncedAt
     ) {
+        return orders(current, open, closed, syncedAt, ACCOUNT_1);
+    }
+
+    public static SheetTable orders(
+            SheetTable current,
+            List<ConnectorResponse.Order> open,
+            List<ConnectorResponse.Order> closed,
+            Instant syncedAt,
+            String accountLabel
+    ) {
         var table = current.withHeaders(ORDER_HEADERS);
         if (open == null && closed == null) return table;
+        var managedAccount = normalizedAccountLabel(accountLabel);
         var complete = open != null && closed != null;
         var rows = table.rows().stream()
-                .filter(row -> !complete || !ACCOUNT_1.equalsIgnoreCase(value(table, row, "Account")))
+                .filter(row -> !complete || !managedAccount.equalsIgnoreCase(value(table, row, "Account")))
                 .collect(Collectors.toCollection(ArrayList::new));
         var byId = new LinkedHashMap<String, List<String>>();
         if (!complete) {
@@ -112,7 +133,7 @@ public final class InvestmentOsSheetModel {
                 .sorted(Comparator.comparing(ConnectorResponse.Order::brokerOrderId))
                 .forEach(order -> {
                     var row = table.emptyRow();
-                    put(table, row, "Account", ACCOUNT_1);
+                    put(table, row, "Account", managedAccount);
                     put(table, row, "Order ID", order.brokerOrderId());
                     put(table, row, "Ticker", order.symbol());
                     put(table, row, "Side", order.side() == null ? null : order.side().name());
@@ -259,6 +280,14 @@ public final class InvestmentOsSheetModel {
 
     private static String normalize(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    private static String normalizedAccountLabel(String value) {
+        var normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        if (!ACCOUNT_1.equals(normalized) && !ACCOUNT_2.equals(normalized)) {
+            throw new IllegalArgumentException("accountLabel must be ACCOUNT_1 or ACCOUNT_2");
+        }
+        return normalized;
     }
 
     private static String value(SheetTable table, List<String> row, String header) {
