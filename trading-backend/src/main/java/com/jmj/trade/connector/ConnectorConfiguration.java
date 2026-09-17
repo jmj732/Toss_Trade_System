@@ -33,7 +33,7 @@ public class ConnectorConfiguration {
             BrokerConnectionService connections,
             ConnectorApiKeyService keys,
             SecureRandom secureRandom,
-            @Value("${public.dashboard-url}") String publicDashboardUrl,
+            @Value("${public.dashboard-url:http://localhost:3000}") String publicDashboardUrl,
             @Value("${security.oidc.registration-id:oidc}") String oidcRegistrationId
     ) {
         return new ConnectorMcpOAuthService(
