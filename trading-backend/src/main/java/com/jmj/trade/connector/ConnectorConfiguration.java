@@ -33,6 +33,8 @@ public class ConnectorConfiguration {
             BrokerConnectionService connections,
             ConnectorApiKeyService keys,
             SecureRandom secureRandom,
+            JdbcTemplate jdbc,
+            tools.jackson.databind.ObjectMapper objectMapper,
             @Value("${public.dashboard-url:http://localhost:3000}") String publicDashboardUrl,
             @Value("${security.oidc.registration-id:oidc}") String oidcRegistrationId
     ) {
@@ -42,6 +44,7 @@ public class ConnectorConfiguration {
                 secureRandom,
                 Clock.systemUTC(),
                 publicDashboardUrl,
-                oidcRegistrationId);
+                oidcRegistrationId,
+                new JdbcConnectorOAuthClientStore(jdbc, objectMapper));
     }
 }

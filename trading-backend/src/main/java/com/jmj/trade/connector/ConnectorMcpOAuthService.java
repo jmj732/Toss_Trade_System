@@ -37,7 +37,7 @@ public final class ConnectorMcpOAuthService {
     private final Clock clock;
     private final String publicBaseUrl;
     private final String oidcRegistrationId;
-    private final Map<String, RegisteredClient> clients = new ConcurrentHashMap<>();
+    private final ConnectorOAuthClientStore clients;
     private final Map<String, AuthorizationCode> codes = new ConcurrentHashMap<>();
 
     ConnectorMcpOAuthService(
@@ -46,9 +46,11 @@ public final class ConnectorMcpOAuthService {
             SecureRandom random,
             Clock clock,
             String publicBaseUrl,
-            String oidcRegistrationId
+            String oidcRegistrationId,
+            ConnectorOAuthClientStore clients
     ) {
         this.connections = Objects.requireNonNull(connections, "connections");
+        this.clients = Objects.requireNonNull(clients, "clients");
         this.keys = Objects.requireNonNull(keys, "keys");
         this.random = Objects.requireNonNull(random, "random");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -66,7 +68,7 @@ public final class ConnectorMcpOAuthService {
     RegisteredClient register(List<String> redirectUris) {
         var normalized = validateRedirectUris(redirectUris);
         var client = new RegisteredClient(opaque("mcp_client_"), normalized);
-        clients.put(client.clientId(), client);
+        clients.save(client);
         return client;
     }
 
@@ -201,7 +203,7 @@ public final class ConnectorMcpOAuthService {
     }
 
     private RegisteredClient client(String clientId) {
-        var client = clients.get(clientId);
+        var client = clients.find(clientId);
         if (client == null) {
             throw oauthError("invalid_client", "client_id is not registered", null);
         }
