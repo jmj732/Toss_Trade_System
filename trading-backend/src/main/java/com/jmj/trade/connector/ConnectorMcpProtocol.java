@@ -48,6 +48,9 @@ public final class ConnectorMcpProtocol {
         var capabilities = objectMapper.createObjectNode();
         capabilities.set("tools", objectMapper.createObjectNode().put("listChanged", false));
         result.set("capabilities", capabilities);
+        result.put("instructions",
+                "Use these read-only tools to inspect the authenticated Toss Invest account. "
+                        + "Treat stale or partial portfolio data as uncertain and never infer a trade from it.");
         result.set("serverInfo", objectMapper.createObjectNode()
                 .put("name", "investment-os-toss")
                 .put("version", "1.0.0"));
@@ -68,16 +71,19 @@ public final class ConnectorMcpProtocol {
         var tools = result.putArray("tools");
         tools.add(tool(
                 "get_portfolio",
+                "Get portfolio",
                 "Read the latest Toss Invest portfolio snapshot. If stale or partial is true, treat the data as uncertain and do not size or submit trades.",
-                emptySchema()));
+                emptySchema(), objectSchema()));
         tools.add(tool(
                 "get_orders",
+                "Get orders",
                 "Read Toss Invest broker orders. Use OPEN for working orders or CLOSED for completed and canceled orders.",
-                ordersSchema()));
+                ordersSchema(), arraySchema()));
         tools.add(tool(
                 "get_recent_fills",
+                "Get recent fills",
                 "Read filled quantities derived from Toss Invest open and closed orders. Optionally filter by an ISO-8601 instant.",
-                fillsSchema()));
+                fillsSchema(), arraySchema()));
         return result(request, result);
     }
 
@@ -104,6 +110,7 @@ public final class ConnectorMcpProtocol {
     private ObjectNode toolResult(ObjectNode request, Object value) {
         var payload = objectMapper.createObjectNode();
         payload.put("isError", false);
+        payload.set("structuredContent", objectMapper.valueToTree(value));
         var content = payload.putArray("content");
         var text = objectMapper.writeValueAsString(value);
         content.addObject().put("type", "text").put("text", text);
@@ -117,11 +124,14 @@ public final class ConnectorMcpProtocol {
         return result(request, payload);
     }
 
-    private ObjectNode tool(String name, String description, ObjectNode schema) {
+    private ObjectNode tool(String name, String title, String description,
+                            ObjectNode schema, ObjectNode outputSchema) {
         var tool = objectMapper.createObjectNode();
         tool.put("name", name);
+        tool.put("title", title);
         tool.put("description", description);
         tool.set("inputSchema", schema);
+        tool.set("outputSchema", outputSchema);
         var annotations = tool.objectNode();
         annotations.put("readOnlyHint", true);
         annotations.put("destructiveHint", false);
@@ -152,6 +162,16 @@ public final class ConnectorMcpProtocol {
                 .put("format", "date-time"));
         return objectMapper.createObjectNode().put("type", "object")
                 .set("properties", properties);
+    }
+
+    private ObjectNode objectSchema() {
+        return objectMapper.createObjectNode().put("type", "object");
+    }
+
+    private ObjectNode arraySchema() {
+        return objectMapper.createObjectNode()
+                .put("type", "array")
+                .set("items", objectMapper.createObjectNode().put("type", "object"));
     }
 
     private static String optionalText(JsonNode arguments, String field, String fallback) {
