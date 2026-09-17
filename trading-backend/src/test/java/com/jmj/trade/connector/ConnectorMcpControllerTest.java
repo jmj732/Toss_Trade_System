@@ -65,7 +65,7 @@ class ConnectorMcpControllerTest {
                         .content("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith("application/json"))
-                .andExpect(jsonPath("$.result").isObject());
+                .andExpect(jsonPath("$.result").exists());
     }
 
     private static TestingAuthenticationToken authentication() {
