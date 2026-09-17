@@ -25,6 +25,8 @@ class ConnectorApiKeyAuthenticationFilterTest {
         mcpSse.addHeader("Authorization", "Bearer ckey_test");
         var mcpMessage = new MockHttpServletRequest("POST", "/api/v1/connector/mcp/messages");
         mcpMessage.addHeader("Authorization", "Bearer ckey_test");
+        var mcpStreamable = new MockHttpServletRequest("POST", "/api/v1/connector/mcp");
+        mcpStreamable.addHeader("Authorization", "Bearer ckey_test");
         var post = new MockHttpServletRequest("POST", "/api/v1/connector/portfolio");
         post.addHeader("Authorization", "Bearer ckey_test");
         var noKey = new MockHttpServletRequest("GET", "/api/v1/connector/portfolio");
@@ -33,6 +35,7 @@ class ConnectorApiKeyAuthenticationFilterTest {
         assertThat(ConnectorApiKeyAuthenticationFilter.isConnectorRequest(orders)).isTrue();
         assertThat(ConnectorApiKeyAuthenticationFilter.isConnectorRequest(mcpSse)).isTrue();
         assertThat(ConnectorApiKeyAuthenticationFilter.isConnectorRequest(mcpMessage)).isTrue();
+        assertThat(ConnectorApiKeyAuthenticationFilter.isConnectorRequest(mcpStreamable)).isTrue();
         assertThat(ConnectorApiKeyAuthenticationFilter.isConnectorRequest(post)).isFalse();
         assertThat(ConnectorApiKeyAuthenticationFilter.isConnectorRequest(noKey)).isFalse();
     }
