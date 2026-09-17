@@ -128,6 +128,35 @@ test("unknown freshness stays explicit", () => {
   assert.doesNotMatch(html, /LIVE/);
 });
 
+test("freshness distinguishes stale partial portfolio state", () => {
+  const html = render(createElement(DataFreshnessIndicator, {
+    section: { stale: true, unknownFields: ["account.cash"], data: { partial: true, missingSections: ["CASH"] } }
+  }));
+  assert.match(html, /STALE · 일부 누락/);
+  assert.match(html, /누락: account\.cash, CASH/);
+});
+
+test("freshness exposes state/source/sync timestamps and unknown fields accessibly", () => {
+  const html = render(createElement(DataFreshnessIndicator, {
+    section: {
+      stale: true,
+      unknownFields: ["account.profitLossRate"],
+      sourceAsOf: "2026-08-17T23:59:58Z",
+      syncedAt: "2026-08-18T00:00:03Z",
+      data: {
+        asOf: "2026-08-18T00:00:00Z",
+        partial: true,
+        missingSections: ["CASH"]
+      }
+    }
+  }));
+  assert.match(html, /기준 2026-08-18 09:00 KST/);
+  assert.match(html, /원본 2026-08-18 08:59 KST/);
+  assert.match(html, /동기화 2026-08-18 09:00 KST/);
+  assert.match(html, /확인 불가 필드: account\.profitLossRate/);
+  assert.match(html, /title="[^"]*account\.profitLossRate[^"]*CASH/);
+});
+
 test("global stock search is an accessible symbol route entry", () => {
   const html = render(createElement(GlobalStockSearch, { onSearch() {} }));
   assert.match(html, /종목 검색/);
@@ -138,6 +167,29 @@ test("PortfolioRiskPanel stays a compact one-liner when the server omits the sec
   const html = render(createElement(PortfolioRiskPanel, { dashboard: dashboard() }));
   assert.match(html, /포트폴리오 위험/);
   assert.match(html, /서버 위험 평가 없음/);
+});
+
+test("PortfolioRiskPanel renders shared state risk metrics", () => {
+  const html = render(createElement(PortfolioRiskPanel, {
+    dashboard: dashboard({ portfolio: {
+      data: { positions: [], account: {}, risk: { largestPositionPct: 12.5, investedPct: 80, cashPct: 20 } }
+    } })
+  }));
+  assert.match(html, /최대 포지션/);
+  assert.match(html, /12\.50%/);
+  assert.match(html, /현금 비중/);
+});
+
+test("PortfolioRiskPanel renders server position count without client calculation", () => {
+  const html = render(createElement(PortfolioRiskPanel, {
+    dashboard: dashboard({ portfolio: {
+      data: { positions: [], account: {}, risk: {
+        largestPositionPct: 12.5, investedPct: 80, cashPct: 20, positionCount: 3
+      } }
+    } })
+  }));
+  assert.match(html, /보유 종목 수/);
+  assert.match(html, />3<\/dd>/);
 });
 
 test("PortfolioRiskPanel surfaces the reason when the section is unavailable", () => {
@@ -199,6 +251,23 @@ test("PortfolioRiskPanel surfaces unknownFields instead of dropping them silentl
   assert.match(html, /positions\[NVDA\]\.weight/);
 });
 
+test("PortfolioSummary shows canonical portfolio source and sync times", () => {
+  const html = render(createElement(PortfolioSummary, {
+    dashboard: dashboard({ portfolio: {
+      asOf: "2026-08-18T00:00:00Z",
+      sourceAsOf: "2026-08-17T23:59:58Z",
+      syncedAt: "2026-08-18T00:00:03Z",
+      data: {
+        account: { marketValueAmounts: { USD: 100 }, profitLossAmounts: {}, dailyProfitLossAmounts: {} },
+        buyingPower: {}
+      }
+    } })
+  }));
+  assert.match(html, /기준 2026-08-18 09:00 KST/);
+  assert.match(html, /원본 2026-08-18 08:59 KST/);
+  assert.match(html, /동기화 2026-08-18 09:00 KST/);
+});
+
 test("KillSwitchBanner renders only when engaged is true", () => {
   const engaged = render(createElement(KillSwitchBanner, {
     killSwitch: { engaged: true, reason: "수동 정지", changedAt: "2026-08-18T08:00:00Z" }
@@ -240,6 +309,30 @@ test("PortfolioPositionTable renders each position as a compact row without BC-2
   for (const removed of ["Risk", "Next Catalyst", "판단", "비중"]) {
     assert.doesNotMatch(html, new RegExp(removed));
   }
+});
+
+test("PortfolioPositionTable renders state percentages and open orders", () => {
+  const html = render(createElement(PortfolioPositionTable, {
+    section: { data: {
+      positions: [{ symbol: "NVDA", currency: "USD", quantity: 1, currentPrice: 120,
+        marketValue: 120, unrealizedPnlPct: 20, weight: 0.1 }],
+      openOrders: [{ symbol: "AAPL", side: "BUY", quantity: 1, status: "PENDING" }]
+    } },
+    analysis: {}, detail: "full"
+  }));
+  assert.match(html, /\+20\.00%/);
+  assert.match(html, /비중 10.0%/);
+  assert.match(html, /미체결 주문/);
+  assert.match(html, /BUY AAPL/);
+});
+
+test("PortfolioPositionTable labels unknown collections instead of claiming they are empty", () => {
+  const html = render(createElement(PortfolioPositionTable, {
+    section: { data: { positions: null, openOrders: null } }
+  }));
+  assert.match(html, /보유 포지션 확인 필요/);
+  assert.match(html, /미체결 주문 확인 필요/);
+  assert.doesNotMatch(html, /보유 포지션이 없습니다/);
 });
 
 test("PortfolioSummary renders per-currency buying power as orderable cash", () => {

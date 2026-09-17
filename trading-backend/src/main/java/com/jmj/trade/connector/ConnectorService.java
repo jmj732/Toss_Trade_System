@@ -1,6 +1,7 @@
 package com.jmj.trade.connector;
 
 import com.jmj.trade.account.FreshPortfolioReadService;
+import com.jmj.trade.account.PortfolioReadException;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerAdapter;
@@ -43,6 +44,26 @@ public final class ConnectorService {
                 source.buyingPower().entrySet().stream().collect(java.util.stream.Collectors.toUnmodifiableMap(
                         Map.Entry::getKey, entry -> new ConnectorResponse.BuyingPower(
                                 entry.getValue().cashBuyingPower(), entry.getValue().observedAt()))));
+    }
+
+    public ConnectorResponse.PortfolioState portfolioState(UUID userId, UUID connectionId) {
+        final ConnectorResponse.Portfolio portfolio;
+        try {
+            portfolio = portfolio(userId, connectionId);
+        } catch (PortfolioReadException exception) {
+            // An active connection with no successful run is still a valid state. Keep the
+            // canonical response machine-readable instead of turning first-sync failure into 500.
+            return unknownState();
+        }
+
+        final List<ConnectorResponse.Order> openOrders;
+        try {
+            openOrders = orders(userId, connectionId, "OPEN");
+        } catch (RuntimeException exception) {
+            // The account snapshot remains useful when the broker order surface is unavailable.
+            return PortfolioStateBuilder.build(portfolio, null);
+        }
+        return PortfolioStateBuilder.build(portfolio, openOrders);
     }
 
     public List<ConnectorResponse.Order> orders(UUID userId, UUID connectionId, String rawGroup) {
@@ -121,6 +142,14 @@ public final class ConnectorService {
                 ConnectorResponse.BrokerOrderSide.valueOf(source.side().name()), source.currency().name(),
                 source.filledQuantity(), source.averageFilledPrice() == null ? source.limitPrice() : source.averageFilledPrice(),
                 source.commission(), source.tax(), source.filledAt(), null);
+    }
+
+    private static ConnectorResponse.PortfolioState unknownState() {
+        return new ConnectorResponse.PortfolioState(
+                null, null, null, null, null, null, null, null,
+                true, "INITIAL_SYNC_FAILED", true,
+                List.of("ACCOUNT", "CASH", "POSITIONS", "OPEN_ORDERS"),
+                List.of("PORTFOLIO_STATE"));
     }
 
     private static BrokerOrderGroup parseGroup(String raw) {

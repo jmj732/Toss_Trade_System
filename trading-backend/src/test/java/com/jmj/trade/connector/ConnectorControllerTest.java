@@ -43,6 +43,26 @@ class ConnectorControllerTest {
     }
 
     @Test
+    void portfolioStateRouteReturnsCalculationReadyState() throws Exception {
+        var service = mock(ConnectorService.class);
+        when(service.portfolioState(USER, CONNECTION)).thenReturn(new ConnectorResponse.PortfolioState(
+                Instant.parse("2026-09-13T00:00:00Z"), "USD",
+                new ConnectorResponse.StateAccount(new BigDecimal("1000"), new BigDecimal("100"), new BigDecimal("10")),
+                List.of(), List.of(), new ConnectorResponse.Risk(new BigDecimal("0"), new BigDecimal("90"), new BigDecimal("10")),
+                false, null, false, List.of(), List.of()));
+        MockMvc mvc = standaloneSetup(new ConnectorController(service)).build();
+
+        mvc.perform(get("/api/v1/connector/portfolio/state")
+                        .principal(authentication()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.asOf").value("2026-09-13T00:00:00Z"))
+                .andExpect(jsonPath("$.account.totalValue").value(1000))
+                .andExpect(jsonPath("$.risk.cashPct").value(10));
+
+        verify(service).portfolioState(USER, CONNECTION);
+    }
+
+    @Test
     void ordersAndFillsRoutesUseBoundConnection() throws Exception {
         var service = mock(ConnectorService.class);
         when(service.orders(USER, CONNECTION, "OPEN")).thenReturn(List.of());
