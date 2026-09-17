@@ -23,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ConnectorMcpOAuthService {
 
     public static final String READ_SCOPE = "connector:read";
+    public static final String TRADE_SCOPE = "connector:trade";
     public static final String RESOURCE_PATH = "/api/v1/connector/mcp";
     public static final String AUTHORIZE_PATH = "/api/v1/connector/oauth/authorize";
     public static final String TOKEN_PATH = "/api/v1/connector/oauth/token";
@@ -115,11 +116,13 @@ public final class ConnectorMcpOAuthService {
             codes.remove(code);
         }
 
-        var issued = keys.issue(
-                authorization.userId(),
-                authorization.connectionId(),
-                clock.instant().plus(ACCESS_TOKEN_TTL));
-        return new TokenResponse(issued.apiKey(), "Bearer", ACCESS_TOKEN_TTL.toSeconds(), READ_SCOPE);
+        var scope = normalizedScope(authorization.scope());
+        var issued = TRADE_SCOPE.equals(scope)
+                ? keys.issue(authorization.userId(), authorization.connectionId(),
+                        clock.instant().plus(ACCESS_TOKEN_TTL), scope)
+                : keys.issue(authorization.userId(), authorization.connectionId(),
+                        clock.instant().plus(ACCESS_TOKEN_TTL));
+        return new TokenResponse(issued.apiKey(), "Bearer", ACCESS_TOKEN_TTL.toSeconds(), scope);
     }
 
     public boolean isContinuation(String returnTo) {
@@ -155,6 +158,7 @@ public final class ConnectorMcpOAuthService {
                 userId,
                 active.getFirst().id(),
                 request.codeChallenge(),
+                normalizedScope(request.scope()),
                 clock.instant().plus(AUTHORIZATION_CODE_TTL)));
         trimExpiredCodes();
         return errorOrCodeRedirect(request.redirectUri(), code, request.state());
@@ -196,9 +200,8 @@ public final class ConnectorMcpOAuthService {
         if (!"S256".equals(request.codeChallengeMethod())) {
             throw oauthError("invalid_request", "code_challenge_method=S256 is required", request);
         }
-        if (request.scope() != null && !request.scope().isBlank()
-                && !READ_SCOPE.equals(request.scope().trim())) {
-            throw oauthError("invalid_scope", "only connector:read is supported", request);
+        if (request.scope() != null && !request.scope().isBlank() && !supportedScope(request.scope())) {
+            throw oauthError("invalid_scope", "only connector:read or connector:trade is supported", request);
         }
     }
 
@@ -285,6 +288,19 @@ public final class ConnectorMcpOAuthService {
                 .toUriString();
     }
 
+    private static String normalizedScope(String scope) {
+        if (scope == null || scope.isBlank()) return READ_SCOPE;
+        return java.util.Arrays.stream(scope.trim().split("\\s+"))
+                .anyMatch(TRADE_SCOPE::equals) ? TRADE_SCOPE : READ_SCOPE;
+    }
+
+    private static boolean supportedScope(String scope) {
+        for (var token : scope.trim().split("\\s+")) {
+            if (!READ_SCOPE.equals(token) && !TRADE_SCOPE.equals(token)) return false;
+        }
+        return true;
+    }
+
     private static String errorOrCodeRedirect(String redirectUri, String code, String state) {
         var builder = UriComponentsBuilder.fromUriString(redirectUri)
                 .queryParam("code", code);
@@ -362,6 +378,7 @@ public final class ConnectorMcpOAuthService {
             UUID userId,
             UUID connectionId,
             String codeChallenge,
+            String scope,
             Instant expiresAt
     ) {
     }

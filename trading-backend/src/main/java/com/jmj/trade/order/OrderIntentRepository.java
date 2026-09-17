@@ -22,4 +22,12 @@ public interface OrderIntentRepository extends JpaRepository<OrderIntent, UUID> 
                and intent.brokerConnectionId = :connectionId
             """)
     Optional<OrderIntent> findOwnedByIdForUpdate(UUID id, UUID userId, UUID connectionId);
+
+    @Query("""
+            select intent from OrderIntent intent
+             where intent.id = :id
+               and intent.userId = :userId
+               and intent.brokerConnectionId = :connectionId
+            """)
+    Optional<OrderIntent> findOwnedById(UUID id, UUID userId, UUID connectionId);
 }

@@ -19,6 +19,8 @@ public final class ConnectorApiKeyService {
 
     private static final String RAW_PREFIX = "ckey_";
     private static final int DISPLAY_PREFIX_LENGTH = 13;
+    public static final String READ_SCOPE = "connector:read";
+    public static final String TRADE_SCOPE = "connector:trade";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -38,7 +40,12 @@ public final class ConnectorApiKeyService {
     }
 
     public IssuedKey issue(UUID userId, UUID connectionId, Instant expiresAt) {
+        return issue(userId, connectionId, expiresAt, READ_SCOPE);
+    }
+
+    public IssuedKey issue(UUID userId, UUID connectionId, Instant expiresAt, String scope) {
         requireIds(userId, connectionId);
+        requireScope(scope);
         if (expiresAt != null && !expiresAt.isAfter(clock.instant())) {
             throw new ApiKeyException(Code.INVALID_INPUT);
         }
@@ -54,16 +61,16 @@ public final class ConnectorApiKeyService {
             var id = UUID.randomUUID();
             jdbc.update("""
                     INSERT INTO connector_api_keys
-                        (id, user_id, connection_id, key_hash, key_prefix, status, created_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP, ?)
+                        (id, user_id, connection_id, key_hash, key_prefix, scope, status, created_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP, ?)
                     """, id, userId, connectionId, hash(raw), raw.substring(0, DISPLAY_PREFIX_LENGTH),
-                    expiresAt == null ? null : OffsetDateTime.ofInstant(expiresAt, java.time.ZoneOffset.UTC));
+                    scope, expiresAt == null ? null : OffsetDateTime.ofInstant(expiresAt, java.time.ZoneOffset.UTC));
             var key = jdbc.query("""
                     SELECT id, connection_id, key_prefix, status, created_at, last_used_at, revoked_at, expires_at
                       FROM connector_api_keys WHERE id = ?
                     """, ConnectorApiKeyService::view, id).getFirst();
             return new IssuedKey(key.id(), raw, key.connectionId(), key.prefix(), key.status(),
-                    key.createdAt(), key.expiresAt());
+                    key.createdAt(), key.expiresAt(), scope);
         });
     }
 
@@ -92,17 +99,17 @@ public final class ConnectorApiKeyService {
             return Optional.empty();
         }
         return jdbc.query("""
-                SELECT api_key.id, api_key.user_id, api_key.connection_id, api_key.key_prefix, api_key.expires_at,
+                SELECT api_key.id, api_key.user_id, api_key.connection_id, api_key.key_prefix, api_key.scope, api_key.expires_at,
                        api_key.expires_at IS NOT NULL AND api_key.expires_at <= CURRENT_TIMESTAMP AS expired
                   FROM connector_api_keys api_key
                   JOIN broker_connections broker
                     ON broker.id = api_key.connection_id AND broker.user_id = api_key.user_id
-                 WHERE api_key.key_hash = ? AND api_key.status IN ('ACTIVE', 'EXPIRED')
+                WHERE api_key.key_hash = ? AND api_key.status IN ('ACTIVE', 'EXPIRED')
                    AND broker.status = 'ACTIVE' AND broker.deleted_at IS NULL
                 """, (rs, row) -> new AuthenticatedKey(
                 rs.getObject("id", UUID.class), rs.getObject("user_id", UUID.class),
                 rs.getObject("connection_id", UUID.class), rs.getString("key_prefix"),
-                instant(rs, "expires_at"), rs.getBoolean("expired")), hash(rawKey))
+                instant(rs, "expires_at"), rs.getBoolean("expired"), rs.getString("scope")), hash(rawKey))
                 .stream().findFirst();
     }
 
@@ -146,20 +153,36 @@ public final class ConnectorApiKeyService {
         if (userId == null || connectionId == null) throw new ApiKeyException(Code.INVALID_INPUT);
     }
 
+    private static void requireScope(String scope) {
+        if (!READ_SCOPE.equals(scope) && !TRADE_SCOPE.equals(scope)) {
+            throw new ApiKeyException(Code.INVALID_INPUT);
+        }
+    }
+
     public enum Status { ACTIVE, EXPIRED, REVOKED }
 
     public record KeyView(UUID id, UUID connectionId, String prefix, Status status,
                           Instant createdAt, Instant lastUsedAt, Instant revokedAt, Instant expiresAt) { }
 
     public record IssuedKey(UUID id, String apiKey, UUID connectionId, String prefix,
-                            Status status, Instant createdAt, Instant expiresAt) { }
+                            Status status, Instant createdAt, Instant expiresAt, String scope) {
+        public IssuedKey(UUID id, String apiKey, UUID connectionId, String prefix,
+                         Status status, Instant createdAt, Instant expiresAt) {
+            this(id, apiKey, connectionId, prefix, status, createdAt, expiresAt, READ_SCOPE);
+        }
+    }
 
     public record AuthenticatedKey(UUID id, UUID userId, UUID connectionId,
-                                   String prefix, Instant expiresAt, boolean expired) {
+                                   String prefix, Instant expiresAt, boolean expired, String scope) {
+        public AuthenticatedKey(UUID id, UUID userId, UUID connectionId,
+                                String prefix, Instant expiresAt, boolean expired) {
+            this(id, userId, connectionId, prefix, expiresAt, expired, READ_SCOPE);
+        }
         public AuthenticatedKey(UUID id, UUID userId, UUID connectionId, Instant expiresAt) {
-            this(id, userId, connectionId, "", expiresAt, false);
+            this(id, userId, connectionId, "", expiresAt, false, READ_SCOPE);
         }
         public boolean expired() { return expired; }
+        public boolean canTrade() { return TRADE_SCOPE.equals(scope); }
     }
 
     public enum Code { INVALID_INPUT, CONNECTION_NOT_FOUND, NOT_FOUND }

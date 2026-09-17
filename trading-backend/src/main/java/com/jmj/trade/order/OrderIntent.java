@@ -50,6 +50,9 @@ public class OrderIntent {
     @Column(name = "limit_price", precision = 28, scale = 10)
     private BigDecimal limitPrice;
 
+    @Column(name = "proposal_reference_price", precision = 28, scale = 10)
+    private BigDecimal proposalReferencePrice;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "trading_currency", length = 3)
     private Currency tradingCurrency;
@@ -195,6 +198,16 @@ public class OrderIntent {
         }
         this.createdAt = createdAt;
         this.expiresAt = expiresAt;
+    }
+
+    public void stampProposalReferencePrice(BigDecimal referencePrice) {
+        if (status != OrderIntentStatus.PROPOSED) {
+            throw new IllegalStateException("proposal reference price requires PROPOSED intent");
+        }
+        if (referencePrice == null || referencePrice.signum() <= 0) {
+            throw new IllegalArgumentException("referencePrice must be positive");
+        }
+        this.proposalReferencePrice = referencePrice;
     }
 
     public void approve() {
@@ -385,6 +398,10 @@ public class OrderIntent {
 
     public BigDecimal getLimitPrice() {
         return limitPrice;
+    }
+
+    public BigDecimal getProposalReferencePrice() {
+        return proposalReferencePrice;
     }
 
     public Currency getTradingCurrency() {

@@ -116,6 +116,7 @@ class BeanInventoryCredentialedProfileTest extends PostgresIntegrationTest {
             "marketEventIngestionLease : com.jmj.trade.intelligence.ingestion.MarketEventIngestionLease",
             "marketEventIngestionService : com.jmj.trade.intelligence.ingestion.MarketEventIngestionService",
             "marketEventProviderRegistry : com.jmj.trade.intelligence.ingestion.MarketEventProviderRegistry",
+            "mcpOrderExecutionService : com.jmj.trade.order.McpOrderExecutionService",
             "notificationController : com.jmj.trade.notification.NotificationController",
             "notificationOutboxProcessor : com.jmj.trade.notification.NotificationOutboxProcessor",
             "notificationOutboxWriter : com.jmj.trade.notification.NotificationOutboxWriter",
