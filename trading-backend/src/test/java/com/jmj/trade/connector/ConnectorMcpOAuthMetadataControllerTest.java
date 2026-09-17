@@ -28,10 +28,10 @@ class ConnectorMcpOAuthMetadataControllerTest {
 
     @Test
     void advertisesProtectedResourceAndAuthorizationServerMetadataAtWellKnownUris() throws Exception {
-        mvc.perform(get("/.well-known/oauth-protected-resource/api/v1/connector/mcp/sse"))
+        mvc.perform(get("/.well-known/oauth-protected-resource/api/v1/connector/mcp"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.resource")
-                        .value("https://dashboard.example/api/v1/connector/mcp/sse"))
+                        .value("https://dashboard.example/api/v1/connector/mcp"))
                 .andExpect(jsonPath("$.authorization_servers[0]")
                         .value("https://dashboard.example/.well-known/oauth-authorization-server"));
 

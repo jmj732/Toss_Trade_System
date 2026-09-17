@@ -23,7 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ConnectorMcpOAuthService {
 
     public static final String READ_SCOPE = "connector:read";
-    public static final String RESOURCE_PATH = "/api/v1/connector/mcp/sse";
+    public static final String RESOURCE_PATH = "/api/v1/connector/mcp";
     public static final String AUTHORIZE_PATH = "/api/v1/connector/oauth/authorize";
     public static final String TOKEN_PATH = "/api/v1/connector/oauth/token";
     public static final String REGISTER_PATH = "/api/v1/connector/oauth/register";

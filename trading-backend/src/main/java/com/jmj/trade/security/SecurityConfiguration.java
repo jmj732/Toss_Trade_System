@@ -71,8 +71,7 @@ public class SecurityConfiguration {
         http.logout(logout -> logout.disable());
         http.exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint((request, response, ignored) -> {
-                    if (mcpOAuth != null
-                            && request.getRequestURI().startsWith("/api/v1/connector/mcp/")) {
+                    if (mcpOAuth != null && isMcpRequest(request.getRequestURI())) {
                         response.setHeader("WWW-Authenticate",
                                 "Bearer resource_metadata=\""
                                         + mcpOAuth.publicUrl("/.well-known/oauth-protected-resource"
@@ -98,6 +97,11 @@ public class SecurityConfiguration {
                             userInfo.oidcUserService(oidcUsers.getObject())));
         }
         return http.build();
+    }
+
+    private static boolean isMcpRequest(String path) {
+        return "/api/v1/connector/mcp".equals(path)
+                || path.startsWith("/api/v1/connector/mcp/");
     }
 
     static Consumer<org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest.Builder>

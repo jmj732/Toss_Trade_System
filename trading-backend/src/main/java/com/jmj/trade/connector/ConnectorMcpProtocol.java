@@ -44,13 +44,23 @@ public final class ConnectorMcpProtocol {
 
     private ObjectNode initialize(ObjectNode request) {
         var result = objectMapper.createObjectNode();
-        result.put("protocolVersion", PROTOCOL_VERSION);
-        result.set("capabilities", objectMapper.createObjectNode().set(
-                "tools", objectMapper.createObjectNode()));
+        result.put("protocolVersion", negotiatedProtocolVersion(request));
+        var capabilities = objectMapper.createObjectNode();
+        capabilities.set("tools", objectMapper.createObjectNode().put("listChanged", false));
+        result.set("capabilities", capabilities);
         result.set("serverInfo", objectMapper.createObjectNode()
                 .put("name", "investment-os-toss")
                 .put("version", "1.0.0"));
         return result(request, result);
+    }
+
+    private String negotiatedProtocolVersion(ObjectNode request) {
+        var requested = request.path("params").path("protocolVersion").asText(null);
+        if (requested == null) return PROTOCOL_VERSION;
+        return switch (requested) {
+            case "2025-06-18", "2025-03-26", "2024-11-05" -> requested;
+            default -> PROTOCOL_VERSION;
+        };
     }
 
     private ObjectNode toolsList(ObjectNode request) {
@@ -93,6 +103,7 @@ public final class ConnectorMcpProtocol {
 
     private ObjectNode toolResult(ObjectNode request, Object value) {
         var payload = objectMapper.createObjectNode();
+        payload.put("isError", false);
         var content = payload.putArray("content");
         var text = objectMapper.writeValueAsString(value);
         content.addObject().put("type", "text").put("text", text);

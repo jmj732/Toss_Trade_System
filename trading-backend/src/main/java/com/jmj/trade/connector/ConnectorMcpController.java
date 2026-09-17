@@ -27,10 +27,32 @@ public final class ConnectorMcpController {
     private static final String MESSAGE_PATH = "/api/v1/connector/mcp/messages";
 
     private final ConnectorMcpProtocol protocol;
+    private final String publicDashboardUrl;
     private final ConcurrentMap<String, Session> sessions = new ConcurrentHashMap<>();
 
-    public ConnectorMcpController(ConnectorMcpProtocol protocol) {
+    public ConnectorMcpController(
+            ConnectorMcpProtocol protocol,
+            @org.springframework.beans.factory.annotation.Value("${public.dashboard-url:http://localhost:3000}")
+            String publicDashboardUrl
+    ) {
         this.protocol = protocol;
+        this.publicDashboardUrl = trimTrailingSlash(publicDashboardUrl);
+    }
+
+    /**
+     * Streamable HTTP transport used by current ChatGPT MCP connections.
+     * The connector key binds every request to the user's active broker connection,
+     * so the endpoint can remain stateless and does not need an MCP session id.
+     */
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    ResponseEntity<ObjectNode> mcp(
+            @RequestBody ObjectNode request,
+            Authentication authentication
+    ) {
+        var key = key(authentication);
+        var response = protocol.handle(request, key.userId(), key.connectionId());
+        if (response == null) return ResponseEntity.accepted().build();
+        return ResponseEntity.ok(response);
     }
 
     @GetMapping(value = "/sse", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -47,7 +69,7 @@ public final class ConnectorMcpController {
         try {
             emitter.send(SseEmitter.event()
                     .name("endpoint")
-                    .data(MESSAGE_PATH + "?sessionId=" + sessionId));
+                    .data(publicDashboardUrl + MESSAGE_PATH + "?sessionId=" + sessionId));
         } catch (IOException exception) {
             cleanup.run();
             emitter.completeWithError(exception);
@@ -90,5 +112,11 @@ public final class ConnectorMcpController {
         boolean belongsTo(ConnectorApiKeyService.AuthenticatedKey key) {
             return userId.equals(key.userId()) && connectionId.equals(key.connectionId());
         }
+    }
+
+    private static String trimTrailingSlash(String value) {
+        var normalized = value == null ? "" : value.trim();
+        while (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
+        return normalized;
     }
 }

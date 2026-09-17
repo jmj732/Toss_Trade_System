@@ -29,11 +29,11 @@ and the one-time connector key. Do not put the key in chat, Git, or logs.
 
 ## ChatGPT MCP app
 
-The MCP app exposes the same read-only surface through the SSE transport used
-by the ChatGPT custom-app setup screen:
+The MCP app exposes the same read-only surface through the Streamable HTTP
+transport used by current ChatGPT custom-app connections:
 
 ```text
-https://web-dashboard-phi-lac.vercel.app/api/v1/connector/mcp/sse
+https://web-dashboard-phi-lac.vercel.app/api/v1/connector/mcp
 ```
 
 In the app setup dialog, select `OAuth` (or `혼합` if the UI presents both

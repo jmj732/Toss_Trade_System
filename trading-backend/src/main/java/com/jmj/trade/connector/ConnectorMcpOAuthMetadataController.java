@@ -22,6 +22,7 @@ final class ConnectorMcpOAuthMetadataController {
 
     @GetMapping(value = {
             "/oauth-protected-resource",
+            "/oauth-protected-resource/api/v1/connector/mcp",
             "/oauth-protected-resource/api/v1/connector/mcp/sse"
     }, produces = MediaType.APPLICATION_JSON_VALUE)
     Map<String, Object> protectedResource() {
