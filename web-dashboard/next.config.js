@@ -9,7 +9,8 @@ export default {
     return [
       { source: "/api/:path*", destination: `${backend}/api/:path*` },
       { source: "/oauth2/:path*", destination: `${backend}/oauth2/:path*` },
-      { source: "/login/oauth2/:path*", destination: `${backend}/login/oauth2/:path*` }
+      { source: "/login/oauth2/:path*", destination: `${backend}/login/oauth2/:path*` },
+      { source: "/.well-known/:path*", destination: `${backend}/.well-known/:path*` }
     ];
   }
 };

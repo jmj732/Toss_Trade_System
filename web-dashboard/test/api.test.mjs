@@ -564,6 +564,10 @@ test("proxies only the session API and OIDC lifecycle to Spring", async () => {
       source: "/login/oauth2/:path*",
       destination: "http://localhost:8080/login/oauth2/:path*"
     },
+    {
+      source: "/.well-known/:path*",
+      destination: "http://localhost:8080/.well-known/:path*"
+    },
   ]);
 });
 
