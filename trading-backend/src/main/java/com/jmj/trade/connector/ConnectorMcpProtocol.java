@@ -3,6 +3,7 @@ package com.jmj.trade.connector;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.jmj.trade.order.McpOrderExecutionService;
+import com.jmj.trade.order.LiveOrderActivationException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
@@ -192,12 +193,20 @@ public final class ConnectorMcpProtocol {
                     .log("MCP tool completed");
             return response;
         } catch (RuntimeException exception) {
-            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+            var builder = LOG.atWarn().addKeyValue("operation", "mcp_tool")
                     .addKeyValue("tool", name)
                     .addKeyValue("outcome", "failure")
                     .addKeyValue("error_type", exception.getClass().getSimpleName())
-                    .addKeyValue("duration_ms", (System.nanoTime() - started) / 1_000_000)
-                    .log("MCP tool failed");
+                    .addKeyValue("duration_ms", (System.nanoTime() - started) / 1_000_000);
+            if (exception instanceof LiveOrderActivationException activationException) {
+                builder.addKeyValue("error_code", activationException.code().name())
+                        .addKeyValue("reason", activationException.getMessage());
+            }
+            builder.log("MCP tool failed");
+            if (exception instanceof LiveOrderActivationException activationException) {
+                return toolError(request, "Order blocked [" + activationException.code().name() + "]: "
+                        + activationException.getMessage());
+            }
             return toolError(request, "Connector tool failed");
         }
     }

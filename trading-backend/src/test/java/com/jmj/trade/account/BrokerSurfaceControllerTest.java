@@ -43,6 +43,22 @@ class BrokerSurfaceControllerTest {
     }
 
     @Test
+    void accountIdentityRouteReturnsTheProviderAccountSequence() throws Exception {
+        var surfaces = mock(BrokerSurfaceService.class);
+        when(surfaces.accountIdentity(USER, CONNECTION)).thenReturn(BrokerSurfaceResponse.available(
+                new BrokerSurfaceResponse.AccountIdentityView("7", "GENERAL", "*******5697")));
+        MockMvc mvc = standaloneSetup(new BrokerSurfaceController(surfaces)).build();
+
+        mvc.perform(get("/api/v1/broker-connections/{connectionId}/account-identity", CONNECTION)
+                        .principal(() -> USER.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("AVAILABLE"))
+                .andExpect(jsonPath("$.data.accountSeq").value("7"))
+                .andExpect(jsonPath("$.data.displayAccountNumber").value("*******5697"));
+        verify(surfaces).accountIdentity(USER, CONNECTION);
+    }
+
+    @Test
     void candlesRouteReturnsTheProviderEnvelope() throws Exception {
         var surfaces = mock(BrokerSurfaceService.class);
         when(surfaces.candles(USER, CONNECTION, "AAPL", "1d", 100, null, true))

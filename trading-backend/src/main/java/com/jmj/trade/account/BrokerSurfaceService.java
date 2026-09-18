@@ -166,6 +166,31 @@ public final class BrokerSurfaceService {
         }
     }
 
+    public BrokerSurfaceResponse<BrokerSurfaceResponse.AccountIdentityView> accountIdentity(
+            UUID userId, UUID connectionId) {
+        requireReady(userId, connectionId);
+        try {
+            var response = broker.getAccounts(new BrokerConnectionRef(connectionId));
+            if (response.value() == null || response.value().size() != 1) {
+                return BrokerSurfaceResponse.unavailable("ACCOUNT_COUNT_UNSUPPORTED",
+                        List.of(provenance("/api/v1/accounts", null, null, response.metadata().observedAt())));
+            }
+            var account = response.value().getFirst().account();
+            if (account == null || account.brokerAccountId().isBlank()
+                    || !account.brokerAccountId().matches("[0-9]+")) {
+                return BrokerSurfaceResponse.unavailable("PROVIDER_MALFORMED",
+                        List.of(provenance("/api/v1/accounts", null, null, response.metadata().observedAt())));
+            }
+            return BrokerSurfaceResponse.available(new BrokerSurfaceResponse.AccountIdentityView(
+                    account.brokerAccountId(), account.accountType(), account.displayAccountNumber()),
+                    List.of(provenance("/api/v1/accounts", null, null, response.metadata().observedAt())));
+        } catch (BrokerException exception) {
+            return failure(exception, "/api/v1/accounts");
+        } catch (RuntimeException exception) {
+            return failure(BrokerErrorCategory.CONTRACT, "/api/v1/accounts");
+        }
+    }
+
     public <T> BrokerSurfaceResponse<T> unsupported(UUID userId, UUID connectionId) {
         requireReady(userId, connectionId);
         return BrokerSurfaceResponse.unavailable("PROVIDER_UNSUPPORTED");

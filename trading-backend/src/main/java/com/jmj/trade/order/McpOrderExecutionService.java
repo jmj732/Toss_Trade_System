@@ -3,6 +3,7 @@ package com.jmj.trade.order;
 import com.jmj.trade.account.FreshPortfolioReadService;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAdapter;
+import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerConnectionRef;
 import com.jmj.trade.broker.BrokerOrderGroup;
 import com.jmj.trade.broker.BrokerOrderLifecycle;
@@ -165,7 +166,9 @@ public final class McpOrderExecutionService {
     public OrderResult getOrder(UUID userId, UUID connectionId, String brokerOrderId) {
         requireIds(userId, connectionId);
         if (brokerOrderId == null || brokerOrderId.isBlank()) throw blocked("brokerOrderId is required");
-        var account = safety.resolve(userId, connectionId, accountId(userId, connectionId));
+        // Order lookup is read-only. The live allowlist gates prepare/submit/cancel, but must not
+        // hide the broker's current status for an already known connected account.
+        var account = connectedAccount(connectionId);
         var response = orders.getOrder(account, brokerOrderId);
         return response == null || response.value() == null
                 ? new OrderResult(brokerOrderId, "UNKNOWN")
@@ -206,6 +209,16 @@ public final class McpOrderExecutionService {
                 (rs, row) -> rs.getObject("broker_account_id", UUID.class), userId, connectionId);
         if (ids.size() != 1) throw blocked("live account mapping is missing or ambiguous");
         return ids.getFirst();
+    }
+
+    private BrokerAccountRef connectedAccount(UUID connectionId) {
+        var response = quotes.getAccounts(new BrokerConnectionRef(connectionId));
+        var accounts = response == null ? null : response.value();
+        if (accounts == null || accounts.size() != 1 || accounts.getFirst() == null
+                || accounts.getFirst().account() == null) {
+            throw blocked("exactly one broker account is required");
+        }
+        return accounts.getFirst().account();
     }
 
     private Quote quote(UUID connectionId, String symbol) {

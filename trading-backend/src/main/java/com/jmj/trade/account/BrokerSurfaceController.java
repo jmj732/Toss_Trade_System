@@ -35,6 +35,14 @@ public final class BrokerSurfaceController {
         return surfaces.buyingPower(userId(principal), connectionId, currency);
     }
 
+    @GetMapping("/account-identity")
+    BrokerSurfaceResponse<BrokerSurfaceResponse.AccountIdentityView> accountIdentity(
+            Principal principal,
+            @PathVariable UUID connectionId
+    ) {
+        return surfaces.accountIdentity(userId(principal), connectionId);
+    }
+
     @GetMapping("/prices")
     BrokerSurfaceResponse<List<BrokerSurfaceResponse.PriceView>> prices(
             Principal principal,
