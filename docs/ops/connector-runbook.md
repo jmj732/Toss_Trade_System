@@ -1,6 +1,8 @@
 # Investment OS connector
 
-Read-only Toss account access for a Custom GPT Action or ChatGPT MCP app.
+Toss account access for a Custom GPT Action or ChatGPT MCP app. The default
+connector scope is read-only; trade tools require an explicit
+`connector:trade` scope.
 
 ## Issue a key
 
@@ -29,7 +31,7 @@ and the one-time connector key. Do not put the key in chat, Git, or logs.
 
 ## ChatGPT MCP app
 
-The MCP app exposes the same read-only surface through the Streamable HTTP
+The MCP app exposes the connector surface through the Streamable HTTP
 transport used by current ChatGPT custom-app connections:
 
 ```text
@@ -40,17 +42,25 @@ In the app setup dialog, select `OAuth` (or `혼합` if the UI presents both
 choices). The server publishes MCP protected-resource and authorization-server
 metadata, then redirects the browser through the existing OIDC login. OAuth
 authorization requires exactly one active Toss connection for the signed-in
-user; it issues a one-hour, read-only bearer backed by the existing connector
-key lifecycle. No connector key needs to be copied into ChatGPT.
+user. No connector key needs to be copied into ChatGPT.
+
+The requested OAuth scope determines the MCP tools:
+
+- `connector:read`: `get_portfolio`, `get_orders`, and `get_recent_fills`.
+- `connector:trade`: the three read tools plus `prepare_order`,
+  `submit_order`, `cancel_order`, and `get_order`.
+
+If `REAL_ORDER_ENABLED=false`, trade-scoped connections still show the four
+trade tools so the capability is discoverable, but calls return an explicit
+disabled error and no broker order is sent. Reconnect the MCP app after
+changing its requested scope so the client receives a new token and rescans
+the tool list.
 
 After tool scanning, test with prompts such as:
 
 - `내 Toss 포트폴리오를 조회해줘.`
 - `열린 주문을 보여줘.`
 - `2026-09-01T00:00:00Z 이후 체결 내역을 보여줘.`
-
-Only `get_portfolio`, `get_orders`, and `get_recent_fills` are exposed. No order
-creation, cancellation, or other write tool is available.
 
 ## Read surface
 
@@ -71,9 +81,10 @@ integration. No separate cash-balance field or second cash ledger is exposed.
 - `stale=true` or `partial=true`: do not size or submit; request a resync/review.
 - `unknownFields` and `missingSections` are authoritative uncertainty signals.
 - `currency` is the calculation currency (USD first, then KRW); values are not silently FX-converted.
-- Connector keys can authenticate the read-only REST surface and MCP SSE
-  messages under `/api/v1/connector/**` and carry
-  `SCOPE_CONNECTOR_READ`; they cannot call order mutation APIs.
+- Connector keys can authenticate the REST surface and MCP messages under
+  `/api/v1/connector/**`. Every key carries `SCOPE_CONNECTOR_READ`; only a key
+  with `connector:trade` also carries `SCOPE_CONNECTOR_TRADE` and can call
+  trade tools.
 - Keys do not expire by default. Revoke with
   `DELETE /api/v1/connector-api-keys/{id}` using recent human authentication;
   rotate/revoke if the key may have leaked.
