@@ -32,6 +32,23 @@ test("renders secret-free credential and lifecycle controls", () => {
   assert.doesNotMatch(html, /client-secret-canary|client-id-canary/);
 });
 
+test("renders provider account sequence only when the owner lookup succeeded", () => {
+  const html = renderToStaticMarkup(createElement(BrokerOnboarding, {
+    connection: { status: "ACTIVE" },
+    connectionId: "connection-1",
+    accountIdentity: { status: "AVAILABLE", data: {
+      accountSeq: "1", accountType: "GENERAL", displayAccountNumber: "*******5697"
+    } },
+    busyAction: null,
+    onCredentials() {},
+    onCommand() {}
+  }));
+
+  assert.match(html, /Toss accountSeq/);
+  assert.match(html, />1</);
+  assert.doesNotMatch(html, /client-secret|access-token/);
+});
+
 test("leads with account status and keeps credentials and destructive actions secondary", () => {
   const html = renderToStaticMarkup(createElement(BrokerOnboarding, {
     connection: {

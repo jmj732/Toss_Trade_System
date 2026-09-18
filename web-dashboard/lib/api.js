@@ -300,6 +300,11 @@ export function verifyBrokerConnection(connectionId, fetcher = fetch) {
     fetcher);
 }
 
+export function loadBrokerAccountIdentity(connectionId, fetcher = fetch) {
+  return readEvent(
+    `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/account-identity`, fetcher);
+}
+
 export function syncPortfolio(connectionId, fetcher = fetch) {
   return brokerCommand(
     `/api/v1/broker-connections/${encodeURIComponent(connectionId)}/portfolio-syncs`,

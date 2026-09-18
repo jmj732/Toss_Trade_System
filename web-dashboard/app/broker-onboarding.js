@@ -37,6 +37,7 @@ function CredentialForm({ title, action, disabled, onCredentials }) {
 export function BrokerOnboarding({
   connection,
   connectionId,
+  accountIdentity,
   busyAction,
   onCredentials,
   onCommand
@@ -64,7 +65,10 @@ export function BrokerOnboarding({
         hasConnection ? h("div", null, h("dt", null, "버전"), h("dd", null,
           connection?.credentialRevision ?? "—")) : null,
         hasConnection ? h("div", null, h("dt", null, "최근 확인"), h("dd", null,
-          connection?.lastValidatedAt ?? "아직 확인 전")) : null)),
+          connection?.lastValidatedAt ?? "아직 확인 전")) : null,
+        accountIdentity?.status === "AVAILABLE" && accountIdentity.data?.accountSeq
+          ? h("div", null, h("dt", null, "Toss accountSeq"),
+            h("dd", null, accountIdentity.data.accountSeq)) : null)),
     hasConnection ? h("section", { className: "onboarding-command-section" },
       h("h3", null, "계좌 작업"),
       h("div", { className: "onboarding-actions" },
