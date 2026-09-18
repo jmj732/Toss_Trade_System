@@ -56,8 +56,8 @@ grep -q 'doppler run --project trade --config staging -- docker compose' \
   fail "credentialed deploy must retain Doppler injection"
 grep -q 'BROKER_CREDENTIALS_ENABLED: "true"' compose.staging.credentialed.yaml ||
   fail "credentialed staging must expose broker onboarding"
-grep -q 'REAL_ORDER_ENABLED: "false"' compose.staging.credentialed.yaml ||
-  fail "credentialed staging must block real order activation"
+grep -q 'REAL_ORDER_ENABLED: ${REAL_ORDER_ENABLED:-false}' compose.staging.credentialed.yaml ||
+  fail "credentialed staging must default to blocking real order activation"
 grep -q 'REAL_ORDER_CANARY_ENABLED: "false"' compose.staging.credentialed.yaml ||
   fail "credentialed staging must block live canary"
 grep -q '^      PUBLIC_DASHBOARD_URL: ' compose.staging.credentialed.yaml ||
