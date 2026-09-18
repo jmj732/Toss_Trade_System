@@ -47,7 +47,8 @@ public final class ConnectorMcpProtocol {
     }
 
     ObjectNode handle(ObjectNode request, UUID userId, UUID connectionId, boolean canTrade) {
-        canTrade = canTrade && tradeService != null;
+        var tradeScopeGranted = canTrade;
+        var liveExecutionAvailable = tradeScopeGranted && tradeService != null;
         if (request == null || !"2.0".equals(request.path("jsonrpc").asText(null))) {
             return error(request, -32600, "Invalid Request");
         }
@@ -56,29 +57,41 @@ public final class ConnectorMcpProtocol {
         if (method == null) return error(request, -32600, "Invalid Request");
 
         var response = switch (method) {
-            case "initialize" -> initialize(request, canTrade);
+            case "initialize" -> initialize(request, tradeScopeGranted, liveExecutionAvailable);
             case "notifications/initialized" -> null;
             case "ping" -> result(request, objectMapper.createObjectNode());
-            case "tools/list" -> toolsList(request, canTrade);
-            case "tools/call" -> toolsCall(request, userId, connectionId, canTrade);
+            case "tools/list" -> toolsList(request, tradeScopeGranted);
+            case "tools/call" -> toolsCall(request, userId, connectionId,
+                    tradeScopeGranted, liveExecutionAvailable);
             default -> error(request, -32601, "Method not found: " + method);
         };
         return request.has("id") ? response : null;
     }
 
-    private ObjectNode initialize(ObjectNode request, boolean canTrade) {
+    private ObjectNode initialize(ObjectNode request, boolean tradeScopeGranted, boolean liveExecutionAvailable) {
         var result = objectMapper.createObjectNode();
         result.put("protocolVersion", negotiatedProtocolVersion(request));
         var capabilities = objectMapper.createObjectNode();
         capabilities.set("tools", objectMapper.createObjectNode().put("listChanged", false));
         result.set("capabilities", capabilities);
-        result.put("instructions", canTrade
-                ? "Use read tools to inspect the authenticated Toss Invest account. Trade tools require an explicit prepare_order then submit_order approval flow; stale or partial data blocks submission."
-                : "Use these read-only tools to inspect the authenticated Toss Invest account. Treat stale or partial portfolio data as uncertain and never infer a trade from it.");
+        result.put("instructions", instructions(tradeScopeGranted, liveExecutionAvailable));
         result.set("serverInfo", objectMapper.createObjectNode()
                 .put("name", "investment-os-toss")
                 .put("version", "1.0.0"));
         return result(request, result);
+    }
+
+    private static String instructions(boolean tradeScopeGranted, boolean liveExecutionAvailable) {
+        if (!tradeScopeGranted) {
+            return "Use these read-only tools to inspect the authenticated Toss Invest account. "
+                    + "Treat stale or partial portfolio data as uncertain and never infer a trade from it.";
+        }
+        if (!liveExecutionAvailable) {
+            return "Trade tools are visible because connector:trade is granted, but live order execution "
+                    + "is disabled by server configuration. Calls will fail until REAL_ORDER_ENABLED=true.";
+        }
+        return "Use read tools to inspect the authenticated Toss Invest account. Trade tools require an explicit "
+                + "prepare_order then submit_order approval flow; stale or partial data blocks submission.";
     }
 
     private String negotiatedProtocolVersion(ObjectNode request) {
@@ -133,7 +146,8 @@ public final class ConnectorMcpProtocol {
         return result(request, result);
     }
 
-    private ObjectNode toolsCall(ObjectNode request, UUID userId, UUID connectionId, boolean canTrade) {
+    private ObjectNode toolsCall(ObjectNode request, UUID userId, UUID connectionId,
+                                 boolean tradeScopeGranted, boolean liveExecutionAvailable) {
         var params = request.path("params");
         var name = params.path("name").asText(null);
         if (name == null) return error(request, -32602, "Tool name is required");
@@ -147,20 +161,28 @@ public final class ConnectorMcpProtocol {
                         optionalText(arguments, "group", "OPEN"))));
                 case "get_recent_fills" -> toolResult(request, envelope("fills", service.fills(userId, connectionId,
                         optionalInstant(arguments, "since"))));
-                case "prepare_order" -> canTrade
-                        ? toolResult(request, tradeService.prepare(userId, connectionId, prepare(arguments)))
-                        : forbiddenTrade(request);
-                case "submit_order" -> canTrade
-                        ? toolResult(request, tradeService.submit(userId, connectionId,
-                                requiredText(arguments, "proposalId")))
-                        : forbiddenTrade(request);
-                case "cancel_order" -> canTrade
-                        ? toolResult(request, tradeService.cancel(userId, connectionId,
-                                requiredText(arguments, "brokerOrderId")))
-                        : forbiddenTrade(request);
-                case "get_order" -> canTrade
-                        ? toolResult(request, getOrderLookup(arguments, userId, connectionId))
-                        : forbiddenTrade(request);
+                case "prepare_order" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : !liveExecutionAvailable
+                        ? liveOrderExecutionDisabled(request)
+                        : toolResult(request, tradeService.prepare(userId, connectionId, prepare(arguments)));
+                case "submit_order" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : !liveExecutionAvailable
+                        ? liveOrderExecutionDisabled(request)
+                        : toolResult(request, tradeService.submit(userId, connectionId,
+                                requiredText(arguments, "proposalId")));
+                case "cancel_order" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : !liveExecutionAvailable
+                        ? liveOrderExecutionDisabled(request)
+                        : toolResult(request, tradeService.cancel(userId, connectionId,
+                                requiredText(arguments, "brokerOrderId")));
+                case "get_order" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : !liveExecutionAvailable
+                        ? liveOrderExecutionDisabled(request)
+                        : toolResult(request, getOrderLookup(arguments, userId, connectionId));
                 default -> error(request, -32601, "Tool not found: " + name);
             };
             LOG.atInfo().addKeyValue("operation", "mcp_tool")
@@ -377,6 +399,10 @@ public final class ConnectorMcpProtocol {
 
     private ObjectNode forbiddenTrade(ObjectNode request) {
         return toolError(request, "Connector trade scope required");
+    }
+
+    private ObjectNode liveOrderExecutionDisabled(ObjectNode request) {
+        return toolError(request, "Live order execution is disabled (REAL_ORDER_ENABLED=false)");
     }
 
     private ObjectNode result(ObjectNode request, JsonNode result) {
