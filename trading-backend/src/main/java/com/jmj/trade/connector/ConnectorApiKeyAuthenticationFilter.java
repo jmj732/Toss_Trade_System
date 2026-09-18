@@ -12,7 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.List;
+import java.util.ArrayList;
 
 public final class ConnectorApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
@@ -65,9 +65,13 @@ public final class ConnectorApiKeyAuthenticationFilter extends OncePerRequestFil
             error(response, HttpServletResponse.SC_UNAUTHORIZED, "CONNECTOR_UNAUTHORIZED");
             return;
         }
+        var authorities = new ArrayList<SimpleGrantedAuthority>();
+        authorities.add(new SimpleGrantedAuthority("SCOPE_CONNECTOR_READ"));
+        if (key.canTrade()) {
+            authorities.add(new SimpleGrantedAuthority("SCOPE_CONNECTOR_TRADE"));
+        }
         var authentication = new UsernamePasswordAuthenticationToken(
-                key.userId().toString(), null,
-                List.of(new SimpleGrantedAuthority("SCOPE_CONNECTOR_READ")));
+                key.userId().toString(), null, authorities);
         authentication.setDetails(key);
         SecurityContextHolder.getContext().setAuthentication(authentication);
         filterChain.doFilter(request, response);

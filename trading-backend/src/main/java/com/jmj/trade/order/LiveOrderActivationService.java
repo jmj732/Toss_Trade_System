@@ -85,6 +85,10 @@ public final class LiveOrderActivationService {
     }
 
     public UUID propose(UUID userId, Proposal proposal) {
+        return propose(userId, proposal, proposalTtl);
+    }
+
+    public UUID propose(UUID userId, Proposal proposal, Duration ttl) {
         requireId(userId, "userId");
         if (proposal == null || proposal.connectionId() == null || proposal.brokerAccountId() == null) {
             throw validation();
@@ -99,7 +103,10 @@ public final class LiveOrderActivationService {
                     id, proposal.brokerAccountId(), userId, proposal.connectionId(), proposal.side(), proposal.type(),
                     proposal.symbol(), proposal.quantity(), proposal.limitPrice(), proposal.currency());
             var createdAt = Instant.now();
-            intent.stampProposal(createdAt, createdAt.plus(proposalTtl));
+            if (ttl == null || ttl.isNegative() || ttl.isZero()) {
+                throw validation();
+            }
+            intent.stampProposal(createdAt, createdAt.plus(ttl));
             intents.saveAndFlush(intent);
             return id;
         }));
@@ -164,6 +171,48 @@ public final class LiveOrderActivationService {
         });
     }
 
+    /** Connector trade-scope approval: explicit MCP submit is the approval boundary. */
+    public void approveFromMcp(UUID userId, UUID orderIntentId, String actor) {
+        var target = ownedIntent(userId, orderIntentId);
+        if (target.getExecutionMode() != OrderExecutionMode.LIVE || target.getStatus() != OrderIntentStatus.PROPOSED) {
+            throw conflict();
+        }
+        var price = currentPrice(target);
+        var syncedPortfolio = portfolios.read(userId, target.getBrokerConnectionId());
+        transactions.execute(status -> {
+            var intent = intents.findOwnedByIdForUpdate(orderIntentId, userId, target.getBrokerConnectionId())
+                    .orElseThrow(() -> new LiveOrderActivationException(
+                            LiveOrderActivationException.Code.NOT_FOUND, "live order not found"));
+            if (intent.getExpiresAt() != null && !Instant.now().isBefore(intent.getExpiresAt())) {
+                throw new LiveOrderActivationException(LiveOrderActivationException.Code.PROPOSAL_EXPIRED,
+                        "live order proposal expired");
+            }
+            var decision = risk.approveLive(new PreTradeRiskEngine.ApprovalCommand(
+                    userId, target.getBrokerConnectionId(), orderIntentId, price, Instant.now(), actor),
+                    syncedPortfolio);
+            if (!decision.approved()) {
+                throw new LiveOrderActivationException(LiveOrderActivationException.Code.SAFETY_BLOCKED,
+                        decision.reasons().getFirst().name());
+            }
+            return null;
+        });
+    }
+
+    public void expireFromMcp(UUID userId, UUID orderIntentId, String actor) {
+        var target = ownedIntent(userId, orderIntentId);
+        transactions.execute(status -> {
+            var intent = intents.findOwnedByIdForUpdate(orderIntentId, userId, target.getBrokerConnectionId())
+                    .orElseThrow(() -> new LiveOrderActivationException(
+                            LiveOrderActivationException.Code.NOT_FOUND, "live order not found"));
+            if (intent.getStatus() == OrderIntentStatus.PROPOSED
+                    && intent.getExpiresAt() != null && !Instant.now().isBefore(intent.getExpiresAt())) {
+                intent.terminate(OrderIntentStatus.EXPIRED, "MCP_PROPOSAL_EXPIRED", Instant.now(), BigDecimal.ZERO);
+                intents.saveAndFlush(intent);
+            }
+            return null;
+        });
+    }
+
     public DispatchResult dispatch(UUID userId, UUID orderIntentId, String clientOrderId,
                                    String stepUpToken, String actor) {
         return dispatch(userId, orderIntentId, clientOrderId, stepUpToken, actor, null);
@@ -181,7 +230,37 @@ public final class LiveOrderActivationService {
         var price = currentPrice(intent, quoteMaxAge);
         var syncedPortfolio = portfolios.read(userId, intent.getBrokerConnectionId());
         var prepared = Objects.requireNonNull(transactions.execute(status -> prepare(
-                userId, orderIntentId, clientOrderId, stepUpToken, actor, price, syncedPortfolio)));
+                userId, orderIntentId, clientOrderId, stepUpToken, actor, price, syncedPortfolio, true)));
+        return dispatchPrepared(prepared, clientOrderId, actor);
+    }
+
+    /** Connector trade-scope dispatch. Step-up is replaced by the connector:trade authorization boundary. */
+    public DispatchResult dispatchFromMcp(UUID userId, UUID orderIntentId, String clientOrderId, String actor,
+                                         java.math.BigDecimal expectedReferencePrice) {
+        requireId(userId, "userId");
+        requireId(orderIntentId, "orderIntentId");
+        requireClientOrderId(clientOrderId);
+        var intent = ownedIntent(userId, orderIntentId);
+        if (intent.getExecutionMode() != OrderExecutionMode.LIVE || intent.getStatus() != OrderIntentStatus.APPROVED) {
+            throw conflict();
+        }
+        if (expectedReferencePrice == null || intent.getProposalReferencePrice() == null
+                || expectedReferencePrice.compareTo(intent.getProposalReferencePrice()) != 0) {
+            throw new LiveOrderActivationException(LiveOrderActivationException.Code.CONFLICT,
+                    "live quote changed since proposal");
+        }
+        var price = currentPrice(intent);
+        if (price.compareTo(expectedReferencePrice) != 0) {
+            throw new LiveOrderActivationException(LiveOrderActivationException.Code.CONFLICT,
+                    "live quote changed since proposal");
+        }
+        var syncedPortfolio = portfolios.read(userId, intent.getBrokerConnectionId());
+        var prepared = Objects.requireNonNull(transactions.execute(status -> prepare(
+                userId, orderIntentId, clientOrderId, null, actor, price, syncedPortfolio, false)));
+        return dispatchPrepared(prepared, clientOrderId, actor);
+    }
+
+    private DispatchResult dispatchPrepared(Prepared prepared, String clientOrderId, String actor) {
         if (!prepared.callBroker()) {
             return result(prepared.attemptId());
         }
@@ -227,6 +306,13 @@ public final class LiveOrderActivationService {
         var target = liveBrokerOrder(userId, orderIntentId);
         var account = allowlistedAccount(userId, target.intent());
         consumeStepUp(userId, orderIntentId, stepUpToken);
+        return invokeOperation(target.order().getBrokerOrderId(),
+                () -> orders.cancelOrder(account, target.order().getBrokerOrderId()));
+    }
+
+    public OperationResult cancelFromMcp(UUID userId, UUID orderIntentId, String actor) {
+        var target = liveBrokerOrder(userId, orderIntentId);
+        var account = allowlistedAccount(userId, target.intent());
         return invokeOperation(target.order().getBrokerOrderId(),
                 () -> orders.cancelOrder(account, target.order().getBrokerOrderId()));
     }
@@ -377,7 +463,8 @@ public final class LiveOrderActivationService {
 
     private Prepared prepare(UUID userId, UUID orderIntentId, String clientOrderId, String stepUpToken,
                              String actor, BigDecimal price,
-                             PortfolioReadService.PortfolioView syncedPortfolio) {
+                             PortfolioReadService.PortfolioView syncedPortfolio,
+                             boolean requireStepUp) {
         var intent = intents.findOwnedByIdForUpdate(orderIntentId, userId,
                         ownedIntent(userId, orderIntentId).getBrokerConnectionId())
                 .orElseThrow(() -> new LiveOrderActivationException(
@@ -394,7 +481,7 @@ public final class LiveOrderActivationService {
             }
             return new Prepared(existing.get().getId(), null, null, false);
         }
-        consumeStepUp(userId, orderIntentId, stepUpToken);
+        if (requireStepUp) consumeStepUp(userId, orderIntentId, stepUpToken);
         var submission = risk.submitLive(userId, intent.getBrokerConnectionId(), orderIntentId,
                 price, Instant.now(), actor, syncedPortfolio);
         if (!submission.decision().approved()) {

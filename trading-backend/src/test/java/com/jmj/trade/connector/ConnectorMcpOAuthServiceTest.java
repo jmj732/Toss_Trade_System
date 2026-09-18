@@ -95,6 +95,37 @@ class ConnectorMcpOAuthServiceTest {
                 org.mockito.ArgumentMatchers.any(Instant.class));
     }
 
+    @Test
+    void authorizationCodeExchangeCanIssueTradeScopedBearer() {
+        var client = service.register(List.of(REDIRECT));
+        var params = authorizationParams(client.clientId(), REDIRECT);
+        params.set("scope", "connector:trade");
+        var loginLocation = service.beginAuthorization(params, null);
+        var returnTo = org.springframework.web.util.UriComponentsBuilder
+                .fromUriString(loginLocation).build().getQueryParams().getFirst("returnTo");
+        returnTo = java.net.URLDecoder.decode(returnTo, java.nio.charset.StandardCharsets.UTF_8);
+        when(connections.list(USER)).thenReturn(List.of(new BrokerConnectionView(
+                CONNECTION, USER, com.jmj.trade.broker.connection.BrokerType.TOSS_INVEST,
+                BrokerConnectionStatus.ACTIVE, 1, NOW)));
+        when(keys.issue(org.mockito.ArgumentMatchers.eq(USER), org.mockito.ArgumentMatchers.eq(CONNECTION),
+                org.mockito.ArgumentMatchers.any(Instant.class),
+                org.mockito.ArgumentMatchers.eq("connector:trade")))
+                .thenReturn(new ConnectorApiKeyService.IssuedKey(
+                        UUID.randomUUID(), "ckey_trade", CONNECTION, "ckey_trade",
+                        ConnectorApiKeyService.Status.ACTIVE, NOW, NOW.plusSeconds(3600),
+                        "connector:trade"));
+
+        var callback = service.completeAfterLogin(returnTo,
+                new TestingAuthenticationToken(USER.toString(), null, "ROLE_USER"));
+        var code = org.springframework.web.util.UriComponentsBuilder.fromUriString(callback)
+                .build().getQueryParams().getFirst("code");
+        var token = service.exchangeCode(client.clientId(), code, REDIRECT, "verifier");
+
+        assertThat(token.scope()).isEqualTo("connector:trade");
+        verify(keys).issue(org.mockito.ArgumentMatchers.eq(USER), org.mockito.ArgumentMatchers.eq(CONNECTION),
+                org.mockito.ArgumentMatchers.any(Instant.class), org.mockito.ArgumentMatchers.eq("connector:trade"));
+    }
+
     private static LinkedMultiValueMap<String, String> authorizationParams(
             String clientId,
             String redirectUri

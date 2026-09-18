@@ -174,4 +174,25 @@ public class CredentialedOrderStackConfiguration {
                 new TransactionTemplate(transactionManager),
                 proposalTtl);
     }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "real-order", name = "enabled", havingValue = "true")
+    McpOrderExecutionService mcpOrderExecutionService(
+            LiveOrderActivationService activation,
+            PreTradeRiskEngine risk,
+            FreshPortfolioReadService portfolios,
+            BrokerAdapter brokerAdapter,
+            @Qualifier("tossOrderPort") BrokerOrderPort orderPort,
+            LiveOrderSafetyLedger safety,
+            OrderIntentRepository intents,
+            BrokerOrderRepository brokerOrders,
+            SubmissionAttemptRepository attempts,
+            JdbcTemplate jdbc,
+            UnknownAttemptReconciler reconciler,
+            OrderSubmissionService submissions
+    ) {
+        return new McpOrderExecutionService(
+                activation, risk, portfolios, brokerAdapter, orderPort, safety,
+                intents, brokerOrders, attempts, jdbc, reconciler, submissions);
+    }
 }

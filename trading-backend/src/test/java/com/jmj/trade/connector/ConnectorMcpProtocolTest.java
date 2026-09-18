@@ -2,6 +2,7 @@ package com.jmj.trade.connector;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
+import com.jmj.trade.order.McpOrderExecutionService;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -21,7 +22,8 @@ class ConnectorMcpProtocolTest {
     private static final UUID CONNECTION = UUID.fromString("018f0000-0000-7000-8000-000000000002");
 
     private final ConnectorService service = mock(ConnectorService.class);
-    private final ConnectorMcpProtocol protocol = new ConnectorMcpProtocol(service, new ObjectMapper());
+    private final McpOrderExecutionService tradeService = mock(McpOrderExecutionService.class);
+    private final ConnectorMcpProtocol protocol = new ConnectorMcpProtocol(service, tradeService, new ObjectMapper());
 
     @Test
     void initializesWithToolsCapability() throws Exception {
@@ -52,6 +54,30 @@ class ConnectorMcpProtocolTest {
         assertThat(tools.get(2).path("outputSchema").path("properties").path("fills")
                 .path("type").asText()).isEqualTo("array");
         assertThat(tools.get(2).path("outputSchema").path("required").toString()).contains("fills");
+    }
+
+    @Test
+    void listsTradeToolsOnlyWhenTradeScopeIsGranted() throws Exception {
+        var response = protocol.handle(request("trade", "tools/list", "{}"), USER, CONNECTION, true);
+
+        var tools = response.path("result").path("tools");
+        assertThat(tools.size()).isEqualTo(7);
+        assertThat(tools.get(3).path("name").asText()).isEqualTo("prepare_order");
+        assertThat(tools.get(4).path("name").asText()).isEqualTo("submit_order");
+        assertThat(tools.get(5).path("name").asText()).isEqualTo("cancel_order");
+        assertThat(tools.get(6).path("name").asText()).isEqualTo("get_order");
+        assertThat(tools.get(3).path("annotations").path("readOnlyHint").asBoolean()).isFalse();
+        assertThat(tools.get(4).path("annotations").path("destructiveHint").asBoolean()).isTrue();
+        assertThat(tools.get(4).path("inputSchema").path("required").toString()).contains("proposalId");
+    }
+
+    @Test
+    void readScopeCannotCallTradeTool() throws Exception {
+        var response = protocol.handle(toolCall("trade-read", "submit_order",
+                "{\"proposalId\":\"ordp_018f0000-0000-7000-8000-000000000001\"}"), USER, CONNECTION);
+        assertThat(response.path("result").path("isError").asBoolean()).isTrue();
+        verify(tradeService, org.mockito.Mockito.never()).submit(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test

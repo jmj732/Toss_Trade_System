@@ -50,7 +50,7 @@ public final class ConnectorMcpController {
             Authentication authentication
     ) {
         var key = key(authentication);
-        var response = protocol.handle(request, key.userId(), key.connectionId());
+        var response = handle(request, key);
         if (response == null) return ResponseEntity.accepted().build();
         return ResponseEntity.ok(response);
     }
@@ -89,7 +89,7 @@ public final class ConnectorMcpController {
         var key = key(authentication);
         if (!session.belongsTo(key)) return ResponseEntity.status(403).build();
 
-        var response = protocol.handle(request, key.userId(), key.connectionId());
+        var response = handle(request, key);
         if (response == null) return ResponseEntity.accepted().build();
         try {
             session.emitter().send(SseEmitter.event().name("message").data(response));
@@ -106,6 +106,12 @@ public final class ConnectorMcpController {
             throw new org.springframework.security.authentication.BadCredentialsException("connector key required");
         }
         return key;
+    }
+
+    private ObjectNode handle(ObjectNode request, ConnectorApiKeyService.AuthenticatedKey key) {
+        return key.canTrade()
+                ? protocol.handle(request, key.userId(), key.connectionId(), true)
+                : protocol.handle(request, key.userId(), key.connectionId());
     }
 
     private record Session(UUID userId, UUID connectionId, SseEmitter emitter) {

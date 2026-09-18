@@ -50,6 +50,13 @@ public class OrderSubmissionService {
     }
 
     @Transactional
+    public void auditConnector(UUID orderIntentId, String action, String actor, String payload) {
+        requireActor(actor);
+        submissionLedger(orderIntentId, "McpOrder", orderIntentId, action, action, actor,
+                payload == null ? "{}" : payload, Instant.now());
+    }
+
+    @Transactional
     public UUID createInitialAttempt(
             UUID orderIntentId,
             String clientOrderId,
