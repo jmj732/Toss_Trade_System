@@ -54,6 +54,7 @@ import {
   listBrokerConnections,
   listNotifications,
   loadAnalysisPredictions,
+  loadBrokerAccountIdentity,
   loadDashboard,
   loadEvent,
   loadPaperPerformance,
@@ -200,6 +201,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
   const [connectionId, setConnectionId] = useState("");
   const [connections, setConnections] = useState([]);
   const [connection, setConnection] = useState(null);
+  const [accountIdentity, setAccountIdentity] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [events, setEvents] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
@@ -910,6 +912,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
         ? await createBrokerConnection(credentials)
         : await replaceBrokerCredentials(connectionId, credentials);
       setConnection(result);
+      setAccountIdentity(null);
       if (action === "create") {
         setConnectionId(result.id);
         window.localStorage.setItem("trade.connectionId", result.id);
@@ -927,6 +930,11 @@ export function RouteWorkspace({ route, symbol = "" }) {
     return mutation(action, async () => {
       if (action === "verify") {
         setConnection(await verifyBrokerConnection(id));
+        try {
+          setAccountIdentity(await loadBrokerAccountIdentity(id));
+        } catch {
+          setAccountIdentity(null);
+        }
       } else if (action === "sync") {
         await syncPortfolio(id);
         await openWorkspace(id);
@@ -1246,7 +1254,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
       h(SettingsSections, {
         onExpand: loadSettingsSection,
         account: h(BrokerOnboarding, {
-          connection, connectionId, busyAction: busy,
+          connection, connectionId, accountIdentity, busyAction: busy,
           onCredentials: credentialsAction, onCommand: brokerAction
         }),
         risk: h("div", { className: "settings-risk" },
@@ -1429,6 +1437,7 @@ export function RouteWorkspace({ route, symbol = "" }) {
         h(BrokerOnboarding, {
           connection,
           connectionId: connectionId.trim(),
+          accountIdentity,
           busyAction: busy,
           onCredentials: credentialsAction,
           onCommand: brokerAction

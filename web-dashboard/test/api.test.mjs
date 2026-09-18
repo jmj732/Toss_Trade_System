@@ -35,6 +35,7 @@ import {
   loadOperationalReadiness,
   loadRiskPolicy,
   loadRiskPolicyHistory,
+  loadBrokerAccountIdentity,
   loadStockAnalysis,
   loadStockAnalysisHistory,
   loadStockAnalysisRun,
@@ -122,6 +123,22 @@ test("loads the shared portfolio state contract for the selected connection", as
   assert.equal(state.account.totalValue, 1000);
   assert.deepEqual(calls, [[
     "/api/v1/broker-connections/connection%2F1/portfolio/state",
+    { credentials: "same-origin" }
+  ]]);
+});
+
+test("loads the read-only Toss account identity for allowlist setup", async () => {
+  const calls = [];
+  const fetcher = async (url, options) => {
+    calls.push([url, options]);
+    return json({ status: "AVAILABLE", data: { accountSeq: "1", accountType: "GENERAL" } });
+  };
+
+  const identity = await loadBrokerAccountIdentity("connection/1", fetcher);
+
+  assert.equal(identity.data.accountSeq, "1");
+  assert.deepEqual(calls, [[
+    "/api/v1/broker-connections/connection%2F1/account-identity",
     { credentials: "same-origin" }
   ]]);
 });
