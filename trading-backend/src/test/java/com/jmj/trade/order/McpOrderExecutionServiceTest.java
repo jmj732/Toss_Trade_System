@@ -4,6 +4,7 @@ import com.jmj.trade.account.FreshPortfolioReadService;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerConnectionRef;
+import com.jmj.trade.broker.BrokerAccountView;
 import com.jmj.trade.broker.BrokerOrderPort;
 import com.jmj.trade.broker.BrokerResponse;
 import com.jmj.trade.broker.Currency;
@@ -139,5 +140,27 @@ class McpOrderExecutionServiceTest {
         assertThat(result.status()).isEqualTo("SUBMITTED");
         assertThat(result.brokerOrderId()).isEqualTo("toss-1");
         verify(orders, never()).placeOrder(any(), any(), any());
+    }
+
+    @Test
+    void getOrderReadsConnectedBrokerAccountWithoutLiveAllowlist() {
+        var quotes = mock(BrokerAdapter.class);
+        var orders = mock(BrokerOrderPort.class);
+        var account = new com.jmj.trade.broker.BrokerAccountRef(CONNECTION, "01", "LIVE", "****0001");
+        when(quotes.getAccounts(any(BrokerConnectionRef.class))).thenReturn(new BrokerResponse<>(
+                List.of(new BrokerAccountView(account, "Toss")), BrokerOrderPort.localMetadata()));
+        when(orders.getOrder(eq(account), eq("toss-1"))).thenReturn(new BrokerResponse<>(
+                new com.jmj.trade.broker.BrokerOrderView("toss-1", null,
+                        com.jmj.trade.broker.BrokerOrderSide.BUY, com.jmj.trade.broker.BrokerOrderType.LIMIT,
+                        "AAPL", BigDecimal.ONE, BigDecimal.ZERO, new BigDecimal("180"), Currency.USD,
+                        com.jmj.trade.broker.BrokerOrderLifecycle.PENDING), BrokerOrderPort.localMetadata()));
+
+        var service = new McpOrderExecutionService(mock(LiveOrderActivationService.class), mock(PreTradeRiskEngine.class),
+                mock(FreshPortfolioReadService.class), quotes, orders, mock(LiveOrderSafetyLedger.class),
+                mock(OrderIntentRepository.class), mock(BrokerOrderRepository.class), mock(SubmissionAttemptRepository.class),
+                mock(JdbcTemplate.class), mock(UnknownAttemptReconciler.class), mock(OrderSubmissionService.class));
+
+        assertThat(service.getOrder(USER, CONNECTION, "toss-1").status()).isEqualTo("SUBMITTED");
+        verify(orders).getOrder(account, "toss-1");
     }
 }

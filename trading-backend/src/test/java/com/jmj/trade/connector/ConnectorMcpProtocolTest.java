@@ -3,6 +3,7 @@ package com.jmj.trade.connector;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 import com.jmj.trade.order.McpOrderExecutionService;
+import com.jmj.trade.order.LiveOrderActivationException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -19,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 class ConnectorMcpProtocolTest {
 
@@ -162,6 +164,22 @@ class ConnectorMcpProtocolTest {
 
         verify(service).orders(USER, CONNECTION, "CLOSED");
         verify(service).fills(USER, CONNECTION, Instant.parse("2026-09-01T00:00:00Z"));
+    }
+
+    @Test
+    void exposesSafeLiveOrderBlockReason() throws Exception {
+        when(tradeService.prepare(eq(USER), eq(CONNECTION), org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new LiveOrderActivationException(
+                        LiveOrderActivationException.Code.SAFETY_BLOCKED,
+                        "live account mapping is missing or ambiguous"));
+
+        var response = protocol.handle(toolCall("6b", "prepare_order",
+                "{\"symbol\":\"AAPL\",\"side\":\"BUY\",\"orderType\":\"LIMIT\",\"quantity\":1,\"price\":180}"),
+                USER, CONNECTION, true);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isTrue();
+        assertThat(response.path("result").path("content").get(0).path("text").asText())
+                .contains("SAFETY_BLOCKED", "live account mapping is missing or ambiguous");
     }
 
     @Test
