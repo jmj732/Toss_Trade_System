@@ -101,6 +101,13 @@ public record BrokerSurfaceResponse<T>(
     ) {
     }
 
+    public record AccountIdentityView(
+            String accountSeq,
+            String accountType,
+            String displayAccountNumber
+    ) {
+    }
+
     public record SellableQuantityView(
             String symbol,
             String availability,

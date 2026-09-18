@@ -45,6 +45,33 @@ class BrokerSurfaceServiceTest {
     }
 
     @Test
+    void accountIdentityReadsTheTossAccountSequenceWithoutPersistingIt() {
+        var jdbc = mock(JdbcTemplate.class);
+        var broker = mock(BrokerAdapter.class);
+        var observedAt = Instant.parse("2026-09-19T00:00:00Z");
+        when(jdbc.queryForList(anyString(), eq(String.class), eq(CONNECTION), eq(USER)))
+                .thenReturn(List.of("ACTIVE"));
+        when(broker.getAccounts(any(BrokerConnectionRef.class))).thenReturn(new BrokerResponse<>(
+                List.of(new com.jmj.trade.broker.BrokerAccountView(
+                        new com.jmj.trade.broker.BrokerAccountRef(
+                                CONNECTION, "7", "GENERAL", "*******5697"),
+                        "Toss GENERAL *******5697")),
+                new com.jmj.trade.broker.BrokerCallMetadata("accounts-1", observedAt, java.util.Optional.empty())));
+        var service = new BrokerSurfaceService(jdbc, mock(FreshPortfolioReadService.class), broker);
+
+        var response = service.accountIdentity(USER, CONNECTION);
+
+        assertThat(response.status()).isEqualTo(BrokerSurfaceResponse.Status.AVAILABLE);
+        assertThat(response.data()).isEqualTo(new BrokerSurfaceResponse.AccountIdentityView(
+                "7", "GENERAL", "*******5697"));
+        assertThat(response.provenance()).singleElement().satisfies(item -> {
+            assertThat(item.provider()).isEqualTo("TOSS");
+            assertThat(item.endpoint()).isEqualTo("/api/v1/accounts");
+            assertThat(item.observedAt()).isEqualTo(observedAt);
+        });
+    }
+
+    @Test
     void pricesExposeProviderFieldsWithoutInventingBidAsk() {
         var jdbc = mock(JdbcTemplate.class);
         var broker = mock(BrokerAdapter.class);
