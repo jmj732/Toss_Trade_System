@@ -72,20 +72,30 @@ final class ConnectorMcpOAuthController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<?> token(@RequestParam MultiValueMap<String, String> parameters) {
         try {
-            if (!"authorization_code".equals(parameters.getFirst("grant_type"))) {
+            var grantType = parameters.getFirst("grant_type");
+            ConnectorMcpOAuthService.TokenResponse token;
+            if ("authorization_code".equals(grantType)) {
+                token = oauth.exchangeCode(
+                        parameters.getFirst("client_id"),
+                        parameters.getFirst("code"),
+                        parameters.getFirst("redirect_uri"),
+                        parameters.getFirst("code_verifier"),
+                        parameters.getFirst("resource"));
+            } else if ("refresh_token".equals(grantType)) {
+                token = oauth.exchangeRefreshToken(
+                        parameters.getFirst("client_id"),
+                        parameters.getFirst("refresh_token"),
+                        parameters.getFirst("resource"));
+            } else {
                 throw new ConnectorMcpOAuthService.OAuthException(
-                        "unsupported_grant_type", "grant_type=authorization_code is required", null, null);
+                        "unsupported_grant_type", "grant_type must be authorization_code or refresh_token", null, null);
             }
-            var token = oauth.exchangeCode(
-                    parameters.getFirst("client_id"),
-                    parameters.getFirst("code"),
-                    parameters.getFirst("redirect_uri"),
-                    parameters.getFirst("code_verifier"));
             return ResponseEntity.ok(Map.of(
                     "access_token", token.accessToken(),
                     "token_type", token.tokenType(),
                     "expires_in", token.expiresIn(),
-                    "scope", token.scope()));
+                    "scope", token.scope(),
+                    "refresh_token", token.refreshToken()));
         } catch (ConnectorMcpOAuthService.OAuthException exception) {
             return oauthError(exception);
         }

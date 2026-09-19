@@ -46,15 +46,20 @@ user. No connector key needs to be copied into ChatGPT.
 
 The requested OAuth scope determines the MCP tools:
 
-- `connector:read`: `get_portfolio`, `get_orders`, and `get_recent_fills`.
-- `connector:trade`: the three read tools plus `prepare_order`,
-  `submit_order`, `cancel_order`, and `get_order`.
+- `connector:read`: `get_portfolio`, `get_orders`, `get_recent_fills`, and `get_order`.
+- `connector:trade`: the four read tools plus `prepare_order`, `submit_order`, and `cancel_order`.
 
-If `REAL_ORDER_ENABLED=false`, trade-scoped connections still show the four
+If `REAL_ORDER_ENABLED=false`, trade-scoped connections still show the three
 trade tools so the capability is discoverable, but calls return an explicit
 disabled error and no broker order is sent. Reconnect the MCP app after
 changing its requested scope so the client receives a new token and rescans
 the tool list.
+
+Read tools are headless: they do not ask for account selection, confirmation, or input. Their
+OAuth access token is short-lived; the server issues and rotates opaque 30-day refresh tokens,
+so the ChatGPT connection can refresh without exposing a Toss credential. A failed reauthorization
+is returned as an authentication failure, never as a tool-side prompt. Scheduled tasks must use
+only the read scope; trade tools are intentionally excluded.
 
 After tool scanning, test with prompts such as:
 

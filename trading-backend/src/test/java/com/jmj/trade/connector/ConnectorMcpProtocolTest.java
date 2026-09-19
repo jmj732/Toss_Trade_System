@@ -4,6 +4,8 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.order.LiveOrderActivationException;
+import com.jmj.trade.broker.BrokerErrorCategory;
+import com.jmj.trade.broker.BrokerException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -45,7 +47,7 @@ class ConnectorMcpProtocolTest {
         var response = protocol.handle(request("2", "tools/list", "{}"), USER, CONNECTION);
 
         var tools = response.path("result").path("tools");
-        assertThat(tools.size()).isEqualTo(3);
+        assertThat(tools.size()).isEqualTo(4);
         assertThat(tools.get(0).path("name").asText()).isEqualTo("get_portfolio");
         assertThat(tools.get(1).path("name").asText()).isEqualTo("get_orders");
         assertThat(tools.get(2).path("name").asText()).isEqualTo("get_recent_fills");
@@ -60,6 +62,13 @@ class ConnectorMcpProtocolTest {
         assertThat(tools.get(2).path("outputSchema").path("properties").path("fills")
                 .path("type").asText()).isEqualTo("array");
         assertThat(tools.get(2).path("outputSchema").path("required").toString()).contains("fills");
+        assertThat(tools.get(3).path("name").asText()).isEqualTo("get_order");
+        for (var tool : tools) {
+            assertThat(tool.path("annotations").path("readOnlyHint").asBoolean()).isTrue();
+            assertThat(tool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
+            assertThat(tool.path("annotations").path("openWorldHint").asBoolean()).isFalse();
+            assertThat(tool.path("annotations").path("idempotentHint").asBoolean()).isTrue();
+        }
     }
 
     @Test
@@ -68,13 +77,12 @@ class ConnectorMcpProtocolTest {
 
         var tools = response.path("result").path("tools");
         assertThat(tools.size()).isEqualTo(7);
-        assertThat(tools.get(3).path("name").asText()).isEqualTo("prepare_order");
-        assertThat(tools.get(4).path("name").asText()).isEqualTo("submit_order");
-        assertThat(tools.get(5).path("name").asText()).isEqualTo("cancel_order");
-        assertThat(tools.get(6).path("name").asText()).isEqualTo("get_order");
-        assertThat(tools.get(3).path("annotations").path("readOnlyHint").asBoolean()).isFalse();
-        assertThat(tools.get(4).path("annotations").path("destructiveHint").asBoolean()).isTrue();
-        assertThat(tools.get(4).path("inputSchema").path("required").toString()).contains("proposalId");
+        assertThat(tools.get(4).path("name").asText()).isEqualTo("prepare_order");
+        assertThat(tools.get(5).path("name").asText()).isEqualTo("submit_order");
+        assertThat(tools.get(6).path("name").asText()).isEqualTo("cancel_order");
+        assertThat(tools.get(4).path("annotations").path("readOnlyHint").asBoolean()).isFalse();
+        assertThat(tools.get(5).path("annotations").path("destructiveHint").asBoolean()).isTrue();
+        assertThat(tools.get(5).path("inputSchema").path("required").toString()).contains("proposalId");
     }
 
     @Test
@@ -87,10 +95,9 @@ class ConnectorMcpProtocolTest {
 
         var tools = response.path("result").path("tools");
         assertThat(tools.size()).isEqualTo(7);
-        assertThat(tools.get(3).path("name").asText()).isEqualTo("prepare_order");
-        assertThat(tools.get(4).path("name").asText()).isEqualTo("submit_order");
-        assertThat(tools.get(5).path("name").asText()).isEqualTo("cancel_order");
-        assertThat(tools.get(6).path("name").asText()).isEqualTo("get_order");
+        assertThat(tools.get(4).path("name").asText()).isEqualTo("prepare_order");
+        assertThat(tools.get(5).path("name").asText()).isEqualTo("submit_order");
+        assertThat(tools.get(6).path("name").asText()).isEqualTo("cancel_order");
     }
 
     @ParameterizedTest
@@ -113,8 +120,7 @@ class ConnectorMcpProtocolTest {
                 Arguments.of("prepare_order",
                         "{\"symbol\":\"AAPL\",\"side\":\"BUY\",\"orderType\":\"LIMIT\",\"quantity\":1,\"price\":180}"),
                 Arguments.of("submit_order", "{\"proposalId\":\"ordp_018f0000-0000-7000-8000-000000000001\"}"),
-                Arguments.of("cancel_order", "{\"brokerOrderId\":\"broker-1\"}"),
-                Arguments.of("get_order", "{\"brokerOrderId\":\"broker-1\"}"));
+                Arguments.of("cancel_order", "{\"brokerOrderId\":\"broker-1\"}"));
     }
 
     @Test
@@ -167,6 +173,25 @@ class ConnectorMcpProtocolTest {
     }
 
     @Test
+    void readScopeCallsOrderLookupWithoutTradeExecution() throws Exception {
+        when(service.order(USER, CONNECTION, "broker-1", null)).thenReturn(new ConnectorResponse.Order(
+                "broker-1", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
+                "AAPL", BigDecimal.ONE, BigDecimal.ZERO, new BigDecimal("180"), "USD",
+                ConnectorResponse.BrokerOrderLifecycle.PENDING, ConnectorResponse.BrokerOrderGroup.OPEN,
+                null, null, null, null));
+
+        var response = protocol.handle(toolCall("read-order", "get_order", "{\"brokerOrderId\":\"broker-1\"}"),
+                USER, CONNECTION);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(response.path("result").path("structuredContent").path("brokerOrderId").asText())
+                .isEqualTo("broker-1");
+        verify(service).order(USER, CONNECTION, "broker-1", null);
+        verify(tradeService, org.mockito.Mockito.never()).getOrder(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
     void exposesSafeLiveOrderBlockReason() throws Exception {
         when(tradeService.prepare(eq(USER), eq(CONNECTION), org.mockito.ArgumentMatchers.any()))
                 .thenThrow(new LiveOrderActivationException(
@@ -179,7 +204,24 @@ class ConnectorMcpProtocolTest {
 
         assertThat(response.path("result").path("isError").asBoolean()).isTrue();
         assertThat(response.path("result").path("content").get(0).path("text").asText())
-                .contains("SAFETY_BLOCKED", "live account mapping is missing or ambiguous");
+                .contains("live account mapping is missing or ambiguous");
+        assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("ORDER_BLOCKED");
+    }
+
+    @Test
+    void returnsHeadlessStructuredErrorForRetryableBrokerFailure() throws Exception {
+        when(service.orders(USER, CONNECTION, "OPEN")).thenThrow(new BrokerException(
+                BrokerErrorCategory.NETWORK, null, null, null, null, true, "Toss timeout"));
+
+        var response = protocol.handle(toolCall("broker-failure", "get_orders", "{}"), USER, CONNECTION);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isTrue();
+        assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("TOSS_API_ERROR");
+        assertThat(response.path("result").path("structuredContent").path("retryable").asBoolean()).isTrue();
+        assertThat(response.path("result").path("structuredContent").path("reauthorizationRequired").asBoolean())
+                .isFalse();
     }
 
     @Test

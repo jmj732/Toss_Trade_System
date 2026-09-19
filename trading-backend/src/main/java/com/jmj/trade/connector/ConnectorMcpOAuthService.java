@@ -14,6 +14,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -31,6 +32,7 @@ public final class ConnectorMcpOAuthService {
     public static final String CONTINUE_PATH = "/api/v1/connector/oauth/authorize/complete";
     static final Duration AUTHORIZATION_CODE_TTL = Duration.ofMinutes(5);
     static final Duration ACCESS_TOKEN_TTL = Duration.ofHours(1);
+    static final Duration REFRESH_TOKEN_TTL = Duration.ofDays(30);
 
     private final BrokerConnectionService connections;
     private final ConnectorApiKeyService keys;
@@ -39,6 +41,7 @@ public final class ConnectorMcpOAuthService {
     private final String publicBaseUrl;
     private final String oidcRegistrationId;
     private final ConnectorOAuthClientStore clients;
+    private final ConnectorOAuthRefreshTokenStore refreshTokens;
     private final Map<String, AuthorizationCode> codes = new ConcurrentHashMap<>();
 
     ConnectorMcpOAuthService(
@@ -50,8 +53,23 @@ public final class ConnectorMcpOAuthService {
             String oidcRegistrationId,
             ConnectorOAuthClientStore clients
     ) {
+        this(connections, keys, random, clock, publicBaseUrl, oidcRegistrationId, clients,
+                new InMemoryConnectorOAuthRefreshTokenStore());
+    }
+
+    ConnectorMcpOAuthService(
+            BrokerConnectionService connections,
+            ConnectorApiKeyService keys,
+            SecureRandom random,
+            Clock clock,
+            String publicBaseUrl,
+            String oidcRegistrationId,
+            ConnectorOAuthClientStore clients,
+            ConnectorOAuthRefreshTokenStore refreshTokens
+    ) {
         this.connections = Objects.requireNonNull(connections, "connections");
         this.clients = Objects.requireNonNull(clients, "clients");
+        this.refreshTokens = Objects.requireNonNull(refreshTokens, "refreshTokens");
         this.keys = Objects.requireNonNull(keys, "keys");
         this.random = Objects.requireNonNull(random, "random");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -64,6 +82,10 @@ public final class ConnectorMcpOAuthService {
 
     public String publicUrl(String path) {
         return publicBaseUrl + path;
+    }
+
+    private String resourceUrl() {
+        return publicUrl(RESOURCE_PATH);
     }
 
     RegisteredClient register(List<String> redirectUris) {
@@ -96,6 +118,10 @@ public final class ConnectorMcpOAuthService {
     }
 
     TokenResponse exchangeCode(String clientId, String code, String redirectUri, String verifier) {
+        return exchangeCode(clientId, code, redirectUri, verifier, null);
+    }
+
+    TokenResponse exchangeCode(String clientId, String code, String redirectUri, String verifier, String resource) {
         var client = client(clientId);
         if (code == null || code.isBlank() || redirectUri == null || verifier == null) {
             throw oauthError("invalid_request", "authorization code, redirect_uri and code_verifier are required", null);
@@ -113,16 +139,39 @@ public final class ConnectorMcpOAuthService {
                     || !validPkce(verifier, authorization.codeChallenge())) {
                 throw oauthError("invalid_grant", "authorization code is invalid or expired", null);
             }
+            if (resource != null && !resource.isBlank() && !authorization.resource().equals(resource)) {
+                throw oauthError("invalid_target", "resource does not match this MCP server", null);
+            }
             codes.remove(code);
         }
 
-        var scope = normalizedScope(authorization.scope());
+        return issueTokens(clientId, authorization.userId(), authorization.connectionId(),
+                normalizedScope(authorization.scope()), authorization.resource());
+    }
+
+    TokenResponse exchangeRefreshToken(String clientId, String refreshToken, String resource) {
+        client(clientId);
+        if (refreshToken == null || refreshToken.isBlank()) {
+            throw oauthError("invalid_request", "refresh_token is required", null);
+        }
+        var grant = refreshTokens.consume(hash(refreshToken), clientId, clock.instant())
+                .orElseThrow(() -> oauthError("invalid_grant", "refresh token is invalid or expired", null));
+        if (resource != null && !resource.isBlank() && !grant.resource().equals(resource)) {
+            throw oauthError("invalid_target", "resource does not match this MCP server", null);
+        }
+        return issueTokens(clientId, grant.userId(), grant.connectionId(), grant.scope(), grant.resource());
+    }
+
+    private TokenResponse issueTokens(String clientId, UUID userId, UUID connectionId, String scope, String resource) {
+        var now = clock.instant();
         var issued = TRADE_SCOPE.equals(scope)
-                ? keys.issue(authorization.userId(), authorization.connectionId(),
-                        clock.instant().plus(ACCESS_TOKEN_TTL), scope)
-                : keys.issue(authorization.userId(), authorization.connectionId(),
-                        clock.instant().plus(ACCESS_TOKEN_TTL));
-        return new TokenResponse(issued.apiKey(), "Bearer", ACCESS_TOKEN_TTL.toSeconds(), scope);
+                ? keys.issue(userId, connectionId, now.plus(ACCESS_TOKEN_TTL), scope)
+                : keys.issue(userId, connectionId, now.plus(ACCESS_TOKEN_TTL));
+        var rawRefreshToken = opaque("mcp_refresh_");
+        refreshTokens.save(new ConnectorOAuthRefreshTokenStore.Grant(hash(rawRefreshToken), clientId,
+                userId, connectionId, scope, resource == null || resource.isBlank() ? resourceUrl() : resource,
+                now, now.plus(REFRESH_TOKEN_TTL)));
+        return new TokenResponse(issued.apiKey(), "Bearer", ACCESS_TOKEN_TTL.toSeconds(), scope, rawRefreshToken);
     }
 
     public boolean isContinuation(String returnTo) {
@@ -159,6 +208,7 @@ public final class ConnectorMcpOAuthService {
                 active.getFirst().id(),
                 request.codeChallenge(),
                 normalizedScope(request.scope()),
+                request.resource(),
                 clock.instant().plus(AUTHORIZATION_CODE_TTL)));
         trimExpiredCodes();
         return errorOrCodeRedirect(request.redirectUri(), code, request.state());
@@ -177,7 +227,8 @@ public final class ConnectorMcpOAuthService {
                 first(parameters, "state"),
                 required(parameters, "code_challenge"),
                 first(parameters, "code_challenge_method"),
-                first(parameters, "scope"));
+                first(parameters, "scope"),
+                first(parameters, "resource"));
         validateAuthorization(request, parameters);
         return request;
     }
@@ -190,7 +241,7 @@ public final class ConnectorMcpOAuthService {
         return parseAuthorization(uri.getQueryParams());
     }
 
-    private static void validateAuthorization(
+    private void validateAuthorization(
             AuthorizationRequest request,
             MultiValueMap<String, String> parameters
     ) {
@@ -202,6 +253,10 @@ public final class ConnectorMcpOAuthService {
         }
         if (request.scope() != null && !request.scope().isBlank() && !supportedScope(request.scope())) {
             throw oauthError("invalid_scope", "only connector:read or connector:trade is supported", request);
+        }
+        if (request.resource() != null && !request.resource().isBlank()
+                && !resourceUrl().equals(request.resource())) {
+            throw oauthError("invalid_target", "resource does not match this MCP server", request);
         }
     }
 
@@ -283,6 +338,7 @@ public final class ConnectorMcpOAuthService {
                 .queryParam("code_challenge", request.codeChallenge())
                 .queryParam("code_challenge_method", request.codeChallengeMethod())
                 .queryParam("scope", request.scope())
+                .queryParam("resource", request.resource())
                 .build()
                 .encode()
                 .toUriString();
@@ -331,6 +387,15 @@ public final class ConnectorMcpOAuthService {
         }
     }
 
+    private static String hash(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
     private static String normalizeBaseUrl(String value) {
         try {
             var uri = URI.create(Objects.requireNonNull(value, "publicBaseUrl").trim());
@@ -358,7 +423,7 @@ public final class ConnectorMcpOAuthService {
         }
     }
 
-    record TokenResponse(String accessToken, String tokenType, long expiresIn, String scope) {
+    record TokenResponse(String accessToken, String tokenType, long expiresIn, String scope, String refreshToken) {
     }
 
     private record AuthorizationRequest(
@@ -367,7 +432,8 @@ public final class ConnectorMcpOAuthService {
             String state,
             String codeChallenge,
             String codeChallengeMethod,
-            String scope
+            String scope,
+            String resource
     ) {
     }
 
@@ -379,6 +445,7 @@ public final class ConnectorMcpOAuthService {
             UUID connectionId,
             String codeChallenge,
             String scope,
+            String resource,
             Instant expiresAt
     ) {
     }
