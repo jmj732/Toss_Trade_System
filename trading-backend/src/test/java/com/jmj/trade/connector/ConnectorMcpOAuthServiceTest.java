@@ -170,6 +170,32 @@ class ConnectorMcpOAuthServiceTest {
                 org.mockito.ArgumentMatchers.any(Instant.class), org.mockito.ArgumentMatchers.eq("connector:trade"));
     }
 
+    @Test
+    void usesConfiguredTradeScopeWhenClientOmitsScope() {
+        var tradeDefault = new ConnectorMcpOAuthService(connections, keys, new java.security.SecureRandom(),
+                Clock.fixed(NOW, ZoneOffset.UTC), "https://dashboard.example", "oidc", clients,
+                new InMemoryConnectorOAuthRefreshTokenStore(), "connector:trade");
+        var client = tradeDefault.register(List.of(REDIRECT));
+        var params = authorizationParams(client.clientId(), REDIRECT);
+        params.remove("scope");
+        when(connections.list(USER)).thenReturn(List.of(new BrokerConnectionView(
+                CONNECTION, USER, com.jmj.trade.broker.connection.BrokerType.TOSS_INVEST,
+                BrokerConnectionStatus.ACTIVE, 1, NOW)));
+        when(keys.issue(org.mockito.ArgumentMatchers.eq(USER), org.mockito.ArgumentMatchers.eq(CONNECTION),
+                org.mockito.ArgumentMatchers.any(Instant.class), org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(new ConnectorApiKeyService.IssuedKey(
+                        UUID.randomUUID(), "ckey_trade", CONNECTION, "ckey_trade",
+                        ConnectorApiKeyService.Status.ACTIVE, NOW, NOW.plusSeconds(3600), "connector:trade"));
+
+        var location = tradeDefault.beginAuthorization(params,
+                new TestingAuthenticationToken(USER.toString(), null, "ROLE_USER"));
+        var code = org.springframework.web.util.UriComponentsBuilder.fromUriString(location)
+                .build().getQueryParams().getFirst("code");
+        var token = tradeDefault.exchangeCode(client.clientId(), code, REDIRECT, "verifier");
+
+        assertThat(token.scope()).isEqualTo("connector:trade");
+    }
+
     private static LinkedMultiValueMap<String, String> authorizationParams(
             String clientId,
             String redirectUri

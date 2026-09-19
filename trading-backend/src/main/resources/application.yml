@@ -17,6 +17,9 @@ public:
   dashboard-url: ${PUBLIC_DASHBOARD_URL:http://localhost:3000}
 real-order:
   enabled: ${REAL_ORDER_ENABLED:false}
+connector:
+  mcp:
+    default-scope: ${CONNECTOR_MCP_DEFAULT_SCOPE:connector:read}
 stock-analysis:
   running-timeout: ${STOCK_ANALYSIS_RUNNING_TIMEOUT:PT5M}
   # Enabling a provider requires its base-url, path, fields, and provider policy
