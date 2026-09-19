@@ -40,6 +40,7 @@ public final class ConnectorMcpOAuthService {
     private final Clock clock;
     private final String publicBaseUrl;
     private final String oidcRegistrationId;
+    private final String defaultScope;
     private final ConnectorOAuthClientStore clients;
     private final ConnectorOAuthRefreshTokenStore refreshTokens;
     private final Map<String, AuthorizationCode> codes = new ConcurrentHashMap<>();
@@ -54,7 +55,7 @@ public final class ConnectorMcpOAuthService {
             ConnectorOAuthClientStore clients
     ) {
         this(connections, keys, random, clock, publicBaseUrl, oidcRegistrationId, clients,
-                new InMemoryConnectorOAuthRefreshTokenStore());
+                new InMemoryConnectorOAuthRefreshTokenStore(), READ_SCOPE);
     }
 
     ConnectorMcpOAuthService(
@@ -67,6 +68,20 @@ public final class ConnectorMcpOAuthService {
             ConnectorOAuthClientStore clients,
             ConnectorOAuthRefreshTokenStore refreshTokens
     ) {
+        this(connections, keys, random, clock, publicBaseUrl, oidcRegistrationId, clients, refreshTokens, READ_SCOPE);
+    }
+
+    ConnectorMcpOAuthService(
+            BrokerConnectionService connections,
+            ConnectorApiKeyService keys,
+            SecureRandom random,
+            Clock clock,
+            String publicBaseUrl,
+            String oidcRegistrationId,
+            ConnectorOAuthClientStore clients,
+            ConnectorOAuthRefreshTokenStore refreshTokens,
+            String defaultScope
+    ) {
         this.connections = Objects.requireNonNull(connections, "connections");
         this.clients = Objects.requireNonNull(clients, "clients");
         this.refreshTokens = Objects.requireNonNull(refreshTokens, "refreshTokens");
@@ -78,6 +93,7 @@ public final class ConnectorMcpOAuthService {
             throw new IllegalArgumentException("OIDC registration id is invalid");
         }
         this.oidcRegistrationId = oidcRegistrationId;
+        this.defaultScope = normalizedScope(defaultScope, READ_SCOPE);
     }
 
     public String publicUrl(String path) {
@@ -146,7 +162,7 @@ public final class ConnectorMcpOAuthService {
         }
 
         return issueTokens(clientId, authorization.userId(), authorization.connectionId(),
-                normalizedScope(authorization.scope()), authorization.resource());
+                normalizedScope(authorization.scope(), defaultScope), authorization.resource());
     }
 
     TokenResponse exchangeRefreshToken(String clientId, String refreshToken, String resource) {
@@ -207,7 +223,7 @@ public final class ConnectorMcpOAuthService {
                 userId,
                 active.getFirst().id(),
                 request.codeChallenge(),
-                normalizedScope(request.scope()),
+                normalizedScope(request.scope(), defaultScope),
                 request.resource(),
                 clock.instant().plus(AUTHORIZATION_CODE_TTL)));
         trimExpiredCodes();
@@ -344,8 +360,8 @@ public final class ConnectorMcpOAuthService {
                 .toUriString();
     }
 
-    private static String normalizedScope(String scope) {
-        if (scope == null || scope.isBlank()) return READ_SCOPE;
+    private static String normalizedScope(String scope, String fallback) {
+        if (scope == null || scope.isBlank()) return fallback;
         return java.util.Arrays.stream(scope.trim().split("\\s+"))
                 .anyMatch(TRADE_SCOPE::equals) ? TRADE_SCOPE : READ_SCOPE;
     }

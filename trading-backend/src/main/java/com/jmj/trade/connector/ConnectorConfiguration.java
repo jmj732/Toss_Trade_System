@@ -36,7 +36,8 @@ public class ConnectorConfiguration {
             JdbcTemplate jdbc,
             tools.jackson.databind.ObjectMapper objectMapper,
             @Value("${public.dashboard-url:http://localhost:3000}") String publicDashboardUrl,
-            @Value("${security.oidc.registration-id:oidc}") String oidcRegistrationId
+            @Value("${security.oidc.registration-id:oidc}") String oidcRegistrationId,
+            @Value("${connector.mcp.default-scope:connector:read}") String defaultScope
     ) {
         return new ConnectorMcpOAuthService(
                 connections,
@@ -46,6 +47,7 @@ public class ConnectorConfiguration {
                 publicDashboardUrl,
                 oidcRegistrationId,
                 new JdbcConnectorOAuthClientStore(jdbc, objectMapper),
-                new JdbcConnectorOAuthRefreshTokenStore(jdbc));
+                new JdbcConnectorOAuthRefreshTokenStore(jdbc),
+                defaultScope);
     }
 }
