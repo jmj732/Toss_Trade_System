@@ -45,6 +45,7 @@ public class ConnectorConfiguration {
                 Clock.systemUTC(),
                 publicDashboardUrl,
                 oidcRegistrationId,
-                new JdbcConnectorOAuthClientStore(jdbc, objectMapper));
+                new JdbcConnectorOAuthClientStore(jdbc, objectMapper),
+                new JdbcConnectorOAuthRefreshTokenStore(jdbc));
     }
 }

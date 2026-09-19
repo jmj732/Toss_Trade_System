@@ -62,6 +62,17 @@ class ConnectorMcpOAuthServiceTest {
     }
 
     @Test
+    void rejectsAuthorizationForAnotherMcpResource() {
+        var client = service.register(List.of(REDIRECT));
+        var params = authorizationParams(client.clientId(), REDIRECT);
+        params.add("resource", "https://attacker.example/api/v1/connector/mcp");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.beginAuthorization(params, null))
+                .isInstanceOf(ConnectorMcpOAuthService.OAuthException.class)
+                .hasMessage("resource does not match this MCP server");
+    }
+
+    @Test
     void authorizationCodeExchangeIssuesAReadOnlyConnectorBearer() {
         var client = service.register(List.of(REDIRECT));
         var params = authorizationParams(client.clientId(), REDIRECT);
@@ -91,8 +102,41 @@ class ConnectorMcpOAuthServiceTest {
         assertThat(token.accessToken()).isEqualTo("ckey_oauth");
         assertThat(token.tokenType()).isEqualTo("Bearer");
         assertThat(token.scope()).isEqualTo("connector:read");
-        verify(keys).issue(org.mockito.ArgumentMatchers.eq(USER), org.mockito.ArgumentMatchers.eq(CONNECTION),
-                org.mockito.ArgumentMatchers.any(Instant.class));
+        assertThat(token.refreshToken()).startsWith("mcp_refresh_");
+        var refreshed = service.exchangeRefreshToken(client.clientId(), token.refreshToken(),
+                "https://dashboard.example/api/v1/connector/mcp");
+        assertThat(refreshed.accessToken()).isEqualTo("ckey_oauth");
+        assertThat(refreshed.refreshToken()).startsWith("mcp_refresh_")
+                .isNotEqualTo(token.refreshToken());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.exchangeRefreshToken(
+                client.clientId(), token.refreshToken(), "https://dashboard.example/api/v1/connector/mcp"))
+                .isInstanceOf(ConnectorMcpOAuthService.OAuthException.class)
+                .hasMessage("refresh token is invalid or expired");
+        verify(keys, org.mockito.Mockito.times(2)).issue(org.mockito.ArgumentMatchers.eq(USER),
+                org.mockito.ArgumentMatchers.eq(CONNECTION), org.mockito.ArgumentMatchers.any(Instant.class));
+    }
+
+    @Test
+    void rejectsCodeExchangeForAnotherMcpResource() {
+        var client = service.register(List.of(REDIRECT));
+        var params = authorizationParams(client.clientId(), REDIRECT);
+        params.add("resource", "https://dashboard.example/api/v1/connector/mcp");
+        var loginLocation = service.beginAuthorization(params, null);
+        var returnTo = org.springframework.web.util.UriComponentsBuilder.fromUriString(loginLocation)
+                .build().getQueryParams().getFirst("returnTo");
+        returnTo = java.net.URLDecoder.decode(returnTo, java.nio.charset.StandardCharsets.UTF_8);
+        when(connections.list(USER)).thenReturn(List.of(new BrokerConnectionView(
+                CONNECTION, USER, com.jmj.trade.broker.connection.BrokerType.TOSS_INVEST,
+                BrokerConnectionStatus.ACTIVE, 1, NOW)));
+        var callback = service.completeAfterLogin(returnTo,
+                new TestingAuthenticationToken(USER.toString(), null, "ROLE_USER"));
+        var code = org.springframework.web.util.UriComponentsBuilder.fromUriString(callback)
+                .build().getQueryParams().getFirst("code");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.exchangeCode(
+                client.clientId(), code, REDIRECT, "verifier", "https://attacker.example/mcp"))
+                .isInstanceOf(ConnectorMcpOAuthService.OAuthException.class)
+                .hasMessage("resource does not match this MCP server");
     }
 
     @Test

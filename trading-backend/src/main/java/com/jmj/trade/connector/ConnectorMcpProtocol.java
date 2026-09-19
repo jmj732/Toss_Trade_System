@@ -4,6 +4,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.order.LiveOrderActivationException;
+import com.jmj.trade.broker.BrokerException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
@@ -122,6 +123,11 @@ public final class ConnectorMcpProtocol {
                 "Get recent fills",
                 "Read filled quantities derived from Toss Invest open and closed orders. Optionally filter by an ISO-8601 instant.",
                 fillsSchema(), listEnvelopeSchema("fills")));
+        tools.add(tool(
+                "get_order",
+                "Get order",
+                "Read the latest status of a Toss Invest order by brokerOrderId or clientOrderId.",
+                orderLookupSchema(), objectSchema()));
         if (canTrade) {
             tools.add(tool(
                     "prepare_order",
@@ -138,11 +144,6 @@ public final class ConnectorMcpProtocol {
                     "Cancel order",
                     "Cancel a currently open Toss Invest order by brokerOrderId.",
                     brokerOrderIdSchema(), objectSchema(), false, true));
-            tools.add(tool(
-                    "get_order",
-                    "Get order",
-                    "Read the latest status of a Toss Invest order by brokerOrderId or clientOrderId.",
-                    orderLookupSchema(), objectSchema(), true, false));
         }
         return result(request, result);
     }
@@ -162,6 +163,9 @@ public final class ConnectorMcpProtocol {
                         optionalText(arguments, "group", "OPEN"))));
                 case "get_recent_fills" -> toolResult(request, envelope("fills", service.fills(userId, connectionId,
                         optionalInstant(arguments, "since"))));
+                case "get_order" -> toolResult(request, service.order(userId, connectionId,
+                        optionalText(arguments, "brokerOrderId", null),
+                        optionalText(arguments, "clientOrderId", null)));
                 case "prepare_order" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : !liveExecutionAvailable
@@ -179,11 +183,6 @@ public final class ConnectorMcpProtocol {
                         ? liveOrderExecutionDisabled(request)
                         : toolResult(request, tradeService.cancel(userId, connectionId,
                                 requiredText(arguments, "brokerOrderId")));
-                case "get_order" -> !tradeScopeGranted
-                        ? forbiddenTrade(request)
-                        : !liveExecutionAvailable
-                        ? liveOrderExecutionDisabled(request)
-                        : toolResult(request, getOrderLookup(arguments, userId, connectionId));
                 default -> error(request, -32601, "Tool not found: " + name);
             };
             LOG.atInfo().addKeyValue("operation", "mcp_tool")
@@ -204,10 +203,16 @@ public final class ConnectorMcpProtocol {
             }
             builder.log("MCP tool failed");
             if (exception instanceof LiveOrderActivationException activationException) {
-                return toolError(request, "Order blocked [" + activationException.code().name() + "]: "
-                        + activationException.getMessage());
+                return toolError(request, "ORDER_BLOCKED", activationException.getMessage(), false, false);
             }
-            return toolError(request, "Connector tool failed");
+            if (exception instanceof BrokerException brokerException) {
+                return toolError(request, "TOSS_API_ERROR", "Toss API request failed",
+                        brokerException.isRetriable(), false);
+            }
+            if (exception instanceof IllegalArgumentException) {
+                return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
+            }
+            return toolError(request, "CONNECTOR_ERROR", "Connector tool failed", false, false);
         }
     }
 
@@ -221,21 +226,36 @@ public final class ConnectorMcpProtocol {
         return result(request, payload);
     }
 
-    private ObjectNode toolError(ObjectNode request, String message) {
+    private ObjectNode toolError(ObjectNode request, String code, String message, boolean retryable,
+                                 boolean reauthorizationRequired) {
         var payload = objectMapper.createObjectNode();
         payload.put("isError", true);
+        var structured = payload.objectNode();
+        structured.put("ok", false);
+        structured.put("errorCode", code);
+        structured.put("retryable", retryable);
+        structured.put("reauthorizationRequired", reauthorizationRequired);
+        payload.set("structuredContent", structured);
         payload.putArray("content").addObject().put("type", "text").put("text", message);
         return result(request, payload);
     }
 
     private ObjectNode tool(String name, String title, String description,
                             ObjectNode schema, ObjectNode outputSchema) {
-        return tool(name, title, description, schema, outputSchema, true, false);
+        return tool(name, title, description, schema, outputSchema, true, false, true,
+                ConnectorApiKeyService.READ_SCOPE);
     }
 
     private ObjectNode tool(String name, String title, String description,
                             ObjectNode schema, ObjectNode outputSchema,
                             boolean readOnly, boolean destructive) {
+        return tool(name, title, description, schema, outputSchema, readOnly, destructive, false,
+                ConnectorApiKeyService.TRADE_SCOPE);
+    }
+
+    private ObjectNode tool(String name, String title, String description,
+                            ObjectNode schema, ObjectNode outputSchema,
+                            boolean readOnly, boolean destructive, boolean idempotent, String scope) {
         var tool = objectMapper.createObjectNode();
         tool.put("name", name);
         tool.put("title", title);
@@ -245,8 +265,11 @@ public final class ConnectorMcpProtocol {
         var annotations = tool.objectNode();
         annotations.put("readOnlyHint", readOnly);
         annotations.put("destructiveHint", destructive);
+        annotations.put("idempotentHint", idempotent);
         annotations.put("openWorldHint", false);
         tool.set("annotations", annotations);
+        var schemes = tool.putArray("securitySchemes");
+        schemes.addObject().put("type", "oauth2").putArray("scopes").add(scope);
         return tool;
     }
 
@@ -318,14 +341,6 @@ public final class ConnectorMcpProtocol {
         anyOf.add(requiredStringSchema("brokerOrderId"));
         anyOf.add(requiredStringSchema("clientOrderId"));
         return schema;
-    }
-
-    private Object getOrderLookup(JsonNode arguments, UUID userId, UUID connectionId) {
-        var brokerId = arguments.path("brokerOrderId");
-        if (brokerId.isTextual() && !brokerId.asText().isBlank()) {
-            return tradeService.getOrder(userId, connectionId, brokerId.asText());
-        }
-        return tradeService.getOrderByClientId(userId, connectionId, requiredText(arguments, "clientOrderId"));
     }
 
     private ObjectNode requiredStringSchema(String name) {
@@ -407,11 +422,12 @@ public final class ConnectorMcpProtocol {
     }
 
     private ObjectNode forbiddenTrade(ObjectNode request) {
-        return toolError(request, "Connector trade scope required");
+        return toolError(request, "TRADE_SCOPE_REQUIRED", "Connector trade scope required", false, false);
     }
 
     private ObjectNode liveOrderExecutionDisabled(ObjectNode request) {
-        return toolError(request, "Live order execution is disabled (REAL_ORDER_ENABLED=false)");
+        return toolError(request, "LIVE_ORDER_DISABLED", "Live order execution is disabled (REAL_ORDER_ENABLED=false)",
+                false, false);
     }
 
     private ObjectNode result(ObjectNode request, JsonNode result) {

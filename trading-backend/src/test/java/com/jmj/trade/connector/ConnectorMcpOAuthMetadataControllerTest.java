@@ -43,6 +43,9 @@ class ConnectorMcpOAuthMetadataControllerTest {
                         .value("https://dashboard.example/api/v1/connector/oauth/token"))
                 .andExpect(jsonPath("$.registration_endpoint")
                         .value("https://dashboard.example/api/v1/connector/oauth/register"))
+                .andExpect(jsonPath("$.grant_types_supported").isArray())
+                .andExpect(jsonPath("$.grant_types_supported").value(org.hamcrest.Matchers.hasItems(
+                        "authorization_code", "refresh_token")))
                 .andExpect(jsonPath("$.code_challenge_methods_supported[0]").value("S256"));
     }
 }

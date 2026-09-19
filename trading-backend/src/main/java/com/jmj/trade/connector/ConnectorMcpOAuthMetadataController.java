@@ -41,7 +41,7 @@ final class ConnectorMcpOAuthMetadataController {
                 "token_endpoint", oauth.publicUrl(ConnectorMcpOAuthService.TOKEN_PATH),
                 "registration_endpoint", oauth.publicUrl(ConnectorMcpOAuthService.REGISTER_PATH),
                 "response_types_supported", List.of("code"),
-                "grant_types_supported", List.of("authorization_code"),
+                "grant_types_supported", List.of("authorization_code", "refresh_token"),
                 "code_challenge_methods_supported", List.of("S256"),
                 "scopes_supported", List.of(ConnectorMcpOAuthService.READ_SCOPE,
                         ConnectorMcpOAuthService.TRADE_SCOPE),

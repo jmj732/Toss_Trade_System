@@ -11,6 +11,8 @@ import com.jmj.trade.broker.BrokerOrderPort;
 import com.jmj.trade.broker.BrokerOrderView;
 import org.springframework.stereotype.Service;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.util.List;
@@ -24,8 +26,14 @@ public final class ConnectorService {
     private final FreshPortfolioReadService portfolios;
     private final BrokerAdapter broker;
     private final BrokerOrderPort orders;
+    private final JdbcTemplate jdbc;
 
     public ConnectorService(FreshPortfolioReadService portfolios, Map<String, BrokerAdapter> brokers) {
+        this(portfolios, brokers, null);
+    }
+
+    @Autowired
+    public ConnectorService(FreshPortfolioReadService portfolios, Map<String, BrokerAdapter> brokers, JdbcTemplate jdbc) {
         this.portfolios = portfolios;
         this.broker = selectBroker(brokers);
         this.orders = brokers.values().stream()
@@ -33,6 +41,7 @@ public final class ConnectorService {
                 .map(BrokerOrderPort.class::cast)
                 .findFirst()
                 .orElse(null);
+        this.jdbc = jdbc;
     }
 
     public ConnectorResponse.Portfolio portfolio(UUID userId, UUID connectionId) {
@@ -83,6 +92,34 @@ public final class ConnectorService {
                 .map(ConnectorService::fill)
                 .filter(fill -> since == null || (fill.filledAt() != null && !fill.filledAt().isBefore(since)))
                 .toList();
+    }
+
+    public ConnectorResponse.Order order(UUID userId, UUID connectionId, String brokerOrderId, String clientOrderId) {
+        if ((brokerOrderId == null || brokerOrderId.isBlank()) && (clientOrderId == null || clientOrderId.isBlank())) {
+            throw new IllegalArgumentException("brokerOrderId or clientOrderId is required");
+        }
+        if (brokerOrderId == null || brokerOrderId.isBlank()) {
+            brokerOrderId = brokerOrderId(userId, connectionId, clientOrderId);
+        }
+        var response = requireOrderPort().getOrder(account(connectionId), brokerOrderId);
+        if (response == null || response.value() == null) {
+            throw new IllegalStateException("broker order is unavailable");
+        }
+        return order(response.value());
+    }
+
+    private String brokerOrderId(UUID userId, UUID connectionId, String clientOrderId) {
+        if (jdbc == null) throw new IllegalStateException("clientOrderId lookup is unavailable");
+        var ids = jdbc.query("""
+                SELECT broker_order.broker_order_id
+                  FROM broker_orders broker_order
+                  JOIN order_intents intent ON intent.id = broker_order.order_intent_id
+                 WHERE broker_order.client_order_id = ?
+                   AND intent.user_id = ?
+                   AND intent.broker_connection_id = ?
+                """, (rs, row) -> rs.getString(1), clientOrderId, userId, connectionId);
+        if (ids.size() != 1) throw new IllegalArgumentException("clientOrderId was not found");
+        return ids.getFirst();
     }
 
     private BrokerOrderPort requireOrderPort() {
