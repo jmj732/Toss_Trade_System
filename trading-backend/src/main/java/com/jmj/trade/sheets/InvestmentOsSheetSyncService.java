@@ -161,13 +161,13 @@ public final class InvestmentOsSheetSyncService {
             var nextAccount = authoritative
                     ? InvestmentOsSheetModel.accountState(account, portfolio, syncedAt, properties.accountLabel()) : account;
             var priceSnapshot = authoritative && brokerSurface != null
-                    ? fetchPrices(userId, connectionId, nextAccount) : PriceSnapshot.notConfigured();
+                    ? fetchPrices(userId, connectionId, nextAccount, properties.accountLabel()) : PriceSnapshot.notConfigured();
             if (authoritative && brokerSurface != null) {
                 nextAccount = InvestmentOsSheetModel.refreshPrices(nextAccount,
-                        new ArrayList<>(priceSnapshot.prices().values()), syncedAt);
+                        new ArrayList<>(priceSnapshot.prices().values()), syncedAt, properties.accountLabel());
             }
             var completePrices = brokerSurface == null || priceSnapshot.complete()
-                    && InvestmentOsSheetModel.hasCompleteQuotes(nextAccount);
+                    && InvestmentOsSheetModel.hasCompleteQuotes(nextAccount, properties.accountLabel());
             var priceStatus = !authoritative ? "SKIPPED"
                     : brokerSurface == null ? "NOT_CONFIGURED" : completePrices ? "OK" : "PARTIAL";
             if (authoritative && brokerSurface != null && !completePrices) {
@@ -291,8 +291,9 @@ public final class InvestmentOsSheetSyncService {
                 && ("OK".equals(prices) || "NOT_CONFIGURED".equals(prices)), prices);
     }
 
-    private PriceSnapshot fetchPrices(UUID userId, UUID connectionId, InvestmentOsSheetModel.SheetTable account) {
-        var expected = InvestmentOsSheetModel.heldSymbols(account);
+    private PriceSnapshot fetchPrices(UUID userId, UUID connectionId, InvestmentOsSheetModel.SheetTable account,
+                                      String accountLabel) {
+        var expected = InvestmentOsSheetModel.heldSymbols(account, accountLabel);
         var prices = new LinkedHashMap<String, BrokerSurfaceResponse.PriceView>();
         for (var symbol : expected) {
             try {

@@ -1,5 +1,6 @@
 package com.jmj.trade.sheets;
 
+import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.connector.ConnectorResponse;
 import org.junit.jupiter.api.Test;
 
@@ -104,6 +105,27 @@ class InvestmentOsSheetModelTest {
                 .findFirst().orElseThrow();
         assertThat(holding.get(aggregate.column("Quantity"))).isEqualTo("5");
         assertThat(holding.get(aggregate.column("Combined Avg Cost"))).isBlank();
+    }
+
+    @Test
+    void tossQuotesUpdateOnlyAccount1AndNeverRewriteManualAccount2() {
+        var syncedAt = "2026-09-20T00:00:00Z";
+        var account = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
+                List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "11", "22", "", "TOSS_API", "HIGH", syncedAt,
+                        "TOSS_QUOTE_API", syncedAt),
+                List.of("ACCOUNT_2", "ABC", "HOLDING", "USD", "3", "20", "12", "36", "", "MANUAL", "HIGH", "manual-sync",
+                        "MANUAL", "manual-price-time")));
+
+        assertThat(InvestmentOsSheetModel.heldSymbols(account, "ACCOUNT_1")).containsExactly("ABC");
+        var updated = InvestmentOsSheetModel.refreshPrices(account, List.of(new BrokerSurfaceResponse.PriceView(
+                "ABC", bd("15"), null, null, "USD", SYNCED_AT, null)), SYNCED_AT, "ACCOUNT_1");
+
+        var account1 = updated.rows().getFirst();
+        var account2 = updated.rows().get(1);
+        assertThat(account1.get(updated.column("Current Price"))).isEqualTo("15");
+        assertThat(account1.get(updated.column("Market Value"))).isEqualTo("30");
+        assertThat(account2).containsExactlyElementsOf(account.rows().get(1));
+        assertThat(InvestmentOsSheetModel.hasCompleteQuotes(updated, "ACCOUNT_1")).isTrue();
     }
 
     @Test

@@ -223,15 +223,21 @@ public final class InvestmentOsSheetModel {
     public static SheetTable refreshPrices(
             SheetTable current,
             List<BrokerSurfaceResponse.PriceView> prices,
-            Instant syncedAt
+            Instant syncedAt,
+            String accountLabel
     ) {
         var table = accountTable(current);
+        var managedAccount = normalizedAccountLabel(accountLabel);
         var bySymbol = safe(prices).stream().filter(price -> price != null && price.symbol() != null
                         && price.lastPrice() != null && price.lastPrice().signum() > 0)
                 .collect(Collectors.toMap(price -> price.symbol().toUpperCase(Locale.ROOT), price -> price,
                         (first, ignored) -> first, LinkedHashMap::new));
         var rows = new ArrayList<List<String>>();
         for (var sourceRow : table.rows()) {
+            if (!managedAccount.equalsIgnoreCase(value(table, sourceRow, "Account"))) {
+                rows.add(sourceRow);
+                continue;
+            }
             var row = padded(table, sourceRow);
             var ticker = field(table, row, "Ticker", "Asset");
             var price = bySymbol.get(ticker.toUpperCase(Locale.ROOT));
@@ -250,19 +256,23 @@ public final class InvestmentOsSheetModel {
         return table.withRows(rows);
     }
 
-    public static List<String> heldSymbols(SheetTable accountState) {
+    public static List<String> heldSymbols(SheetTable accountState, String accountLabel) {
         var source = accountTable(accountState);
+        var managedAccount = normalizedAccountLabel(accountLabel);
         var symbols = new java.util.TreeSet<String>();
         for (var row : source.rows()) {
+            if (!managedAccount.equalsIgnoreCase(value(source, row, "Account"))) continue;
             var ticker = field(source, row, "Ticker", "Asset");
             if (!ticker.isBlank() && !isCash(source, row, ticker)) symbols.add(ticker.toUpperCase(Locale.ROOT));
         }
         return List.copyOf(symbols);
     }
 
-    public static boolean hasCompleteQuotes(SheetTable accountState) {
+    public static boolean hasCompleteQuotes(SheetTable accountState, String accountLabel) {
         var source = accountTable(accountState);
+        var managedAccount = normalizedAccountLabel(accountLabel);
         for (var row : source.rows()) {
+            if (!managedAccount.equalsIgnoreCase(value(source, row, "Account"))) continue;
             var ticker = field(source, row, "Ticker", "Asset");
             if (ticker.isBlank() || isCash(source, row, ticker)) continue;
             if (!"TOSS_QUOTE_API".equals(value(source, row, "Price Source"))
