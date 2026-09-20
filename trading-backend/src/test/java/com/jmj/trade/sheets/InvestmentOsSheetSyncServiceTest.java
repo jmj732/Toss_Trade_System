@@ -2,6 +2,8 @@ package com.jmj.trade.sheets;
 
 import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
+import com.jmj.trade.broker.BrokerErrorCategory;
+import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
 import org.junit.jupiter.api.Test;
 
@@ -118,6 +120,25 @@ class InvestmentOsSheetSyncServiceTest {
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
         verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4));
+    }
+
+    @Test
+    void brokerOrderFailureReportsSafeCategoryAndStatus() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.orders(USER_ID, CONNECTION_ID, "OPEN")).thenReturn(List.of());
+        when(connector.orders(USER_ID, CONNECTION_ID, "CLOSED")).thenThrow(new BrokerException(
+                BrokerErrorCategory.RATE_LIMITED, 429, "private-error", "private-request-id", null,
+                true, "token=must-not-leak"));
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+
+        var result = service(lease, connector, sheets).sync();
+
+        assertThat(result.error()).isEqualTo("CLOSED_ORDERS_FETCH_FAILED_BROKER_RATE_LIMITED_HTTP_429");
+        assertThat(result.error()).doesNotContain("private", "token");
     }
 
     private InvestmentOsSheetSyncService service(

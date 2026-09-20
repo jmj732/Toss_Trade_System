@@ -2,6 +2,7 @@ package com.jmj.trade.sheets;
 
 import com.jmj.trade.account.AccountSyncException;
 import com.jmj.trade.account.BrokerSurfaceService;
+import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.connector.ConnectorResponse;
@@ -125,14 +126,14 @@ public final class InvestmentOsSheetSyncService {
             try {
                 open = connector.orders(userId, connectionId, "OPEN");
             } catch (RuntimeException exception) {
-                failure = "OPEN_ORDERS_FETCH_FAILED";
+                failure = appendFailure(failure, "OPEN_ORDERS_FETCH_FAILED_" + safeError(exception));
                 LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "open_orders")
                         .addKeyValue("failure_reason", safeError(exception)).log("Toss open orders fetch failed");
             }
             try {
                 closed = connector.orders(userId, connectionId, "CLOSED");
             } catch (RuntimeException exception) {
-                failure = failure == null ? "CLOSED_ORDERS_FETCH_FAILED" : failure + "+CLOSED_ORDERS_FETCH_FAILED";
+                failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception));
                 LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
                         .addKeyValue("failure_reason", safeError(exception)).log("Toss closed orders fetch failed");
             }
@@ -142,7 +143,7 @@ public final class InvestmentOsSheetSyncService {
                         .addKeyValue("broker_fetch_result", "success").addKeyValue("fills", fills.size())
                         .log("Toss recent fills fetch completed");
             } catch (RuntimeException exception) {
-                failure = failure == null ? "FILLS_FETCH_FAILED" : failure + "+FILLS_FETCH_FAILED";
+                failure = appendFailure(failure, "FILLS_FETCH_FAILED_" + safeError(exception));
                 LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "fills")
                         .addKeyValue("failure_reason", safeError(exception)).log("Toss recent fills fetch failed");
             }
@@ -336,6 +337,10 @@ public final class InvestmentOsSheetSyncService {
     private static String safeError(RuntimeException exception) {
         if (exception instanceof AccountSyncException sync) return sync.code().name();
         if (exception instanceof BrokerConnectionException connection) return connection.code().publicCode();
+        if (exception instanceof BrokerException broker) {
+            return "BROKER_" + broker.category().name()
+                    + broker.httpStatus().map(status -> "_HTTP_" + status).orElse("");
+        }
         return exception.getClass().getSimpleName();
     }
 
