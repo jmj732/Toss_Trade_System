@@ -1,6 +1,5 @@
 package com.jmj.trade.sheets;
 
-import com.jmj.trade.account.AccountSyncService;
 import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.connector.ConnectorResponse;
@@ -27,7 +26,6 @@ public final class InvestmentOsSheetSyncService {
 
     private final InvestmentOsSheetProperties properties;
     private final InvestmentOsSheetLease lease;
-    private final AccountSyncService accountSync;
     private final ConnectorService connector;
     private final BrokerSurfaceService brokerSurface;
     private final GoogleSheetsClient sheets;
@@ -36,42 +34,18 @@ public final class InvestmentOsSheetSyncService {
     public InvestmentOsSheetSyncService(
             InvestmentOsSheetProperties properties,
             InvestmentOsSheetLease lease,
-            AccountSyncService accountSync,
-            ConnectorService connector,
-            GoogleSheetsClient sheets,
-            Clock clock
-    ) {
-        this(properties, lease, accountSync, connector, null, sheets, clock);
-    }
-
-    public InvestmentOsSheetSyncService(
-            InvestmentOsSheetProperties properties,
-            InvestmentOsSheetLease lease,
-            AccountSyncService accountSync,
             ConnectorService connector,
             BrokerSurfaceService brokerSurface,
             GoogleSheetsClient sheets,
             Clock clock
     ) {
-        this(properties, lease, accountSync, connector, brokerSurface, sheets,
+        this(properties, lease, connector, brokerSurface, sheets,
                 Objects.requireNonNull(clock, "clock")::instant);
     }
 
     InvestmentOsSheetSyncService(
             InvestmentOsSheetProperties properties,
             InvestmentOsSheetLease lease,
-            AccountSyncService accountSync,
-            ConnectorService connector,
-            GoogleSheetsClient sheets,
-            Supplier<Instant> now
-    ) {
-        this(properties, lease, accountSync, connector, null, sheets, now);
-    }
-
-    InvestmentOsSheetSyncService(
-            InvestmentOsSheetProperties properties,
-            InvestmentOsSheetLease lease,
-            AccountSyncService accountSync,
             ConnectorService connector,
             BrokerSurfaceService brokerSurface,
             GoogleSheetsClient sheets,
@@ -79,7 +53,6 @@ public final class InvestmentOsSheetSyncService {
     ) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.lease = Objects.requireNonNull(lease, "lease");
-        this.accountSync = Objects.requireNonNull(accountSync, "accountSync");
         this.connector = Objects.requireNonNull(connector, "connector");
         this.brokerSurface = brokerSurface;
         this.sheets = Objects.requireNonNull(sheets, "sheets");
@@ -134,7 +107,6 @@ public final class InvestmentOsSheetSyncService {
         String failure = null;
 
         try {
-            accountSync.sync(userId, connectionId);
             portfolio = connector.portfolio(userId, connectionId);
             LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                     .addKeyValue("broker_fetch_result", portfolio == null ? "empty" : "success")

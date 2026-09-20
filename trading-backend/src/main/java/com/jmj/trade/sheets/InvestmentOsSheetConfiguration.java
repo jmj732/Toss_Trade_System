@@ -1,6 +1,5 @@
 package com.jmj.trade.sheets;
 
-import com.jmj.trade.account.AccountSyncService;
 import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.connector.ConnectorService;
 import org.springframework.beans.factory.annotation.Value;
@@ -44,12 +43,11 @@ public class InvestmentOsSheetConfiguration {
     InvestmentOsSheetSyncService investmentOsSheetSyncService(
             InvestmentOsSheetProperties properties,
             InvestmentOsSheetLease lease,
-            AccountSyncService accountSyncService,
             ConnectorService connectorService,
             BrokerSurfaceService brokerSurfaceService,
             GoogleSheetsClient googleSheetsClient
     ) {
-        return new InvestmentOsSheetSyncService(properties, lease, accountSyncService, connectorService,
+        return new InvestmentOsSheetSyncService(properties, lease, connectorService,
                 brokerSurfaceService, googleSheetsClient, Clock.systemUTC());
     }
 

@@ -1,6 +1,5 @@
 package com.jmj.trade.sheets;
 
-import com.jmj.trade.account.AccountSyncService;
 import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
 import org.junit.jupiter.api.Test;
@@ -26,21 +25,19 @@ class InvestmentOsSheetSyncServiceTest {
     void concurrentSyncSkipsBrokerAndSheetWrites() {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(false);
-        var sync = mock(AccountSyncService.class);
         var connector = mock(ConnectorService.class);
         var sheets = mock(GoogleSheetsClient.class);
 
-        var result = service(lease, sync, connector, sheets).sync();
+        var result = service(lease, connector, sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SKIPPED);
-        verifyNoInteractions(sync, connector, sheets);
+        verifyNoInteractions(connector, sheets);
     }
 
     @Test
     void successfulSyncReadsBrokerSnapshotAndPublishesAllManagedTabs() {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
-        var sync = mock(AccountSyncService.class);
         var connector = mock(ConnectorService.class);
         var sheets = mock(GoogleSheetsClient.class);
         when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
@@ -48,10 +45,9 @@ class InvestmentOsSheetSyncServiceTest {
         when(connector.orders(USER_ID, CONNECTION_ID, "OPEN")).thenReturn(List.of());
         when(connector.orders(USER_ID, CONNECTION_ID, "CLOSED")).thenReturn(List.of());
 
-        var result = service(lease, sync, connector, sheets).sync();
+        var result = service(lease, connector, sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
-        verify(sync).sync(USER_ID, CONNECTION_ID);
         verify(connector).fills(eq(USER_ID), eq(CONNECTION_ID), any());
         verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4
                 && updates.stream().anyMatch(update -> update.range().contains("Account State")
@@ -63,18 +59,17 @@ class InvestmentOsSheetSyncServiceTest {
     void brokerFailureDoesNotPublishAZeroSnapshot() {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
-        var sync = mock(AccountSyncService.class);
-        doThrow(new RuntimeException("timeout")).when(sync).sync(USER_ID, CONNECTION_ID);
         var connector = mock(ConnectorService.class);
+        doThrow(new RuntimeException("timeout")).when(connector).portfolio(USER_ID, CONNECTION_ID);
         var sheets = mock(GoogleSheetsClient.class);
         when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
 
-        var result = service(lease, sync, connector, sheets).sync();
+        var result = service(lease, connector, sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
         verify(sheets, never()).batchUpdateValues(eq("sheet-1"), argThat(updates ->
                 updates.stream().anyMatch(update -> update.range().contains("Account State"))));
-        verifyNoInteractions(connector);
+        verify(connector).portfolio(USER_ID, CONNECTION_ID);
     }
 
     @Test
@@ -84,7 +79,7 @@ class InvestmentOsSheetSyncServiceTest {
         var sheets = mock(GoogleSheetsClient.class);
         when(sheets.readValues(eq("sheet-1"), any())).thenThrow(new RuntimeException("google down"));
 
-        var result = service(lease, mock(AccountSyncService.class), mock(ConnectorService.class), sheets).sync();
+        var result = service(lease, mock(ConnectorService.class), sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
         verify(sheets, never()).batchUpdateValues(any(), any());
@@ -95,7 +90,6 @@ class InvestmentOsSheetSyncServiceTest {
     void partialOrderFailurePreservesUnseenOrdersAndMarksSyncFailed() {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
-        var sync = mock(AccountSyncService.class);
         var connector = mock(ConnectorService.class);
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
         when(connector.orders(USER_ID, CONNECTION_ID, "OPEN")).thenThrow(new RuntimeException("timeout"));
@@ -103,7 +97,7 @@ class InvestmentOsSheetSyncServiceTest {
         var sheets = mock(GoogleSheetsClient.class);
         when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
 
-        var result = service(lease, sync, connector, sheets).sync();
+        var result = service(lease, connector, sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
         verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4));
@@ -111,14 +105,13 @@ class InvestmentOsSheetSyncServiceTest {
 
     private InvestmentOsSheetSyncService service(
             InvestmentOsSheetLease lease,
-            AccountSyncService sync,
             ConnectorService connector,
             GoogleSheetsClient sheets
     ) {
         return new InvestmentOsSheetSyncService(
                 new InvestmentOsSheetProperties(true, "sheet-1", USER_ID, CONNECTION_ID,
                         Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(2)),
-                lease, sync, connector, sheets, Instant::now);
+                lease, connector, null, sheets, Instant::now);
     }
 
     private static GoogleSheetsClient.SheetValues emptyValues() {
