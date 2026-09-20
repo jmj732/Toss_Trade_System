@@ -1,6 +1,7 @@
 package com.jmj.trade.sheets;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.time.Duration;
 import java.util.Objects;
@@ -30,6 +31,7 @@ public record InvestmentOsSheetProperties(
                 interval, initialDelay, lockTtl);
     }
 
+    @ConstructorBinding
     public InvestmentOsSheetProperties {
         if (enabled) {
             if (spreadsheetId == null || spreadsheetId.isBlank()) {
