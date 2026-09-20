@@ -236,12 +236,23 @@ final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter,
 
     @Override
     public BrokerResponse<List<BrokerOrderView>> getOrders(BrokerAccountRef account, BrokerOrderGroup group) {
+        return getOrders(account, group, null, null);
+    }
+
+    @Override
+    public BrokerResponse<List<BrokerOrderView>> getOrders(
+            BrokerAccountRef account, BrokerOrderGroup group, LocalDate from, LocalDate to
+    ) {
+        if ((from == null) != (to == null)) throw new IllegalArgumentException("from and to must be provided together");
+        if (from != null && to.isBefore(from)) throw new IllegalArgumentException("to must not be before from");
         mapper.requireToss(account);
         var all = new java.util.ArrayList<BrokerOrderView>();
         String cursor = null;
         BrokerCallMetadata metadata = null;
         do {
-            var response = apiClient.getOrders(account, group, cursor);
+            var response = from == null
+                    ? apiClient.getOrders(account, group, cursor)
+                    : apiClient.getOrders(account, group, cursor, from, to);
             if (response == null) {
                 throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
                         "Toss order list response was missing");

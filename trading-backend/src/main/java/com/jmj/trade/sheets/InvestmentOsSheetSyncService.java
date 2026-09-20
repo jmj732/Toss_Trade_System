@@ -2,6 +2,7 @@ package com.jmj.trade.sheets;
 
 import com.jmj.trade.account.AccountSyncException;
 import com.jmj.trade.account.BrokerSurfaceService;
+import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
@@ -13,6 +14,8 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -123,19 +126,30 @@ public final class InvestmentOsSheetSyncService {
         }
 
         if (portfolio != null && authoritative(portfolio)) {
+            BrokerAccountRef orderAccount = null;
             try {
-                open = connector.orders(userId, connectionId, "OPEN");
+                orderAccount = connector.brokerAccount(connectionId);
             } catch (RuntimeException exception) {
-                failure = appendFailure(failure, "OPEN_ORDERS_FETCH_FAILED_" + safeError(exception));
-                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "open_orders")
-                        .addKeyValue("failure_reason", safeError(exception)).log("Toss open orders fetch failed");
+                failure = appendFailure(failure, "BROKER_ACCOUNT_FETCH_FAILED_" + safeError(exception));
+                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "broker_account")
+                        .addKeyValue("failure_reason", safeError(exception)).log("Toss broker account fetch failed");
             }
-            try {
-                closed = connector.orders(userId, connectionId, "CLOSED");
-            } catch (RuntimeException exception) {
-                failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception));
-                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
-                        .addKeyValue("failure_reason", safeError(exception)).log("Toss closed orders fetch failed");
+            if (orderAccount != null) {
+                try {
+                    open = connector.orders(orderAccount, "OPEN");
+                } catch (RuntimeException exception) {
+                    failure = appendFailure(failure, "OPEN_ORDERS_FETCH_FAILED_" + safeError(exception));
+                    LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "open_orders")
+                            .addKeyValue("failure_reason", safeError(exception)).log("Toss open orders fetch failed");
+                }
+                try {
+                    var today = syncedAt.atZone(ZoneId.of("Asia/Seoul")).toLocalDate();
+                    closed = connector.orders(orderAccount, "CLOSED", today.minusDays(1), today);
+                } catch (RuntimeException exception) {
+                    failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception));
+                    LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
+                            .addKeyValue("failure_reason", safeError(exception)).log("Toss closed orders fetch failed");
+                }
             }
             if (open != null && closed != null) {
                 fills = ConnectorService.fills(open, closed, syncedAt.minus(Duration.ofDays(1)));

@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -76,10 +77,28 @@ public final class ConnectorService {
     }
 
     public List<ConnectorResponse.Order> orders(UUID userId, UUID connectionId, String rawGroup) {
+        return orders(brokerAccount(connectionId), rawGroup);
+    }
+
+    public List<ConnectorResponse.Order> orders(
+            UUID userId, UUID connectionId, String rawGroup, LocalDate from, LocalDate to
+    ) {
+        return orders(brokerAccount(connectionId), rawGroup, from, to);
+    }
+
+    public List<ConnectorResponse.Order> orders(BrokerAccountRef account, String rawGroup) {
         requireOrderPort();
         var group = parseGroup(rawGroup);
-        var account = account(connectionId);
         return requireOrderPort().getOrders(account, group).value().stream().map(ConnectorService::order).toList();
+    }
+
+    public List<ConnectorResponse.Order> orders(
+            BrokerAccountRef account, String rawGroup, LocalDate from, LocalDate to
+    ) {
+        requireOrderPort();
+        var group = parseGroup(rawGroup);
+        return requireOrderPort().getOrders(account, group, from, to).value().stream()
+                .map(ConnectorService::order).toList();
     }
 
     public List<ConnectorResponse.Fill> fills(UUID userId, UUID connectionId, Instant since) {
@@ -137,12 +156,16 @@ public final class ConnectorService {
         return orders;
     }
 
-    private BrokerAccountRef account(UUID connectionId) {
+    public BrokerAccountRef brokerAccount(UUID connectionId) {
         var accounts = requireBroker().getAccounts(new BrokerConnectionRef(connectionId)).value();
         if (accounts == null || accounts.size() != 1) {
             throw new IllegalStateException("exactly one broker account is required");
         }
         return accounts.getFirst().account();
+    }
+
+    private BrokerAccountRef account(UUID connectionId) {
+        return brokerAccount(connectionId);
     }
 
     private BrokerAdapter requireBroker() {

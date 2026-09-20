@@ -12,6 +12,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.UUID;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
@@ -117,6 +118,29 @@ class TossOrderAdapterContractTest {
         });
         server.verify(1, getRequestedFor(urlEqualTo("/api/v1/orders?status=CLOSED&limit=100")));
         server.verify(1, getRequestedFor(urlEqualTo("/api/v1/orders?status=CLOSED&cursor=next&limit=100")));
+    }
+
+    @Test
+    void closedOrderQueryCanBeLimitedToInclusiveCalendarRange() {
+        start();
+        token();
+        server.stubFor(get(urlEqualTo(
+                "/api/v1/orders?status=CLOSED&limit=100&from=2026-09-15&to=2026-09-16"))
+                .withHeader("X-Tossinvest-Account", equalTo(ACCOUNT))
+                .willReturn(json("{\"result\":{\"orders\":[],\"nextCursor\":\"next\",\"hasNext\":true}}")));
+        server.stubFor(get(urlEqualTo(
+                "/api/v1/orders?status=CLOSED&cursor=next&limit=100&from=2026-09-15&to=2026-09-16"))
+                .withHeader("X-Tossinvest-Account", equalTo(ACCOUNT))
+                .willReturn(json("{\"result\":{\"orders\":[],\"nextCursor\":null,\"hasNext\":false}}")));
+
+        var response = adapter().getOrders(account(), BrokerOrderGroup.CLOSED,
+                LocalDate.parse("2026-09-15"), LocalDate.parse("2026-09-16"));
+
+        assertThat(response.value()).isEmpty();
+        server.verify(1, getRequestedFor(urlEqualTo(
+                "/api/v1/orders?status=CLOSED&limit=100&from=2026-09-15&to=2026-09-16")));
+        server.verify(1, getRequestedFor(urlEqualTo(
+                "/api/v1/orders?status=CLOSED&cursor=next&limit=100&from=2026-09-15&to=2026-09-16")));
     }
 
     @Test

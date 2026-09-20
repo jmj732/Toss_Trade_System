@@ -1,6 +1,7 @@
 package com.jmj.trade.broker;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -42,6 +43,18 @@ public interface BrokerOrderPort {
 
     /** 주문 목록 조회(SPEC:555). {@link BrokerOrderGroup#OPEN}/{@link BrokerOrderGroup#CLOSED} 그룹. */
     BrokerResponse<List<BrokerOrderView>> getOrders(BrokerAccountRef account, BrokerOrderGroup group);
+
+    /** Date-bounded order history when the broker supports it. */
+    default BrokerResponse<List<BrokerOrderView>> getOrders(
+            BrokerAccountRef account, BrokerOrderGroup group, LocalDate from, LocalDate to
+    ) {
+        Objects.requireNonNull(account, "account");
+        Objects.requireNonNull(group, "group");
+        Objects.requireNonNull(from, "from");
+        Objects.requireNonNull(to, "to");
+        if (to.isBefore(from)) throw new IllegalArgumentException("to must not be before from");
+        throw new UnsupportedOperationException("date-bounded order history is unavailable");
+    }
 
     /**
      * 주문 정정(SPEC:558). <b>미국 주식은 가격 변경만 지원</b>한다.
