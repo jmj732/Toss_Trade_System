@@ -2,6 +2,7 @@ package com.jmj.trade.sheets;
 
 import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
+import com.jmj.trade.broker.connection.BrokerConnectionException;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -70,6 +71,22 @@ class InvestmentOsSheetSyncServiceTest {
         verify(sheets, never()).batchUpdateValues(eq("sheet-1"), argThat(updates ->
                 updates.stream().anyMatch(update -> update.range().contains("Account State"))));
         verify(connector).portfolio(USER_ID, CONNECTION_ID);
+    }
+
+    @Test
+    void connectionFailureReportsSafePublicCodeAndPreservesAccountRows() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenThrow(BrokerConnectionException.notFound());
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+
+        var result = service(lease, connector, sheets).sync();
+
+        assertThat(result.error()).isEqualTo("BROKER_CONNECTION_NOT_FOUND");
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 1
+                && updates.getFirst().range().contains("Reconciliation Log")));
     }
 
     @Test

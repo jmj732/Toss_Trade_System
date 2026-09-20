@@ -1,6 +1,8 @@
 package com.jmj.trade.sheets;
 
+import com.jmj.trade.account.AccountSyncException;
 import com.jmj.trade.account.BrokerSurfaceService;
+import com.jmj.trade.broker.connection.BrokerConnectionException;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
@@ -78,7 +80,8 @@ public final class InvestmentOsSheetSyncService {
         var syncedAt = now.get();
         LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("outcome", "started")
                 .addKeyValue("account", properties.accountLabel())
-                .addKeyValue("connection_id", connectionId).log("investment os sheet sync started");
+                .addKeyValue("connection_id", connectionId)
+                .addKeyValue("user_id", userId).log("investment os sheet sync started");
         try {
             return run(syncId, userId, connectionId, syncedAt, started);
         } finally {
@@ -330,7 +333,11 @@ public final class InvestmentOsSheetSyncService {
         return result.reverse().toString();
     }
 
-    private static String safeError(RuntimeException exception) { return exception.getClass().getSimpleName(); }
+    private static String safeError(RuntimeException exception) {
+        if (exception instanceof AccountSyncException sync) return sync.code().name();
+        if (exception instanceof BrokerConnectionException connection) return connection.code().publicCode();
+        return exception.getClass().getSimpleName();
+    }
 
     private record Tables(InvestmentOsSheetModel.SheetTable account, InvestmentOsSheetModel.SheetTable orders,
                           InvestmentOsSheetModel.SheetTable aggregate, InvestmentOsSheetModel.SheetTable metrics,

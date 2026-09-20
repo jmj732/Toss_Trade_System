@@ -27,6 +27,10 @@ class InvestmentOsSheetPropertiesBindingTest {
             var properties = context.getBean(InvestmentOsSheetProperties.class);
             assertThat(properties.enabled()).isTrue();
             assertThat(properties.spreadsheetId()).isEqualTo("sheet-1");
+            assertThat(properties.userId()).isEqualTo(java.util.UUID.fromString(
+                    "11111111-1111-1111-1111-111111111111"));
+            assertThat(properties.connectionId()).isEqualTo(java.util.UUID.fromString(
+                    "22222222-2222-2222-2222-222222222222"));
             assertThat(properties.accountLabel()).isEqualTo("ACCOUNT_2");
         });
     }
