@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -51,8 +50,7 @@ class InvestmentOsSheetSyncServiceTest {
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
         when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
         when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
-        when(connector.orders(BROKER_ACCOUNT, "CLOSED", LocalDate.of(2026, 9, 15),
-                LocalDate.of(2026, 9, 16))).thenReturn(List.of(new ConnectorResponse.Order(
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of(new ConnectorResponse.Order(
                 "order-1", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
                 "ABC", bd("2"), bd("2"), bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.FILLED,
                 ConnectorResponse.BrokerOrderGroup.CLOSED, Instant.now(), bd("9.5"), null, null)));
@@ -64,8 +62,7 @@ class InvestmentOsSheetSyncServiceTest {
         verify(connector, never()).fills(eq(USER_ID), eq(CONNECTION_ID), any());
         verify(connector).brokerAccount(CONNECTION_ID);
         verify(connector).orders(BROKER_ACCOUNT, "OPEN");
-        verify(connector).orders(BROKER_ACCOUNT, "CLOSED", LocalDate.of(2026, 9, 15),
-                LocalDate.of(2026, 9, 16));
+        verify(connector).orders(BROKER_ACCOUNT, "CLOSED");
         verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4
                 && updates.stream().anyMatch(update -> update.range().contains("Account State")
                 && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_2")))));
@@ -127,8 +124,7 @@ class InvestmentOsSheetSyncServiceTest {
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
         when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
         when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenThrow(new RuntimeException("timeout"));
-        when(connector.orders(BROKER_ACCOUNT, "CLOSED", LocalDate.of(2026, 9, 15),
-                LocalDate.of(2026, 9, 16))).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
         var sheets = mock(GoogleSheetsClient.class);
         when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
 
@@ -146,8 +142,7 @@ class InvestmentOsSheetSyncServiceTest {
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
         when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
         when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
-        when(connector.orders(BROKER_ACCOUNT, "CLOSED", LocalDate.of(2026, 9, 15),
-                LocalDate.of(2026, 9, 16))).thenThrow(new BrokerException(
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenThrow(new BrokerException(
                 BrokerErrorCategory.RATE_LIMITED, 429, "private-error", "private-request-id", null,
                 true, "token=must-not-leak"));
         var sheets = mock(GoogleSheetsClient.class);

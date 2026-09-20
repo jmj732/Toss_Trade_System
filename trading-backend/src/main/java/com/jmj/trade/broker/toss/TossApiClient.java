@@ -210,19 +210,8 @@ final class TossApiClient {
             BrokerAccountRef account,
             BrokerOrderGroup group,
             String cursor) {
-        return getOrders(account, group, cursor, null, null);
-    }
-
-    TossApiResponse<TossApiDtos.PaginatedOrderResponse> getOrders(
-            BrokerAccountRef account,
-            BrokerOrderGroup group,
-            String cursor,
-            LocalDate from,
-            LocalDate to) {
         Objects.requireNonNull(account, "account");
         Objects.requireNonNull(group, "group");
-        if ((from == null) != (to == null)) throw new IllegalArgumentException("from and to must be provided together");
-        if (from != null && to.isBefore(from)) throw new IllegalArgumentException("to must not be before from");
         return withTokenRefresh(account.brokerConnectionId(), token -> restClient.get()
                 .uri(builder -> {
                     var uri = builder.path("/api/v1/orders")
@@ -232,9 +221,6 @@ final class TossApiClient {
                     }
                     if (group == BrokerOrderGroup.CLOSED) {
                         uri.queryParam("limit", 100);
-                    }
-                    if (from != null) {
-                        uri.queryParam("from", from).queryParam("to", to);
                     }
                     return uri.build();
                 })

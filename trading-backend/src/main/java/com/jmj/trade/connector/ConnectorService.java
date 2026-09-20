@@ -15,7 +15,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -80,25 +79,10 @@ public final class ConnectorService {
         return orders(brokerAccount(connectionId), rawGroup);
     }
 
-    public List<ConnectorResponse.Order> orders(
-            UUID userId, UUID connectionId, String rawGroup, LocalDate from, LocalDate to
-    ) {
-        return orders(brokerAccount(connectionId), rawGroup, from, to);
-    }
-
     public List<ConnectorResponse.Order> orders(BrokerAccountRef account, String rawGroup) {
         requireOrderPort();
         var group = parseGroup(rawGroup);
         return requireOrderPort().getOrders(account, group).value().stream().map(ConnectorService::order).toList();
-    }
-
-    public List<ConnectorResponse.Order> orders(
-            BrokerAccountRef account, String rawGroup, LocalDate from, LocalDate to
-    ) {
-        requireOrderPort();
-        var group = parseGroup(rawGroup);
-        return requireOrderPort().getOrders(account, group, from, to).value().stream()
-                .map(ConnectorService::order).toList();
     }
 
     public List<ConnectorResponse.Fill> fills(UUID userId, UUID connectionId, Instant since) {

@@ -14,8 +14,6 @@ import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -143,8 +141,7 @@ public final class InvestmentOsSheetSyncService {
                             .addKeyValue("failure_reason", safeError(exception)).log("Toss open orders fetch failed");
                 }
                 try {
-                    var today = syncedAt.atZone(ZoneId.of("Asia/Seoul")).toLocalDate();
-                    closed = connector.orders(orderAccount, "CLOSED", today.minusDays(1), today);
+                    closed = connector.orders(orderAccount, "CLOSED");
                 } catch (RuntimeException exception) {
                     failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception));
                     LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
