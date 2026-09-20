@@ -1,6 +1,8 @@
 package com.jmj.trade.sheets;
 
 import com.jmj.trade.account.AccountSyncService;
+import com.jmj.trade.account.BrokerSurfaceService;
+import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
 import org.slf4j.Logger;
@@ -10,7 +12,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -25,6 +29,7 @@ public final class InvestmentOsSheetSyncService {
     private final InvestmentOsSheetLease lease;
     private final AccountSyncService accountSync;
     private final ConnectorService connector;
+    private final BrokerSurfaceService brokerSurface;
     private final GoogleSheetsClient sheets;
     private final Supplier<Instant> now;
 
@@ -36,7 +41,20 @@ public final class InvestmentOsSheetSyncService {
             GoogleSheetsClient sheets,
             Clock clock
     ) {
-        this(properties, lease, accountSync, connector, sheets, Objects.requireNonNull(clock, "clock")::instant);
+        this(properties, lease, accountSync, connector, null, sheets, clock);
+    }
+
+    public InvestmentOsSheetSyncService(
+            InvestmentOsSheetProperties properties,
+            InvestmentOsSheetLease lease,
+            AccountSyncService accountSync,
+            ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
+            GoogleSheetsClient sheets,
+            Clock clock
+    ) {
+        this(properties, lease, accountSync, connector, brokerSurface, sheets,
+                Objects.requireNonNull(clock, "clock")::instant);
     }
 
     InvestmentOsSheetSyncService(
@@ -47,10 +65,23 @@ public final class InvestmentOsSheetSyncService {
             GoogleSheetsClient sheets,
             Supplier<Instant> now
     ) {
+        this(properties, lease, accountSync, connector, null, sheets, now);
+    }
+
+    InvestmentOsSheetSyncService(
+            InvestmentOsSheetProperties properties,
+            InvestmentOsSheetLease lease,
+            AccountSyncService accountSync,
+            ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
+            GoogleSheetsClient sheets,
+            Supplier<Instant> now
+    ) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.lease = Objects.requireNonNull(lease, "lease");
         this.accountSync = Objects.requireNonNull(accountSync, "accountSync");
         this.connector = Objects.requireNonNull(connector, "connector");
+        this.brokerSurface = brokerSurface;
         this.sheets = Objects.requireNonNull(sheets, "sheets");
         this.now = Objects.requireNonNull(now, "now");
     }
@@ -148,32 +179,57 @@ public final class InvestmentOsSheetSyncService {
             var account = current.account();
             var orders = current.orders();
             var aggregate = current.aggregate();
+            var metrics = current.metrics();
             var authoritative = portfolio != null && authoritative(portfolio);
             var nextAccount = authoritative
                     ? InvestmentOsSheetModel.accountState(account, portfolio, syncedAt, properties.accountLabel()) : account;
+            var priceSnapshot = authoritative && brokerSurface != null
+                    ? fetchPrices(userId, connectionId, nextAccount) : PriceSnapshot.notConfigured();
+            if (authoritative && brokerSurface != null) {
+                nextAccount = InvestmentOsSheetModel.refreshPrices(nextAccount,
+                        new ArrayList<>(priceSnapshot.prices().values()), syncedAt);
+            }
+            var completePrices = brokerSurface == null || priceSnapshot.complete()
+                    && InvestmentOsSheetModel.hasCompleteQuotes(nextAccount);
+            var priceStatus = !authoritative ? "SKIPPED"
+                    : brokerSurface == null ? "NOT_CONFIGURED" : completePrices ? "OK" : "PARTIAL";
+            if (authoritative && brokerSurface != null && !completePrices) {
+                failure = appendFailure(failure, "PRICE_FETCH_PARTIAL");
+                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
+                        .addKeyValue("broker_fetch_result", "partial")
+                        .addKeyValue("price_symbols_missing", priceSnapshot.missingSymbols().size())
+                        .log("Toss quote fetch incomplete; existing price and valuation data preserved");
+            }
             var nextOrders = authoritative
                     ? InvestmentOsSheetModel.orders(orders, open, closed, syncedAt, properties.accountLabel()) : orders;
-            var nextAggregate = authoritative
+            var updateAggregate = authoritative && completePrices;
+            var nextAggregate = updateAggregate
                     ? InvestmentOsSheetModel.aggregate(aggregate, nextAccount, syncedAt) : aggregate;
+            var updateMetrics = authoritative && brokerSurface != null && completePrices;
+            var nextMetrics = updateMetrics
+                    ? InvestmentOsSheetModel.portfolioMetrics(metrics, nextAccount, syncedAt) : metrics;
             var allOrderReadsSucceeded = open != null && closed != null;
-            var status = reconciliationStatus(authoritative, portfolio, open, closed, fills);
+            var status = reconciliationStatus(authoritative, portfolio, open, closed, fills, priceStatus);
             var nextRecon = InvestmentOsSheetModel.reconciliation(
                     current.reconciliation(), syncId.toString(), properties.accountLabel(), "" + status.holdings,
-                    status.cash, status.orders, status.fills,
-                    rowDelta(account, nextAccount) + rowDelta(orders, nextOrders) + rowDelta(aggregate, nextAggregate),
+                    status.cash, status.orders, status.fills, status.prices,
+                    rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
+                            + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics),
                     failure == null ? "NONE" : failure,
-                    failure == null && authoritative && allOrderReadsSucceeded && fills != null,
+                    failure == null && authoritative && allOrderReadsSucceeded && fills != null
+                            && (brokerSurface == null || completePrices),
                     syncedAt, failure);
             var updates = new ArrayList<GoogleSheetsClient.SheetValueRange>();
             if (authoritative) {
                 updates.add(toRange("Account State", account, nextAccount));
                 updates.add(toRange("Orders", orders, nextOrders));
-                updates.add(toRange("Portfolio Aggregate", aggregate, nextAggregate));
+                if (updateAggregate) updates.add(toRange("Portfolio Aggregate", aggregate, nextAggregate));
+                if (updateMetrics) updates.add(toRange("Portfolio Metrics", metrics, nextMetrics));
             }
             updates.add(toRange("Reconciliation Log", current.reconciliation(), nextRecon));
             sheets.batchUpdateValues(properties.spreadsheetId(), updates);
             var rowsChanged = rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
-                    + rowDelta(aggregate, nextAggregate);
+                    + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics);
             var ordersChanged = open == null ? 0 : open.size();
             ordersChanged += closed == null ? 0 : closed.size();
             var result = new InvestmentOsSheetSyncResult(
@@ -185,7 +241,9 @@ public final class InvestmentOsSheetSyncService {
                     .addKeyValue("rows_changed", rowsChanged)
                     .addKeyValue("orders_changed", ordersChanged)
                     .addKeyValue("fills_changed", fills == null ? 0 : fills.size())
-                    .addKeyValue("aggregate_recalculation", authoritative)
+                    .addKeyValue("quote_fetch_result", priceStatus.toLowerCase())
+                    .addKeyValue("aggregate_recalculation", updateAggregate)
+                    .addKeyValue("metrics_recalculation", updateMetrics)
                     .addKeyValue("reconciliation_result", status.resolved)
                     .addKeyValue("duration_ms", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
                     .log("investment os sheet sync completed");
@@ -206,6 +264,7 @@ public final class InvestmentOsSheetSyncService {
                 read("Account State", InvestmentOsSheetModel.accountHeaders()),
                 read("Orders", InvestmentOsSheetModel.orderHeaders()),
                 read("Portfolio Aggregate", InvestmentOsSheetModel.aggregateHeaders()),
+                read("Portfolio Metrics", InvestmentOsSheetModel.metricsHeaders()),
                 read("Reconciliation Log", InvestmentOsSheetModel.reconciliationHeaders()));
     }
 
@@ -245,13 +304,40 @@ public final class InvestmentOsSheetSyncService {
     }
 
     private static Status reconciliationStatus(boolean authoritative, ConnectorResponse.Portfolio portfolio,
-                                               List<?> open, List<?> closed, List<?> fills) {
+                                               List<?> open, List<?> closed, List<?> fills, String prices) {
         var holdings = authoritative ? "OK" : "FAILED";
         var cash = authoritative && portfolio.buyingPower().keySet().containsAll(List.of("USD", "KRW")) ? "OK" : "PARTIAL";
         var orders = open != null && closed != null ? "OK" : "PARTIAL";
         var fillStatus = fills != null ? "OK" : "PARTIAL";
         return new Status(holdings, cash, orders, fillStatus, authoritative && "OK".equals(cash)
-                && "OK".equals(orders) && "OK".equals(fillStatus));
+                && "OK".equals(orders) && "OK".equals(fillStatus)
+                && ("OK".equals(prices) || "NOT_CONFIGURED".equals(prices)), prices);
+    }
+
+    private PriceSnapshot fetchPrices(UUID userId, UUID connectionId, InvestmentOsSheetModel.SheetTable account) {
+        var expected = InvestmentOsSheetModel.heldSymbols(account);
+        var prices = new LinkedHashMap<String, BrokerSurfaceResponse.PriceView>();
+        for (var symbol : expected) {
+            try {
+                var response = brokerSurface.prices(userId, connectionId, symbol);
+                if (response != null && response.data() != null) {
+                    for (var price : response.data()) {
+                        if (price != null && price.symbol() != null && price.lastPrice() != null
+                                && price.lastPrice().signum() > 0) {
+                            prices.putIfAbsent(price.symbol().toUpperCase(java.util.Locale.ROOT), price);
+                        }
+                    }
+                }
+            } catch (RuntimeException ignored) {
+                // One quote failure must not discard successful prices for other symbols.
+            }
+        }
+        var missing = expected.stream().filter(symbol -> !prices.containsKey(symbol)).toList();
+        return new PriceSnapshot(Map.copyOf(prices), missing);
+    }
+
+    private static String appendFailure(String failure, String next) {
+        return failure == null ? next : failure + "+" + next;
     }
 
     private static int rowDelta(InvestmentOsSheetModel.SheetTable before, InvestmentOsSheetModel.SheetTable after) {
@@ -275,6 +361,11 @@ public final class InvestmentOsSheetSyncService {
     private static String safeError(RuntimeException exception) { return exception.getClass().getSimpleName(); }
 
     private record Tables(InvestmentOsSheetModel.SheetTable account, InvestmentOsSheetModel.SheetTable orders,
-                          InvestmentOsSheetModel.SheetTable aggregate, InvestmentOsSheetModel.SheetTable reconciliation) { }
-    private record Status(String holdings, String cash, String orders, String fills, boolean resolved) { }
+                          InvestmentOsSheetModel.SheetTable aggregate, InvestmentOsSheetModel.SheetTable metrics,
+                          InvestmentOsSheetModel.SheetTable reconciliation) { }
+    private record Status(String holdings, String cash, String orders, String fills, boolean resolved, String prices) { }
+    private record PriceSnapshot(Map<String, BrokerSurfaceResponse.PriceView> prices, List<String> missingSymbols) {
+        static PriceSnapshot notConfigured() { return new PriceSnapshot(Map.of(), List.of()); }
+        boolean complete() { return missingSymbols.isEmpty(); }
+    }
 }

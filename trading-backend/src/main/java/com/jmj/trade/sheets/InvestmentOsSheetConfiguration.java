@@ -1,6 +1,7 @@
 package com.jmj.trade.sheets;
 
 import com.jmj.trade.account.AccountSyncService;
+import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.connector.ConnectorService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -45,10 +46,11 @@ public class InvestmentOsSheetConfiguration {
             InvestmentOsSheetLease lease,
             AccountSyncService accountSyncService,
             ConnectorService connectorService,
+            BrokerSurfaceService brokerSurfaceService,
             GoogleSheetsClient googleSheetsClient
     ) {
         return new InvestmentOsSheetSyncService(properties, lease, accountSyncService, connectorService,
-                googleSheetsClient, Clock.systemUTC());
+                brokerSurfaceService, googleSheetsClient, Clock.systemUTC());
     }
 
     @Bean
