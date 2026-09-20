@@ -137,15 +137,16 @@ public final class InvestmentOsSheetSyncService {
                 LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
                         .addKeyValue("failure_reason", safeError(exception)).log("Toss closed orders fetch failed");
             }
-            try {
-                fills = connector.fills(userId, connectionId, syncedAt.minus(Duration.ofDays(1)));
+            if (open != null && closed != null) {
+                fills = ConnectorService.fills(open, closed, syncedAt.minus(Duration.ofDays(1)));
                 LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                         .addKeyValue("broker_fetch_result", "success").addKeyValue("fills", fills.size())
                         .log("Toss recent fills fetch completed");
-            } catch (RuntimeException exception) {
-                failure = appendFailure(failure, "FILLS_FETCH_FAILED_" + safeError(exception));
+            } else {
+                failure = appendFailure(failure, "FILLS_NOT_DERIVED_ORDERS_UNAVAILABLE");
                 LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "fills")
-                        .addKeyValue("failure_reason", safeError(exception)).log("Toss recent fills fetch failed");
+                        .addKeyValue("failure_reason", "ORDERS_UNAVAILABLE")
+                        .log("Toss recent fills unavailable; order history fetch failed");
             }
         } else if (failure == null) {
             failure = portfolio == null ? "EMPTY_PORTFOLIO" : "NON_AUTHORITATIVE_PORTFOLIO";

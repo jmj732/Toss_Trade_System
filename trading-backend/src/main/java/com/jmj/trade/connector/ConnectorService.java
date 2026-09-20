@@ -85,9 +85,19 @@ public final class ConnectorService {
     public List<ConnectorResponse.Fill> fills(UUID userId, UUID connectionId, Instant since) {
         requireOrderPort();
         var account = account(connectionId);
-        var open = requireOrderPort().getOrders(account, BrokerOrderGroup.OPEN).value();
-        var closed = requireOrderPort().getOrders(account, BrokerOrderGroup.CLOSED).value();
-        return java.util.stream.Stream.concat(open.stream(), closed.stream())
+        var open = requireOrderPort().getOrders(account, BrokerOrderGroup.OPEN).value().stream()
+                .map(ConnectorService::order).toList();
+        var closed = requireOrderPort().getOrders(account, BrokerOrderGroup.CLOSED).value().stream()
+                .map(ConnectorService::order).toList();
+        return fills(open, closed, since);
+    }
+
+    public static List<ConnectorResponse.Fill> fills(
+            List<ConnectorResponse.Order> open, List<ConnectorResponse.Order> closed, Instant since
+    ) {
+        return java.util.stream.Stream.concat(
+                        (open == null ? List.<ConnectorResponse.Order>of() : open).stream(),
+                        (closed == null ? List.<ConnectorResponse.Order>of() : closed).stream())
                 .filter(order -> order.filledQuantity() != null && order.filledQuantity().signum() > 0)
                 .map(ConnectorService::fill)
                 .filter(fill -> since == null || (fill.filledAt() != null && !fill.filledAt().isBefore(since)))
@@ -174,11 +184,9 @@ public final class ConnectorService {
                 source.averageFilledPrice(), source.commission(), source.tax());
     }
 
-    private static ConnectorResponse.Fill fill(BrokerOrderView source) {
-        return new ConnectorResponse.Fill(source.brokerOrderId(), source.symbol(),
-                ConnectorResponse.BrokerOrderSide.valueOf(source.side().name()), source.currency().name(),
-                source.filledQuantity(), source.averageFilledPrice() == null ? source.limitPrice() : source.averageFilledPrice(),
-                source.commission(), source.tax(), source.filledAt(), null);
+    private static ConnectorResponse.Fill fill(ConnectorResponse.Order source) {
+        return new ConnectorResponse.Fill(source.brokerOrderId(), source.symbol(), source.side(), source.currency(),
+                source.filledQuantity(), source.averageFilledPrice(), source.commission(), source.tax(), source.filledAt(), null);
     }
 
     private static ConnectorResponse.PortfolioState unknownState() {

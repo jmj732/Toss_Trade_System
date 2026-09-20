@@ -94,6 +94,20 @@ class ConnectorServiceTest {
                 .isSameAs(notFound);
     }
 
+    @Test
+    void confirmedOrderFillDoesNotGuessAveragePriceFromLimitPrice() {
+        var order = new ConnectorResponse.Order(
+                "order-1", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
+                "ABC", new BigDecimal("2"), new BigDecimal("1"), new BigDecimal("10"), "USD",
+                ConnectorResponse.BrokerOrderLifecycle.PARTIALLY_FILLED,
+                ConnectorResponse.BrokerOrderGroup.OPEN, OBSERVED_AT, null, null, null);
+
+        var fills = ConnectorService.fills(List.of(order), List.of(), OBSERVED_AT.minusSeconds(60));
+
+        assertThat(fills).hasSize(1);
+        assertThat(fills.getFirst().averagePrice()).isNull();
+    }
+
     private static PortfolioReadService.PortfolioView portfolio() {
         var account = new PortfolioReadService.AccountView(
                 "GENERAL", "****5678", Map.of(), Map.of("USD", new BigDecimal("900")),

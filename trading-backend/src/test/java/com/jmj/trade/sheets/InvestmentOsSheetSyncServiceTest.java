@@ -46,12 +46,18 @@ class InvestmentOsSheetSyncServiceTest {
         when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
         when(connector.orders(USER_ID, CONNECTION_ID, "OPEN")).thenReturn(List.of());
-        when(connector.orders(USER_ID, CONNECTION_ID, "CLOSED")).thenReturn(List.of());
+        when(connector.orders(USER_ID, CONNECTION_ID, "CLOSED")).thenReturn(List.of(new ConnectorResponse.Order(
+                "order-1", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
+                "ABC", bd("2"), bd("2"), bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.FILLED,
+                ConnectorResponse.BrokerOrderGroup.CLOSED, Instant.now(), bd("9.5"), null, null)));
 
         var result = service(lease, connector, sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
-        verify(connector).fills(eq(USER_ID), eq(CONNECTION_ID), any());
+        assertThat(result.fillsChanged()).isEqualTo(1);
+        verify(connector, never()).fills(eq(USER_ID), eq(CONNECTION_ID), any());
+        verify(connector).orders(USER_ID, CONNECTION_ID, "OPEN");
+        verify(connector).orders(USER_ID, CONNECTION_ID, "CLOSED");
         verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4
                 && updates.stream().anyMatch(update -> update.range().contains("Account State")
                 && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_2")))));
@@ -137,7 +143,8 @@ class InvestmentOsSheetSyncServiceTest {
 
         var result = service(lease, connector, sheets).sync();
 
-        assertThat(result.error()).isEqualTo("CLOSED_ORDERS_FETCH_FAILED_BROKER_RATE_LIMITED_HTTP_429");
+        assertThat(result.error()).isEqualTo("CLOSED_ORDERS_FETCH_FAILED_BROKER_RATE_LIMITED_HTTP_429"
+                + "+FILLS_NOT_DERIVED_ORDERS_UNAVAILABLE");
         assertThat(result.error()).doesNotContain("private", "token");
     }
 
