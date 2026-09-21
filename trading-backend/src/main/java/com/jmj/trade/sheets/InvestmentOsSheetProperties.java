@@ -53,9 +53,8 @@ public record InvestmentOsSheetProperties(
         var normalized = value == null || value.isBlank()
                 ? InvestmentOsSheetModel.ACCOUNT_1
                 : value.trim().toUpperCase(java.util.Locale.ROOT);
-        if (!InvestmentOsSheetModel.ACCOUNT_1.equals(normalized)
-                && !InvestmentOsSheetModel.ACCOUNT_2.equals(normalized)) {
-            throw new IllegalArgumentException("accountLabel must be ACCOUNT_1 or ACCOUNT_2");
+        if (!InvestmentOsSheetModel.ACCOUNT_1.equals(normalized)) {
+            throw new IllegalArgumentException("Toss Sheet sync accountLabel must be ACCOUNT_1");
         }
         return normalized;
     }

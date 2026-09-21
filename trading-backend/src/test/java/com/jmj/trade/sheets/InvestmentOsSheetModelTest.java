@@ -15,6 +15,18 @@ class InvestmentOsSheetModelTest {
     private static final Instant SYNCED_AT = Instant.parse("2026-09-16T00:00:00Z");
 
     @Test
+    void canonicalAccountStateIncludesHoldingAndCashState() {
+        var updated = InvestmentOsSheetModel.accountState(
+                new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of()),
+                portfolio(position("ABC", "2", "10"), cash("USD", "100")), SYNCED_AT);
+
+        assertThat(updated.rows()).filteredOn(row -> row.get(updated.column("Ticker")).equals("ABC"))
+                .singleElement().satisfies(row -> assertThat(row.get(updated.column("State"))).isEqualTo("HELD"));
+        assertThat(updated.rows()).filteredOn(row -> row.get(updated.column("Ticker")).equals("CASH_USD"))
+                .singleElement().satisfies(row -> assertThat(row.get(updated.column("State")).toString()).isEqualTo("CASH"));
+    }
+
+    @Test
     void replacesAccount1FromConfirmedSnapshotAndPreservesAccount2() {
         var existing = table(
                 row("ACCOUNT_1", "OLD", "HOLDING", "USD", "2", "10"),
@@ -108,13 +120,85 @@ class InvestmentOsSheetModelTest {
     }
 
     @Test
+    void leavesCombinedQuantityAndMarketValueUnknownWhenAnyAccountQuantityIsMissing() {
+        var account = table(
+                row("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "40"),
+                row("ACCOUNT_2", "ABC", "HOLDING", "USD", "", "20", "90"));
+
+        var aggregate = InvestmentOsSheetModel.aggregate(account, SYNCED_AT);
+        var holding = aggregate.rows().getFirst();
+
+        assertThat(holding.get(aggregate.column("Quantity"))).isBlank();
+        assertThat(holding.get(aggregate.column("Market Value"))).isBlank();
+    }
+
+    @Test
+    void aggregateMarketValueUsesCombinedQuantityAndSharedLatestQuote() {
+        var account = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
+                List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "0.333", "10", "1", "0.33", "", "TOSS_API", "HIGH", "now", "TOSS_QUOTE_API", "now"),
+                List.of("ACCOUNT_2", "ABC", "HOLDING", "USD", "0.333", "20", "1", "0.33", "", "MANUAL", "HIGH", "manual", "TOSS_QUOTE_API", "now")));
+
+        var aggregate = InvestmentOsSheetModel.aggregate(account, SYNCED_AT);
+
+        assertThat(aggregate.rows().getFirst().get(aggregate.column("Market Value"))).isEqualTo("0.67");
+    }
+
+    @Test
+    void updatesOnlyAccount1LastSyncInAccountRegistry() {
+        var registry = new InvestmentOsSheetModel.SheetTable(
+                List.of("Account", "Label", "Sync Mode", "Source", "Default Confidence", "Enabled", "Last Sync", "Notes"),
+                List.of(List.of("ACCOUNT_1", "Toss", "AUTO", "TOSS_API", "HIGH", "TRUE", "old", "keep"),
+                        List.of("ACCOUNT_2", "Manual", "MANUAL", "MANUAL", "MEDIUM", "TRUE", "manual-time", "manual-note")));
+
+        var updated = InvestmentOsSheetModel.accountRegistry(registry, SYNCED_AT);
+
+        assertThat(updated.rows().get(0)).containsExactly("ACCOUNT_1", "Toss", "AUTO", "TOSS_API", "HIGH", "TRUE", SYNCED_AT.toString(), "keep");
+        assertThat(updated.rows().get(1)).containsExactlyElementsOf(registry.rows().get(1));
+    }
+
+    @Test
+    void metricsKeepHighWaterMarkAndReportUsdValueWithoutInventingKrwFx() {
+        var account = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
+                List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "5", "10", "20", "100", "", "TOSS_API", "HIGH", "now", "TOSS_QUOTE_API", "now"),
+                List.of("ACCOUNT_1", "CASH_USD", "CASH", "USD", "", "", "", "", "20", "TOSS_API", "HIGH", "now", "", ""),
+                List.of("ACCOUNT_1", "CASH_KRW", "CASH", "KRW", "", "", "", "", "500000", "TOSS_API", "HIGH", "now", "", ""),
+                List.of("ACCOUNT_2", "CASH_USD", "CASH", "USD", "", "", "", "", "10", "MANUAL", "HIGH", "manual", "", "")));
+        var metrics = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.metricsHeaders(), List.of(
+                List.of("2026-09-15", "ACCOUNT_1", "180", "20", "11%", "200", "-10%", "", "", "old", "TOSS_API", "old")));
+
+        var updated = InvestmentOsSheetModel.portfolioMetrics(metrics, account, SYNCED_AT);
+
+        var account1 = updated.rows().stream().filter(row -> row.get(updated.column("Scope")).equals("ACCOUNT_1"))
+                .findFirst().orElseThrow();
+        assertThat(account1.get(updated.column("Total Value"))).isEqualTo("120");
+        assertThat(account1.get(updated.column("High-water Mark"))).isEqualTo("200");
+        assertThat(account1.get(updated.column("Drawdown %"))).isEqualTo("-40%");
+        assertThat(account1.get(updated.column("Notes"))).contains("KRW cash excluded");
+        assertThat(updated.rows()).anySatisfy(row -> assertThat(row.get(updated.column("Scope"))).isEqualTo("COMBINED"));
+    }
+
+    @Test
+    void metricsPreservePriorSnapshotWhenUsdCashIsUnknown() {
+        var account = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
+                List.of("ACCOUNT_1", "CASH_USD", "CASH", "USD", "", "", "", "", "", "TOSS_API", "HIGH", "old", "", "")));
+        var previous = List.of("2026-09-15", "ACCOUNT_1", "123.45", "23.45", "19%", "150", "-17.7%", "", "", "previous", "TOSS_API", "old");
+        var metrics = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.metricsHeaders(), List.of(previous));
+
+        var updated = InvestmentOsSheetModel.portfolioMetrics(metrics, account, SYNCED_AT);
+
+        assertThat(updated.rows()).containsExactly(previous);
+    }
+
+    @Test
     void tossQuotesUpdateHoldingsInBothAccountsWithoutChangingManualPositionData() {
         var syncedAt = "2026-09-20T00:00:00Z";
         var account = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
                 List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "11", "22", "", "TOSS_API", "HIGH", syncedAt,
                         "TOSS_QUOTE_API", syncedAt),
                 List.of("ACCOUNT_2", "XYZ", "HOLDING", "USD", "3", "20", "12", "36", "", "MANUAL", "HIGH", "manual-sync",
-                        "MANUAL", "manual-price-time")));
+                        "MANUAL", "manual-price-time"),
+                List.of("ACCOUNT_2", "CASH_USD", "CASH", "USD", "", "", "", "", "19.24", "MANUAL", "HIGH", "manual-cash",
+                        "", "")));
 
         assertThat(InvestmentOsSheetModel.heldSymbols(account)).containsExactly("ABC", "XYZ");
         var updated = InvestmentOsSheetModel.refreshPrices(account, List.of(
@@ -133,6 +217,8 @@ class InvestmentOsSheetModelTest {
         assertThat(account2.get(updated.column("Current Price"))).isEqualTo("25");
         assertThat(account2.get(updated.column("Market Value"))).isEqualTo("75");
         assertThat(account2.get(updated.column("Price Source"))).isEqualTo("TOSS_QUOTE_API");
+        assertThat(updated.rows().get(2).get(updated.column("Cash"))).isEqualTo("19.24");
+        assertThat(updated.rows().get(2).get(updated.column("Source"))).isEqualTo("MANUAL");
         assertThat(InvestmentOsSheetModel.hasCompleteQuotes(updated)).isTrue();
     }
 
@@ -150,8 +236,9 @@ class InvestmentOsSheetModelTest {
                 ConnectorResponse.BrokerOrderGroup.OPEN, null, null, null, null);
 
         var updated = InvestmentOsSheetModel.openOrders(table(
-                        row("ACCOUNT_1", "filled-1", "OPEN", "FILLED"),
-                        row("ACCOUNT_2", "manual-1", "XYZ", "PENDING")),
+                        row("ACCOUNT_1", "stale-open-1", "ABC", "PENDING"),
+                        row("ACCOUNT_2", "manual-1", "XYZ", "PENDING"),
+                        row("ACCOUNT_2", "manual-filled", "XYZ", "FILLED")),
                 List.of(open, oldHistory, open), SYNCED_AT);
 
         assertThat(updated.headers()).containsExactlyElementsOf(InvestmentOsSheetModel.orderHeaders());
@@ -210,6 +297,31 @@ class InvestmentOsSheetModelTest {
     }
 
     @Test
+    void orderHistoryStoresOnlyTerminalOrdersAndRefreshesByAccountAndBrokerId() {
+        var existing = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of(
+                List.of("ACCOUNT_1", "active-old", "ABC", "BUY", "LIMIT", "USD", "1", "0", "10", "", "PENDING", "", "TOSS_API", "old", "2026-09-22T00:00:00Z")));
+        var orderedAt = InvestmentOsSheetModel.ORDER_HISTORY_CUTOVER.plusSeconds(1);
+        var open = new ConnectorResponse.Order("active-new", ConnectorResponse.BrokerOrderSide.BUY,
+                ConnectorResponse.BrokerOrderType.LIMIT, "ABC", bd("1"), bd("0"), bd("10"), "USD",
+                ConnectorResponse.BrokerOrderLifecycle.PARTIALLY_FILLED, ConnectorResponse.BrokerOrderGroup.OPEN,
+                null, null, null, null, orderedAt);
+        var filled = new ConnectorResponse.Order("active-new", ConnectorResponse.BrokerOrderSide.BUY,
+                ConnectorResponse.BrokerOrderType.LIMIT, "ABC", bd("1"), bd("1"), bd("10"), "USD",
+                ConnectorResponse.BrokerOrderLifecycle.FILLED, ConnectorResponse.BrokerOrderGroup.CLOSED,
+                SYNCED_AT, bd("9.8"), null, null, orderedAt);
+
+        var history = InvestmentOsSheetModel.orderHistory(existing, List.of(open), List.of(filled),
+                new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of()),
+                SYNCED_AT, InvestmentOsSheetModel.ACCOUNT_1);
+
+        assertThat(history.rows()).hasSize(1);
+        assertThat(history.rows().getFirst().get(history.column("Order ID"))).isEqualTo("active-new");
+        assertThat(history.rows().getFirst().get(history.column("Status"))).isEqualTo("FILLED");
+        assertThat(history.rows().getFirst().get(history.column("Filled Quantity"))).isEqualTo("1");
+        assertThat(history.rows().getFirst().get(history.column("Average Filled Price"))).isEqualTo("9.8");
+    }
+
+    @Test
     void doesNotInferOrderAgeWhenBrokerOrderTimeIsMissing() {
         var order = new ConnectorResponse.Order(
                 "unknown-time", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
@@ -256,8 +368,8 @@ class InvestmentOsSheetModelTest {
         var previousOrder = List.of("ACCOUNT_1", "old-order", "ABC", "BUY", "LIMIT", "USD", "1", "1",
                 "10", "10", "FILLED", "2026-09-20T12:00:00Z", "TOSS_API", "old-sync",
                 "2026-09-20T11:59:59Z");
-        var newOrder = List.of("ACCOUNT_1", "new-order", "XYZ", "BUY", "LIMIT", "USD", "1", "0",
-                "20", "", "PENDING", "", "TOSS_API", "new-sync", "2026-09-21T12:35:53Z");
+        var newOrder = List.of("ACCOUNT_1", "new-order", "XYZ", "BUY", "LIMIT", "USD", "1", "1",
+                "20", "20", "FILLED", "2026-09-21T12:35:54Z", "TOSS_API", "new-sync", "2026-09-21T12:35:53Z");
         var existing = new InvestmentOsSheetModel.SheetTable(headers, List.of(previousOrder, newOrder));
 
         var history = InvestmentOsSheetModel.orderHistory(existing, List.of(), SYNCED_AT);
@@ -267,6 +379,20 @@ class InvestmentOsSheetModelTest {
         assertThat(history.headers()).contains("Ordered At");
         assertThat(history.rows().getFirst().get(history.column("Ordered At")))
                 .isEqualTo("2026-09-21T12:35:53Z");
+    }
+
+    @Test
+    void repeatedIdenticalReconciliationReplacesLatestRowInsteadOfAppending() {
+        var empty = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.reconciliationHeaders(), List.of());
+        var first = InvestmentOsSheetModel.reconciliation(empty, "sync-1", "ACCOUNT_1", "OK", "OK", "OK", "OK",
+                "OK", 0, "NONE", true, SYNCED_AT, null);
+        var second = InvestmentOsSheetModel.reconciliation(first, "sync-2", "ACCOUNT_1", "OK", "OK", "OK", "OK",
+                "OK", 0, "NONE", true, SYNCED_AT.plusSeconds(300), null);
+
+        assertThat(second.rows()).hasSize(1);
+        assertThat(second.rows().getFirst().get(second.column("Sync ID"))).isEqualTo("sync-2");
+        assertThat(second.rows().getFirst().get(second.column("Checked At")))
+                .isEqualTo(SYNCED_AT.plusSeconds(300).toString());
     }
 
     private static InvestmentOsSheetModel.SheetTable table(List<String>... rows) {

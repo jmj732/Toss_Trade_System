@@ -28,7 +28,7 @@ public final class InvestmentOsSheetModel {
     private static final List<String> ACCOUNT_HEADERS = List.of(
             "Account", "Ticker", "Asset Type", "Currency", "Quantity", "Avg Cost",
             "Current Price", "Market Value", "Cash", "Source", "Confidence", "Synced At",
-            "Price Source", "Price Synced At");
+            "Price Source", "Price Synced At", "State");
     private static final List<String> LEGACY_ACCOUNT_HEADERS = List.of(
             "asOf", "Account", "Asset", "Quantity", "Avg Cost", "Currency", "State", "Source",
             "Confidence", "Synced At", "Notes", "Current Price", "Market Value", "Price Source", "Price Synced At");
@@ -48,6 +48,8 @@ public final class InvestmentOsSheetModel {
     private static final List<String> RECON_HEADERS = List.of(
             "Sync ID", "Account", "Broker", "Holdings", "Cash", "Orders", "Fills",
             "Prices", "Rows Changed", "Mismatch/Gap", "Resolved", "Checked At", "Error");
+    private static final List<String> REGISTRY_HEADERS = List.of(
+            "Account", "Label", "Sync Mode", "Source", "Default Confidence", "Enabled", "Last Sync", "Notes");
 
     private InvestmentOsSheetModel() {
     }
@@ -130,7 +132,8 @@ public final class InvestmentOsSheetModel {
         var source = current;
         var table = new SheetTable(ORDER_HEADERS, List.of());
         var rows = source.rows().stream()
-                .filter(row -> !managedAccount.equalsIgnoreCase(value(source, row, "Account")))
+                .filter(row -> !managedAccount.equalsIgnoreCase(value(source, row, "Account"))
+                        && isOpenOrder(source, row))
                 .map(row -> copyOrderRow(source, row, table))
                 .collect(Collectors.toCollection(ArrayList::new));
         var byId = new LinkedHashMap<String, ConnectorResponse.Order>();
@@ -171,9 +174,9 @@ public final class InvestmentOsSheetModel {
         var unkeyed = new ArrayList<List<String>>();
         source.rows().forEach(row -> {
             var copied = copyOrderRow(source, row, table);
-            if (managedAccount.equalsIgnoreCase(value(table, copied, "Account"))
-                    && !isPostCutoverOrder(table, copied)) return;
             var orderId = value(table, copied, "Order ID");
+            if (managedAccount.equalsIgnoreCase(value(table, copied, "Account"))
+                    && (!isPostCutoverOrder(table, copied) || !isTerminalOrder(table, copied) || orderId.isBlank())) return;
             if (orderId.isBlank()) unkeyed.add(copied);
             else byKey.put(value(table, copied, "Account") + "|" + orderId, copied);
         });
@@ -182,12 +185,12 @@ public final class InvestmentOsSheetModel {
                 .filter(row -> managedAccount.equalsIgnoreCase(value(legacy, row, "Account")))
                 .filter(row -> "TOSS_API".equalsIgnoreCase(value(legacy, row, "Source")))
                 .filter(row -> isPostCutoverOrder(legacy, row))
+                .filter(row -> isTerminalOrder(legacy, row))
                 .map(row -> copyOrderRow(legacy, row, table))
                 .filter(row -> !value(table, row, "Order ID").isBlank())
                 .forEach(row -> byKey.put(value(table, row, "Account") + "|" + value(table, row, "Order ID"), row));
-        var fetched = new ArrayList<ConnectorResponse.Order>(safe(open));
-        fetched.addAll(safe(closed));
-        fetched.stream().filter(InvestmentOsSheetModel::isPostCutoverOrder)
+        safe(closed).stream().filter(InvestmentOsSheetModel::isTerminalOrder)
+                .filter(InvestmentOsSheetModel::isPostCutoverOrder)
                 .filter(order -> order.brokerOrderId() != null && !order.brokerOrderId().isBlank())
                 .sorted(Comparator.comparing(ConnectorResponse.Order::brokerOrderId))
                 .forEach(order -> byKey.put(managedAccount + "|" + order.brokerOrderId(),
@@ -205,6 +208,13 @@ public final class InvestmentOsSheetModel {
                 || order.status() == ConnectorResponse.BrokerOrderLifecycle.REPLACING);
     }
 
+    private static boolean isOpenOrder(SheetTable table, List<String> row) {
+        return switch (value(table, row, "Status").toUpperCase(Locale.ROOT)) {
+            case "OPEN", "PENDING", "PARTIALLY_FILLED", "CANCELING", "REPLACING" -> true;
+            default -> false;
+        };
+    }
+
     private static boolean isPostCutoverOrder(ConnectorResponse.Order order) {
         return order != null && order.orderedAt() != null && !order.orderedAt().isBefore(ORDER_HISTORY_CUTOVER);
     }
@@ -217,6 +227,21 @@ public final class InvestmentOsSheetModel {
         } catch (DateTimeParseException exception) {
             return false;
         }
+    }
+
+    private static boolean isTerminalOrder(ConnectorResponse.Order order) {
+        return order != null && order.group() == ConnectorResponse.BrokerOrderGroup.CLOSED
+                && order.status() != null && switch (order.status()) {
+            case FILLED, CANCELED, REJECTED, CANCEL_REJECTED, REPLACE_REJECTED, REPLACED -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isTerminalOrder(SheetTable table, List<String> row) {
+        return switch (value(table, row, "Status").toUpperCase(Locale.ROOT)) {
+            case "FILLED", "CANCELED", "REJECTED", "CANCEL_REJECTED", "REPLACE_REJECTED", "REPLACED" -> true;
+            default -> false;
+        };
     }
 
     private static List<String> brokerOrderRow(
@@ -287,7 +312,7 @@ public final class InvestmentOsSheetModel {
                     .add(account, coverageSource(source, row), value(source, row, "Confidence"),
                             decimalValue(field(source, row, "Quantity")),
                             decimalValue(value(source, row, "Avg Cost")),
-                            decimalValue(value(source, row, "Market Value")),
+                            decimalValue(value(source, row, "Current Price")),
                             decimalValue(field(source, row, "Cash", "Quantity")));
         }
         var rows = new ArrayList<List<String>>();
@@ -295,6 +320,25 @@ public final class InvestmentOsSheetModel {
         holdings.values().stream().sorted(Aggregate.ORDER).forEach(item -> rows.add(item.row(table, observed, false)));
         cash.values().stream().sorted(Aggregate.ORDER).forEach(item -> rows.add(item.row(table, observed, true)));
         return table.withRows(rows);
+    }
+
+    public static SheetTable accountRegistry(SheetTable current, Instant syncedAt) {
+        var table = current.withHeaders(REGISTRY_HEADERS);
+        if (!hasAccountRegistryAccount(table, ACCOUNT_1)) return table;
+        var rows = new ArrayList<List<String>>();
+        for (var sourceRow : table.rows()) {
+            var row = padded(table, sourceRow);
+            if (ACCOUNT_1.equalsIgnoreCase(value(table, row, "Account"))) {
+                put(table, row, "Last Sync", instant(syncedAt));
+            }
+            rows.add(row);
+        }
+        return table.withRows(rows);
+    }
+
+    public static boolean hasAccountRegistryAccount(SheetTable registry, String account) {
+        return registry.rows().stream()
+                .filter(row -> account.equalsIgnoreCase(value(registry, row, "Account"))).count() == 1;
     }
 
     public static SheetTable refreshPrices(
@@ -348,7 +392,9 @@ public final class InvestmentOsSheetModel {
             if (!isPortfolioAccount(value(source, row, "Account"))) continue;
             var ticker = field(source, row, "Ticker", "Asset");
             if (ticker.isBlank() || isCash(source, row, ticker)) continue;
+            var currentPrice = decimalValue(value(source, row, "Current Price"));
             if (!"TOSS_QUOTE_API".equals(value(source, row, "Price Source"))
+                    || currentPrice == null || currentPrice.signum() <= 0
                     || decimalValue(value(source, row, "Market Value")) == null) return false;
         }
         return true;
@@ -532,8 +578,20 @@ public final class InvestmentOsSheetModel {
         put(table, row, "Checked At", instant(checkedAt));
         put(table, row, "Error", error);
         var rows = new ArrayList<>(table.rows());
-        rows.add(row);
+        if (!rows.isEmpty() && sameReconciliationState(table, rows.getLast(), row)) {
+            rows.set(rows.size() - 1, row);
+        } else {
+            rows.add(row);
+        }
         return table.withRows(rows);
+    }
+
+    private static boolean sameReconciliationState(SheetTable table, List<String> previous, List<String> current) {
+        for (var header : List.of("Account", "Broker", "Holdings", "Cash", "Orders", "Fills", "Prices",
+                "Mismatch/Gap", "Resolved", "Error")) {
+            if (!value(table, previous, header).equals(value(table, current, header))) return false;
+        }
+        return true;
     }
 
     public static List<String> accountHeaders() { return ACCOUNT_HEADERS; }
@@ -638,11 +696,12 @@ public final class InvestmentOsSheetModel {
         final LinkedHashSet<String> sources = new LinkedHashSet<>();
         boolean allHigh = true;
         BigDecimal quantity;
+        boolean quantityKnown = true;
         BigDecimal costBasis;
         boolean avgKnown = true;
-        BigDecimal marketValue;
+        BigDecimal currentPrice;
+        boolean priceKnown = true;
         BigDecimal cash;
-        boolean marketKnown = true;
         boolean cashKnown = true;
 
         Aggregate(String ticker, String currency) {
@@ -651,7 +710,7 @@ public final class InvestmentOsSheetModel {
         }
 
         void add(String account, String source, String confidence, BigDecimal qty, BigDecimal avg,
-                 BigDecimal market, BigDecimal cashAmount) {
+                 BigDecimal price, BigDecimal cashAmount) {
             accounts.add(account);
             if (!source.isBlank()) sources.add(source);
             allHigh &= "HIGH".equalsIgnoreCase(confidence);
@@ -659,9 +718,12 @@ public final class InvestmentOsSheetModel {
                 quantity = zero(quantity).add(qty);
                 if (avg == null) avgKnown = false;
                 else costBasis = zero(costBasis).add(qty.multiply(avg));
-            } else avgKnown = false;
-            if (market == null) marketKnown = false;
-            else marketValue = zero(marketValue).add(market);
+            } else {
+                quantityKnown = false;
+                avgKnown = false;
+            }
+            if (price == null || (currentPrice != null && currentPrice.compareTo(price) != 0)) priceKnown = false;
+            else if (currentPrice == null) currentPrice = price;
             if (cashAmount == null) cashKnown = false;
             else cash = zero(cash).add(cashAmount);
         }
@@ -671,10 +733,12 @@ public final class InvestmentOsSheetModel {
             putAlias(table, row, ticker, "Ticker", "Asset");
             put(table, row, "Currency", currency);
             if (!isCash) {
-                putAlias(table, row, decimal(quantity), "Quantity", "Total Quantity");
-                put(table, row, "Combined Avg Cost", !avgKnown || quantity == null || quantity.signum() == 0
+                putAlias(table, row, quantityKnown ? decimal(quantity) : null, "Quantity", "Total Quantity");
+                put(table, row, "Combined Avg Cost", !quantityKnown || !avgKnown || quantity == null || quantity.signum() == 0
                         || costBasis == null ? null : decimal(costBasis.divide(quantity, 8, RoundingMode.HALF_UP)));
-                put(table, row, "Market Value", marketKnown ? decimal(marketValue) : null);
+                var marketValue = !quantityKnown || !priceKnown || quantity == null || currentPrice == null
+                        ? null : quantity.multiply(currentPrice).setScale(2, RoundingMode.HALF_UP);
+                put(table, row, "Market Value", decimal(marketValue));
             } else if (table.hasColumn("Cash")) {
                 put(table, row, "Cash", cashKnown ? decimal(cash) : null);
             } else {

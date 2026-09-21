@@ -48,6 +48,7 @@ class InvestmentOsSheetSyncServiceTest {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
         var connector = mock(ConnectorService.class);
+        var brokerSurface = mock(BrokerSurfaceService.class);
         var sheets = mock(GoogleSheetsClient.class);
         when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
@@ -57,8 +58,10 @@ class InvestmentOsSheetSyncServiceTest {
                 "order-1", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
                 "ABC", bd("2"), bd("2"), bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.FILLED,
                 ConnectorResponse.BrokerOrderGroup.CLOSED, Instant.now(), bd("9.5"), null, null)));
+        when(brokerSurface.prices(USER_ID, CONNECTION_ID, "ABC")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("ABC", bd("15"), null, null, "USD", NOW, NOW))));
 
-        var result = service(lease, connector, sheets).sync();
+        var result = service(lease, connector, brokerSurface, sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
         assertThat(result.fillsChanged()).isEqualTo(1);
@@ -66,9 +69,11 @@ class InvestmentOsSheetSyncServiceTest {
         verify(connector).brokerAccount(CONNECTION_ID);
         verify(connector).orders(BROKER_ACCOUNT, "OPEN");
         verify(connector).orders(BROKER_ACCOUNT, "CLOSED");
-        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 5
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 7
                 && updates.stream().anyMatch(update -> update.range().startsWith("'Orders'!A1"))
                 && updates.stream().anyMatch(update -> update.range().startsWith("'Order History'!A1"))
+                && updates.stream().anyMatch(update -> update.range().startsWith("'Account Registry'!A1")
+                && update.values().stream().anyMatch(row -> row.contains(NOW.toString())))
                 && updates.stream().anyMatch(update -> update.range().contains("Account State")
                 && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_1")))));
         verify(lease).release(any());
@@ -79,6 +84,7 @@ class InvestmentOsSheetSyncServiceTest {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
         var connector = mock(ConnectorService.class);
+        var brokerSurface = mock(BrokerSurfaceService.class);
         var sheets = mock(GoogleSheetsClient.class);
         when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
         var legacyHeaders = List.of("asOf", "Asset", "Side", "Condition/Price", "Quantity", "Status",
@@ -98,8 +104,10 @@ class InvestmentOsSheetSyncServiceTest {
                 "closed-1", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
                 "ABC", bd("2"), bd("2"), bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.FILLED,
                 ConnectorResponse.BrokerOrderGroup.CLOSED, NOW, bd("9.5"), null, null)));
+        when(brokerSurface.prices(USER_ID, CONNECTION_ID, "ABC")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("ABC", bd("15"), null, null, "USD", NOW, NOW))));
 
-        var result = service(lease, connector, sheets).sync();
+        var result = service(lease, connector, brokerSurface, sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
         ArgumentCaptor<List<GoogleSheetsClient.SheetValueRange>> updates = ArgumentCaptor.forClass(List.class);
@@ -193,6 +201,117 @@ class InvestmentOsSheetSyncServiceTest {
     }
 
     @Test
+    void partialPortfolioPreservesPriorAccountAndOrderSnapshots() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
+                NOW, false, null, true, List.of(), List.of("positions.partial"), null,
+                List.of(), java.util.Map.of("USD", buyingPower("100"), "KRW", buyingPower("500"))));
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account State'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("range", List.of(
+                        List.of("Account", "Ticker", "Asset Type", "Currency", "Quantity", "Avg Cost", "Current Price",
+                                "Market Value", "Cash", "Source", "Confidence", "Synced At", "Price Source", "Price Synced At"),
+                        List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "15", "30", "", "TOSS_API", "HIGH", "old", "TOSS_QUOTE_API", "old"))));
+        when(sheets.readValues(eq("sheet-1"), eq("'Orders'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("range", List.of(
+                        InvestmentOsSheetModel.orderHeaders().stream().map(value -> (Object) value).toList(),
+                        List.of("ACCOUNT_1", "order-1", "ABC", "BUY", "LIMIT", "USD", "1", "0", "10", "", "PENDING", "", "TOSS_API", "old", NOW.toString()))));
+
+        var result = service(lease, connector, sheets).sync();
+
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
+        verify(connector, never()).brokerAccount(any());
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 1
+                && updates.getFirst().range().startsWith("'Reconciliation Log'!")));
+    }
+
+    @Test
+    void missingUsdCashMakesBrokerResponseNonAuthoritative() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var position = new ConnectorResponse.Position("ABC", "ABC", "US", bd("2"), "USD", bd("10"),
+                bd("11"), bd("20"), bd("22"), bd("22"), bd("2"), bd("2"), bd("0.1"), bd("0.1"),
+                bd("0"), bd("0"), bd("0"), bd("0"), bd("2"), NOW);
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
+                NOW, false, null, false, List.of(), List.of(), null, List.of(position),
+                java.util.Map.of("USD", buyingPower(null), "KRW", buyingPower("0"))));
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+
+        var result = service(lease, connector, sheets).sync();
+
+        assertThat(result.error()).isEqualTo("NON_AUTHORITATIVE_PORTFOLIO");
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 1
+                && updates.getFirst().range().startsWith("'Reconciliation Log'!")));
+    }
+
+    @Test
+    void missingAverageCostMakesBrokerResponseNonAuthoritative() {
+        var position = new ConnectorResponse.Position("ABC", "ABC", "US", bd("2"), "USD", null,
+                bd("11"), bd("20"), bd("22"), bd("22"), bd("2"), bd("2"), bd("0.1"), bd("0.1"),
+                bd("0"), bd("0"), bd("0"), bd("0"), bd("2"), NOW);
+        assertNonAuthoritative(new ConnectorResponse.Portfolio(NOW, false, null, false, List.of(), List.of(), null,
+                List.of(position), java.util.Map.of("USD", buyingPower("100"), "KRW", buyingPower("0"))));
+    }
+
+    @Test
+    void quoteFailurePreservesLastPriceAndDoesNotRecalculateAggregateOrMetrics() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var brokerSurface = mock(BrokerSurfaceService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account State'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("range", List.of(
+                        List.of("Account", "Ticker", "Asset Type", "Currency", "Quantity", "Avg Cost", "Current Price",
+                                "Market Value", "Cash", "Source", "Confidence", "Synced At", "Price Source", "Price Synced At"),
+                        List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "14", "28", "", "TOSS_API", "HIGH", "old", "TOSS_QUOTE_API", "old"))));
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
+        when(brokerSurface.prices(USER_ID, CONNECTION_ID, "ABC"))
+                .thenReturn(BrokerSurfaceResponse.unavailable("PROVIDER_RATE_LIMITED"));
+
+        var result = service(lease, connector, brokerSurface, sheets).sync();
+
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
+        assertThat(result.error()).contains("PRICE_FETCH_PARTIAL", "PROVIDER_RATE_LIMITED");
+        ArgumentCaptor<List<GoogleSheetsClient.SheetValueRange>> updates = ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        assertThat(updates.getValue()).noneMatch(update -> update.range().startsWith("'Portfolio Aggregate'!")
+                || update.range().startsWith("'Portfolio Metrics'!"));
+        var account = updates.getValue().stream().filter(update -> update.range().startsWith("'Account State'!"))
+                .findFirst().orElseThrow();
+        assertThat(account.values()).anySatisfy(row -> assertThat(row).contains("14", "28"));
+    }
+
+    @Test
+    void googleWriteFailureReturnsFailedWithoutRetryingBrokerWrites() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
+        doThrow(new RuntimeException("Google API unavailable")).when(sheets).batchUpdateValues(eq("sheet-1"), any());
+
+        var result = service(lease, connector, sheets).sync();
+
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), any());
+        verify(connector, times(1)).portfolio(USER_ID, CONNECTION_ID);
+    }
+
+    @Test
     void connectionFailureReportsSafePublicCodeAndPreservesAccountRows() {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
@@ -243,7 +362,7 @@ class InvestmentOsSheetSyncServiceTest {
     }
 
     @Test
-    void postCutoverOpenAndClosedOrdersAreAddedToHistoryFromTheirBrokerOrderTimes() {
+    void onlyPostCutoverTerminalOrdersAreAddedToHistoryFromTheirBrokerOrderTimes() {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
         var connector = mock(ConnectorService.class);
@@ -268,8 +387,7 @@ class InvestmentOsSheetSyncServiceTest {
         verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
         var history = updates.getValue().stream().filter(update -> update.range().startsWith("'Order History'!"))
                 .findFirst().orElseThrow();
-        assertThat(history.values()).anySatisfy(row -> assertThat(row)
-                .contains("new-open", "PENDING", "2026-09-21T12:35:54Z"));
+        assertThat(history.values()).noneSatisfy(row -> assertThat(row).contains("new-open"));
         assertThat(history.values()).anySatisfy(row -> assertThat(row)
                 .contains("new-closed", "FILLED", "2026-09-21T12:35:55Z"));
     }
@@ -291,7 +409,7 @@ class InvestmentOsSheetSyncServiceTest {
         var result = service(lease, connector, sheets).sync();
 
         assertThat(result.error()).isEqualTo("CLOSED_ORDERS_FETCH_FAILED_BROKER_RATE_LIMITED_HTTP_429"
-                + "+FILLS_NOT_DERIVED_ORDERS_UNAVAILABLE");
+                + "+FILLS_NOT_DERIVED_ORDERS_UNAVAILABLE+PRICE_SOURCE_NOT_CONFIGURED");
         assertThat(result.error()).doesNotContain("private", "token");
     }
 
@@ -309,6 +427,7 @@ class InvestmentOsSheetSyncServiceTest {
             BrokerSurfaceService brokerSurface,
             GoogleSheetsClient sheets
     ) {
+        when(sheets.readValues(eq("sheet-1"), eq("'Account Registry'!A:Z"))).thenReturn(registryValues());
         return new InvestmentOsSheetSyncService(
                 new InvestmentOsSheetProperties(true, "sheet-1", USER_ID, CONNECTION_ID,
                         Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(2)),
@@ -319,6 +438,13 @@ class InvestmentOsSheetSyncServiceTest {
         return new GoogleSheetsClient.SheetValues("range", List.of());
     }
 
+    private static GoogleSheetsClient.SheetValues registryValues() {
+        return new GoogleSheetsClient.SheetValues("range", List.of(
+                List.of("Account", "Label", "Sync Mode", "Source", "Default Confidence", "Enabled", "Last Sync", "Notes"),
+                List.of("ACCOUNT_1", "Toss", "AUTO", "TOSS_API", "HIGH", "TRUE", "old", "keep"),
+                List.of("ACCOUNT_2", "Manual", "MANUAL", "MANUAL", "MEDIUM", "TRUE", "manual-time", "manual-note")));
+    }
+
     private static ConnectorResponse.Portfolio portfolio() {
         var position = new ConnectorResponse.Position("ABC", "ABC", "US", bd("2"), "USD", bd("10"),
                 bd("11"), bd("20"), bd("22"), bd("22"), bd("2"), bd("2"), bd("0.1"), bd("0.1"),
@@ -327,6 +453,25 @@ class InvestmentOsSheetSyncServiceTest {
                 List.of(position), java.util.Map.of(
                         "USD", new ConnectorResponse.BuyingPower(bd("100"), NOW),
                         "KRW", new ConnectorResponse.BuyingPower(bd("0"), NOW)));
+    }
+
+    private static ConnectorResponse.BuyingPower buyingPower(String amount) {
+        return new ConnectorResponse.BuyingPower(amount == null ? null : bd(amount), NOW);
+    }
+
+    private void assertNonAuthoritative(ConnectorResponse.Portfolio portfolio) {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio);
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+
+        var result = service(lease, connector, sheets).sync();
+
+        assertThat(result.error()).isEqualTo("NON_AUTHORITATIVE_PORTFOLIO");
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 1
+                && updates.getFirst().range().startsWith("'Reconciliation Log'!")));
     }
 
     private static BigDecimal bd(String value) { return new BigDecimal(value); }
