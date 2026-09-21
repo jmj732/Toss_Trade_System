@@ -115,74 +115,132 @@ public final class InvestmentOsSheetModel {
         return table.withRows(rows);
     }
 
-    public static SheetTable orders(
-            SheetTable current,
-            List<ConnectorResponse.Order> open,
-            List<ConnectorResponse.Order> closed,
-            Instant syncedAt
-    ) {
-        return orders(current, open, closed, syncedAt, ACCOUNT_1);
+    public static SheetTable openOrders(SheetTable current, List<ConnectorResponse.Order> open, Instant syncedAt) {
+        return openOrders(current, open, syncedAt, ACCOUNT_1);
     }
 
-    public static SheetTable orders(
-            SheetTable current,
-            List<ConnectorResponse.Order> open,
-            List<ConnectorResponse.Order> closed,
-            Instant syncedAt,
-            String accountLabel
+    public static SheetTable openOrders(
+            SheetTable current, List<ConnectorResponse.Order> open, Instant syncedAt, String accountLabel
     ) {
-        var table = current.withHeaders(ORDER_HEADERS);
-        if (open == null && closed == null) return table;
+        if (open == null) return current;
         var managedAccount = normalizedAccountLabel(accountLabel);
-        var complete = open != null && closed != null;
-        var rows = table.rows().stream()
-                .filter(row -> !complete || !managedAccount.equalsIgnoreCase(value(table, row, "Account")))
+        var source = current;
+        var table = new SheetTable(ORDER_HEADERS, List.of());
+        var rows = source.rows().stream()
+                .filter(row -> !managedAccount.equalsIgnoreCase(value(source, row, "Account")))
+                .map(row -> copyOrderRow(source, row, table))
                 .collect(Collectors.toCollection(ArrayList::new));
-        var byId = new LinkedHashMap<String, List<String>>();
-        if (!complete) {
-            rows.forEach(row -> {
-                var id = value(table, row, "Order ID");
-                if (!id.isBlank()) byId.put(id, row);
-            });
-        }
-        var brokerOrders = new LinkedHashMap<String, ConnectorResponse.Order>();
-        if (open != null) safe(open).forEach(order -> brokerOrders.put(order.brokerOrderId(), order));
-        if (closed != null) safe(closed).forEach(order -> brokerOrders.put(order.brokerOrderId(), order));
-        var observed = syncedAt;
-        brokerOrders.values().stream()
+        var byId = new LinkedHashMap<String, ConnectorResponse.Order>();
+        safe(open).stream().filter(InvestmentOsSheetModel::isOpenOrder)
+                .filter(order -> order.brokerOrderId() != null && !order.brokerOrderId().isBlank())
+                .forEach(order -> byId.put(order.brokerOrderId(), order));
+        byId.values().stream().sorted(Comparator.comparing(ConnectorResponse.Order::brokerOrderId))
+                .forEach(order -> rows.add(brokerOrderRow(table, order, managedAccount, syncedAt)));
+        return table.withRows(rows);
+    }
+
+    public static SheetTable orderHistory(SheetTable current, List<ConnectorResponse.Order> closed, Instant syncedAt) {
+        return orderHistory(current, closed, syncedAt, ACCOUNT_1);
+    }
+
+    public static SheetTable orderHistory(
+            SheetTable current, List<ConnectorResponse.Order> closed, Instant syncedAt, String accountLabel
+    ) {
+        return orderHistory(current, closed, new SheetTable(ORDER_HEADERS, List.of()), syncedAt, accountLabel);
+    }
+
+    public static SheetTable orderHistory(
+            SheetTable current, List<ConnectorResponse.Order> closed, SheetTable legacyOrders,
+            Instant syncedAt, String accountLabel
+    ) {
+        if (closed == null) return current;
+        var managedAccount = normalizedAccountLabel(accountLabel);
+        var source = current;
+        var table = new SheetTable(ORDER_HEADERS, List.of());
+        var byKey = new LinkedHashMap<String, List<String>>();
+        var unkeyed = new ArrayList<List<String>>();
+        source.rows().forEach(row -> {
+            var copied = copyOrderRow(source, row, table);
+            var orderId = value(table, copied, "Order ID");
+            if (orderId.isBlank()) unkeyed.add(copied);
+            else byKey.put(value(table, copied, "Account") + "|" + orderId, copied);
+        });
+        var legacy = legacyOrders == null ? new SheetTable(List.of(), List.of()) : legacyOrders;
+        legacy.rows().stream()
+                .filter(row -> managedAccount.equalsIgnoreCase(value(legacy, row, "Account")))
+                .filter(row -> "TOSS_API".equalsIgnoreCase(value(legacy, row, "Source")))
+                .filter(row -> isClosedStatus(value(legacy, row, "Status")))
+                .map(row -> copyOrderRow(legacy, row, table))
+                .filter(row -> !value(table, row, "Order ID").isBlank())
+                .forEach(row -> byKey.put(value(table, row, "Account") + "|" + value(table, row, "Order ID"), row));
+        safe(closed).stream().filter(InvestmentOsSheetModel::isClosedOrder)
+                .filter(order -> order.brokerOrderId() != null && !order.brokerOrderId().isBlank())
                 .sorted(Comparator.comparing(ConnectorResponse.Order::brokerOrderId))
-                .forEach(order -> {
-                    var row = table.emptyRow();
-                    put(table, row, "Account", managedAccount);
-                    put(table, row, "Order ID", order.brokerOrderId());
-                    put(table, row, "Ticker", order.symbol());
-                    put(table, row, "Side", order.side() == null ? null : order.side().name());
-                    put(table, row, "Type", order.type() == null ? null : order.type().name());
-                    put(table, row, "Currency", order.currency());
-                    put(table, row, "Quantity", decimal(order.quantity()));
-                    put(table, row, "Filled Quantity", decimal(order.filledQuantity()));
-                    put(table, row, "Order Price", decimal(order.limitPrice()));
-                    put(table, row, "Average Filled Price", decimal(order.averageFilledPrice()));
-                    put(table, row, "Status", order.status() == null ? null : order.status().name());
-                    put(table, row, "Filled At", instant(order.filledAt()));
-                    put(table, row, "Source", "TOSS_API");
-                    put(table, row, "Synced At", instant(observed));
-                    byId.put(order.brokerOrderId(), row);
-                });
-        if (!complete) {
-            var result = new ArrayList<List<String>>();
-            var emitted = new LinkedHashSet<String>();
-            for (var row : rows) {
-                var id = value(table, row, "Order ID");
-                result.add(byId.getOrDefault(id, row));
-                if (!id.isBlank()) emitted.add(id);
-            }
-            byId.values().stream()
-                    .filter(row -> !emitted.contains(value(table, row, "Order ID")))
-                    .forEach(result::add);
-            return table.withRows(result);
-        }
-        return table.withRows(new ArrayList<>(byId.values()));
+                .forEach(order -> byKey.put(managedAccount + "|" + order.brokerOrderId(),
+                        brokerOrderRow(table, order, managedAccount, syncedAt)));
+        var rows = new ArrayList<>(byKey.values());
+        rows.addAll(unkeyed);
+        return table.withRows(rows);
+    }
+
+    private static boolean isOpenOrder(ConnectorResponse.Order order) {
+        return order != null && order.group() == ConnectorResponse.BrokerOrderGroup.OPEN
+                && (order.status() == ConnectorResponse.BrokerOrderLifecycle.PENDING
+                || order.status() == ConnectorResponse.BrokerOrderLifecycle.PARTIALLY_FILLED
+                || order.status() == ConnectorResponse.BrokerOrderLifecycle.CANCELING
+                || order.status() == ConnectorResponse.BrokerOrderLifecycle.REPLACING);
+    }
+
+    private static boolean isClosedOrder(ConnectorResponse.Order order) {
+        return order != null && order.group() == ConnectorResponse.BrokerOrderGroup.CLOSED;
+    }
+
+    private static boolean isClosedStatus(String status) {
+        return switch (status.toUpperCase(Locale.ROOT)) {
+            case "FILLED", "CANCELED", "REJECTED", "CANCEL_REJECTED", "REPLACE_REJECTED", "REPLACED" -> true;
+            default -> false;
+        };
+    }
+
+    private static List<String> brokerOrderRow(
+            SheetTable table, ConnectorResponse.Order order, String account, Instant syncedAt
+    ) {
+        var row = table.emptyRow();
+        put(table, row, "Account", account);
+        put(table, row, "Order ID", order.brokerOrderId());
+        put(table, row, "Ticker", order.symbol());
+        put(table, row, "Side", order.side() == null ? null : order.side().name());
+        put(table, row, "Type", order.type() == null ? null : order.type().name());
+        put(table, row, "Currency", order.currency());
+        put(table, row, "Quantity", decimal(order.quantity()));
+        put(table, row, "Filled Quantity", decimal(order.filledQuantity()));
+        put(table, row, "Order Price", decimal(order.limitPrice()));
+        put(table, row, "Average Filled Price", decimal(order.averageFilledPrice()));
+        put(table, row, "Status", order.status() == null ? null : order.status().name());
+        put(table, row, "Filled At", instant(order.filledAt()));
+        put(table, row, "Source", "TOSS_API");
+        put(table, row, "Synced At", instant(syncedAt));
+        return row;
+    }
+
+    private static List<String> copyOrderRow(SheetTable source, List<String> row, SheetTable target) {
+        var result = target.emptyRow();
+        put(target, result, "Account", value(source, row, "Account"));
+        put(target, result, "Order ID", value(source, row, "Order ID"));
+        putAlias(target, result, firstNonblank(source, row, "Ticker", "Asset"), "Ticker");
+        put(target, result, "Side", value(source, row, "Side"));
+        put(target, result, "Type", value(source, row, "Type"));
+        put(target, result, "Currency", value(source, row, "Currency"));
+        put(target, result, "Quantity", value(source, row, "Quantity"));
+        put(target, result, "Filled Quantity", value(source, row, "Filled Quantity"));
+        put(target, result, "Order Price", firstNonblank(source, row, "Order Price", "Condition/Price"));
+        put(target, result, "Average Filled Price", firstNonblank(source, row,
+                "Average Filled Price", "Filled Price"));
+        put(target, result, "Status", value(source, row, "Status"));
+        put(target, result, "Filled At", value(source, row, "Filled At"));
+        put(target, result, "Source", value(source, row, "Source"));
+        put(target, result, "Synced At", value(source, row, "Synced At"));
+        return result;
     }
 
     public static SheetTable aggregate(SheetTable accountState, Instant syncedAt) {
@@ -399,6 +457,14 @@ public final class InvestmentOsSheetModel {
 
     private static String field(SheetTable table, List<String> row, String... names) {
         for (var name : names) if (table.hasColumn(name)) return value(table, row, name);
+        return "";
+    }
+
+    private static String firstNonblank(SheetTable table, List<String> row, String... names) {
+        for (var name : names) {
+            var value = value(table, row, name);
+            if (!value.isBlank()) return value;
+        }
         return "";
     }
 

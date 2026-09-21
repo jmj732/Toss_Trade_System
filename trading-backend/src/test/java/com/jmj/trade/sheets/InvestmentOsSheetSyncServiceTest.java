@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
+import org.mockito.ArgumentCaptor;
 
 class InvestmentOsSheetSyncServiceTest {
 
@@ -65,10 +66,81 @@ class InvestmentOsSheetSyncServiceTest {
         verify(connector).brokerAccount(CONNECTION_ID);
         verify(connector).orders(BROKER_ACCOUNT, "OPEN");
         verify(connector).orders(BROKER_ACCOUNT, "CLOSED");
-        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 5
+                && updates.stream().anyMatch(update -> update.range().startsWith("'Orders'!A1"))
+                && updates.stream().anyMatch(update -> update.range().startsWith("'Order History'!A1"))
                 && updates.stream().anyMatch(update -> update.range().contains("Account State")
                 && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_1")))));
         verify(lease).release(any());
+    }
+
+    @Test
+    void legacyOrdersAreArchivedBeforeTheMixedColumnsAreCleared() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        var legacyHeaders = List.of("asOf", "Asset", "Side", "Condition/Price", "Quantity", "Status",
+                "Filled Price", "Notes", "Order ID", "Account", "Source", "Synced At", "Ticker", "Type",
+                "Currency", "Filled Quantity", "Order Price", "Average Filled Price", "Filled At");
+        var legacyOrder = List.of("", "", "BUY", "", "2", "FILLED", "", "", "closed-1", "ACCOUNT_1",
+                "TOSS_API", "old-sync", "ABC", "LIMIT", "USD", "2", "10", "9.5", "2026-09-16T00:00:00Z");
+        var legacyValues = new java.util.ArrayList<List<Object>>();
+        legacyValues.add(new java.util.ArrayList<>(legacyHeaders));
+        legacyValues.add(new java.util.ArrayList<>(legacyOrder));
+        when(sheets.readValues(eq("sheet-1"), eq("'Orders'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("Orders!A:Z", legacyValues));
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of(new ConnectorResponse.Order(
+                "closed-1", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
+                "ABC", bd("2"), bd("2"), bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.FILLED,
+                ConnectorResponse.BrokerOrderGroup.CLOSED, NOW, bd("9.5"), null, null)));
+
+        var result = service(lease, connector, sheets).sync();
+
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
+        ArgumentCaptor<List<GoogleSheetsClient.SheetValueRange>> updates = ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        var orders = updates.getValue().stream().filter(update -> update.range().startsWith("'Orders'!"))
+                .findFirst().orElseThrow();
+        assertThat(orders.range()).isEqualTo("'Orders'!A1:S2");
+        assertThat(orders.values().getFirst()).containsExactlyElementsOf(
+                java.util.stream.Stream.concat(InvestmentOsSheetModel.orderHeaders().stream(),
+                        java.util.stream.Stream.of("", "", "", "", "")).toList());
+        assertThat(orders.values().get(1)).containsOnly("");
+        var history = updates.getValue().stream().filter(update -> update.range().startsWith("'Order History'!"))
+                .findFirst().orElseThrow();
+        assertThat(history.values().get(1)).contains("closed-1", "FILLED", "9.5");
+    }
+
+    @Test
+    void legacyOrdersStayUntouchedWhenClosedHistoryCouldNotBeFetched() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        var legacyValues = new java.util.ArrayList<List<Object>>();
+        legacyValues.add(new java.util.ArrayList<>(List.of("asOf", "Asset", "Side", "Condition/Price", "Quantity",
+                "Status", "Filled Price", "Notes", "Order ID", "Account", "Source", "Synced At", "Ticker",
+                "Type", "Currency", "Filled Quantity", "Order Price", "Average Filled Price", "Filled At")));
+        legacyValues.add(new java.util.ArrayList<>(List.of("", "", "BUY", "", "2", "FILLED", "", "",
+                "closed-1", "ACCOUNT_1", "TOSS_API", "old-sync", "ABC", "LIMIT", "USD", "2", "10", "9.5", "old")));
+        when(sheets.readValues(eq("sheet-1"), eq("'Orders'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("Orders!A:Z", legacyValues));
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenThrow(new RuntimeException("timeout"));
+
+        service(lease, connector, sheets).sync();
+
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.stream()
+                .noneMatch(update -> update.range().startsWith("'Orders'!")
+                        || update.range().startsWith("'Order History'!"))));
     }
 
     @Test
@@ -164,7 +236,9 @@ class InvestmentOsSheetSyncServiceTest {
         var result = service(lease, connector, sheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
-        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4));
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4
+                && updates.stream().noneMatch(update -> update.range().startsWith("'Orders'!A1"))
+                && updates.stream().anyMatch(update -> update.range().startsWith("'Order History'!A1"))));
     }
 
     @Test

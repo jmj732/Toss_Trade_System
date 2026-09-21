@@ -137,21 +137,28 @@ class InvestmentOsSheetModelTest {
     }
 
     @Test
-    void orderUpsertIsIdempotentAndUsesBrokerStatusAndConfirmedFillOnly() {
-        var existing = table(row("ACCOUNT_1", "order-1", "ABC", "OPEN"));
-        var order = new ConnectorResponse.Order(
-                "order-1", ConnectorResponse.BrokerOrderSide.BUY,
-                ConnectorResponse.BrokerOrderType.LIMIT, "ABC", bd("2"), bd("1"),
+    void ordersOnlyContainsConfirmedOpenOrdersInCanonicalColumns() {
+        var oldHistory = new ConnectorResponse.Order(
+                "filled-1", ConnectorResponse.BrokerOrderSide.BUY,
+                ConnectorResponse.BrokerOrderType.LIMIT, "OPEN", bd("2"), bd("2"),
                 bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.FILLED,
                 ConnectorResponse.BrokerOrderGroup.CLOSED, SYNCED_AT, bd("9.5"), null, null);
+        var open = new ConnectorResponse.Order(
+                "pending-1", ConnectorResponse.BrokerOrderSide.BUY,
+                ConnectorResponse.BrokerOrderType.LIMIT, "ABC", bd("2"), bd("1"),
+                bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.PARTIALLY_FILLED,
+                ConnectorResponse.BrokerOrderGroup.OPEN, null, null, null, null);
 
-        var once = InvestmentOsSheetModel.orders(existing, List.of(order), List.of(), SYNCED_AT);
-        var twice = InvestmentOsSheetModel.orders(once, List.of(order), List.of(), SYNCED_AT);
+        var updated = InvestmentOsSheetModel.openOrders(table(
+                        row("ACCOUNT_1", "filled-1", "OPEN", "FILLED"),
+                        row("ACCOUNT_2", "manual-1", "XYZ", "PENDING")),
+                List.of(open, oldHistory, open), SYNCED_AT);
 
-        assertThat(twice.rows()).hasSize(1);
-        var row = twice.rows().getFirst();
-        assertThat(row.get(twice.column("Status"))).isEqualTo("FILLED");
-        assertThat(row.get(twice.column("Average Filled Price"))).isEqualTo("9.5");
+        assertThat(updated.headers()).containsExactlyElementsOf(InvestmentOsSheetModel.orderHeaders());
+        assertThat(updated.rows()).hasSize(2);
+        assertThat(updated.rows()).extracting(row -> row.get(updated.column("Order ID")))
+                .containsExactly("manual-1", "pending-1");
+        assertThat(updated.rows().get(1).get(updated.column("Status"))).isEqualTo("PARTIALLY_FILLED");
     }
 
     @Test
@@ -161,8 +168,8 @@ class InvestmentOsSheetModelTest {
                 ConnectorResponse.BrokerOrderType.LIMIT, "ABC", bd("2"), bd("1"),
                 bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.PARTIALLY_FILLED,
                 ConnectorResponse.BrokerOrderGroup.OPEN, null, null, null, null);
-        var updated = InvestmentOsSheetModel.orders(new InvestmentOsSheetModel.SheetTable(List.of(), List.of()),
-                List.of(order), List.of(), SYNCED_AT);
+        var updated = InvestmentOsSheetModel.openOrders(new InvestmentOsSheetModel.SheetTable(List.of(), List.of()),
+                List.of(order), SYNCED_AT);
         var row = updated.rows().getFirst();
         assertThat(row.get(updated.column("Average Filled Price"))).isBlank();
         assertThat(row.get(updated.column("Status"))).isEqualTo("PARTIALLY_FILLED");
@@ -172,7 +179,7 @@ class InvestmentOsSheetModelTest {
     void failedBrokerSectionLeavesExistingRowsUntouched() {
         var existing = table(row("ACCOUNT_1", "order-1", "ABC", "OPEN"));
 
-        var unchanged = InvestmentOsSheetModel.orders(existing, null, null, SYNCED_AT);
+        var unchanged = InvestmentOsSheetModel.openOrders(existing, null, SYNCED_AT);
 
         assertThat(unchanged.rows()).hasSize(1);
         assertThat(unchanged.rows().getFirst().get(unchanged.column("Order ID")))
@@ -180,19 +187,52 @@ class InvestmentOsSheetModelTest {
     }
 
     @Test
-    void partialOrderReadAddsConfirmedRowsButDoesNotDeleteUnseenRows() {
-        var existing = table(row("ACCOUNT_1", "order-old", "ABC", "OPEN"));
+    void orderHistoryIsIdempotentAndKeepsClosedStatusesSeparate() {
+        var existing = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of());
         var order = new ConnectorResponse.Order(
-                "order-new", ConnectorResponse.BrokerOrderSide.SELL,
-                ConnectorResponse.BrokerOrderType.MARKET, "XYZ", bd("1"), bd("0"),
-                null, "USD", ConnectorResponse.BrokerOrderLifecycle.PENDING,
+                "closed-1", ConnectorResponse.BrokerOrderSide.SELL,
+                ConnectorResponse.BrokerOrderType.MARKET, "XYZ", bd("1"), bd("1"),
+                null, "USD", ConnectorResponse.BrokerOrderLifecycle.CANCELED,
+                ConnectorResponse.BrokerOrderGroup.CLOSED, SYNCED_AT, bd("12"), null, null);
+        var stillOpen = new ConnectorResponse.Order(
+                "open-1", ConnectorResponse.BrokerOrderSide.BUY,
+                ConnectorResponse.BrokerOrderType.LIMIT, "ABC", bd("1"), bd("0"),
+                bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.PENDING,
                 ConnectorResponse.BrokerOrderGroup.OPEN, null, null, null, null);
 
-        var updated = InvestmentOsSheetModel.orders(existing, List.of(order), null, SYNCED_AT);
+        var once = InvestmentOsSheetModel.orderHistory(existing, List.of(order, stillOpen), SYNCED_AT);
+        var twice = InvestmentOsSheetModel.orderHistory(once, List.of(order, stillOpen), SYNCED_AT);
 
-        assertThat(updated.rows()).hasSize(2);
-        assertThat(updated.rows()).extracting(row -> row.get(updated.column("Order ID")))
-                .containsExactly("order-old", "order-new");
+        assertThat(twice.rows()).hasSize(1);
+        assertThat(twice.rows().getFirst().get(twice.column("Order ID"))).isEqualTo("closed-1");
+        assertThat(twice.rows().getFirst().get(twice.column("Status"))).isEqualTo("CANCELED");
+        assertThat(twice.rows().getFirst().get(twice.column("Average Filled Price"))).isEqualTo("12");
+    }
+
+    @Test
+    void migratesConfirmedLegacyClosedRowsEvenWhenTheCurrentClosedListIsEmpty() {
+        var legacy = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of(
+                List.of("ACCOUNT_1", "legacy-1", "ABC", "BUY", "LIMIT", "USD", "2", "2", "10", "9.5",
+                        "FILLED", "2026-09-16T00:00:00Z", "TOSS_API", "old-sync")));
+
+        var history = InvestmentOsSheetModel.orderHistory(
+                new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of()),
+                List.of(), legacy, SYNCED_AT, InvestmentOsSheetModel.ACCOUNT_1);
+
+        assertThat(history.rows()).hasSize(1);
+        assertThat(history.rows().getFirst().get(history.column("Order ID"))).isEqualTo("legacy-1");
+        assertThat(history.rows().getFirst().get(history.column("Status"))).isEqualTo("FILLED");
+    }
+
+    @Test
+    void failedClosedOrderReadLeavesHistoryUntouched() {
+        var existing = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(),
+                List.of(List.of("ACCOUNT_1", "old", "ABC", "BUY", "LIMIT", "USD", "1", "0", "10", "",
+                        "PENDING", "", "TOSS_API", "old")));
+
+        var unchanged = InvestmentOsSheetModel.orderHistory(existing, null, SYNCED_AT);
+
+        assertThat(unchanged).isEqualTo(existing);
     }
 
     private static InvestmentOsSheetModel.SheetTable table(List<String>... rows) {

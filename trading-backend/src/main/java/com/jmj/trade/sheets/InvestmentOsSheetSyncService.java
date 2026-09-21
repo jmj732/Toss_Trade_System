@@ -166,6 +166,7 @@ public final class InvestmentOsSheetSyncService {
         try {
             var account = current.account();
             var orders = current.orders();
+            var orderHistory = current.orderHistory();
             var aggregate = current.aggregate();
             var metrics = current.metrics();
             var authoritative = portfolio != null && authoritative(portfolio);
@@ -188,8 +189,14 @@ public final class InvestmentOsSheetSyncService {
                         .addKeyValue("price_symbols_missing", priceSnapshot.missingSymbols().size())
                         .log("Toss quote fetch incomplete; existing price and valuation data preserved");
             }
-            var nextOrders = authoritative
-                    ? InvestmentOsSheetModel.orders(orders, open, closed, syncedAt, properties.accountLabel()) : orders;
+            var archiveReady = isCanonicalOrderTable(orders) || closed != null;
+            var updateOrders = authoritative && open != null && archiveReady;
+            var updateOrderHistory = authoritative && closed != null;
+            var nextOrders = updateOrders
+                    ? InvestmentOsSheetModel.openOrders(orders, open, syncedAt, properties.accountLabel()) : orders;
+            var nextOrderHistory = updateOrderHistory
+                    ? InvestmentOsSheetModel.orderHistory(
+                            orderHistory, closed, orders, syncedAt, properties.accountLabel()) : orderHistory;
             var updateAggregate = authoritative && completePrices;
             var nextAggregate = updateAggregate
                     ? InvestmentOsSheetModel.aggregate(aggregate, nextAccount, syncedAt) : aggregate;
@@ -201,7 +208,7 @@ public final class InvestmentOsSheetSyncService {
             var nextRecon = InvestmentOsSheetModel.reconciliation(
                     current.reconciliation(), syncId.toString(), properties.accountLabel(), "" + status.holdings,
                     status.cash, status.orders, status.fills, status.prices,
-                    rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
+                    rowDelta(account, nextAccount) + rowDelta(orders, nextOrders) + rowDelta(orderHistory, nextOrderHistory)
                             + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics),
                     failure == null ? "NONE" : failure,
                     failure == null && authoritative && allOrderReadsSucceeded && fills != null
@@ -210,13 +217,15 @@ public final class InvestmentOsSheetSyncService {
             var updates = new ArrayList<GoogleSheetsClient.SheetValueRange>();
             if (authoritative) {
                 updates.add(toRange("Account State", account, nextAccount));
-                updates.add(toRange("Orders", orders, nextOrders));
+                if (updateOrders) updates.add(toOrderRange("Orders", orders, nextOrders));
+                if (updateOrderHistory) updates.add(toOrderRange("Order History", orderHistory, nextOrderHistory));
                 if (updateAggregate) updates.add(toRange("Portfolio Aggregate", aggregate, nextAggregate));
                 if (updateMetrics) updates.add(toRange("Portfolio Metrics", metrics, nextMetrics));
             }
             updates.add(toRange("Reconciliation Log", current.reconciliation(), nextRecon));
             sheets.batchUpdateValues(properties.spreadsheetId(), updates);
             var rowsChanged = rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
+                    + rowDelta(orderHistory, nextOrderHistory)
                     + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics);
             var ordersChanged = open == null ? 0 : open.size();
             ordersChanged += closed == null ? 0 : closed.size();
@@ -251,6 +260,7 @@ public final class InvestmentOsSheetSyncService {
         return new Tables(
                 read("Account State", InvestmentOsSheetModel.accountHeaders()),
                 read("Orders", InvestmentOsSheetModel.orderHeaders()),
+                read("Order History", InvestmentOsSheetModel.orderHeaders()),
                 read("Portfolio Aggregate", InvestmentOsSheetModel.aggregateHeaders()),
                 read("Portfolio Metrics", InvestmentOsSheetModel.metricsHeaders()),
                 read("Reconciliation Log", InvestmentOsSheetModel.reconciliationHeaders()));
@@ -275,6 +285,32 @@ public final class InvestmentOsSheetSyncService {
         while (rows.size() < required) rows.add(new ArrayList<>(java.util.Collections.nCopies(next.headers().size(), "")));
         return new GoogleSheetsClient.SheetValueRange(
                 quote(tab) + "!A1:" + column(next.headers().size()) + rows.size(), rows);
+    }
+
+    private static GoogleSheetsClient.SheetValueRange toOrderRange(
+            String tab, InvestmentOsSheetModel.SheetTable previous, InvestmentOsSheetModel.SheetTable next
+    ) {
+        var width = Math.max(previous.headers().size(), next.headers().size());
+        var rows = new ArrayList<List<Object>>();
+        var header = new ArrayList<Object>(next.headers());
+        while (header.size() < width) header.add("");
+        rows.add(header);
+        next.rows().forEach(row -> {
+            var cells = new ArrayList<Object>(row);
+            while (cells.size() < width) cells.add("");
+            rows.add(cells);
+        });
+        var required = Math.max(previous.rows().size(), next.rows().size()) + 1;
+        while (rows.size() < required) rows.add(new ArrayList<>(java.util.Collections.nCopies(width, "")));
+        return new GoogleSheetsClient.SheetValueRange(
+                quote(tab) + "!A1:" + column(width) + rows.size(), rows);
+    }
+
+    private static boolean isCanonicalOrderTable(InvestmentOsSheetModel.SheetTable table) {
+        var canonical = InvestmentOsSheetModel.orderHeaders();
+        if (table.headers().size() < canonical.size()
+                || !table.headers().subList(0, canonical.size()).equals(canonical)) return false;
+        return table.headers().subList(canonical.size(), table.headers().size()).stream().allMatch(String::isBlank);
     }
 
     private static boolean authoritative(ConnectorResponse.Portfolio portfolio) {
@@ -357,6 +393,7 @@ public final class InvestmentOsSheetSyncService {
     }
 
     private record Tables(InvestmentOsSheetModel.SheetTable account, InvestmentOsSheetModel.SheetTable orders,
+                          InvestmentOsSheetModel.SheetTable orderHistory,
                           InvestmentOsSheetModel.SheetTable aggregate, InvestmentOsSheetModel.SheetTable metrics,
                           InvestmentOsSheetModel.SheetTable reconciliation) { }
     private record Status(String holdings, String cash, String orders, String fills, boolean resolved, String prices) { }
