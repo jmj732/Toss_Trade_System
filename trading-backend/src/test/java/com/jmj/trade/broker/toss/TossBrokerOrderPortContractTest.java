@@ -10,8 +10,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -88,6 +90,18 @@ class TossBrokerOrderPortContractTest extends BrokerOrderPortContract {
     }
 
     @Test
+    void orderRetrievalPreservesTossOrderTime() throws ReflectiveOperationException {
+        var mapped = adapter.getOrders(account, BrokerOrderGroup.CLOSED).value().getFirst();
+        var orderedAt = Arrays.stream(mapped.getClass().getRecordComponents())
+                .filter(component -> component.getName().equals("orderedAt"))
+                .findFirst();
+
+        assertThat(orderedAt).isPresent();
+        assertThat(orderedAt.orElseThrow().getAccessor().invoke(mapped))
+                .isEqualTo(Instant.parse("2026-08-02T01:00:00Z"));
+    }
+
+    @Test
     void operationRejectionStatusesRemainDistinctFromOrderRejection() {
         var mapper = new TossResponseMapper();
         assertThat(mapper.order(order("cancel-rejected", "CANCEL_REJECTED")).status().name())
@@ -103,7 +117,7 @@ class TossBrokerOrderPortContractTest extends BrokerOrderPortContract {
     private static TossApiDtos.Order order(String orderId, String status) {
         return new TossApiDtos.Order(
                 orderId, "AAPL", "BUY", "MARKET", "DAY", status, "1", null, null, "USD",
-                "2026-08-02T10:00:00Z", null,
+                "2026-08-02T10:00:00+09:00", null,
                 new TossApiDtos.OrderExecution("1", "180", "180", "0", "0",
                         "2026-08-02T10:00:01Z", null));
     }

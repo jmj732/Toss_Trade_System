@@ -188,7 +188,7 @@ public final class ConnectorService {
                 source.filledQuantity(), source.limitPrice(), source.currency().name(),
                 ConnectorResponse.BrokerOrderLifecycle.valueOf(source.status().name()),
                 ConnectorResponse.BrokerOrderGroup.valueOf(source.group().name()), source.filledAt(),
-                source.averageFilledPrice(), source.commission(), source.tax());
+                source.averageFilledPrice(), source.commission(), source.tax(), source.orderedAt());
     }
 
     private static ConnectorResponse.Fill fill(ConnectorResponse.Order source) {

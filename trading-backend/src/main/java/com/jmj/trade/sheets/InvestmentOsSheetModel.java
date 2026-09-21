@@ -6,6 +6,7 @@ import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -21,6 +22,8 @@ public final class InvestmentOsSheetModel {
 
     public static final String ACCOUNT_1 = "ACCOUNT_1";
     public static final String ACCOUNT_2 = "ACCOUNT_2";
+    // One-time history cutover; keep fixed across restarts and routine deployments.
+    public static final Instant ORDER_HISTORY_CUTOVER = Instant.parse("2026-09-21T12:35:53Z");
 
     private static final List<String> ACCOUNT_HEADERS = List.of(
             "Account", "Ticker", "Asset Type", "Currency", "Quantity", "Avg Cost",
@@ -32,7 +35,7 @@ public final class InvestmentOsSheetModel {
     private static final List<String> ORDER_HEADERS = List.of(
             "Account", "Order ID", "Ticker", "Side", "Type", "Currency", "Quantity",
             "Filled Quantity", "Order Price", "Average Filled Price", "Status", "Filled At",
-            "Source", "Synced At");
+            "Source", "Synced At", "Ordered At");
     private static final List<String> AGGREGATE_HEADERS = List.of(
             "Ticker", "Currency", "Quantity", "Combined Avg Cost", "Market Value", "Cash",
             "Accounts Included", "Source Coverage", "Confidence", "Synced At");
@@ -140,20 +143,27 @@ public final class InvestmentOsSheetModel {
     }
 
     public static SheetTable orderHistory(SheetTable current, List<ConnectorResponse.Order> closed, Instant syncedAt) {
-        return orderHistory(current, closed, syncedAt, ACCOUNT_1);
+        return orderHistory(current, List.of(), closed, new SheetTable(List.of(), List.of()), syncedAt, ACCOUNT_1);
     }
 
     public static SheetTable orderHistory(
             SheetTable current, List<ConnectorResponse.Order> closed, Instant syncedAt, String accountLabel
     ) {
-        return orderHistory(current, closed, new SheetTable(ORDER_HEADERS, List.of()), syncedAt, accountLabel);
+        return orderHistory(current, List.of(), closed, new SheetTable(ORDER_HEADERS, List.of()), syncedAt, accountLabel);
     }
 
     public static SheetTable orderHistory(
             SheetTable current, List<ConnectorResponse.Order> closed, SheetTable legacyOrders,
             Instant syncedAt, String accountLabel
     ) {
-        if (closed == null) return current;
+        return orderHistory(current, List.of(), closed, legacyOrders, syncedAt, accountLabel);
+    }
+
+    public static SheetTable orderHistory(
+            SheetTable current, List<ConnectorResponse.Order> open, List<ConnectorResponse.Order> closed,
+            SheetTable legacyOrders, Instant syncedAt, String accountLabel
+    ) {
+        if (open == null || closed == null) return current;
         var managedAccount = normalizedAccountLabel(accountLabel);
         var source = current;
         var table = new SheetTable(ORDER_HEADERS, List.of());
@@ -161,6 +171,8 @@ public final class InvestmentOsSheetModel {
         var unkeyed = new ArrayList<List<String>>();
         source.rows().forEach(row -> {
             var copied = copyOrderRow(source, row, table);
+            if (managedAccount.equalsIgnoreCase(value(table, copied, "Account"))
+                    && !isPostCutoverOrder(table, copied)) return;
             var orderId = value(table, copied, "Order ID");
             if (orderId.isBlank()) unkeyed.add(copied);
             else byKey.put(value(table, copied, "Account") + "|" + orderId, copied);
@@ -169,11 +181,13 @@ public final class InvestmentOsSheetModel {
         legacy.rows().stream()
                 .filter(row -> managedAccount.equalsIgnoreCase(value(legacy, row, "Account")))
                 .filter(row -> "TOSS_API".equalsIgnoreCase(value(legacy, row, "Source")))
-                .filter(row -> isClosedStatus(value(legacy, row, "Status")))
+                .filter(row -> isPostCutoverOrder(legacy, row))
                 .map(row -> copyOrderRow(legacy, row, table))
                 .filter(row -> !value(table, row, "Order ID").isBlank())
                 .forEach(row -> byKey.put(value(table, row, "Account") + "|" + value(table, row, "Order ID"), row));
-        safe(closed).stream().filter(InvestmentOsSheetModel::isClosedOrder)
+        var fetched = new ArrayList<ConnectorResponse.Order>(safe(open));
+        fetched.addAll(safe(closed));
+        fetched.stream().filter(InvestmentOsSheetModel::isPostCutoverOrder)
                 .filter(order -> order.brokerOrderId() != null && !order.brokerOrderId().isBlank())
                 .sorted(Comparator.comparing(ConnectorResponse.Order::brokerOrderId))
                 .forEach(order -> byKey.put(managedAccount + "|" + order.brokerOrderId(),
@@ -191,15 +205,18 @@ public final class InvestmentOsSheetModel {
                 || order.status() == ConnectorResponse.BrokerOrderLifecycle.REPLACING);
     }
 
-    private static boolean isClosedOrder(ConnectorResponse.Order order) {
-        return order != null && order.group() == ConnectorResponse.BrokerOrderGroup.CLOSED;
+    private static boolean isPostCutoverOrder(ConnectorResponse.Order order) {
+        return order != null && order.orderedAt() != null && !order.orderedAt().isBefore(ORDER_HISTORY_CUTOVER);
     }
 
-    private static boolean isClosedStatus(String status) {
-        return switch (status.toUpperCase(Locale.ROOT)) {
-            case "FILLED", "CANCELED", "REJECTED", "CANCEL_REJECTED", "REPLACE_REJECTED", "REPLACED" -> true;
-            default -> false;
-        };
+    private static boolean isPostCutoverOrder(SheetTable table, List<String> row) {
+        var orderedAt = value(table, row, "Ordered At");
+        if (orderedAt.isBlank()) return false;
+        try {
+            return !Instant.parse(orderedAt).isBefore(ORDER_HISTORY_CUTOVER);
+        } catch (DateTimeParseException exception) {
+            return false;
+        }
     }
 
     private static List<String> brokerOrderRow(
@@ -220,6 +237,7 @@ public final class InvestmentOsSheetModel {
         put(table, row, "Filled At", instant(order.filledAt()));
         put(table, row, "Source", "TOSS_API");
         put(table, row, "Synced At", instant(syncedAt));
+        put(table, row, "Ordered At", instant(order.orderedAt()));
         return row;
     }
 
@@ -240,6 +258,7 @@ public final class InvestmentOsSheetModel {
         put(target, result, "Filled At", value(source, row, "Filled At"));
         put(target, result, "Source", value(source, row, "Source"));
         put(target, result, "Synced At", value(source, row, "Synced At"));
+        put(target, result, "Ordered At", value(source, row, "Ordered At"));
         return result;
     }
 

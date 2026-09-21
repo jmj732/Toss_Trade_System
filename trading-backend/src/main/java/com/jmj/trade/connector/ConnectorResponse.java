@@ -167,8 +167,28 @@ public final class ConnectorResponse {
             Instant filledAt,
             BigDecimal averageFilledPrice,
             BigDecimal commission,
-            BigDecimal tax
+            BigDecimal tax,
+            Instant orderedAt
     ) {
+        public Order(
+                String brokerOrderId,
+                BrokerOrderSide side,
+                BrokerOrderType type,
+                String symbol,
+                BigDecimal quantity,
+                BigDecimal filledQuantity,
+                BigDecimal limitPrice,
+                String currency,
+                BrokerOrderLifecycle status,
+                BrokerOrderGroup group,
+                Instant filledAt,
+                BigDecimal averageFilledPrice,
+                BigDecimal commission,
+                BigDecimal tax
+        ) {
+            this(brokerOrderId, side, type, symbol, quantity, filledQuantity, limitPrice, currency, status,
+                    group, filledAt, averageFilledPrice, commission, tax, null);
+        }
     }
 
     public record Fill(

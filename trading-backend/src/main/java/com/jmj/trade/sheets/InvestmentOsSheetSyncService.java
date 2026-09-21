@@ -191,12 +191,12 @@ public final class InvestmentOsSheetSyncService {
             }
             var archiveReady = isCanonicalOrderTable(orders) || closed != null;
             var updateOrders = authoritative && open != null && archiveReady;
-            var updateOrderHistory = authoritative && closed != null;
+            var updateOrderHistory = authoritative && open != null && closed != null;
             var nextOrders = updateOrders
                     ? InvestmentOsSheetModel.openOrders(orders, open, syncedAt, properties.accountLabel()) : orders;
             var nextOrderHistory = updateOrderHistory
                     ? InvestmentOsSheetModel.orderHistory(
-                            orderHistory, closed, orders, syncedAt, properties.accountLabel()) : orderHistory;
+                            orderHistory, open, closed, orders, syncedAt, properties.accountLabel()) : orderHistory;
             var updateAggregate = authoritative && completePrices;
             var nextAggregate = updateAggregate
                     ? InvestmentOsSheetModel.aggregate(aggregate, nextAccount, syncedAt) : aggregate;

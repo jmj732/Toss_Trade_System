@@ -187,30 +187,45 @@ class InvestmentOsSheetModelTest {
     }
 
     @Test
-    void orderHistoryIsIdempotentAndKeepsClosedStatusesSeparate() {
+    void orderHistoryRowsRemainIdempotentAcrossSyncs() {
         var existing = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of());
         var order = new ConnectorResponse.Order(
-                "closed-1", ConnectorResponse.BrokerOrderSide.SELL,
-                ConnectorResponse.BrokerOrderType.MARKET, "XYZ", bd("1"), bd("1"),
-                null, "USD", ConnectorResponse.BrokerOrderLifecycle.CANCELED,
-                ConnectorResponse.BrokerOrderGroup.CLOSED, SYNCED_AT, bd("12"), null, null);
-        var stillOpen = new ConnectorResponse.Order(
-                "open-1", ConnectorResponse.BrokerOrderSide.BUY,
-                ConnectorResponse.BrokerOrderType.LIMIT, "ABC", bd("1"), bd("0"),
-                bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.PENDING,
-                ConnectorResponse.BrokerOrderGroup.OPEN, null, null, null, null);
+                "new-order", ConnectorResponse.BrokerOrderSide.SELL, ConnectorResponse.BrokerOrderType.MARKET,
+                "XYZ", bd("1"), bd("1"), null, "USD", ConnectorResponse.BrokerOrderLifecycle.CANCELED,
+                ConnectorResponse.BrokerOrderGroup.CLOSED, SYNCED_AT, bd("12"), null, null,
+                InvestmentOsSheetModel.ORDER_HISTORY_CUTOVER);
 
-        var once = InvestmentOsSheetModel.orderHistory(existing, List.of(order, stillOpen), SYNCED_AT);
-        var twice = InvestmentOsSheetModel.orderHistory(once, List.of(order, stillOpen), SYNCED_AT);
+        var once = InvestmentOsSheetModel.orderHistory(existing, List.of(), List.of(order),
+                new InvestmentOsSheetModel.SheetTable(List.of(), List.of()), SYNCED_AT,
+                InvestmentOsSheetModel.ACCOUNT_1);
+        var twice = InvestmentOsSheetModel.orderHistory(once, List.of(), List.of(order),
+                new InvestmentOsSheetModel.SheetTable(List.of(), List.of()), SYNCED_AT,
+                InvestmentOsSheetModel.ACCOUNT_1);
 
         assertThat(twice.rows()).hasSize(1);
-        assertThat(twice.rows().getFirst().get(twice.column("Order ID"))).isEqualTo("closed-1");
+        assertThat(twice.headers()).contains("Ordered At");
+        assertThat(twice.rows().getFirst().get(twice.column("Order ID"))).isEqualTo("new-order");
+        assertThat(twice.rows().getFirst().get(twice.column("Ordered At"))).isEqualTo("2026-09-21T12:35:53Z");
         assertThat(twice.rows().getFirst().get(twice.column("Status"))).isEqualTo("CANCELED");
-        assertThat(twice.rows().getFirst().get(twice.column("Average Filled Price"))).isEqualTo("12");
     }
 
     @Test
-    void migratesConfirmedLegacyClosedRowsEvenWhenTheCurrentClosedListIsEmpty() {
+    void doesNotInferOrderAgeWhenBrokerOrderTimeIsMissing() {
+        var order = new ConnectorResponse.Order(
+                "unknown-time", ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
+                "ABC", bd("1"), bd("1"), bd("10"), "USD", ConnectorResponse.BrokerOrderLifecycle.FILLED,
+                ConnectorResponse.BrokerOrderGroup.CLOSED, SYNCED_AT, bd("10"), null, null);
+
+        var history = InvestmentOsSheetModel.orderHistory(
+                new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of()),
+                List.of(), List.of(order), new InvestmentOsSheetModel.SheetTable(List.of(), List.of()),
+                SYNCED_AT, InvestmentOsSheetModel.ACCOUNT_1);
+
+        assertThat(history.rows()).isEmpty();
+    }
+
+    @Test
+    void doesNotMigrateLegacyRowsWithoutAnOrderTimestamp() {
         var legacy = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of(
                 List.of("ACCOUNT_1", "legacy-1", "ABC", "BUY", "LIMIT", "USD", "2", "2", "10", "9.5",
                         "FILLED", "2026-09-16T00:00:00Z", "TOSS_API", "old-sync")));
@@ -219,9 +234,7 @@ class InvestmentOsSheetModelTest {
                 new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.orderHeaders(), List.of()),
                 List.of(), legacy, SYNCED_AT, InvestmentOsSheetModel.ACCOUNT_1);
 
-        assertThat(history.rows()).hasSize(1);
-        assertThat(history.rows().getFirst().get(history.column("Order ID"))).isEqualTo("legacy-1");
-        assertThat(history.rows().getFirst().get(history.column("Status"))).isEqualTo("FILLED");
+        assertThat(history.rows()).isEmpty();
     }
 
     @Test
@@ -233,6 +246,27 @@ class InvestmentOsSheetModelTest {
         var unchanged = InvestmentOsSheetModel.orderHistory(existing, null, SYNCED_AT);
 
         assertThat(unchanged).isEqualTo(existing);
+    }
+
+    @Test
+    void orderHistoryDropsPreCutoverRowsAndKeepsRowsPlacedAtOrAfterCutover() {
+        var headers = List.of("Account", "Order ID", "Ticker", "Side", "Type", "Currency", "Quantity",
+                "Filled Quantity", "Order Price", "Average Filled Price", "Status", "Filled At", "Source",
+                "Synced At", "Ordered At");
+        var previousOrder = List.of("ACCOUNT_1", "old-order", "ABC", "BUY", "LIMIT", "USD", "1", "1",
+                "10", "10", "FILLED", "2026-09-20T12:00:00Z", "TOSS_API", "old-sync",
+                "2026-09-20T11:59:59Z");
+        var newOrder = List.of("ACCOUNT_1", "new-order", "XYZ", "BUY", "LIMIT", "USD", "1", "0",
+                "20", "", "PENDING", "", "TOSS_API", "new-sync", "2026-09-21T12:35:53Z");
+        var existing = new InvestmentOsSheetModel.SheetTable(headers, List.of(previousOrder, newOrder));
+
+        var history = InvestmentOsSheetModel.orderHistory(existing, List.of(), SYNCED_AT);
+
+        assertThat(history.rows()).hasSize(1);
+        assertThat(history.rows().getFirst().get(history.column("Order ID"))).isEqualTo("new-order");
+        assertThat(history.headers()).contains("Ordered At");
+        assertThat(history.rows().getFirst().get(history.column("Ordered At")))
+                .isEqualTo("2026-09-21T12:35:53Z");
     }
 
     private static InvestmentOsSheetModel.SheetTable table(List<String>... rows) {
