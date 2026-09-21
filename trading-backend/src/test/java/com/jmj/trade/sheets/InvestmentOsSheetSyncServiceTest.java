@@ -65,7 +65,7 @@ class InvestmentOsSheetSyncServiceTest {
         verify(connector).orders(BROKER_ACCOUNT, "CLOSED");
         verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.size() == 4
                 && updates.stream().anyMatch(update -> update.range().contains("Account State")
-                && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_2")))));
+                && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_1")))));
         verify(lease).release(any());
     }
 

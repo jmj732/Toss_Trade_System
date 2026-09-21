@@ -27,7 +27,7 @@ public record InvestmentOsSheetProperties(
             Duration initialDelay,
             Duration lockTtl
     ) {
-        this(enabled, spreadsheetId, userId, connectionId, InvestmentOsSheetModel.ACCOUNT_2,
+        this(enabled, spreadsheetId, userId, connectionId, InvestmentOsSheetModel.ACCOUNT_1,
                 interval, initialDelay, lockTtl);
     }
 
@@ -51,7 +51,7 @@ public record InvestmentOsSheetProperties(
 
     private static String normalizeAccountLabel(String value) {
         var normalized = value == null || value.isBlank()
-                ? InvestmentOsSheetModel.ACCOUNT_2
+                ? InvestmentOsSheetModel.ACCOUNT_1
                 : value.trim().toUpperCase(java.util.Locale.ROOT);
         if (!InvestmentOsSheetModel.ACCOUNT_1.equals(normalized)
                 && !InvestmentOsSheetModel.ACCOUNT_2.equals(normalized)) {
