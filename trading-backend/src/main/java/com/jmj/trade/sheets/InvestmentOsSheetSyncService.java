@@ -266,7 +266,7 @@ public final class InvestmentOsSheetSyncService {
                     .addKeyValue("failure_reason", failure == null ? "NONE" : failure)
                     .addKeyValue("aggregate_recalculation", updateAggregate)
                     .addKeyValue("metrics_recalculation", updateMetrics)
-                    .addKeyValue("reconciliation_result", status.resolved)
+                    .addKeyValue("reconciliation_result", failure == null && status.resolved)
                     .addKeyValue("duration_ms", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
                     .log("investment os sheet sync completed");
             return result;

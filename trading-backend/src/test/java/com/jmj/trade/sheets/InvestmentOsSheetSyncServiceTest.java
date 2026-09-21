@@ -80,6 +80,40 @@ class InvestmentOsSheetSyncServiceTest {
     }
 
     @Test
+    void registryGapIsRecordedAsUnresolved() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
+                NOW, false, null, false, List.of(), List.of(), null, List.of(), java.util.Map.of(
+                "USD", new ConnectorResponse.BuyingPower(bd("0"), NOW),
+                "KRW", new ConnectorResponse.BuyingPower(bd("0"), NOW))));
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
+        var sync = service(lease, connector, sheets);
+        when(sheets.readValues(eq("sheet-1"), eq("'Account Registry'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("registry", List.of(
+                        List.of("Account", "Label", "Sync Mode", "Source", "Default Confidence", "Enabled", "Last Sync", "Notes"),
+                        List.of("ACCOUNT_2", "Manual", "MANUAL", "MANUAL", "MEDIUM", "TRUE", "manual-time", "keep"))));
+
+        var result = sync.sync();
+
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
+        ArgumentCaptor<List<GoogleSheetsClient.SheetValueRange>> updates = ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        var reconciliation = updates.getValue().stream()
+                .filter(update -> update.range().startsWith("'Reconciliation Log'!"))
+                .findFirst().orElseThrow();
+        var headers = reconciliation.values().getFirst().stream().map(String::valueOf).toList();
+        var latest = reconciliation.values().get(1).stream().map(String::valueOf).toList();
+        assertThat(latest.get(headers.indexOf("Resolved"))).isEqualTo("false");
+        assertThat(latest.get(headers.indexOf("Error"))).contains("ACCOUNT_REGISTRY_ROW_MISSING_OR_DUPLICATE");
+    }
+
+    @Test
     void legacyRowsWithoutOrderTimeAreRemovedWhenMixedColumnsAreCleared() {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
