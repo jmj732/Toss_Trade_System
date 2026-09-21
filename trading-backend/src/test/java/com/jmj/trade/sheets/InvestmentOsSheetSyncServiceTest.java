@@ -1,11 +1,13 @@
 package com.jmj.trade.sheets;
 
-import com.jmj.trade.connector.ConnectorResponse;
-import com.jmj.trade.connector.ConnectorService;
+import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.connection.BrokerConnectionException;
+import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
+import com.jmj.trade.connector.ConnectorResponse;
+import com.jmj.trade.connector.ConnectorService;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -67,6 +69,37 @@ class InvestmentOsSheetSyncServiceTest {
                 && updates.stream().anyMatch(update -> update.range().contains("Account State")
                 && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_1")))));
         verify(lease).release(any());
+    }
+
+    @Test
+    void syncFetchesQuotesForHoldingsInBothAccounts() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var brokerSurface = mock(BrokerSurfaceService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account State'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("range", List.of(
+                        List.of("Account", "Ticker", "Asset Type", "Currency", "Quantity", "Avg Cost",
+                                "Current Price", "Market Value", "Cash", "Source", "Confidence", "Synced At",
+                                "Price Source", "Price Synced At"),
+                        List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "11", "22", "",
+                                "TOSS_API", "HIGH", "old", "TOSS_QUOTE_API", "old"),
+                        List.of("ACCOUNT_2", "XYZ", "HOLDING", "USD", "3", "20", "12", "36", "",
+                                "MANUAL", "HIGH", "manual", "MANUAL", "manual"))));
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
+        when(brokerSurface.prices(eq(USER_ID), eq(CONNECTION_ID), any())).thenAnswer(invocation ->
+                BrokerSurfaceResponse.available(List.of(new BrokerSurfaceResponse.PriceView(
+                        invocation.getArgument(2), bd("15"), null, null, "USD", NOW, NOW))));
+
+        service(lease, connector, brokerSurface, sheets).sync();
+
+        verify(brokerSurface).prices(USER_ID, CONNECTION_ID, "ABC");
+        verify(brokerSurface).prices(USER_ID, CONNECTION_ID, "XYZ");
     }
 
     @Test
@@ -160,10 +193,19 @@ class InvestmentOsSheetSyncServiceTest {
             ConnectorService connector,
             GoogleSheetsClient sheets
     ) {
+        return service(lease, connector, null, sheets);
+    }
+
+    private InvestmentOsSheetSyncService service(
+            InvestmentOsSheetLease lease,
+            ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
+            GoogleSheetsClient sheets
+    ) {
         return new InvestmentOsSheetSyncService(
                 new InvestmentOsSheetProperties(true, "sheet-1", USER_ID, CONNECTION_ID,
                         Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(2)),
-                lease, connector, null, sheets, () -> NOW);
+                lease, connector, brokerSurface, sheets, () -> NOW);
     }
 
     private static GoogleSheetsClient.SheetValues emptyValues() {

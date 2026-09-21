@@ -108,24 +108,32 @@ class InvestmentOsSheetModelTest {
     }
 
     @Test
-    void tossQuotesUpdateOnlyAccount1AndNeverRewriteManualAccount2() {
+    void tossQuotesUpdateHoldingsInBothAccountsWithoutChangingManualPositionData() {
         var syncedAt = "2026-09-20T00:00:00Z";
         var account = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
                 List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "11", "22", "", "TOSS_API", "HIGH", syncedAt,
                         "TOSS_QUOTE_API", syncedAt),
-                List.of("ACCOUNT_2", "ABC", "HOLDING", "USD", "3", "20", "12", "36", "", "MANUAL", "HIGH", "manual-sync",
+                List.of("ACCOUNT_2", "XYZ", "HOLDING", "USD", "3", "20", "12", "36", "", "MANUAL", "HIGH", "manual-sync",
                         "MANUAL", "manual-price-time")));
 
-        assertThat(InvestmentOsSheetModel.heldSymbols(account, "ACCOUNT_1")).containsExactly("ABC");
-        var updated = InvestmentOsSheetModel.refreshPrices(account, List.of(new BrokerSurfaceResponse.PriceView(
-                "ABC", bd("15"), null, null, "USD", SYNCED_AT, null)), SYNCED_AT, "ACCOUNT_1");
+        assertThat(InvestmentOsSheetModel.heldSymbols(account)).containsExactly("ABC", "XYZ");
+        var updated = InvestmentOsSheetModel.refreshPrices(account, List.of(
+                new BrokerSurfaceResponse.PriceView("ABC", bd("15"), null, null, "USD", SYNCED_AT, null),
+                new BrokerSurfaceResponse.PriceView("XYZ", bd("25"), null, null, "USD", SYNCED_AT, null)),
+                SYNCED_AT);
 
         var account1 = updated.rows().getFirst();
         var account2 = updated.rows().get(1);
         assertThat(account1.get(updated.column("Current Price"))).isEqualTo("15");
         assertThat(account1.get(updated.column("Market Value"))).isEqualTo("30");
-        assertThat(account2).containsExactlyElementsOf(account.rows().get(1));
-        assertThat(InvestmentOsSheetModel.hasCompleteQuotes(updated, "ACCOUNT_1")).isTrue();
+        assertThat(account2.get(updated.column("Ticker"))).isEqualTo("XYZ");
+        assertThat(account2.get(updated.column("Quantity"))).isEqualTo("3");
+        assertThat(account2.get(updated.column("Avg Cost"))).isEqualTo("20");
+        assertThat(account2.get(updated.column("Source"))).isEqualTo("MANUAL");
+        assertThat(account2.get(updated.column("Current Price"))).isEqualTo("25");
+        assertThat(account2.get(updated.column("Market Value"))).isEqualTo("75");
+        assertThat(account2.get(updated.column("Price Source"))).isEqualTo("TOSS_QUOTE_API");
+        assertThat(InvestmentOsSheetModel.hasCompleteQuotes(updated)).isTrue();
     }
 
     @Test
