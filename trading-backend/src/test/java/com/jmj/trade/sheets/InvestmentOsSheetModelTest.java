@@ -152,8 +152,41 @@ class InvestmentOsSheetModelTest {
 
         var updated = InvestmentOsSheetModel.accountRegistry(registry, SYNCED_AT);
 
-        assertThat(updated.rows().get(0)).containsExactly("ACCOUNT_1", "Toss", "AUTO", "TOSS_API", "HIGH", "TRUE", SYNCED_AT.toString(), "keep");
+        assertThat(updated.rows().get(0)).containsExactly("ACCOUNT_1", "Toss", "AUTO", "TOSS_API", "HIGH", "TRUE", SYNCED_AT.toString(), "");
         assertThat(updated.rows().get(1)).containsExactlyElementsOf(registry.rows().get(1));
+    }
+
+    @Test
+    void authoritativeAccount1SyncClearsLegacyManualNotes() {
+        var existing = new InvestmentOsSheetModel.SheetTable(
+                InvestmentOsSheetModel.accountHeaders().stream().toList(),
+                List.of(List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "11", "22", "",
+                        "TOSS_API", "HIGH", "old", "TOSS_QUOTE_API", "old", "HELD")));
+        var legacy = new InvestmentOsSheetModel.SheetTable(
+                List.of("asOf", "Account", "Asset", "Quantity", "Avg Cost", "Currency", "State", "Source",
+                        "Confidence", "Synced At", "Notes", "Current Price", "Market Value", "Price Source", "Price Synced At"),
+                List.of(List.of("2026-09-21", "ACCOUNT_1", "ABC", "2", "10", "USD", "HELD", "TOSS_API",
+                        "HIGH", "old", "Fresh screenshot: stale", "11", "22", "TOSS_QUOTE_API", "old")));
+
+        var updated = InvestmentOsSheetModel.accountState(legacy,
+                portfolio(position("ABC", "2", "10"), cash("USD", "100")), SYNCED_AT);
+
+        assertThat(updated.rows()).allSatisfy(row -> assertThat(row.get(updated.column("Notes"))).isBlank());
+    }
+
+    @Test
+    void aggregateSourceCoverageDeduplicatesAccountAndQuoteSources() {
+        var account = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
+                List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "15", "30", "", "TOSS_API", "HIGH", "now",
+                        "TOSS_QUOTE_API", "now", "HELD"),
+                List.of("ACCOUNT_2", "ABC", "HOLDING", "USD", "3", "20", "15", "45", "", "MANUAL", "HIGH", "manual",
+                        "TOSS_QUOTE_API", "now", "HELD")));
+
+        var aggregate = InvestmentOsSheetModel.aggregate(account, SYNCED_AT);
+
+        var row = aggregate.rows().getFirst();
+        assertThat(row.get(aggregate.column("Source Coverage")))
+                .isEqualTo("TOSS_API+TOSS_QUOTE_API+MANUAL");
     }
 
     @Test

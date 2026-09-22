@@ -93,6 +93,7 @@ public final class InvestmentOsSheetModel {
             put(table, row, "Source", "TOSS_API");
             put(table, row, "Confidence", "HIGH");
             put(table, row, "Synced At", instant(observed));
+            putOptional(table, row, "Notes", "");
             rows.add(row);
         }
         if (portfolio.buyingPower() != null) {
@@ -114,6 +115,7 @@ public final class InvestmentOsSheetModel {
                         put(table, row, "Source", "TOSS_API");
                         put(table, row, "Confidence", "HIGH");
                         put(table, row, "Synced At", instant(observed));
+                        putOptional(table, row, "Notes", "");
                         rows.add(row);
                     });
         }
@@ -330,6 +332,7 @@ public final class InvestmentOsSheetModel {
             var row = padded(table, sourceRow);
             if (ACCOUNT_1.equalsIgnoreCase(value(table, row, "Account"))) {
                 put(table, row, "Last Sync", instant(syncedAt));
+                putOptional(table, row, "Notes", "");
             }
             rows.add(row);
         }
@@ -512,6 +515,14 @@ public final class InvestmentOsSheetModel {
         var source = value(table, row, "Source");
         var priceSource = value(table, row, "Price Source");
         return priceSource.isBlank() ? source : source.isBlank() ? priceSource : source + "+" + priceSource;
+    }
+
+    private static void addSources(String raw, LinkedHashSet<String> target) {
+        if (raw == null || raw.isBlank()) return;
+        for (var source : raw.split("[+;]")) {
+            var normalized = source.trim();
+            if (!normalized.isBlank()) target.add(normalized);
+        }
     }
 
     private static List<String> padded(SheetTable table, List<String> row) {
@@ -712,7 +723,7 @@ public final class InvestmentOsSheetModel {
         void add(String account, String source, String confidence, BigDecimal qty, BigDecimal avg,
                  BigDecimal price, BigDecimal cashAmount) {
             accounts.add(account);
-            if (!source.isBlank()) sources.add(source);
+            addSources(source, sources);
             allHigh &= "HIGH".equalsIgnoreCase(confidence);
             if (qty != null) {
                 quantity = zero(quantity).add(qty);

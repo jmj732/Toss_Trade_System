@@ -80,6 +80,28 @@ class InvestmentOsSheetSyncServiceTest {
     }
 
     @Test
+    void closedOrderHistoryIsCachedBetweenFiveMinuteSyncs() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
+                NOW, false, null, false, List.of(), List.of(), null, List.of(), java.util.Map.of(
+                "USD", buyingPower("100"), "KRW", buyingPower("0"))));
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
+
+        var sync = service(lease, connector, sheets);
+        sync.sync();
+        sync.sync();
+
+        verify(connector, times(1)).orders(BROKER_ACCOUNT, "CLOSED");
+        verify(connector, times(2)).orders(BROKER_ACCOUNT, "OPEN");
+    }
+
+    @Test
     void registryGapIsRecordedAsUnresolved() {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
@@ -207,14 +229,14 @@ class InvestmentOsSheetSyncServiceTest {
         when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
         when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
         when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
-        when(brokerSurface.prices(eq(USER_ID), eq(CONNECTION_ID), any())).thenAnswer(invocation ->
-                BrokerSurfaceResponse.available(List.of(new BrokerSurfaceResponse.PriceView(
-                        invocation.getArgument(2), bd("15"), null, null, "USD", NOW, NOW))));
+        when(brokerSurface.prices(eq(USER_ID), eq(CONNECTION_ID), eq("ABC,XYZ"))).thenReturn(
+                BrokerSurfaceResponse.available(List.of(
+                        new BrokerSurfaceResponse.PriceView("ABC", bd("15"), null, null, "USD", NOW, NOW),
+                        new BrokerSurfaceResponse.PriceView("XYZ", bd("15"), null, null, "USD", NOW, NOW))));
 
         service(lease, connector, brokerSurface, sheets).sync();
 
-        verify(brokerSurface).prices(USER_ID, CONNECTION_ID, "ABC");
-        verify(brokerSurface).prices(USER_ID, CONNECTION_ID, "XYZ");
+        verify(brokerSurface).prices(USER_ID, CONNECTION_ID, "ABC,XYZ");
     }
 
     @Test

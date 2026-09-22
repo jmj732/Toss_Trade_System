@@ -27,6 +27,9 @@ import java.util.function.Supplier;
 public final class InvestmentOsSheetSyncService {
     private static final Logger LOG = LoggerFactory.getLogger(InvestmentOsSheetSyncService.class);
     private static final String OPERATION = "investment_os_sheet_sync";
+    // ponytail: refresh the unbounded CLOSED order history less often; OPEN orders and holdings stay on the 5-minute loop.
+    private static final Duration CLOSED_ORDER_REFRESH_INTERVAL = Duration.ofMinutes(30);
+    private static final Duration CLOSED_ORDER_RATE_LIMIT_BACKOFF = Duration.ofMinutes(30);
 
     private final InvestmentOsSheetProperties properties;
     private final InvestmentOsSheetLease lease;
@@ -34,6 +37,9 @@ public final class InvestmentOsSheetSyncService {
     private final BrokerSurfaceService brokerSurface;
     private final GoogleSheetsClient sheets;
     private final Supplier<Instant> now;
+    private Instant closedOrdersFetchedAt;
+    private Instant closedOrdersRetryNotBefore;
+    private List<ConnectorResponse.Order> cachedClosedOrders = List.of();
 
     public InvestmentOsSheetSyncService(
             InvestmentOsSheetProperties properties,
@@ -110,6 +116,7 @@ public final class InvestmentOsSheetSyncService {
         List<ConnectorResponse.Order> closed = null;
         List<ConnectorResponse.Fill> fills = null;
         String failure = null;
+        boolean closedFromCache = false;
 
         try {
             portfolio = connector.portfolio(userId, connectionId);
@@ -140,12 +147,38 @@ public final class InvestmentOsSheetSyncService {
                     LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "open_orders")
                             .addKeyValue("failure_reason", safeError(exception)).log("Toss open orders fetch failed");
                 }
-                try {
-                    closed = connector.orders(orderAccount, "CLOSED");
-                } catch (RuntimeException exception) {
-                    failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception));
-                    LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
-                            .addKeyValue("failure_reason", safeError(exception)).log("Toss closed orders fetch failed");
+                if (shouldRefreshClosedOrders(syncedAt)) {
+                    try {
+                        closed = connector.orders(orderAccount, "CLOSED");
+                        cachedClosedOrders = List.copyOf(closed == null ? List.of() : closed);
+                        closedOrdersFetchedAt = syncedAt;
+                        closedOrdersRetryNotBefore = null;
+                        LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
+                                .addKeyValue("fetch_mode", "fresh").addKeyValue("orders", cachedClosedOrders.size())
+                                .log("Toss closed orders fetch completed");
+                    } catch (RuntimeException exception) {
+                        closedOrdersRetryNotBefore = syncedAt.plus(CLOSED_ORDER_RATE_LIMIT_BACKOFF);
+                        if (closedOrdersFetchedAt != null) {
+                            closed = cachedClosedOrders;
+                            closedFromCache = true;
+                            failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception)
+                                    + "+CLOSED_ORDERS_USING_CACHE");
+                        } else {
+                            failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception));
+                        }
+                        LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
+                                .addKeyValue("failure_reason", safeError(exception))
+                                .addKeyValue("fetch_mode", closedFromCache ? "cache" : "failed")
+                                .log("Toss closed orders fetch failed; cached history retained when available");
+                    }
+                } else if (closedOrdersFetchedAt != null) {
+                    closed = cachedClosedOrders;
+                    closedFromCache = true;
+                    LOG.atDebug().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
+                            .addKeyValue("fetch_mode", "cache").addKeyValue("fetched_at", closedOrdersFetchedAt)
+                            .log("Toss closed orders fetch skipped; refresh interval has not elapsed");
+                } else {
+                    failure = appendFailure(failure, "CLOSED_ORDERS_RATE_LIMIT_BACKOFF");
                 }
             }
             if (open != null && closed != null) {
@@ -212,7 +245,7 @@ public final class InvestmentOsSheetSyncService {
             }
             var archiveReady = isCanonicalOrderTable(orders) || closed != null;
             var updateOrders = authoritative && open != null && archiveReady;
-            var updateOrderHistory = authoritative && open != null && closed != null;
+            var updateOrderHistory = authoritative && open != null && closed != null && !closedFromCache;
             var nextOrders = updateOrders
                     ? InvestmentOsSheetModel.openOrders(orders, open, syncedAt, properties.accountLabel()) : orders;
             var nextOrderHistory = updateOrderHistory
@@ -251,7 +284,7 @@ public final class InvestmentOsSheetSyncService {
                     + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics)
                     + rowDelta(registry, nextRegistry);
             var ordersChanged = open == null ? 0 : open.size();
-            ordersChanged += closed == null ? 0 : closed.size();
+            ordersChanged += closed == null || closedFromCache ? 0 : closed.size();
             var result = new InvestmentOsSheetSyncResult(
                     failure == null && authoritative && allOrderReadsSucceeded && fills != null && completePrices
                             ? InvestmentOsSheetSyncResult.Outcome.SUCCEEDED
@@ -370,34 +403,44 @@ public final class InvestmentOsSheetSyncService {
         var expected = InvestmentOsSheetModel.heldSymbols(account);
         var prices = new LinkedHashMap<String, BrokerSurfaceResponse.PriceView>();
         var errors = new LinkedHashMap<String, String>();
-        for (var symbol : expected) {
+        for (var start = 0; start < expected.size(); start += 20) {
+            var symbols = expected.subList(start, Math.min(start + 20, expected.size()));
             try {
-                var response = brokerSurface.prices(userId, connectionId, symbol);
+                var response = brokerSurface.prices(userId, connectionId, String.join(",", symbols));
                 if (response == null || response.data() == null || response.stale()) {
-                    errors.put(symbol, response == null ? "EMPTY_RESPONSE" : response.stale()
+                    var reason = response == null ? "EMPTY_RESPONSE" : response.stale()
                             ? "STALE_PRICE_RESPONSE"
-                            : response.unavailableReason() == null ? "PRICE_UNAVAILABLE" : response.unavailableReason());
+                            : response.unavailableReason() == null ? "PRICE_UNAVAILABLE" : response.unavailableReason();
+                    symbols.forEach(symbol -> errors.put(symbol, reason));
                     continue;
                 }
                 for (var price : response.data()) {
-                    if (price != null && symbol.equalsIgnoreCase(price.symbol()) && price.lastPrice() != null
+                    if (price != null && price.symbol() != null && price.lastPrice() != null
                             && price.lastPrice().signum() > 0) {
                         prices.putIfAbsent(price.symbol().toUpperCase(java.util.Locale.ROOT), price);
                     }
                 }
-                if (!prices.containsKey(symbol)) {
-                    var missingPrice = response.unknownFields().stream()
-                            .filter(field -> field.equalsIgnoreCase(symbol + ".lastPrice"))
-                            .findFirst().orElse("LAST_PRICE_MISSING");
-                    errors.put(symbol, missingPrice);
+                for (var symbol : symbols) {
+                    if (!prices.containsKey(symbol)) {
+                        var missingPrice = response.unknownFields().stream()
+                                .filter(field -> field.equalsIgnoreCase(symbol + ".lastPrice"))
+                                .findFirst().orElse("LAST_PRICE_MISSING");
+                        errors.put(symbol, missingPrice);
+                    }
                 }
             } catch (RuntimeException exception) {
-                errors.put(symbol, safeError(exception));
+                symbols.forEach(symbol -> errors.put(symbol, safeError(exception)));
             }
         }
         var missing = expected.stream().filter(symbol -> !prices.containsKey(symbol)).toList();
         var failures = errors.entrySet().stream().map(entry -> entry.getKey() + "=" + entry.getValue()).toList();
         return new PriceSnapshot(Map.copyOf(prices), missing, failures);
+    }
+
+    private boolean shouldRefreshClosedOrders(Instant at) {
+        if (closedOrdersRetryNotBefore != null && at.isBefore(closedOrdersRetryNotBefore)) return false;
+        return closedOrdersFetchedAt == null
+                || !at.isBefore(closedOrdersFetchedAt.plus(CLOSED_ORDER_REFRESH_INTERVAL));
     }
 
     private static String appendFailure(String failure, String next) {
