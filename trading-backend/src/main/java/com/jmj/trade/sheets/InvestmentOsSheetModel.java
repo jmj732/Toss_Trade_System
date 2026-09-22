@@ -22,6 +22,8 @@ public final class InvestmentOsSheetModel {
 
     public static final String ACCOUNT_1 = "ACCOUNT_1";
     public static final String ACCOUNT_2 = "ACCOUNT_2";
+    private static final List<String> CANONICAL_SOURCE_ORDER = List.of(
+            "USER_SCREENSHOT", "TOSS_API", "TOSS_QUOTE_API");
     // One-time history cutover; keep fixed across restarts and routine deployments.
     public static final Instant ORDER_HISTORY_CUTOVER = Instant.parse("2026-09-21T12:35:53Z");
 
@@ -758,13 +760,24 @@ public final class InvestmentOsSheetModel {
             putOptional(table, row, "Asset Type", isCash ? "CASH" : "HOLDING");
             putOptional(table, row, "State", isCash ? "CASH" : "HELD");
             put(table, row, "Accounts Included", String.join(",", accounts));
-            put(table, row, "Source Coverage", String.join("+", sources));
+            put(table, row, "Source Coverage", canonicalSources(sources));
             put(table, row, "Confidence", allHigh ? "HIGH" : "MEDIUM");
             put(table, row, "Synced At", syncedAt);
             putOptional(table, row, "asOf", localDate(syncedAt));
             putOptional(table, row, "Notes", isCash ? "Combined reported cash; currencies remain separate."
                     : "Market value uses latest quote × combined quantity.");
             return row;
+        }
+
+        private static String canonicalSources(LinkedHashSet<String> sources) {
+            var ordered = new ArrayList<String>();
+            for (var preferred : CANONICAL_SOURCE_ORDER) {
+                if (sources.contains(preferred)) ordered.add(preferred);
+            }
+            sources.stream()
+                    .filter(source -> !CANONICAL_SOURCE_ORDER.contains(source))
+                    .forEach(ordered::add);
+            return String.join("+", ordered);
         }
 
         private static BigDecimal zero(BigDecimal value) { return value == null ? BigDecimal.ZERO : value; }
