@@ -64,6 +64,6 @@ controlled production path.
 
 ## Rollback
 
-Historical images are removed after deployment cleanup. Roll back by rerunning CD from a
-known-good, verified commit so its images are rebuilt and transferred; do not rebuild from an
+CD has no manual trigger. Roll back by reverting the bad change through the normal PR flow;
+the resulting verified push to `main` automatically rebuilds and deploys. Do not deploy from an
 unverified working tree.

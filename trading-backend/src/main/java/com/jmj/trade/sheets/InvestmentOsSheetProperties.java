@@ -1,6 +1,7 @@
 package com.jmj.trade.sheets;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.time.Duration;
 import java.util.Objects;
@@ -26,10 +27,11 @@ public record InvestmentOsSheetProperties(
             Duration initialDelay,
             Duration lockTtl
     ) {
-        this(enabled, spreadsheetId, userId, connectionId, InvestmentOsSheetModel.ACCOUNT_2,
+        this(enabled, spreadsheetId, userId, connectionId, InvestmentOsSheetModel.ACCOUNT_1,
                 interval, initialDelay, lockTtl);
     }
 
+    @ConstructorBinding
     public InvestmentOsSheetProperties {
         if (enabled) {
             if (spreadsheetId == null || spreadsheetId.isBlank()) {
@@ -49,11 +51,10 @@ public record InvestmentOsSheetProperties(
 
     private static String normalizeAccountLabel(String value) {
         var normalized = value == null || value.isBlank()
-                ? InvestmentOsSheetModel.ACCOUNT_2
+                ? InvestmentOsSheetModel.ACCOUNT_1
                 : value.trim().toUpperCase(java.util.Locale.ROOT);
-        if (!InvestmentOsSheetModel.ACCOUNT_1.equals(normalized)
-                && !InvestmentOsSheetModel.ACCOUNT_2.equals(normalized)) {
-            throw new IllegalArgumentException("accountLabel must be ACCOUNT_1 or ACCOUNT_2");
+        if (!InvestmentOsSheetModel.ACCOUNT_1.equals(normalized)) {
+            throw new IllegalArgumentException("Toss Sheet sync accountLabel must be ACCOUNT_1");
         }
         return normalized;
     }

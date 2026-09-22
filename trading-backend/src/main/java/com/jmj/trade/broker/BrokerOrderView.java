@@ -22,7 +22,28 @@ public record BrokerOrderView(
         Instant filledAt,
         BigDecimal averageFilledPrice,
         BigDecimal commission,
-        BigDecimal tax) {
+        BigDecimal tax,
+        Instant orderedAt) {
+
+    public BrokerOrderView(
+            String brokerOrderId,
+            String idempotencyKey,
+            BrokerOrderSide side,
+            BrokerOrderType type,
+            String symbol,
+            BigDecimal quantity,
+            BigDecimal filledQuantity,
+            BigDecimal limitPrice,
+            Currency currency,
+            BrokerOrderLifecycle status,
+            Instant filledAt,
+            BigDecimal averageFilledPrice,
+            BigDecimal commission,
+            BigDecimal tax
+    ) {
+        this(brokerOrderId, idempotencyKey, side, type, symbol, quantity, filledQuantity,
+                limitPrice, currency, status, filledAt, averageFilledPrice, commission, tax, null);
+    }
 
     public BrokerOrderView(
             String brokerOrderId,
@@ -37,7 +58,7 @@ public record BrokerOrderView(
             BrokerOrderLifecycle status
     ) {
         this(brokerOrderId, idempotencyKey, side, type, symbol, quantity, filledQuantity,
-                limitPrice, currency, status, null, null, null, null);
+                limitPrice, currency, status, null, null, null, null, null);
     }
 
     public BrokerOrderView {

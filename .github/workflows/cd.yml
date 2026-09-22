@@ -5,7 +5,6 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
-  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -18,9 +17,8 @@ jobs:
   deploy:
     name: Deploy Spring backend and dashboard
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -191,9 +189,8 @@ jobs:
   deploy-vercel:
     name: Deploy dashboard to Vercel
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push')
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

@@ -76,18 +76,31 @@ public final class ConnectorService {
     }
 
     public List<ConnectorResponse.Order> orders(UUID userId, UUID connectionId, String rawGroup) {
+        return orders(brokerAccount(connectionId), rawGroup);
+    }
+
+    public List<ConnectorResponse.Order> orders(BrokerAccountRef account, String rawGroup) {
         requireOrderPort();
         var group = parseGroup(rawGroup);
-        var account = account(connectionId);
         return requireOrderPort().getOrders(account, group).value().stream().map(ConnectorService::order).toList();
     }
 
     public List<ConnectorResponse.Fill> fills(UUID userId, UUID connectionId, Instant since) {
         requireOrderPort();
         var account = account(connectionId);
-        var open = requireOrderPort().getOrders(account, BrokerOrderGroup.OPEN).value();
-        var closed = requireOrderPort().getOrders(account, BrokerOrderGroup.CLOSED).value();
-        return java.util.stream.Stream.concat(open.stream(), closed.stream())
+        var open = requireOrderPort().getOrders(account, BrokerOrderGroup.OPEN).value().stream()
+                .map(ConnectorService::order).toList();
+        var closed = requireOrderPort().getOrders(account, BrokerOrderGroup.CLOSED).value().stream()
+                .map(ConnectorService::order).toList();
+        return fills(open, closed, since);
+    }
+
+    public static List<ConnectorResponse.Fill> fills(
+            List<ConnectorResponse.Order> open, List<ConnectorResponse.Order> closed, Instant since
+    ) {
+        return java.util.stream.Stream.concat(
+                        (open == null ? List.<ConnectorResponse.Order>of() : open).stream(),
+                        (closed == null ? List.<ConnectorResponse.Order>of() : closed).stream())
                 .filter(order -> order.filledQuantity() != null && order.filledQuantity().signum() > 0)
                 .map(ConnectorService::fill)
                 .filter(fill -> since == null || (fill.filledAt() != null && !fill.filledAt().isBefore(since)))
@@ -127,12 +140,16 @@ public final class ConnectorService {
         return orders;
     }
 
-    private BrokerAccountRef account(UUID connectionId) {
+    public BrokerAccountRef brokerAccount(UUID connectionId) {
         var accounts = requireBroker().getAccounts(new BrokerConnectionRef(connectionId)).value();
         if (accounts == null || accounts.size() != 1) {
             throw new IllegalStateException("exactly one broker account is required");
         }
         return accounts.getFirst().account();
+    }
+
+    private BrokerAccountRef account(UUID connectionId) {
+        return brokerAccount(connectionId);
     }
 
     private BrokerAdapter requireBroker() {
@@ -171,14 +188,12 @@ public final class ConnectorService {
                 source.filledQuantity(), source.limitPrice(), source.currency().name(),
                 ConnectorResponse.BrokerOrderLifecycle.valueOf(source.status().name()),
                 ConnectorResponse.BrokerOrderGroup.valueOf(source.group().name()), source.filledAt(),
-                source.averageFilledPrice(), source.commission(), source.tax());
+                source.averageFilledPrice(), source.commission(), source.tax(), source.orderedAt());
     }
 
-    private static ConnectorResponse.Fill fill(BrokerOrderView source) {
-        return new ConnectorResponse.Fill(source.brokerOrderId(), source.symbol(),
-                ConnectorResponse.BrokerOrderSide.valueOf(source.side().name()), source.currency().name(),
-                source.filledQuantity(), source.averageFilledPrice() == null ? source.limitPrice() : source.averageFilledPrice(),
-                source.commission(), source.tax(), source.filledAt(), null);
+    private static ConnectorResponse.Fill fill(ConnectorResponse.Order source) {
+        return new ConnectorResponse.Fill(source.brokerOrderId(), source.symbol(), source.side(), source.currency(),
+                source.filledQuantity(), source.averageFilledPrice(), source.commission(), source.tax(), source.filledAt(), null);
     }
 
     private static ConnectorResponse.PortfolioState unknownState() {

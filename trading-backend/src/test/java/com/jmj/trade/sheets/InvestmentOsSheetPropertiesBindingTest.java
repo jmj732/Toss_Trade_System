@@ -1,0 +1,69 @@
+package com.jmj.trade.sheets;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Configuration;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class InvestmentOsSheetPropertiesBindingTest {
+
+    private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withUserConfiguration(PropertiesConfiguration.class)
+            .withPropertyValues(
+                    "investment-os.sheet.enabled=true",
+                    "investment-os.sheet.spreadsheet-id=sheet-1",
+                    "investment-os.sheet.user-id=11111111-1111-1111-1111-111111111111",
+                    "investment-os.sheet.connection-id=22222222-2222-2222-2222-222222222222",
+                    "investment-os.sheet.account-label=ACCOUNT_2"
+            );
+
+    @Test
+    void rejectsAccount2BecauseTossSyncMustNeverOwnManualAccountData() {
+        contextRunner.run(context -> {
+            assertThat(context).hasFailed();
+        });
+    }
+
+    @Test
+    void defaultsToAccount1WhenAccountLabelIsNotConfigured() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(PropertiesConfiguration.class)
+                .withPropertyValues(
+                        "investment-os.sheet.enabled=true",
+                        "investment-os.sheet.spreadsheet-id=sheet-1",
+                        "investment-os.sheet.user-id=11111111-1111-1111-1111-111111111111",
+                        "investment-os.sheet.connection-id=22222222-2222-2222-2222-222222222222"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(InvestmentOsSheetProperties.class).accountLabel())
+                            .isEqualTo("ACCOUNT_1");
+                });
+    }
+
+    @Test
+    void applicationConfigurationDefaultsAccountLabelToAccount1() {
+        new ApplicationContextRunner()
+                .withInitializer(new ConfigDataApplicationContextInitializer())
+                .withUserConfiguration(PropertiesConfiguration.class)
+                .withPropertyValues(
+                        "investment-os.sheet.enabled=true",
+                        "investment-os.sheet.spreadsheet-id=sheet-1",
+                        "investment-os.sheet.user-id=11111111-1111-1111-1111-111111111111",
+                        "investment-os.sheet.connection-id=22222222-2222-2222-2222-222222222222"
+                )
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(InvestmentOsSheetProperties.class).accountLabel())
+                            .isEqualTo("ACCOUNT_1");
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(InvestmentOsSheetProperties.class)
+    static class PropertiesConfiguration {
+    }
+}

@@ -1,6 +1,11 @@
 package com.jmj.trade.sheets;
 
-import com.jmj.trade.account.AccountSyncService;
+import com.jmj.trade.account.AccountSyncException;
+import com.jmj.trade.account.BrokerSurfaceService;
+import com.jmj.trade.broker.BrokerAccountRef;
+import com.jmj.trade.broker.BrokerException;
+import com.jmj.trade.broker.connection.BrokerConnectionException;
+import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
 import org.slf4j.Logger;
@@ -10,7 +15,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -20,37 +27,44 @@ import java.util.function.Supplier;
 public final class InvestmentOsSheetSyncService {
     private static final Logger LOG = LoggerFactory.getLogger(InvestmentOsSheetSyncService.class);
     private static final String OPERATION = "investment_os_sheet_sync";
+    // ponytail: refresh the unbounded CLOSED order history less often; OPEN orders and holdings stay on the 5-minute loop.
+    private static final Duration CLOSED_ORDER_REFRESH_INTERVAL = Duration.ofMinutes(30);
+    private static final Duration CLOSED_ORDER_RATE_LIMIT_BACKOFF = Duration.ofMinutes(30);
 
     private final InvestmentOsSheetProperties properties;
     private final InvestmentOsSheetLease lease;
-    private final AccountSyncService accountSync;
     private final ConnectorService connector;
+    private final BrokerSurfaceService brokerSurface;
     private final GoogleSheetsClient sheets;
     private final Supplier<Instant> now;
+    private Instant closedOrdersFetchedAt;
+    private Instant closedOrdersRetryNotBefore;
+    private List<ConnectorResponse.Order> cachedClosedOrders = List.of();
 
     public InvestmentOsSheetSyncService(
             InvestmentOsSheetProperties properties,
             InvestmentOsSheetLease lease,
-            AccountSyncService accountSync,
             ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
             GoogleSheetsClient sheets,
             Clock clock
     ) {
-        this(properties, lease, accountSync, connector, sheets, Objects.requireNonNull(clock, "clock")::instant);
+        this(properties, lease, connector, brokerSurface, sheets,
+                Objects.requireNonNull(clock, "clock")::instant);
     }
 
     InvestmentOsSheetSyncService(
             InvestmentOsSheetProperties properties,
             InvestmentOsSheetLease lease,
-            AccountSyncService accountSync,
             ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
             GoogleSheetsClient sheets,
             Supplier<Instant> now
     ) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.lease = Objects.requireNonNull(lease, "lease");
-        this.accountSync = Objects.requireNonNull(accountSync, "accountSync");
         this.connector = Objects.requireNonNull(connector, "connector");
+        this.brokerSurface = brokerSurface;
         this.sheets = Objects.requireNonNull(sheets, "sheets");
         this.now = Objects.requireNonNull(now, "now");
     }
@@ -74,7 +88,8 @@ public final class InvestmentOsSheetSyncService {
         var syncedAt = now.get();
         LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("outcome", "started")
                 .addKeyValue("account", properties.accountLabel())
-                .addKeyValue("connection_id", connectionId).log("investment os sheet sync started");
+                .addKeyValue("connection_id", connectionId)
+                .addKeyValue("user_id", userId).log("investment os sheet sync started");
         try {
             return run(syncId, userId, connectionId, syncedAt, started);
         } finally {
@@ -101,9 +116,9 @@ public final class InvestmentOsSheetSyncService {
         List<ConnectorResponse.Order> closed = null;
         List<ConnectorResponse.Fill> fills = null;
         String failure = null;
+        boolean closedFromCache = false;
 
         try {
-            accountSync.sync(userId, connectionId);
             portfolio = connector.portfolio(userId, connectionId);
             LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                     .addKeyValue("broker_fetch_result", portfolio == null ? "empty" : "success")
@@ -116,29 +131,66 @@ public final class InvestmentOsSheetSyncService {
         }
 
         if (portfolio != null && authoritative(portfolio)) {
+            BrokerAccountRef orderAccount = null;
             try {
-                open = connector.orders(userId, connectionId, "OPEN");
+                orderAccount = connector.brokerAccount(connectionId);
             } catch (RuntimeException exception) {
-                failure = "OPEN_ORDERS_FETCH_FAILED";
-                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "open_orders")
-                        .addKeyValue("failure_reason", safeError(exception)).log("Toss open orders fetch failed");
+                failure = appendFailure(failure, "BROKER_ACCOUNT_FETCH_FAILED_" + safeError(exception));
+                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "broker_account")
+                        .addKeyValue("failure_reason", safeError(exception)).log("Toss broker account fetch failed");
             }
-            try {
-                closed = connector.orders(userId, connectionId, "CLOSED");
-            } catch (RuntimeException exception) {
-                failure = failure == null ? "CLOSED_ORDERS_FETCH_FAILED" : failure + "+CLOSED_ORDERS_FETCH_FAILED";
-                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
-                        .addKeyValue("failure_reason", safeError(exception)).log("Toss closed orders fetch failed");
+            if (orderAccount != null) {
+                try {
+                    open = connector.orders(orderAccount, "OPEN");
+                } catch (RuntimeException exception) {
+                    failure = appendFailure(failure, "OPEN_ORDERS_FETCH_FAILED_" + safeError(exception));
+                    LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "open_orders")
+                            .addKeyValue("failure_reason", safeError(exception)).log("Toss open orders fetch failed");
+                }
+                if (shouldRefreshClosedOrders(syncedAt)) {
+                    try {
+                        closed = connector.orders(orderAccount, "CLOSED");
+                        cachedClosedOrders = List.copyOf(closed == null ? List.of() : closed);
+                        closedOrdersFetchedAt = syncedAt;
+                        closedOrdersRetryNotBefore = null;
+                        LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
+                                .addKeyValue("fetch_mode", "fresh").addKeyValue("orders", cachedClosedOrders.size())
+                                .log("Toss closed orders fetch completed");
+                    } catch (RuntimeException exception) {
+                        closedOrdersRetryNotBefore = syncedAt.plus(CLOSED_ORDER_RATE_LIMIT_BACKOFF);
+                        if (closedOrdersFetchedAt != null) {
+                            closed = cachedClosedOrders;
+                            closedFromCache = true;
+                            failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception)
+                                    + "+CLOSED_ORDERS_USING_CACHE");
+                        } else {
+                            failure = appendFailure(failure, "CLOSED_ORDERS_FETCH_FAILED_" + safeError(exception));
+                        }
+                        LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
+                                .addKeyValue("failure_reason", safeError(exception))
+                                .addKeyValue("fetch_mode", closedFromCache ? "cache" : "failed")
+                                .log("Toss closed orders fetch failed; cached history retained when available");
+                    }
+                } else if (closedOrdersFetchedAt != null) {
+                    closed = cachedClosedOrders;
+                    closedFromCache = true;
+                    LOG.atDebug().addKeyValue("operation", OPERATION).addKeyValue("section", "closed_orders")
+                            .addKeyValue("fetch_mode", "cache").addKeyValue("fetched_at", closedOrdersFetchedAt)
+                            .log("Toss closed orders fetch skipped; refresh interval has not elapsed");
+                } else {
+                    failure = appendFailure(failure, "CLOSED_ORDERS_RATE_LIMIT_BACKOFF");
+                }
             }
-            try {
-                fills = connector.fills(userId, connectionId, syncedAt.minus(Duration.ofDays(1)));
+            if (open != null && closed != null) {
+                fills = ConnectorService.fills(open, closed, syncedAt.minus(Duration.ofDays(1)));
                 LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                         .addKeyValue("broker_fetch_result", "success").addKeyValue("fills", fills.size())
                         .log("Toss recent fills fetch completed");
-            } catch (RuntimeException exception) {
-                failure = failure == null ? "FILLS_FETCH_FAILED" : failure + "+FILLS_FETCH_FAILED";
+            } else {
+                failure = appendFailure(failure, "FILLS_NOT_DERIVED_ORDERS_UNAVAILABLE");
                 LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("section", "fills")
-                        .addKeyValue("failure_reason", safeError(exception)).log("Toss recent fills fetch failed");
+                        .addKeyValue("failure_reason", "ORDERS_UNAVAILABLE")
+                        .log("Toss recent fills unavailable; order history fetch failed");
             }
         } else if (failure == null) {
             failure = portfolio == null ? "EMPTY_PORTFOLIO" : "NON_AUTHORITATIVE_PORTFOLIO";
@@ -147,37 +199,95 @@ public final class InvestmentOsSheetSyncService {
         try {
             var account = current.account();
             var orders = current.orders();
+            var orderHistory = current.orderHistory();
             var aggregate = current.aggregate();
+            var metrics = current.metrics();
+            var registry = current.registry();
             var authoritative = portfolio != null && authoritative(portfolio);
             var nextAccount = authoritative
                     ? InvestmentOsSheetModel.accountState(account, portfolio, syncedAt, properties.accountLabel()) : account;
-            var nextOrders = authoritative
-                    ? InvestmentOsSheetModel.orders(orders, open, closed, syncedAt, properties.accountLabel()) : orders;
-            var nextAggregate = authoritative
+            var registryReady = authoritative
+                    && InvestmentOsSheetModel.hasAccountRegistryAccount(registry, properties.accountLabel());
+            var nextRegistry = registryReady
+                    ? InvestmentOsSheetModel.accountRegistry(registry, syncedAt) : registry;
+            if (authoritative && !registryReady) {
+                failure = appendFailure(failure, "ACCOUNT_REGISTRY_ROW_MISSING_OR_DUPLICATE");
+                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
+                        .addKeyValue("failure_reason", "ACCOUNT_REGISTRY_ROW_MISSING_OR_DUPLICATE")
+                        .log("Account Registry Last Sync not updated; registry config preserved");
+            }
+            var expectedSymbols = authoritative ? InvestmentOsSheetModel.heldSymbols(nextAccount) : List.<String>of();
+            var priceSnapshot = authoritative && brokerSurface != null
+                    ? fetchPrices(userId, connectionId, nextAccount) : PriceSnapshot.notConfigured();
+            if (authoritative && brokerSurface != null) {
+                nextAccount = InvestmentOsSheetModel.refreshPrices(nextAccount,
+                        new ArrayList<>(priceSnapshot.prices().values()), syncedAt);
+            }
+            var completePrices = authoritative && (expectedSymbols.isEmpty()
+                    || brokerSurface != null && priceSnapshot.complete()
+                    && InvestmentOsSheetModel.hasCompleteQuotes(nextAccount));
+            var priceStatus = !authoritative ? "SKIPPED"
+                    : expectedSymbols.isEmpty() ? "NOT_REQUIRED"
+                    : brokerSurface == null ? "NOT_CONFIGURED" : completePrices ? "OK" : "PARTIAL";
+            if (authoritative && !expectedSymbols.isEmpty() && brokerSurface == null) {
+                failure = appendFailure(failure, "PRICE_SOURCE_NOT_CONFIGURED");
+            }
+            if (authoritative && brokerSurface != null && !completePrices) {
+                failure = appendFailure(failure, "PRICE_FETCH_PARTIAL");
+                if (!priceSnapshot.errors().isEmpty()) {
+                    failure = appendFailure(failure, "PRICE_FETCH_ERRORS_" + String.join(",", priceSnapshot.errors()));
+                }
+                LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
+                        .addKeyValue("broker_fetch_result", "partial")
+                        .addKeyValue("price_symbols_missing", priceSnapshot.missingSymbols().size())
+                        .addKeyValue("price_fetch_errors", priceSnapshot.errors())
+                        .log("Toss quote fetch incomplete; existing price and valuation data preserved");
+            }
+            var archiveReady = isCanonicalOrderTable(orders) || closed != null;
+            var updateOrders = authoritative && open != null && archiveReady;
+            var updateOrderHistory = authoritative && open != null && closed != null && !closedFromCache;
+            var nextOrders = updateOrders
+                    ? InvestmentOsSheetModel.openOrders(orders, open, syncedAt, properties.accountLabel()) : orders;
+            var nextOrderHistory = updateOrderHistory
+                    ? InvestmentOsSheetModel.orderHistory(
+                            orderHistory, open, closed, orders, syncedAt, properties.accountLabel()) : orderHistory;
+            var updateAggregate = authoritative && completePrices;
+            var nextAggregate = updateAggregate
                     ? InvestmentOsSheetModel.aggregate(aggregate, nextAccount, syncedAt) : aggregate;
+            var updateMetrics = authoritative && completePrices;
+            var nextMetrics = updateMetrics
+                    ? InvestmentOsSheetModel.portfolioMetrics(metrics, nextAccount, syncedAt) : metrics;
             var allOrderReadsSucceeded = open != null && closed != null;
-            var status = reconciliationStatus(authoritative, portfolio, open, closed, fills);
+            var status = reconciliationStatus(authoritative, portfolio, open, closed, fills, priceStatus);
             var nextRecon = InvestmentOsSheetModel.reconciliation(
                     current.reconciliation(), syncId.toString(), properties.accountLabel(), "" + status.holdings,
-                    status.cash, status.orders, status.fills,
-                    rowDelta(account, nextAccount) + rowDelta(orders, nextOrders) + rowDelta(aggregate, nextAggregate),
+                    status.cash, status.orders, status.fills, status.prices,
+                    rowDelta(account, nextAccount) + rowDelta(orders, nextOrders) + rowDelta(orderHistory, nextOrderHistory)
+                            + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics)
+                            + rowDelta(registry, nextRegistry),
                     failure == null ? "NONE" : failure,
-                    failure == null && authoritative && allOrderReadsSucceeded && fills != null,
+                    failure == null && authoritative && allOrderReadsSucceeded && fills != null && completePrices,
                     syncedAt, failure);
             var updates = new ArrayList<GoogleSheetsClient.SheetValueRange>();
             if (authoritative) {
                 updates.add(toRange("Account State", account, nextAccount));
-                updates.add(toRange("Orders", orders, nextOrders));
-                updates.add(toRange("Portfolio Aggregate", aggregate, nextAggregate));
+                if (updateOrders) updates.add(toOrderRange("Orders", orders, nextOrders));
+                if (updateOrderHistory) updates.add(toOrderRange("Order History", orderHistory, nextOrderHistory));
+                if (updateAggregate) updates.add(toRange("Portfolio Aggregate", aggregate, nextAggregate));
+                if (updateMetrics) updates.add(toRange("Portfolio Metrics", metrics, nextMetrics));
+                if (registryReady) updates.add(toRange("Account Registry", registry, nextRegistry));
             }
             updates.add(toRange("Reconciliation Log", current.reconciliation(), nextRecon));
             sheets.batchUpdateValues(properties.spreadsheetId(), updates);
             var rowsChanged = rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
-                    + rowDelta(aggregate, nextAggregate);
+                    + rowDelta(orderHistory, nextOrderHistory)
+                    + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics)
+                    + rowDelta(registry, nextRegistry);
             var ordersChanged = open == null ? 0 : open.size();
-            ordersChanged += closed == null ? 0 : closed.size();
+            ordersChanged += closed == null || closedFromCache ? 0 : closed.size();
             var result = new InvestmentOsSheetSyncResult(
-                    failure == null && authoritative ? InvestmentOsSheetSyncResult.Outcome.SUCCEEDED
+                    failure == null && authoritative && allOrderReadsSucceeded && fills != null && completePrices
+                            ? InvestmentOsSheetSyncResult.Outcome.SUCCEEDED
                             : InvestmentOsSheetSyncResult.Outcome.FAILED,
                     syncId, rowsChanged, ordersChanged, fills == null ? 0 : fills.size(), failure);
             LOG.atInfo().addKeyValue("operation", OPERATION)
@@ -185,8 +295,11 @@ public final class InvestmentOsSheetSyncService {
                     .addKeyValue("rows_changed", rowsChanged)
                     .addKeyValue("orders_changed", ordersChanged)
                     .addKeyValue("fills_changed", fills == null ? 0 : fills.size())
-                    .addKeyValue("aggregate_recalculation", authoritative)
-                    .addKeyValue("reconciliation_result", status.resolved)
+                    .addKeyValue("quote_fetch_result", priceStatus.toLowerCase())
+                    .addKeyValue("failure_reason", failure == null ? "NONE" : failure)
+                    .addKeyValue("aggregate_recalculation", updateAggregate)
+                    .addKeyValue("metrics_recalculation", updateMetrics)
+                    .addKeyValue("reconciliation_result", failure == null && status.resolved)
                     .addKeyValue("duration_ms", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
                     .log("investment os sheet sync completed");
             return result;
@@ -205,8 +318,12 @@ public final class InvestmentOsSheetSyncService {
         return new Tables(
                 read("Account State", InvestmentOsSheetModel.accountHeaders()),
                 read("Orders", InvestmentOsSheetModel.orderHeaders()),
+                read("Order History", InvestmentOsSheetModel.orderHeaders()),
                 read("Portfolio Aggregate", InvestmentOsSheetModel.aggregateHeaders()),
-                read("Reconciliation Log", InvestmentOsSheetModel.reconciliationHeaders()));
+                read("Portfolio Metrics", InvestmentOsSheetModel.metricsHeaders()),
+                read("Reconciliation Log", InvestmentOsSheetModel.reconciliationHeaders()),
+                read("Account Registry", List.of("Account", "Label", "Sync Mode", "Source", "Default Confidence",
+                        "Enabled", "Last Sync", "Notes")));
     }
 
     private InvestmentOsSheetModel.SheetTable read(String tab, List<String> defaults) {
@@ -230,32 +347,143 @@ public final class InvestmentOsSheetSyncService {
                 quote(tab) + "!A1:" + column(next.headers().size()) + rows.size(), rows);
     }
 
+    private static GoogleSheetsClient.SheetValueRange toOrderRange(
+            String tab, InvestmentOsSheetModel.SheetTable previous, InvestmentOsSheetModel.SheetTable next
+    ) {
+        var width = Math.max(previous.headers().size(), next.headers().size());
+        var rows = new ArrayList<List<Object>>();
+        var header = new ArrayList<Object>(next.headers());
+        while (header.size() < width) header.add("");
+        rows.add(header);
+        next.rows().forEach(row -> {
+            var cells = new ArrayList<Object>(row);
+            while (cells.size() < width) cells.add("");
+            rows.add(cells);
+        });
+        var required = Math.max(previous.rows().size(), next.rows().size()) + 1;
+        while (rows.size() < required) rows.add(new ArrayList<>(java.util.Collections.nCopies(width, "")));
+        return new GoogleSheetsClient.SheetValueRange(
+                quote(tab) + "!A1:" + column(width) + rows.size(), rows);
+    }
+
+    private static boolean isCanonicalOrderTable(InvestmentOsSheetModel.SheetTable table) {
+        var canonical = InvestmentOsSheetModel.orderHeaders();
+        if (table.headers().size() < canonical.size()
+                || !table.headers().subList(0, canonical.size()).equals(canonical)) return false;
+        return table.headers().subList(canonical.size(), table.headers().size()).stream().allMatch(String::isBlank);
+    }
+
     private static boolean authoritative(ConnectorResponse.Portfolio portfolio) {
         if (portfolio.stale() || portfolio.partial() || portfolio.buyingPower() == null || portfolio.positions() == null) {
             return false;
         }
         if (!portfolio.buyingPower().keySet().containsAll(List.of("USD", "KRW"))
-                || portfolio.buyingPower().values().stream().anyMatch(Objects::isNull)) {
+                || portfolio.buyingPower().values().stream().anyMatch(value -> value == null
+                || value.cashBuyingPower() == null)) {
             return false;
         }
         return portfolio.positions().stream().allMatch(position -> position != null
                 && position.symbol() != null && !position.symbol().isBlank()
                 && position.currency() != null && !position.currency().isBlank()
-                && position.quantity() != null);
+                && position.quantity() != null && position.averagePrice() != null);
     }
 
     private static Status reconciliationStatus(boolean authoritative, ConnectorResponse.Portfolio portfolio,
-                                               List<?> open, List<?> closed, List<?> fills) {
+                                               List<?> open, List<?> closed, List<?> fills, String prices) {
         var holdings = authoritative ? "OK" : "FAILED";
         var cash = authoritative && portfolio.buyingPower().keySet().containsAll(List.of("USD", "KRW")) ? "OK" : "PARTIAL";
         var orders = open != null && closed != null ? "OK" : "PARTIAL";
         var fillStatus = fills != null ? "OK" : "PARTIAL";
         return new Status(holdings, cash, orders, fillStatus, authoritative && "OK".equals(cash)
-                && "OK".equals(orders) && "OK".equals(fillStatus));
+                && "OK".equals(orders) && "OK".equals(fillStatus)
+                && ("OK".equals(prices) || "NOT_REQUIRED".equals(prices)), prices);
+    }
+
+    private PriceSnapshot fetchPrices(UUID userId, UUID connectionId, InvestmentOsSheetModel.SheetTable account) {
+        var expected = InvestmentOsSheetModel.heldSymbols(account);
+        var prices = new LinkedHashMap<String, BrokerSurfaceResponse.PriceView>();
+        var errors = new LinkedHashMap<String, String>();
+        for (var start = 0; start < expected.size(); start += 20) {
+            var symbols = expected.subList(start, Math.min(start + 20, expected.size()));
+            try {
+                var response = brokerSurface.prices(userId, connectionId, String.join(",", symbols));
+                if (response == null || response.data() == null || response.stale()) {
+                    var reason = response == null ? "EMPTY_RESPONSE" : response.stale()
+                            ? "STALE_PRICE_RESPONSE"
+                            : response.unavailableReason() == null ? "PRICE_UNAVAILABLE" : response.unavailableReason();
+                    symbols.forEach(symbol -> errors.put(symbol, reason));
+                    continue;
+                }
+                for (var price : response.data()) {
+                    if (price != null && price.symbol() != null && price.lastPrice() != null
+                            && price.lastPrice().signum() > 0) {
+                        prices.putIfAbsent(price.symbol().toUpperCase(java.util.Locale.ROOT), price);
+                    }
+                }
+                for (var symbol : symbols) {
+                    if (!prices.containsKey(symbol)) {
+                        var missingPrice = response.unknownFields().stream()
+                                .filter(field -> field.equalsIgnoreCase(symbol + ".lastPrice"))
+                                .findFirst().orElse("LAST_PRICE_MISSING");
+                        errors.put(symbol, missingPrice);
+                    }
+                }
+            } catch (RuntimeException exception) {
+                symbols.forEach(symbol -> errors.put(symbol, safeError(exception)));
+            }
+        }
+        var missing = expected.stream().filter(symbol -> !prices.containsKey(symbol)).toList();
+        var failures = errors.entrySet().stream().map(entry -> entry.getKey() + "=" + entry.getValue()).toList();
+        return new PriceSnapshot(Map.copyOf(prices), missing, failures);
+    }
+
+    private boolean shouldRefreshClosedOrders(Instant at) {
+        if (closedOrdersRetryNotBefore != null && at.isBefore(closedOrdersRetryNotBefore)) return false;
+        return closedOrdersFetchedAt == null
+                || !at.isBefore(closedOrdersFetchedAt.plus(CLOSED_ORDER_REFRESH_INTERVAL));
+    }
+
+    private static String appendFailure(String failure, String next) {
+        return failure == null ? next : failure + "+" + next;
     }
 
     private static int rowDelta(InvestmentOsSheetModel.SheetTable before, InvestmentOsSheetModel.SheetTable after) {
-        return before.rows().equals(after.rows()) ? 0 : Math.max(before.rows().size(), after.rows().size());
+        var identity = identityColumns(before, after);
+        var previous = keyedRows(before, identity);
+        var next = keyedRows(after, identity);
+        var keys = new java.util.LinkedHashSet<>(previous.keySet());
+        keys.addAll(next.keySet());
+        return (int) keys.stream().filter(key -> !Objects.equals(previous.get(key), next.get(key))).count();
+    }
+
+    private static List<String> identityColumns(
+            InvestmentOsSheetModel.SheetTable before, InvestmentOsSheetModel.SheetTable after
+    ) {
+        for (var candidate : List.of(List.of("Account", "Order ID"), List.of("Scope"),
+                List.of("Account", "Ticker", "Currency"), List.of("Account", "Asset", "Currency"),
+                List.of("Ticker", "Currency"), List.of("Asset", "Currency"), List.of("Account"))) {
+            if (candidate.stream().allMatch(name -> before.hasColumn(name) && after.hasColumn(name))) return candidate;
+        }
+        return List.of();
+    }
+
+    private static Map<String, List<String>> keyedRows(
+            InvestmentOsSheetModel.SheetTable table, List<String> identity
+    ) {
+        var rows = new LinkedHashMap<String, List<String>>();
+        for (var index = 0; index < table.rows().size(); index++) {
+            var row = table.rows().get(index);
+            var key = identity.isEmpty() ? "row:" + index
+                    : identity.stream().map(name -> cell(table, row, name))
+                    .collect(java.util.stream.Collectors.joining("|"));
+            rows.put(key, row);
+        }
+        return rows;
+    }
+
+    private static String cell(InvestmentOsSheetModel.SheetTable table, List<String> row, String column) {
+        var index = table.column(column);
+        return index >= row.size() || row.get(index) == null ? "" : row.get(index);
     }
 
     private void requireConfiguredUser(UUID userId, UUID connectionId) {
@@ -272,9 +500,25 @@ public final class InvestmentOsSheetSyncService {
         return result.reverse().toString();
     }
 
-    private static String safeError(RuntimeException exception) { return exception.getClass().getSimpleName(); }
+    private static String safeError(RuntimeException exception) {
+        if (exception instanceof AccountSyncException sync) return sync.code().name();
+        if (exception instanceof BrokerConnectionException connection) return connection.code().publicCode();
+        if (exception instanceof BrokerException broker) {
+            return "BROKER_" + broker.category().name()
+                    + broker.httpStatus().map(status -> "_HTTP_" + status).orElse("");
+        }
+        return exception.getClass().getSimpleName();
+    }
 
     private record Tables(InvestmentOsSheetModel.SheetTable account, InvestmentOsSheetModel.SheetTable orders,
-                          InvestmentOsSheetModel.SheetTable aggregate, InvestmentOsSheetModel.SheetTable reconciliation) { }
-    private record Status(String holdings, String cash, String orders, String fills, boolean resolved) { }
+                          InvestmentOsSheetModel.SheetTable orderHistory,
+                          InvestmentOsSheetModel.SheetTable aggregate, InvestmentOsSheetModel.SheetTable metrics,
+                          InvestmentOsSheetModel.SheetTable reconciliation,
+                          InvestmentOsSheetModel.SheetTable registry) { }
+    private record Status(String holdings, String cash, String orders, String fills, boolean resolved, String prices) { }
+    private record PriceSnapshot(Map<String, BrokerSurfaceResponse.PriceView> prices, List<String> missingSymbols,
+                                 List<String> errors) {
+        static PriceSnapshot notConfigured() { return new PriceSnapshot(Map.of(), List.of(), List.of()); }
+        boolean complete() { return missingSymbols.isEmpty(); }
+    }
 }

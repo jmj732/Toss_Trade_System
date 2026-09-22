@@ -234,7 +234,8 @@ final class TossResponseMapper {
                 instant(order.execution().filledAt()),
                 nullableNonNegativeDecimal(order.execution().averageFilledPrice()),
                 nullableNonNegativeDecimal(order.execution().commission()),
-                nullableNonNegativeDecimal(order.execution().tax()));
+                nullableNonNegativeDecimal(order.execution().tax()),
+                instant(order.orderedAt()));
     }
 
     private BrokerOrderSide orderSide(String raw) {
