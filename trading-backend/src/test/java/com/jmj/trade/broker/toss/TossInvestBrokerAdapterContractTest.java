@@ -27,6 +27,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlMatching;
@@ -91,6 +92,35 @@ class TossInvestBrokerAdapterContractTest {
         assertThat(response.metadata().requestId()).isEqualTo("req-success");
         assertThat(response.metadata().rateLimit()).hasValueSatisfying(rateLimit ->
                 assertThat(rateLimit.remaining()).contains(77));
+    }
+
+    @Test
+    void cachesAccountListForFiveMinutes() {
+        server.stubFor(get("/api/v1/accounts").willReturn(json("""
+                {"result":[{"accountNo":"9876543210","accountSeq":9876543210,"accountType":"UNKNOWN_RAW"}]}
+                """)));
+        var adapter = adapter();
+
+        adapter.getAccounts(CONNECTION);
+        adapter.getAccounts(CONNECTION);
+
+        server.verify(1, getRequestedFor(urlEqualTo("/api/v1/accounts")));
+    }
+
+    @Test
+    void backsOffRepeatedAccountRateLimitWithoutSendingAnotherRequest() {
+        server.stubFor(get("/api/v1/accounts").willReturn(aResponse().withStatus(429)
+                .withHeader("Retry-After", "5")
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"error\":{\"code\":\"rate-limit-exceeded\"}}")));
+        var adapter = adapter();
+
+        assertThatThrownBy(() -> adapter.getAccounts(CONNECTION))
+                .isInstanceOf(BrokerException.class);
+        assertThatThrownBy(() -> adapter.getAccounts(CONNECTION))
+                .isInstanceOf(BrokerException.class);
+
+        server.verify(1, getRequestedFor(urlEqualTo("/api/v1/accounts")));
     }
 
     @Test
