@@ -25,16 +25,26 @@ import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
 import com.jmj.trade.broker.SellableQuantitySnapshot;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Objects;
-import java.time.LocalDate;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 import static com.jmj.trade.broker.BrokerOrderPort.ack;
 
 final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter, BrokerOrderPort {
 
+    private static final Duration ACCOUNT_LIST_CACHE_TTL = Duration.ofMinutes(5);
+
     private final TossApiClient apiClient;
     private final TossResponseMapper mapper;
+    private final ConcurrentMap<UUID, CachedAccounts> accountCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, AccountRateLimitGate> accountRateLimitGates = new ConcurrentHashMap<>();
+    private final ConcurrentMap<UUID, Object> accountLocks = new ConcurrentHashMap<>();
 
     TossInvestBrokerAdapter(TossApiClient apiClient, TossResponseMapper mapper) {
         this.apiClient = Objects.requireNonNull(apiClient, "apiClient");
@@ -44,11 +54,55 @@ final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter,
     @Override
     public BrokerResponse<List<BrokerAccountView>> getAccounts(BrokerConnectionRef connection) {
         mapper.requireToss(connection);
-        var response = apiClient.getAccounts(connection.brokerConnectionId());
-        var accounts = List.copyOf(response.value().stream()
-                .map(account -> mapper.account(connection, account))
-                .toList());
-        return new BrokerResponse<>(accounts, response.metadata());
+        var connectionId = connection.brokerConnectionId();
+        var now = Instant.now();
+        var rateLimitGate = accountRateLimitGates.get(connectionId);
+        if (rateLimitGate != null && now.isBefore(rateLimitGate.retryAt())) {
+            throw rateLimitGate.exception();
+        }
+        var cached = accountCache.get(connectionId);
+        if (cached != null && now.isBefore(cached.expiresAt())) {
+            return cached.response();
+        }
+
+        var lock = accountLocks.computeIfAbsent(connectionId, ignored -> new Object());
+        synchronized (lock) {
+            now = Instant.now();
+            rateLimitGate = accountRateLimitGates.get(connectionId);
+            if (rateLimitGate != null && now.isBefore(rateLimitGate.retryAt())) {
+                throw rateLimitGate.exception();
+            }
+            cached = accountCache.get(connectionId);
+            if (cached != null && now.isBefore(cached.expiresAt())) {
+                return cached.response();
+            }
+
+            try {
+                var response = apiClient.getAccounts(connectionId);
+                var accounts = List.copyOf(response.value().stream()
+                        .map(account -> mapper.account(connection, account))
+                        .toList());
+                var mapped = new BrokerResponse<>(accounts, response.metadata());
+                accountRateLimitGates.remove(connectionId);
+                accountCache.put(connectionId, new CachedAccounts(mapped, now.plus(ACCOUNT_LIST_CACHE_TTL)));
+                return mapped;
+            } catch (BrokerException exception) {
+                if (exception.category() == BrokerErrorCategory.RATE_LIMITED) {
+                    var retryAfter = exception.retryAfter().orElse(Duration.ofSeconds(1));
+                    accountRateLimitGates.put(connectionId,
+                            new AccountRateLimitGate(now.plus(retryAfter), exception));
+                }
+                throw exception;
+            }
+        }
+    }
+
+    private record CachedAccounts(
+            BrokerResponse<List<BrokerAccountView>> response,
+            Instant expiresAt) {
+    }
+
+    private record AccountRateLimitGate(Instant retryAt, BrokerException exception) {
     }
 
     @Override
