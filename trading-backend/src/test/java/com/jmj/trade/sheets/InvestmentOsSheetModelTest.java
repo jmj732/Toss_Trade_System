@@ -177,16 +177,16 @@ class InvestmentOsSheetModelTest {
     @Test
     void aggregateSourceCoverageDeduplicatesAccountAndQuoteSources() {
         var account = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
-                List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "15", "30", "", "TOSS_API", "HIGH", "now",
+                List.of("ACCOUNT_2", "ABC", "HOLDING", "USD", "3", "20", "15", "45", "", "USER_SCREENSHOT", "HIGH", "manual",
                         "TOSS_QUOTE_API", "now", "HELD"),
-                List.of("ACCOUNT_2", "ABC", "HOLDING", "USD", "3", "20", "15", "45", "", "MANUAL", "HIGH", "manual",
+                List.of("ACCOUNT_1", "ABC", "HOLDING", "USD", "2", "10", "15", "30", "", "TOSS_API", "HIGH", "now",
                         "TOSS_QUOTE_API", "now", "HELD")));
 
         var aggregate = InvestmentOsSheetModel.aggregate(account, SYNCED_AT);
 
         var row = aggregate.rows().getFirst();
         assertThat(row.get(aggregate.column("Source Coverage")))
-                .isEqualTo("TOSS_API+TOSS_QUOTE_API+MANUAL");
+                .isEqualTo("USER_SCREENSHOT+TOSS_API+TOSS_QUOTE_API");
     }
 
     @Test
