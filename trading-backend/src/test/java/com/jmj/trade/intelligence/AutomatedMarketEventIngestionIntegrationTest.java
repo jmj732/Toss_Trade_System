@@ -60,8 +60,11 @@ class AutomatedMarketEventIngestionIntegrationTest extends PostgresIntegrationTe
         assertThat(second.providersSucceeded()).contains(MarketEventProviderId.SEC);
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM intelligence_events", Integer.class)).isEqualTo(1);
+        // Automated official-event ingestion no longer emits EVENT_CREATED notifications directly; the
+        // continuous-monitoring evaluator owns alerting on material events (see EventIntelligenceService.insert's
+        // notify flag and EventIntelligenceIntegrationTest asserting EVENT_CREATED count == 0 for this path).
         assertThat(jdbc.queryForObject(
-                "SELECT count(*) FROM notification_outbox_events", Integer.class)).isEqualTo(1);
+                "SELECT count(*) FROM notification_outbox_events", Integer.class)).isZero();
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM market_event_ingestion_runs WHERE status = 'FAILED'",
                 Integer.class)).isEqualTo(1);
@@ -82,6 +85,24 @@ class AutomatedMarketEventIngestionIntegrationTest extends PostgresIntegrationTe
                  ORDER BY started_at DESC, id DESC
                  LIMIT 1
                 """, Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void includesDatabaseWatchlistSymbolsInOfficialEventCollectionTargets() {
+        var connectionId = insertConnection(USER_ID);
+        insertPortfolio(connectionId);
+        jdbc.update("""
+                INSERT INTO monitoring_watchlist (id, user_id, symbol, levels, status,
+                                                 evidence, observed_at, created_at, updated_at)
+                VALUES (?, ?, 'ONTO', '{"prepare":{"min":295,"max":302},"confirm":{"min":306,"max":310},
+                        "pullback":{"min":262,"max":270},"invalidate":{"min":240,"max":250}}'::jsonb,
+                        'WATCH', '{}'::jsonb, ?, ?, ?)
+                """, UUID.randomUUID(), USER_ID, NOW, NOW, NOW);
+
+        ingestion.collect();
+
+        assertThat(jdbc.queryForList("SELECT affected_symbols::text FROM intelligence_events", String.class))
+                .contains("[\"NVDA\"]", "[\"ONTO\"]");
     }
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -110,14 +131,20 @@ class AutomatedMarketEventIngestionIntegrationTest extends PostgresIntegrationTe
                     if (fail) {
                         throw new IllegalStateException("provider unavailable");
                     }
-                    return List.of(new MarketEvent(
-                            id,
-                            "CIK0001045810:0001045810-26-000001",
-                            "SEC_8-K",
-                            "NVIDIA filing",
-                            Instant.parse("2026-08-01T12:00:00Z"),
-                            List.of("NVDA"),
-                            List.of()));
+                    // Model a real official provider: emit one filing per symbol in the request, so a symbol
+                    // that only reaches the request through the DB watchlist (e.g. ONTO) yields its own event.
+                    var events = new java.util.ArrayList<MarketEvent>();
+                    for (var symbol : new java.util.TreeSet<>(request.symbols())) {
+                        events.add(new MarketEvent(
+                                id,
+                                "CIK:" + symbol + ":8-K:2026-08-01",
+                                "SEC_8-K",
+                                symbol + " filing",
+                                Instant.parse("2026-08-01T12:00:00Z"),
+                                List.of(symbol),
+                                List.of()));
+                    }
+                    return List.copyOf(events);
                 }
             };
         }

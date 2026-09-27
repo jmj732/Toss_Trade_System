@@ -96,6 +96,20 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void monitoringRefreshPersistsReadOnlySnapshotWithoutSyncNotifications() {
+        var owner = insertOwnerAndConnection();
+        broker.account = account(owner.connectionId());
+
+        service.syncForMonitoring(owner.userId(), owner.connectionId());
+
+        assertThat(count("account_snapshots")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM notification_outbox_events
+                 WHERE user_id = ? AND event_type IN ('SYNC_SUCCEEDED', 'SYNC_FAILED')
+                """, Integer.class, owner.userId())).isZero();
+    }
+
+    @Test
     void persistsBrokerSellableExactlyWithoutLocalPendingSellDeduction() {
         var owner = insertOwnerAndConnection();
         broker.account = account(owner.connectionId());

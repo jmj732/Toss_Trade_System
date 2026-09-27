@@ -96,7 +96,8 @@ public final class AccountSyncTransactions {
             AccountSnapshot snapshot,
             List<Position> positions,
             Map<String, SellableQuantitySnapshot> sellableQuantities,
-            List<AccountCapacitySnapshot> capacities
+            List<AccountCapacitySnapshot> capacities,
+            boolean notify
     ) {
         return transaction.execute(status -> {
             var completedAt = now();
@@ -124,14 +125,16 @@ public final class AccountSyncTransactions {
             positions.forEach(position -> insertPosition(
                     target, position, sellableQuantities.get(position.symbol()), completedAt));
             capacities.forEach(capacity -> insertCapacity(target, capacity, completedAt));
-            notifications.emit(target.userId(), NotificationEventType.SYNC_SUCCEEDED, target.runId(),
-                    Map.of("connectionId", target.connectionId(), "syncRunId", target.runId()),
-                    completedAt.toInstant());
+            if (notify) {
+                notifications.emit(target.userId(), NotificationEventType.SYNC_SUCCEEDED, target.runId(),
+                        Map.of("connectionId", target.connectionId(), "syncRunId", target.runId()),
+                        completedAt.toInstant());
+            }
             return new AccountSyncResult(target.runId(), completedAt.toInstant());
         });
     }
 
-    void fail(SyncTarget target, String errorCode) {
+    void fail(SyncTarget target, String errorCode, boolean notify) {
         transaction.executeWithoutResult(status -> {
             var failedAt = now();
             var updated = jdbc.update("""
@@ -144,7 +147,7 @@ public final class AccountSyncTransactions {
                        AND broker_connection_id = ?
                        AND status = 'RUNNING'
                     """, errorCode, failedAt, target.runId(), target.userId(), target.connectionId());
-            if (updated == 1) {
+            if (updated == 1 && notify) {
                 notifications.emit(target.userId(), NotificationEventType.SYNC_FAILED, target.runId(),
                         Map.of(
                                 "connectionId", target.connectionId(),

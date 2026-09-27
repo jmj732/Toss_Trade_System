@@ -1,0 +1,8 @@
+# Profile used only by AutomatedMarketEventIngestionIntegrationTest.
+# Shrinks the SEC provider's minimum re-collection interval so the test can run two
+# back-to-back collect() cycles and exercise event-level deduplication (the production
+# due() gate would otherwise skip the second SEC run as "not yet due"). Must stay positive:
+# the properties constructor rejects non-positive intervals.
+market-events:
+  provider-intervals:
+    sec: PT0.001S

@@ -65,7 +65,7 @@ public class EventIntelligenceService {
         var symbols = symbols(command.affectedSymbols());
         var macroScope = macroScope(command.macroScope());
         return insert(userId, connectionId, source, sourceEventId, type, summary, symbols,
-                macroScope, command.occurredAt(), true).orElseThrow();
+                macroScope, command.occurredAt(), true, true).orElseThrow();
     }
 
     @Transactional
@@ -82,7 +82,7 @@ public class EventIntelligenceService {
         var symbols = symbols(event.affectedSymbols(), true);
         return insert(userId, connectionId, event.provider().name(), event.sourceEventId(),
                 event.type(), event.summary(), symbols, macroScope(event.macroScope()),
-                event.occurredAt(), false).isPresent();
+                event.occurredAt(), false, false).isPresent();
     }
 
     private java.util.Optional<EventView> insert(
@@ -95,7 +95,8 @@ public class EventIntelligenceService {
             List<String> symbols,
             List<MacroScope> macroScope,
             Instant occurredAt,
-            boolean failOnDuplicate
+            boolean failOnDuplicate,
+            boolean notify
     ) {
         var eventId = UUID.randomUUID();
         var collectedAt = now();
@@ -118,13 +119,15 @@ public class EventIntelligenceService {
             }
             return java.util.Optional.empty();
         }
-        notifications.emit(userId, NotificationEventType.EVENT_CREATED, eventId,
-                Map.of(
-                        "connectionId", connectionId,
-                        "eventId", eventId,
-                        "type", type,
-                        "affectedSymbols", symbols),
-                collectedAt.toInstant());
+        if (notify) {
+            notifications.emit(userId, NotificationEventType.EVENT_CREATED, eventId,
+                    Map.of(
+                            "connectionId", connectionId,
+                            "eventId", eventId,
+                            "type", type,
+                            "affectedSymbols", symbols),
+                    collectedAt.toInstant());
+        }
         return java.util.Optional.of(new EventView(eventId, text(source, 80),
                 text(sourceEventId, 200), text(type, 60), text(summary, 1000), symbols,
                 macroScope, occurredAt, collectedAt.toInstant()));
