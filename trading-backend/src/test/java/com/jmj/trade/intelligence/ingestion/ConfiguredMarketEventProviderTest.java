@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,17 +28,40 @@ class ConfiguredMarketEventProviderTest {
             <rss><channel><item><guid>feed-1</guid><title>Release</title>
             <pubDate>Sat, 01 Aug 2026 12:00:00 GMT</pubDate></item></channel></rss>
             """);
+    private final AtomicInteger companyTickersHits = new AtomicInteger();
+    private final AtomicReference<Integer> companyTickersStatus = new AtomicReference<>(200);
     private HttpServer server;
     private URI base;
+
+    private static final String COMPANY_TICKERS_JSON = """
+            {"0":{"cik_str":320193,"ticker":"AAPL","title":"Apple Inc."},
+             "1":{"cik_str":1045810,"ticker":"NVDA","title":"NVIDIA Corp"}}
+            """;
 
     @BeforeEach
     void setUp() throws IOException {
         server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
         server.createContext("/", exchange -> {
             var path = exchange.getRequestURI().getPath();
+            if (path.equals("/company_tickers.json")) {
+                companyTickersHits.incrementAndGet();
+                var status = companyTickersStatus.get();
+                var payload = (status == 200 ? COMPANY_TICKERS_JSON : "error")
+                        .getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(status, payload.length);
+                try (var output = exchange.getResponseBody()) {
+                    output.write(payload);
+                }
+                return;
+            }
             var body = switch (path) {
                 case "/submissions/CIK0001045810.json" -> """
                         {"filings":{"recent":{"accessionNumber":["0001045810-26-000001"],
+                        "acceptanceDateTime":["20260801120000"],"filingDate":["2026-08-01"],
+                        "form":["8-K"]}}}
+                        """;
+                case "/submissions/CIK0000320193.json" -> """
+                        {"filings":{"recent":{"accessionNumber":["0000320193-26-000010"],
                         "acceptanceDateTime":["20260801120000"],"filingDate":["2026-08-01"],
                         "form":["8-K"]}}}
                         """;
@@ -131,6 +155,79 @@ class ConfiguredMarketEventProviderTest {
         assertThat(result.events()).hasSize(1);
         assertThat(result.events().getFirst().affectedSymbols()).containsExactly("NVDA");
         assertThat(result.failures()).hasSize(1);
+    }
+
+    @Test
+    void resolvesUnmappedHoldingSymbolFromSecTickerMap() {
+        var result = secProvider(Map.of()).collectWithFailures(
+                new MarketEventProvider.Request(Set.of("AAPL"),
+                        Instant.parse("2026-07-01T00:00:00Z"), 10));
+
+        assertThat(result.failures()).isEmpty();
+        assertThat(result.events()).singleElement().satisfies(event -> {
+            assertThat(event.sourceEventId()).isEqualTo("CIK0000320193:0000320193-26-000010");
+            assertThat(event.affectedSymbols()).containsExactly("AAPL");
+        });
+        assertThat(companyTickersHits.get()).isEqualTo(1);
+    }
+
+    @Test
+    void configuredIdentifierOverridesResolvedCik() {
+        // AAPL is deliberately configured to NVDA's CIK: the configured value must win and the
+        // ticker map must not be consulted for a symbol that already has an identifier.
+        var result = secProvider(Map.of("AAPL", "0001045810")).collectWithFailures(
+                new MarketEventProvider.Request(Set.of("AAPL"),
+                        Instant.parse("2026-07-01T00:00:00Z"), 10));
+
+        assertThat(result.failures()).isEmpty();
+        assertThat(result.events()).singleElement().satisfies(event ->
+                assertThat(event.sourceEventId()).isEqualTo("CIK0001045810:0001045810-26-000001"));
+        assertThat(companyTickersHits.get()).isZero();
+    }
+
+    @Test
+    void fetchesTickerMapOnceAcrossTwoCollectionsWithin24h() {
+        var provider = secProvider(Map.of());
+        var request = new MarketEventProvider.Request(Set.of("AAPL"),
+                Instant.parse("2026-07-01T00:00:00Z"), 10);
+
+        assertThat(provider.collectWithFailures(request).events()).hasSize(1);
+        assertThat(provider.collectWithFailures(request).events()).hasSize(1);
+
+        assertThat(companyTickersHits.get()).isEqualTo(1);
+    }
+
+    @Test
+    void tickerMapFailureStillCollectsConfiguredIdentifiers() {
+        companyTickersStatus.set(500);
+
+        var result = secProvider(Map.of("NVDA", "0001045810")).collectWithFailures(
+                new MarketEventProvider.Request(Set.of("NVDA", "AAPL"),
+                        Instant.parse("2026-07-01T00:00:00Z"), 10));
+
+        assertThat(result.events()).singleElement().satisfies(event ->
+                assertThat(event.affectedSymbols()).containsExactly("NVDA"));
+        assertThat(result.failures()).isNotEmpty();
+    }
+
+    @Test
+    void unknownTickerIsSkippedRatherThanGuessed() {
+        var result = secProvider(Map.of()).collectWithFailures(
+                new MarketEventProvider.Request(Set.of("ZZZZ"),
+                        Instant.parse("2026-07-01T00:00:00Z"), 10));
+
+        assertThat(result.events()).isEmpty();
+        assertThat(result.failures()).isEmpty();
+        assertThat(companyTickersHits.get()).isEqualTo(1);
+    }
+
+    private ConfiguredMarketEventProvider secProvider(Map<String, String> identifiers) {
+        var configuration = new MarketEventIngestionProperties.ProviderConfiguration(
+                true, base, "/", "", "trade-test/1.0 contact@example.com",
+                identifiers, Map.of("company-tickers", base + "/company_tickers.json"),
+                List.of(), Duration.ofSeconds(1), Duration.ofSeconds(1), 0, Duration.ZERO);
+        return new ConfiguredMarketEventProvider(
+                MarketEventProviderId.SEC, configuration, new ObjectMapper());
     }
 
     private MarketEventProvider provider(MarketEventProviderId id) {

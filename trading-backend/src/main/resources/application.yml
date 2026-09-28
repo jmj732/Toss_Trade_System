@@ -88,6 +88,31 @@ market-events:
       enabled: ${MARKET_EVENTS_BLS_ENABLED:false}
     bea:
       enabled: ${MARKET_EVENTS_BEA_ENABLED:false}
+  provider-intervals:
+    sec: ${MARKET_EVENTS_SEC_INTERVAL:PT15M}
+    ir: ${MARKET_EVENTS_IR_INTERVAL:PT15M}
+    fed: ${MARKET_EVENTS_FED_INTERVAL:PT1H}
+    fred: ${MARKET_EVENTS_FRED_INTERVAL:PT6H}
+    bls: ${MARKET_EVENTS_BLS_INTERVAL:P1D}
+    bea: ${MARKET_EVENTS_BEA_INTERVAL:P1D}
+  provider-lookbacks:
+    fred: ${MARKET_EVENTS_FRED_LOOKBACK:P45D}
+monitoring:
+  scheduler:
+    enabled: ${MONITORING_SCHEDULER_ENABLED:false}
+  interval: ${MONITORING_INTERVAL:PT15M}
+  initial-delay: ${MONITORING_INITIAL_DELAY:PT1M}
+  price-interval: ${MONITORING_PRICE_INTERVAL:PT10M}
+  macro-interval: ${MONITORING_MACRO_INTERVAL:PT1H}
+notification:
+  telegram:
+    enabled: ${TELEGRAM_ENABLED:false}
+    bot-token: ${TELEGRAM_BOT_TOKEN:}
+    chat-id: ${TELEGRAM_CHAT_ID:}
+    user-id: ${TELEGRAM_USER_ID:}
+    interval: ${TELEGRAM_INTERVAL:PT15S}
+    initial-delay: ${TELEGRAM_INITIAL_DELAY:PT10S}
+    batch-size: ${TELEGRAM_BATCH_SIZE:1}
 management:
   endpoints:
     web:

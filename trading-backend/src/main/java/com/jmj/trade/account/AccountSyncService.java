@@ -28,6 +28,15 @@ public final class AccountSyncService {
     }
 
     public AccountSyncResult sync(UUID userId, UUID connectionId) {
+        return sync(userId, connectionId, true);
+    }
+
+    /** Refreshes the read-only portfolio snapshot without emitting an interactive sync notice. */
+    public AccountSyncResult syncForMonitoring(UUID userId, UUID connectionId) {
+        return sync(userId, connectionId, false);
+    }
+
+    private AccountSyncResult sync(UUID userId, UUID connectionId, boolean notify) {
         var target = transactions.start(userId, connectionId);
         try {
             var accounts = broker.getAccounts(new BrokerConnectionRef(target.connectionId())).value();
@@ -51,10 +60,11 @@ public final class AccountSyncService {
                     snapshot,
                     positions,
                     sellableQuantities,
-                    List.of(krwCapacity, usdCapacity));
+                    List.of(krwCapacity, usdCapacity),
+                    notify);
         } catch (RuntimeException exception) {
             try {
-                transactions.fail(target, errorCode(exception));
+                transactions.fail(target, errorCode(exception), notify);
             } catch (RuntimeException cleanup) {
                 exception.addSuppressed(cleanup);
             }

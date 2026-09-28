@@ -12,6 +12,8 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
+from app.monitoring.router import router as monitoring_router
+
 
 RATIO_SCALE = Decimal("0.0000000001")
 CORE_SCALE = Decimal("0.0000000001")
@@ -382,6 +384,8 @@ async def correlate(request: Request, call_next):
             if request.url.path.endswith(("/stock-analysis-inputs", "/stock-analyses"))
             else "stock-forecast"
             if request.url.path.endswith("/stock-forecasts")
+            else "monitoring"
+            if request.url.path.endswith("/monitoring/evaluations")
             else "request"
         )
         LOG.info(
@@ -405,6 +409,9 @@ def health() -> dict[str, str]:
 @app.get("/internal/v1/ready")
 def ready() -> dict[str, str]:
     return {"status": "READY"}
+
+
+app.include_router(monitoring_router)
 
 
 @app.post(

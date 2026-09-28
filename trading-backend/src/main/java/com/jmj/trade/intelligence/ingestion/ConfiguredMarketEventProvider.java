@@ -15,6 +15,7 @@ import java.io.StringReader;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -26,13 +27,19 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 final class ConfiguredMarketEventProvider implements MarketEventProvider {
+
+    private static final Duration TICKER_MAP_TTL = Duration.ofHours(24);
+    private static final String DEFAULT_COMPANY_TICKERS_URL =
+            "https://www.sec.gov/files/company_tickers.json";
 
     private final MarketEventProviderId id;
     private final MarketEventIngestionProperties.ProviderConfiguration configuration;
     private final ObjectMapper objectMapper;
     private final MarketEventHttpClient http;
+    private volatile TickerMapCache tickerMapCache;
 
     ConfiguredMarketEventProvider(
             MarketEventProviderId id,
@@ -84,13 +91,35 @@ final class ConfiguredMarketEventProvider implements MarketEventProvider {
         var events = new ArrayList<MarketEvent>();
         var failures = new ArrayList<RuntimeException>();
         var byCik = new java.util.LinkedHashMap<String, List<String>>();
-        configuration.identifiers().forEach((symbol, cik) -> {
-            var normalized = normalizeCik(cik);
-            if (request.symbols().contains(symbol.toUpperCase(Locale.ROOT))) {
-                byCik.computeIfAbsent(normalized, ignored -> new ArrayList<>())
-                        .add(symbol.toUpperCase(Locale.ROOT));
+        // Configured identifiers always win over auto-resolved CIKs. Canonicalize both sides so a
+        // configured class share (BRK.B) suppresses resolving its hyphenated request form (BRK-B).
+        var configuredByCanon = new java.util.HashMap<String, String>();
+        configuration.identifiers().forEach((symbol, cik) ->
+                configuredByCanon.put(canonicalTicker(symbol), normalizeCik(cik)));
+        var unresolved = new java.util.LinkedHashSet<String>();
+        for (var raw : request.symbols()) {
+            var symbol = raw.toUpperCase(Locale.ROOT);
+            var configured = configuredByCanon.get(canonicalTicker(symbol));
+            if (configured != null) {
+                byCik.computeIfAbsent(configured, ignored -> new ArrayList<>()).add(symbol);
+            } else {
+                unresolved.add(symbol);
             }
-        });
+        }
+        if (!unresolved.isEmpty()) {
+            try {
+                var tickers = companyTickers(request);
+                for (var symbol : unresolved) {
+                    var cik = tickers.get(canonicalTicker(symbol));
+                    if (cik != null) {
+                        // Dedup by CIK: GOOG/GOOGL share a CIK, so both symbols attach to one submissions fetch.
+                        byCik.computeIfAbsent(cik, ignored -> new ArrayList<>()).add(symbol);
+                    }
+                }
+            } catch (RuntimeException exception) {
+                failures.add(exception);
+            }
+        }
         for (var entry : byCik.entrySet()) {
             try {
                 request.heartbeatCheck();
@@ -380,10 +409,53 @@ final class ConfiguredMarketEventProvider implements MarketEventProvider {
                 && configuration.apiKey().isBlank()) {
             throw new IllegalArgumentException(id + " requires apiKey");
         }
-        if ((id == MarketEventProviderId.SEC && configuration.identifiers().isEmpty())
-                || (id != MarketEventProviderId.SEC && configuration.scopes().isEmpty())) {
+        // SEC no longer requires configured identifiers: unmapped request symbols are resolved from
+        // SEC's public company_tickers.json, and identifiers act only as an optional override.
+        if (id != MarketEventProviderId.SEC && configuration.scopes().isEmpty()) {
             throw new IllegalArgumentException(id + " requires configured scopes");
         }
+    }
+
+    private synchronized Map<String, String> companyTickers(Request request) {
+        var cache = tickerMapCache;
+        if (cache != null && !cache.isExpired(Instant.now())) {
+            return cache.tickers();
+        }
+        request.heartbeatCheck();
+        var body = http.get(companyTickersUri(), configuration, heartbeat(request));
+        request.heartbeatCheck();
+        var parsed = parseCompanyTickers(body);
+        // Only a successful fetch is cached, so a failed fetch is retried on the next collection.
+        tickerMapCache = new TickerMapCache(parsed, Instant.now());
+        return parsed;
+    }
+
+    private URI companyTickersUri() {
+        var configured = configuration.feedUrls().get("company-tickers");
+        var value = configured == null || configured.isBlank() ? DEFAULT_COMPANY_TICKERS_URL : configured;
+        return url(value);
+    }
+
+    private Map<String, String> parseCompanyTickers(String body) {
+        var root = json(body, "SEC_COMPANY_TICKERS");
+        var tickers = new java.util.HashMap<String, String>();
+        for (var entry : root) {
+            var ticker = text(entry.path("ticker"));
+            var cik = text(entry.path("cik_str"));
+            if (ticker == null || cik == null) {
+                continue;
+            }
+            try {
+                tickers.put(canonicalTicker(ticker), normalizeCik(cik));
+            } catch (RuntimeException ignored) {
+                // A malformed ticker-map entry is skipped; the rest of the map is still usable.
+            }
+        }
+        return Map.copyOf(tickers);
+    }
+
+    private static String canonicalTicker(String value) {
+        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT).replace('.', '-');
     }
 
     private static String normalizeCik(String value) {
@@ -539,5 +611,12 @@ final class ConfiguredMarketEventProvider implements MarketEventProvider {
     }
 
     private record FeedItem(String id, String title, String occurred) {
+    }
+
+    private record TickerMapCache(Map<String, String> tickers, Instant fetchedAt) {
+
+        boolean isExpired(Instant now) {
+            return fetchedAt == null || !fetchedAt.plus(TICKER_MAP_TTL).isAfter(now);
+        }
     }
 }

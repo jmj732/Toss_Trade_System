@@ -18,10 +18,11 @@ public class NotificationOutboxConfiguration {
             JdbcTemplate jdbcTemplate,
             PlatformTransactionManager transactionManager,
             ObjectMapper objectMapper,
-            InboxLedger inboxLedger
+            InboxLedger inboxLedger,
+            TelegramDeliverySettings telegramSettings
     ) {
         return new NotificationOutboxProcessor(
-                jdbcTemplate, transactionManager, objectMapper, inboxLedger);
+                jdbcTemplate, transactionManager, objectMapper, inboxLedger, telegramSettings);
     }
 
     @Configuration(proxyBeanMethods = false)

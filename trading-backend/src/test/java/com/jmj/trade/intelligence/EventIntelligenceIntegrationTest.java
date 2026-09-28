@@ -270,6 +270,10 @@ class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
                         List.of(new EventIntelligenceService.MacroScope(
                                 "FRED", "CPIAUCSL", "2026-07", "2026-08-01")))))
                 .isTrue();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM notification_outbox_events WHERE event_type = 'EVENT_CREATED'
+                """, Integer.class))
+                .isZero();
         var eventId = jdbc.queryForObject(
                 "SELECT id FROM intelligence_events WHERE source = 'FRED'", UUID.class);
         insertSuccessfulPortfolio(connectionId, USER_ID, "150", TIME.plusMinutes(1));

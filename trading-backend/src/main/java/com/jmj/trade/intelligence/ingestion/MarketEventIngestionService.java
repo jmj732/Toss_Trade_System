@@ -74,7 +74,7 @@ public final class MarketEventIngestionService {
                             properties.maxEventsPerProvider());
                     var collection = provider.collectWithFailures(new MarketEventProvider.Request(
                             symbols, OffsetDateTime.now(ZoneOffset.UTC)
-                                    .minus(properties.lookback()).toInstant(), maxEvents,
+                                    .minus(properties.lookback(provider.id())).toInstant(), maxEvents,
                             () -> lease.renew(owner)));
                     if (collection == null || collection.events().size() > maxEvents) {
                         throw new IllegalStateException("provider returned too many events");
@@ -165,8 +165,18 @@ public final class MarketEventIngestionService {
                 resultSet.getObject("next_retry_at", OffsetDateTime.class),
                 resultSet.getInt("attempt"), resultSet.getString("last_error")), provider.name())
                 .stream().findFirst().orElse(null);
-        if (latest == null || "SUCCEEDED".equals(latest.status())) {
+        if (latest == null) {
             return true;
+        }
+        if ("SUCCEEDED".equals(latest.status())) {
+            var completedAt = jdbc.query("""
+                    SELECT completed_at FROM market_event_ingestion_runs
+                     WHERE provider = ? AND status = 'SUCCEEDED'
+                     ORDER BY completed_at DESC, id DESC LIMIT 1
+                    """, (resultSet, rowNumber) -> resultSet.getObject(1, OffsetDateTime.class), provider.name())
+                    .stream().findFirst().orElse(null);
+            return completedAt == null || completedAt.isBefore(OffsetDateTime.now(ZoneOffset.UTC)
+                    .minus(properties.minimumInterval(provider)));
         }
         if (!"FAILED".equals(latest.status())) {
             return false;
@@ -198,7 +208,7 @@ public final class MarketEventIngestionService {
                             || "SUCCEEDED".equals(latestAttempt.status())
                             ? 1 : latestAttempt.lastError() == null
                             ? 1 : latestAttempt.attempt() + 1,
-                    now.minus(properties.lookback()), now);
+                    now.minus(properties.lookback(provider)), now);
             return id;
         });
     }
@@ -253,7 +263,7 @@ public final class MarketEventIngestionService {
     private List<Target> targets() {
         return jdbc.query("""
                 SELECT connection.user_id, connection.id,
-                       COALESCE(string_agg(DISTINCT upper(position.symbol), ','), '') AS symbols
+                       COALESCE(string_agg(DISTINCT symbol.symbol, ','), '') AS symbols
                   FROM broker_connections connection
                   LEFT JOIN LATERAL (
                       SELECT run.id
@@ -264,8 +274,15 @@ public final class MarketEventIngestionService {
                        ORDER BY run.completed_at DESC, run.id DESC
                        LIMIT 1
                   ) success ON true
-                  LEFT JOIN position_snapshots position
-                    ON position.sync_run_id = success.id
+                  LEFT JOIN LATERAL (
+                      SELECT upper(position.symbol) AS symbol
+                        FROM position_snapshots position
+                       WHERE position.sync_run_id = success.id
+                      UNION
+                      SELECT watchlist.symbol
+                        FROM monitoring_watchlist watchlist
+                       WHERE watchlist.user_id = connection.user_id
+                  ) symbol ON true
                  WHERE connection.status = 'ACTIVE'
                    AND connection.deleted_at IS NULL
                  GROUP BY connection.user_id, connection.id

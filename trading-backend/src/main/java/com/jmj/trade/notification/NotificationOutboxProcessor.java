@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -39,18 +40,21 @@ final class NotificationOutboxProcessor {
     private final TransactionTemplate transaction;
     private final ObjectMapper objectMapper;
     private final InboxLedger inbox;
+    private final TelegramDeliverySettings telegramSettings;
 
     NotificationOutboxProcessor(
             JdbcTemplate jdbc,
             PlatformTransactionManager transactionManager,
             ObjectMapper objectMapper,
-            InboxLedger inbox
+            InboxLedger inbox,
+            TelegramDeliverySettings telegramSettings
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.transaction = new TransactionTemplate(
                 Objects.requireNonNull(transactionManager, "transactionManager"));
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.inbox = Objects.requireNonNull(inbox, "inbox");
+        this.telegramSettings = Objects.requireNonNull(telegramSettings, "telegramSettings");
     }
 
     ProcessResult process(int batchSize) {
@@ -126,6 +130,17 @@ final class NotificationOutboxProcessor {
                 """,
                 UUID.randomUUID(), row.id(), row.userId(), row.eventType(),
                 rendered.title(), rendered.body(), row.sourceId(), now());
+        if (NotificationEventType.MONITORING_ALERT.name().equals(row.eventType())
+                && telegramSettings.isConfiguredFor(row.userId())) {
+            var timestamp = now();
+            jdbc.update("""
+                    INSERT INTO telegram_notification_deliveries (
+                        outbox_event_id, user_id, status, attempt_count, next_attempt_at,
+                        created_at, updated_at
+                    ) VALUES (?, ?, 'PENDING', 0, ?, ?, ?)
+                    ON CONFLICT (outbox_event_id) DO NOTHING
+                    """, row.id(), row.userId(), timestamp, timestamp, timestamp);
+        }
         inbox.markProcessed(CONSUMER_NAME, row.id(), row.eventType());
         jdbc.update(
                 "UPDATE notification_outbox_events SET processed_at = ? WHERE id = ?",
@@ -168,7 +183,30 @@ final class NotificationOutboxProcessor {
             case PRODUCTION_READINESS_ALERT -> new Rendered(
                     "Production readiness needs attention",
                     "Provider credentials, freshness, scheduling, or safety gates are not ready.");
+            case MONITORING_ALERT -> renderMonitoringAlert(payload);
         };
+    }
+
+    private Rendered renderMonitoringAlert(JsonNode payload) {
+        var scope = text(payload, "scope");
+        var previousState = text(payload, "previousState");
+        var newState = text(payload, "newState");
+        var subjectKey = text(payload, "subjectKey");
+        var evidence = payload.path("evidence");
+        var summary = evidence.path("summary").asText();
+        if (summary.isBlank()) {
+            try {
+                summary = objectMapper.writeValueAsString(evidence);
+            } catch (JacksonException exception) {
+                summary = "evidence unavailable";
+            }
+        }
+        if (summary.length() > 800) {
+            summary = summary.substring(0, 797) + "...";
+        }
+        return new Rendered("[%s] %s".formatted(scope, newState),
+                "변화: %s → %s\n대상: %s\n근거: %s".formatted(
+                        previousState, newState, subjectKey, summary));
     }
 
     private static String text(JsonNode payload, String field) {

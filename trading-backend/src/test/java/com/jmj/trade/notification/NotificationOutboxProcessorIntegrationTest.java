@@ -27,10 +27,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 // them, but this keeps the test's own concurrency genuinely unconstrained by pool size.
 @SpringBootTest(
         classes = TradingBackendApplication.class,
-        properties = "spring.datasource.hikari.maximum-pool-size=4")
+        properties = {
+                "spring.datasource.hikari.maximum-pool-size=4",
+                "notification.telegram.enabled=true",
+                "notification.telegram.bot-token=test-token",
+                "notification.telegram.chat-id=123456",
+                "notification.telegram.user-id=11111111-1111-1111-1111-111111111111",
+                "notification.telegram.interval=PT1H",
+                "notification.telegram.initial-delay=PT1H"
+        })
 class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresIntegrationTest {
 
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID OTHER_USER_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
 
     @Autowired
     private NotificationOutboxProcessor processor;
@@ -38,10 +47,18 @@ class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresI
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private org.springframework.transaction.PlatformTransactionManager transactionManager;
+
+    @Autowired
+    private TelegramDeliverySettings telegramSettings;
+
     @BeforeEach
     void setUp() {
-        jdbc.execute("TRUNCATE inbox_messages, notifications, notification_outbox_events, users CASCADE");
+        jdbc.execute("TRUNCATE telegram_notification_deliveries, inbox_messages, notifications, "
+                + "notification_outbox_events, users CASCADE");
         jdbc.update("INSERT INTO users (id) VALUES (?)", USER_ID);
+        jdbc.update("INSERT INTO users (id) VALUES (?)", OTHER_USER_ID);
     }
 
     @Test
@@ -222,6 +239,100 @@ class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresI
                 .anySatisfy(body -> assertThat(body).contains("BROKER_REJECTED"));
     }
 
+    @Test
+    void rendersMonitoringStateTransitionsAsShortAlerts() {
+        var id = insertRawOutboxEvent("MONITORING_ALERT", UUID.randomUUID(), """
+                {"scope":"MARKET","subjectKey":"MARKET","previousState":"NORMAL",
+                 "newState":"RISK_TRANSITION","evidence":{"summary":"HY OAS 10D +45bp"},
+                 "observedAt":"2026-09-27T08:00:00Z"}
+                """);
+
+        assertThat(processor.process(10).processed()).isEqualTo(1);
+
+        var stored = jdbc.queryForMap(
+                "SELECT type, title, body FROM notifications WHERE outbox_event_id = ?", id);
+        assertThat(stored.get("type")).isEqualTo("MONITORING_ALERT");
+        assertThat(stored.get("title")).isEqualTo("[MARKET] RISK_TRANSITION");
+        assertThat(stored.get("body")).isEqualTo(
+                "변화: NORMAL → RISK_TRANSITION\n대상: MARKET\n근거: HY OAS 10D +45bp");
+    }
+
+    @Test
+    void telegramDeliversOnlyMonitoringAlertsForTheConfiguredUser() {
+        var allowedId = insertRawOutboxEvent(USER_ID, "MONITORING_ALERT", UUID.randomUUID(), """
+                {"scope":"MARKET","subjectKey":"MARKET","previousState":"NORMAL",
+                 "newState":"RISK_TRANSITION","evidence":{"summary":"HY OAS 10D +45bp"},
+                 "observedAt":"2026-09-27T08:00:00Z"}
+                """);
+        insertRawOutboxEvent(OTHER_USER_ID, "MONITORING_ALERT", UUID.randomUUID(), """
+                {"scope":"MARKET","subjectKey":"MARKET","previousState":"NORMAL",
+                 "newState":"RISK_TRANSITION","evidence":{"summary":"private alert"},
+                 "observedAt":"2026-09-27T08:00:00Z"}
+                """);
+        insertOutboxEvent(NotificationEventType.SYNC_SUCCEEDED, UUID.randomUUID(), "{}");
+        processor.process(10);
+        var sender = new RecordingTelegramSender();
+        var delivery = new TelegramNotificationDeliveryProcessor(
+                jdbc, transactionManager, telegramSettings, sender);
+
+        assertThat(delivery.process(10)).isEqualTo(1);
+
+        assertThat(sender.messages).hasSize(1);
+        assertThat(sender.messages.get(0)).contains("[MARKET] RISK_TRANSITION")
+                .contains("HY OAS 10D +45bp").doesNotContain("private alert");
+        var attempt = jdbc.queryForMap("""
+                SELECT status, attempt_count, sent_at FROM telegram_notification_deliveries
+                 WHERE outbox_event_id = ?
+                """, allowedId);
+        assertThat(attempt.get("status")).isEqualTo("SENT");
+        assertThat(attempt.get("attempt_count")).isEqualTo(1);
+        assertThat(attempt.get("sent_at")).isNotNull();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM telegram_notification_deliveries d
+                  JOIN notification_outbox_events e ON e.id = d.outbox_event_id
+                 WHERE e.user_id = ? OR e.event_type <> 'MONITORING_ALERT'
+                """, Long.class, OTHER_USER_ID)).isZero();
+    }
+
+    @Test
+    void persistsFailuresAndRetriesThemAfterBackoff() {
+        var outboxId = insertOutboxEvent("MONITORING_ALERT", UUID.randomUUID(), """
+                {"scope":"WATCHLIST","subjectKey":"ONTO","previousState":"WATCH",
+                 "newState":"PREPARE","evidence":{"summary":"price entered prepare zone"},
+                 "observedAt":"2026-09-27T08:00:00Z"}
+                """);
+        processor.process(10);
+        var sender = new RecordingTelegramSender();
+        sender.failuresRemaining = 1;
+        var delivery = new TelegramNotificationDeliveryProcessor(
+                jdbc, transactionManager, telegramSettings, sender);
+
+        assertThat(delivery.process(10)).isEqualTo(1);
+        var failedAttempt = jdbc.queryForMap("""
+                SELECT status, attempt_count, last_error, sent_at
+                  FROM telegram_notification_deliveries WHERE outbox_event_id = ?
+                """, outboxId);
+        assertThat(failedAttempt.get("status")).isEqualTo("PENDING");
+        assertThat(failedAttempt.get("attempt_count")).isEqualTo(1);
+        assertThat(failedAttempt.get("last_error")).isEqualTo("TEST_FAILURE");
+        assertThat(failedAttempt.get("sent_at")).isNull();
+
+        jdbc.update("UPDATE telegram_notification_deliveries SET next_attempt_at = ? "
+                        + "WHERE outbox_event_id = ?",
+                OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(1), outboxId);
+        assertThat(delivery.process(10)).isEqualTo(1);
+
+        var sentAttempt = jdbc.queryForMap("""
+                SELECT status, attempt_count, sent_at FROM telegram_notification_deliveries
+                 WHERE outbox_event_id = ?
+                """, outboxId);
+        assertThat(sentAttempt.get("status")).isEqualTo("SENT");
+        assertThat(sentAttempt.get("attempt_count")).isEqualTo(2);
+        assertThat(sentAttempt.get("sent_at")).isNotNull();
+        assertThat(sender.messages).hasSize(1);
+        assertThat(sender.messages.get(0)).contains("ONTO");
+    }
+
     private static String titleFor(List<Map<String, Object>> rows, String type) {
         return rows.stream().filter(row -> type.equals(row.get("type")))
                 .map(row -> (String) row.get("title")).findFirst().orElseThrow();
@@ -244,15 +355,37 @@ class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresI
         return insertRawOutboxEvent(type.name(), sourceId, payloadJson);
     }
 
+    private UUID insertOutboxEvent(String type, UUID sourceId, String payloadJson) {
+        return insertRawOutboxEvent(type, sourceId, payloadJson);
+    }
+
     private UUID insertRawOutboxEvent(String eventType, UUID sourceId, String payloadJson) {
+        return insertRawOutboxEvent(USER_ID, eventType, sourceId, payloadJson);
+    }
+
+    private UUID insertRawOutboxEvent(UUID userId, String eventType, UUID sourceId, String payloadJson) {
         var id = UUID.randomUUID();
         var now = OffsetDateTime.now(ZoneOffset.UTC);
         jdbc.update("""
                 INSERT INTO notification_outbox_events (
                     id, user_id, event_type, source_id, payload, occurred_at, created_at
                 ) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?)
-                """, id, USER_ID, eventType, sourceId, payloadJson, now, now);
+                """, id, userId, eventType, sourceId, payloadJson, now, now);
         return id;
+    }
+
+    private static final class RecordingTelegramSender implements TelegramMessageSender {
+        private final List<String> messages = new ArrayList<>();
+        private int failuresRemaining;
+
+        @Override
+        public void send(String message) {
+            if (failuresRemaining > 0) {
+                failuresRemaining--;
+                throw new TelegramDeliveryException("TEST_FAILURE");
+            }
+            messages.add(message);
+        }
     }
 
     private long count(String table) {
