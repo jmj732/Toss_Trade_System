@@ -74,7 +74,7 @@ public final class MarketEventIngestionService {
                             properties.maxEventsPerProvider());
                     var collection = provider.collectWithFailures(new MarketEventProvider.Request(
                             symbols, OffsetDateTime.now(ZoneOffset.UTC)
-                                    .minus(properties.lookback()).toInstant(), maxEvents,
+                                    .minus(properties.lookback(provider.id())).toInstant(), maxEvents,
                             () -> lease.renew(owner)));
                     if (collection == null || collection.events().size() > maxEvents) {
                         throw new IllegalStateException("provider returned too many events");
@@ -208,7 +208,7 @@ public final class MarketEventIngestionService {
                             || "SUCCEEDED".equals(latestAttempt.status())
                             ? 1 : latestAttempt.lastError() == null
                             ? 1 : latestAttempt.attempt() + 1,
-                    now.minus(properties.lookback()), now);
+                    now.minus(properties.lookback(provider)), now);
             return id;
         });
     }

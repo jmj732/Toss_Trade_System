@@ -21,7 +21,8 @@ public record MarketEventIngestionProperties(
         int batchSize,
         int maxEventsPerProvider,
         Map<String, ProviderConfiguration> providers,
-        Map<String, Duration> providerIntervals
+        Map<String, Duration> providerIntervals,
+        Map<String, Duration> providerLookbacks
 ) {
 
     public MarketEventIngestionProperties {
@@ -52,6 +53,17 @@ public record MarketEventIngestionProperties(
             });
         }
         providerIntervals = Map.copyOf(intervals);
+        var lookbacks = new java.util.LinkedHashMap<String, Duration>();
+        lookbacks.put("fred", Duration.ofDays(45));
+        if (providerLookbacks != null) {
+            providerLookbacks.forEach((key, value) -> {
+                if (key == null || key.isBlank() || value == null || !value.isPositive()) {
+                    throw new IllegalArgumentException("providerLookbacks must contain positive durations");
+                }
+                lookbacks.put(key.trim().toLowerCase(java.util.Locale.ROOT), value);
+            });
+        }
+        providerLookbacks = Map.copyOf(lookbacks);
         positive(interval, "interval");
         if (initialDelay.isNegative()) {
             throw new IllegalArgumentException("initialDelay must not be negative");
@@ -77,6 +89,11 @@ public record MarketEventIngestionProperties(
     public Duration minimumInterval(MarketEventProviderId provider) {
         Objects.requireNonNull(provider, "provider");
         return providerIntervals.getOrDefault(provider.name().toLowerCase(java.util.Locale.ROOT), interval);
+    }
+
+    public Duration lookback(MarketEventProviderId provider) {
+        Objects.requireNonNull(provider, "provider");
+        return providerLookbacks.getOrDefault(provider.name().toLowerCase(java.util.Locale.ROOT), lookback);
     }
 
     public record ProviderConfiguration(

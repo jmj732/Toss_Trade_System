@@ -8,14 +8,14 @@
 | --- | --- | --- |
 | 보유 수량·평단·평가액 | 성공한 Toss 계좌 스냅샷 | 계좌 동기화 후 갱신. 오래되거나 다른 통화의 환산율이 없으면 합산 비중은 UNKNOWN. |
 | 위험 한도 | Spring `risk_policies` | 동일 종목 합산 비중에 `max_concentration` 적용. 섹터·팩터 한도는 현재 정책에 없음. |
-| SEC 공시 | 기존 SEC submissions 어댑터 | CIK가 설정된 보유·watchlist 종목의 신규 공시. SEC 공개 API는 키가 없지만 공정 접근 제한을 지켜야 함. |
+| SEC 공시 | 기존 SEC submissions 어댑터 | 보유·watchlist 종목의 신규 공시. CIK는 SEC 공개 `company_tickers.json`에서 자동 해석하며 `identifiers` 설정은 선택적 override로만 쓴다. SEC 공개 API는 키가 없지만 공정 접근 제한을 지켜야 함. |
 | IR·정부 발표 | 기존 IR/FED/BLS/BEA 어댑터 | 설정한 공식 피드와 발표만 수집. |
 | FRED 거시·금리 | 기존 FRED 어댑터 | 무료 API 키 필요. 원천 관측일 기준으로 평가하며 시장 가격처럼 5분마다 조회하지 않음. |
 | 가격·거래량·상대강도·시장 내부 | 구성된 가격 제공자 | 미설정·지연·미제공이면 UNKNOWN. 무료로 제공되지 않는 세부 시장 데이터는 추정하지 않음. |
 
 FRED 매핑에서 `DGS10`은 10년 명목금리, `DFII10`은 10년 실질금리, `T10YIE`는 10년 기대인플레이션 지표다. [HY OAS](https://fred.stlouisfed.org/series/BAMLH0A0HYM2)와 [IG OAS](https://fred.stlouisfed.org/series/BAMLC0A0CM)의 원천 단위는 `%`이므로 계산 엔진에 `bp`로 전달할 때 100을 곱한다. [DTWEXBGS](https://fred.stlouisfed.org/series/DTWEXBGS)는 광의의 무역가중 달러지수이며 DXY와 다른 지표다.
 
-SEC의 [공개 submissions API](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)는 인증 키 없이 이용할 수 있다. [SEC의 공정 접근 제한](https://www.sec.gov/files/privacy.htm)은 전체 요청량 10회/초 이하를 요구한다. [FRED observations API](https://fred.stlouisfed.org/docs/api/fred/series_observations.html)는 API 키를 요구한다. Telegram 전송은 [공식 Bot API](https://core.telegram.org/bots/api)를 사용한다.
+SEC의 [공개 submissions API](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)는 인증 키 없이 이용할 수 있다. 요청 심볼 중 `identifiers`에 매핑이 없는 종목은 SEC 공개 [`company_tickers.json`](https://www.sec.gov/files/company_tickers.json)에서 CIK를 자동 해석한다(24시간 메모리 캐시, 설정된 user-agent 전송, `.`/`-` 클래스주 정규화). 티커맵을 받지 못하면 provider 실패로 기록하되 설정된 identifiers 수집은 계속하고, 미확인 티커는 추정하지 않고 건너뛴다. 티커맵 URL은 `market-events.providers.sec.feed-urls.company-tickers`로 조정할 수 있고 기본값은 www.sec.gov다(submissions는 data.sec.gov). [SEC의 공정 접근 제한](https://www.sec.gov/files/privacy.htm)은 전체 요청량 10회/초 이하를 요구한다. [FRED observations API](https://fred.stlouisfed.org/docs/api/fred/series_observations.html)는 API 키를 요구한다. Telegram 전송은 [공식 Bot API](https://core.telegram.org/bots/api)를 사용한다.
 
 ## 운영 원칙
 

@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 @SpringBootTest(classes = TradingBackendApplication.class)
 @Import(AutomatedMarketEventIngestionIntegrationTest.ProviderFixture.class)
@@ -45,6 +46,7 @@ class AutomatedMarketEventIngestionIntegrationTest extends PostgresIntegrationTe
         jdbc.execute("TRUNCATE broker_connections, users CASCADE");
         jdbc.update("DELETE FROM market_event_ingestion_runs");
         jdbc.update("DELETE FROM market_event_ingestion_leases");
+        ProviderFixture.CAPTURED_SINCE.clear();
     }
 
     @Test
@@ -105,8 +107,44 @@ class AutomatedMarketEventIngestionIntegrationTest extends PostgresIntegrationTe
                 .contains("[\"NVDA\"]", "[\"ONTO\"]");
     }
 
+    @Test
+    void fredUsesLongLookbackWhileSecUsesGlobalLookback() {
+        var connectionId = insertConnection(USER_ID);
+        insertPortfolio(connectionId);
+
+        ingestion.collect();
+
+        // Line 77: the per-provider lookback drives the collection Request.since handed to each provider.
+        var fredSince = ProviderFixture.CAPTURED_SINCE.get(MarketEventProviderId.FRED);
+        var secSince = ProviderFixture.CAPTURED_SINCE.get(MarketEventProviderId.SEC);
+        assertThat(fredSince).isNotNull();
+        assertThat(secSince).isNotNull();
+        var now = Instant.now();
+        assertThat(fredSince).isCloseTo(
+                now.minus(java.time.Duration.ofDays(45)), within(1, java.time.temporal.ChronoUnit.HOURS));
+        assertThat(secSince).isCloseTo(
+                now.minus(java.time.Duration.ofDays(2)), within(1, java.time.temporal.ChronoUnit.HOURS));
+
+        // Line 211: the recorded requested_since uses the same per-provider lookback relative to started_at.
+        assertThat(recordedLookbackDays(MarketEventProviderId.FRED)).isEqualTo(45L);
+        assertThat(recordedLookbackDays(MarketEventProviderId.SEC)).isEqualTo(2L);
+    }
+
+    private long recordedLookbackDays(MarketEventProviderId provider) {
+        return jdbc.queryForObject("""
+                SELECT ROUND(EXTRACT(EPOCH FROM (started_at - requested_since)) / 86400)
+                  FROM market_event_ingestion_runs
+                 WHERE provider = ?
+                 ORDER BY started_at DESC, id DESC
+                 LIMIT 1
+                """, Long.class, provider.name());
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     static class ProviderFixture {
+
+        static final java.util.Map<MarketEventProviderId, Instant> CAPTURED_SINCE =
+                new java.util.concurrent.ConcurrentHashMap<>();
 
         @Primary
         @Bean("fixtureMarketEventProviderRegistry")
@@ -128,6 +166,7 @@ class AutomatedMarketEventIngestionIntegrationTest extends PostgresIntegrationTe
 
                 @Override
                 public List<MarketEvent> collect(Request request) {
+                    CAPTURED_SINCE.put(id, request.since());
                     if (fail) {
                         throw new IllegalStateException("provider unavailable");
                     }

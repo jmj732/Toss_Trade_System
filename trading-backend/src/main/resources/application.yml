@@ -95,6 +95,8 @@ market-events:
     fred: ${MARKET_EVENTS_FRED_INTERVAL:PT6H}
     bls: ${MARKET_EVENTS_BLS_INTERVAL:P1D}
     bea: ${MARKET_EVENTS_BEA_INTERVAL:P1D}
+  provider-lookbacks:
+    fred: ${MARKET_EVENTS_FRED_LOOKBACK:P45D}
 monitoring:
   scheduler:
     enabled: ${MONITORING_SCHEDULER_ENABLED:false}
