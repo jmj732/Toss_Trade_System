@@ -24,6 +24,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Set;
@@ -122,14 +123,15 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat((BigDecimal) row.get("enterprise_value")).isEqualByComparingTo("1000200");
         assertThat(row.get("revenue_growth_yoy")).isNull();
 
+        var persistedQuoteAsOf = quoteAsOf.truncatedTo(ChronoUnit.MICROS);
         var snapshot = jdbc.queryForMap("""
                 SELECT payload -> 'fundamentals' AS fundamentals
                   FROM investment_security_snapshots WHERE user_id = ? AND ticker = 'AAPL'
                 ORDER BY created_at DESC LIMIT 1
                 """, USER_ID).get("fundamentals").toString();
         assertThat(snapshot).contains("\"asOf\": \"" + period + "T00:00:00Z\"")
-                .contains("\"marketCapAsOf\": \"" + quoteAsOf + "\"")
-                .contains("\"enterpriseValueAsOf\": \"" + quoteAsOf + "\"")
+                .contains("\"marketCapAsOf\": \"" + persistedQuoteAsOf + "\"")
+                .contains("\"enterpriseValueAsOf\": \"" + persistedQuoteAsOf + "\"")
                 .contains("\"enterpriseValueSource\": \"FMP_MARKET_CAP_PLUS_BALANCE_SHEET\"")
                 .contains("\"dilutedSharesBasis\": \"WEIGHTED_AVERAGE_TTM\"");
     }
