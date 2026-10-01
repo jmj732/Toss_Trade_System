@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
@@ -99,6 +100,37 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThatThrownBy(unavailable::captureAll)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("one or more investment data captures failed");
+    }
+
+    @Test
+    void decisionLedgerReplayUsesPostgresPrecisionAndRejectsChangedDecision() {
+        var watchlist = mock(MonitoringWatchlistService.class);
+        when(watchlist.list(USER_ID)).thenReturn(List.of());
+        var riskPolicies = mock(RiskPolicyService.class);
+        when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
+                0, new BigDecimal("10000000"), new BigDecimal("10000"),
+                new BigDecimal("100"), new BigDecimal("0.25"), false));
+        var service = new InvestmentContextService(jdbc, mapper, transactions,
+                new StockDataProviderRegistry(List.of()), mock(PortfolioReadService.class),
+                watchlist, riskPolicies, Duration.ofMinutes(15), Duration.ofDays(7),
+                Duration.ofDays(210), Duration.ofDays(10));
+        var decisionId = UUID.randomUUID();
+        var decisionAsOf = Instant.now().minusSeconds(30).truncatedTo(ChronoUnit.SECONDS).plusNanos(123_456_123);
+
+        var created = service.recordDecision(USER_ID, decision(decisionId, decisionAsOf,
+                "123.456789121", "0.87654321"));
+        var replay = service.recordDecision(USER_ID, decision(decisionId,
+                decisionAsOf.plusNanos(666), "123.456789124", "0.87654341"));
+
+        assertThat(created.asOf()).isEqualTo(decisionAsOf.truncatedTo(ChronoUnit.MICROS));
+        assertThat(replay.decisionId()).isEqualTo(created.decisionId());
+        assertThat(replay.asOf()).isEqualTo(created.asOf());
+        assertThat(replay.referencePrice()).isEqualByComparingTo("123.45678912");
+        assertThat(replay.confidence()).isEqualByComparingTo("0.876543");
+        assertThatThrownBy(() -> service.recordDecision(USER_ID,
+                decision(decisionId, decisionAsOf.plusNanos(666), "123.466789124", "0.87654341")))
+                .isInstanceOf(InvestmentException.class)
+                .hasMessage("CONFLICT");
     }
 
     @Test
@@ -303,6 +335,14 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 SELECT last_success_at FROM investment_pipeline_state
                  WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
                 """, OffsetDateTime.class, USER_ID)).isEqualTo(lastSuccess);
+    }
+
+    private InvestmentContextService.DecisionInput decision(
+            UUID decisionId, Instant asOf, String referencePrice, String confidence
+    ) {
+        return new InvestmentContextService.DecisionInput(decisionId, asOf, "aapl", "hold",
+                new BigDecimal(referencePrice), "regular_close", "1Y", "Thesis remains intact",
+                "Revenue declines for two quarters", "Review after next filing", new BigDecimal(confidence));
     }
 
     private InvestmentContextService service(StockDataProvider provider) {

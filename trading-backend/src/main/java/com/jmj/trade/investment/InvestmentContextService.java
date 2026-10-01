@@ -1392,7 +1392,8 @@ public final class InvestmentContextService {
     private static boolean sameDecision(DecisionView existing, DecisionInput input) {
         return existing.asOf().equals(input.asOf()) && existing.asset().equals(input.asset())
                 && existing.action().equals(input.action())
-                && Objects.equals(existing.referencePrice(), input.referencePrice())
+                && existing.referencePrice() != null
+                && existing.referencePrice().compareTo(input.referencePrice()) == 0
                 && Objects.equals(existing.priceSession(), input.priceSession())
                 && existing.horizon().equals(input.horizon())
                 && existing.alphaThesis().equals(input.alphaThesis())
@@ -1429,9 +1430,14 @@ public final class InvestmentContextService {
         if (!Set.of("ADD", "HOLD", "REDUCE", "EXIT", "REPLACE").contains(action) || session == null) {
             throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         }
-        return new DecisionInput(input.decisionId(), input.asOf(), ticker(input.asset()), action,
-                input.referencePrice(), session, input.horizon().trim(), input.alphaThesis().trim(),
-                input.invalidation().trim(), input.nextReviewTrigger().trim(), input.confidence());
+        var referencePrice = input.referencePrice().setScale(8, RoundingMode.HALF_UP);
+        if (referencePrice.signum() <= 0 || referencePrice.precision() - referencePrice.scale() > 16) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
+        return new DecisionInput(input.decisionId(), input.asOf().truncatedTo(ChronoUnit.MICROS),
+                ticker(input.asset()), action, referencePrice, session, input.horizon().trim(),
+                input.alphaThesis().trim(), input.invalidation().trim(), input.nextReviewTrigger().trim(),
+                input.confidence().setScale(6, RoundingMode.HALF_UP));
     }
 
     private void validateDecision(DecisionInput input) {

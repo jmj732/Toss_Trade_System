@@ -39,6 +39,7 @@ class MonitoringStateStore {
             Instant observedAt
     ) {
         require(userId, scope, subjectKey, state, sourceType, observedAt);
+        observedAt = observedAt.truncatedTo(ChronoUnit.MICROS);
         var normalizedState = state.trim().toUpperCase();
         var now = now();
         jdbc.update("""
@@ -177,7 +178,7 @@ class MonitoringStateStore {
     }
 
     private static OffsetDateTime offset(Instant instant) {
-        return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
+        return OffsetDateTime.ofInstant(instant.truncatedTo(ChronoUnit.MICROS), ZoneOffset.UTC);
     }
 
     private static OffsetDateTime now() {

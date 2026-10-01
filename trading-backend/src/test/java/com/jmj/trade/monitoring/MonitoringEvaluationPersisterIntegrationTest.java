@@ -12,6 +12,8 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -54,6 +56,34 @@ class MonitoringEvaluationPersisterIntegrationTest extends PostgresIntegrationTe
                 "[{\"symbol\":\"AAPL\",\"state\":\"NORMAL\",\"dataQuality\":\"PARTIAL\"}]"));
 
         assertThat(currentState(policySubject)).isEqualTo("CLEARED");
+    }
+
+    @Test
+    void canonicalizesNanosecondStateTimestampsBeforeOrderingAndDeduplication() {
+        var observedAt = Instant.parse("2026-10-02T12:00:00.123456789Z");
+        var canonicalObservedAt = observedAt.truncatedTo(ChronoUnit.MICROS);
+        var subject = "POLICY:MAX_CONCENTRATION:SYMBOL:nanosecond";
+
+        var transition = states.observe(USER_ID, "EVENT", subject, "BREACH", Map.of("summary", "seed"),
+                "RISK_POLICY", "nanosecond-event", observedAt);
+
+        assertThat(transition).isNotNull();
+        assertThat(transition.observedAt()).isEqualTo(canonicalObservedAt);
+        assertThat(jdbc.queryForObject("""
+                SELECT observed_at FROM monitoring_current_states
+                 WHERE user_id = ? AND scope = 'EVENT' AND subject_key = ?
+                """, OffsetDateTime.class, USER_ID, subject).toInstant())
+                .isEqualTo(canonicalObservedAt);
+        assertThat(historyCount(subject)).isEqualTo(1);
+
+        assertThat(states.observe(USER_ID, "EVENT", subject, "BREACH", Map.of("summary", "replay"),
+                "RISK_POLICY", "nanosecond-event", observedAt)).isNull();
+        assertThat(historyCount(subject)).isEqualTo(1);
+
+        assertThat(states.observe(USER_ID, "EVENT", subject, "CLEARED", Map.of("summary", "stale"),
+                "RISK_POLICY", "older-event", observedAt.minusNanos(1_000))).isNull();
+        assertThat(currentState(subject)).isEqualTo("BREACH");
+        assertThat(historyCount(subject)).isEqualTo(1);
     }
 
     @Test
@@ -120,5 +150,12 @@ class MonitoringEvaluationPersisterIntegrationTest extends PostgresIntegrationTe
                 SELECT state FROM monitoring_current_states
                  WHERE user_id = ? AND scope = 'EVENT' AND subject_key = ?
                 """, String.class, USER_ID, subject);
+    }
+
+    private int historyCount(String subject) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM monitoring_state_history
+                 WHERE user_id = ? AND scope = 'EVENT' AND subject_key = ?
+                """, Integer.class, USER_ID, subject);
     }
 }
