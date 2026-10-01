@@ -74,7 +74,7 @@ investment:
     price-stale-after: ${INVESTMENT_PRICE_STALE_AFTER:PT15M}
     regular-close-stale-after: ${INVESTMENT_REGULAR_CLOSE_STALE_AFTER:P7D}
     fundamental-stale-after: ${INVESTMENT_FUNDAMENTAL_STALE_AFTER:P210D}
-    consensus-stale-after: ${INVESTMENT_CONSENSUS_STALE_AFTER:PT10D}
+    consensus-stale-after: ${INVESTMENT_CONSENSUS_STALE_AFTER:P10D}
 market-events:
   scheduler:
     enabled: ${MARKET_EVENTS_SCHEDULER_ENABLED:false}
