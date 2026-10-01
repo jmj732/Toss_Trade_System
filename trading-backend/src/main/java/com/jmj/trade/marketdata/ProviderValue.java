@@ -12,11 +12,19 @@ public record ProviderValue(
         String period,
         String identifier,
         Instant asOf,
-        List<String> missingData
+        List<String> missingData,
+        StockAnalysisInput.AsOfBasis asOfBasis
 ) {
 
+    public ProviderValue(
+            String field, JsonNode value, String unit, String period, String identifier,
+            Instant asOf, List<String> missingData
+    ) {
+        this(field, value, unit, period, identifier, asOf, missingData, StockAnalysisInput.AsOfBasis.SOURCE_AS_OF);
+    }
+
     public ProviderValue(String field, JsonNode value, Instant asOf, List<String> missingData) {
-        this(field, value, null, null, null, asOf, missingData);
+        this(field, value, null, null, null, asOf, missingData, StockAnalysisInput.AsOfBasis.SOURCE_AS_OF);
     }
 
     public ProviderValue {
@@ -27,6 +35,7 @@ public record ProviderValue(
             value = null;
         }
         missingData = missingData == null ? List.of() : List.copyOf(missingData);
+        asOfBasis = asOfBasis == null ? StockAnalysisInput.AsOfBasis.SOURCE_AS_OF : asOfBasis;
         if (value == null && missingData.isEmpty()) {
             throw new IllegalArgumentException("null value requires missingData");
         }

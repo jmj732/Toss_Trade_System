@@ -50,6 +50,7 @@ class InvestmentOsSheetSyncServiceTest {
         var connector = mock(ConnectorService.class);
         var brokerSurface = mock(BrokerSurfaceService.class);
         var sheets = mock(GoogleSheetsClient.class);
+        var researchSheets = mock(InvestmentOsResearchSheetSync.class);
         when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
         when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
@@ -61,7 +62,7 @@ class InvestmentOsSheetSyncServiceTest {
         when(brokerSurface.prices(USER_ID, CONNECTION_ID, "ABC")).thenReturn(BrokerSurfaceResponse.available(List.of(
                 new BrokerSurfaceResponse.PriceView("ABC", bd("15"), null, null, "USD", NOW, NOW))));
 
-        var result = service(lease, connector, brokerSurface, sheets).sync();
+        var result = service(lease, connector, brokerSurface, sheets, researchSheets).sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
         assertThat(result.fillsChanged()).isEqualTo(1);
@@ -76,6 +77,7 @@ class InvestmentOsSheetSyncServiceTest {
                 && update.values().stream().anyMatch(row -> row.contains(NOW.toString())))
                 && updates.stream().anyMatch(update -> update.range().contains("Account State")
                 && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_1")))));
+        verify(researchSheets).sync(USER_ID);
         verify(lease).release(any());
     }
 
@@ -483,11 +485,21 @@ class InvestmentOsSheetSyncServiceTest {
             BrokerSurfaceService brokerSurface,
             GoogleSheetsClient sheets
     ) {
+        return service(lease, connector, brokerSurface, sheets, null);
+    }
+
+    private InvestmentOsSheetSyncService service(
+            InvestmentOsSheetLease lease,
+            ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
+            GoogleSheetsClient sheets,
+            InvestmentOsResearchSheetSync researchSheets
+    ) {
         when(sheets.readValues(eq("sheet-1"), eq("'Account Registry'!A:Z"))).thenReturn(registryValues());
         return new InvestmentOsSheetSyncService(
                 new InvestmentOsSheetProperties(true, "sheet-1", USER_ID, CONNECTION_ID,
                         Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(2)),
-                lease, connector, brokerSurface, sheets, () -> NOW);
+                lease, connector, brokerSurface, sheets, () -> NOW, researchSheets);
     }
 
     private static GoogleSheetsClient.SheetValues emptyValues() {

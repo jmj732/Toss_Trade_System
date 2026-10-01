@@ -43,17 +43,17 @@ public class RiskPolicyService {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         var normalized = normalize(new RiskPolicyInput(
                 defaultMaxOrderAmountKrw, defaultMaxOrderAmountUsd,
-                defaultMaxQuantity, defaultMaxConcentration));
+                defaultMaxQuantity, defaultMaxConcentration, null));
         this.defaults = new RiskPolicySnapshot(
                 0, normalized.maxOrderAmountKrw(), normalized.maxOrderAmountUsd(),
-                normalized.maxQuantity(), normalized.maxConcentration(), false);
+                normalized.maxQuantity(), normalized.maxConcentration(), null, false);
     }
 
     public RiskPolicySnapshot current(UUID userId) {
         requireId(userId);
         return jdbc.query("""
                 SELECT version, max_order_amount_krw, max_order_amount_usd,
-                       max_quantity, max_concentration
+                       max_quantity, max_concentration, soft_risk_budget
                   FROM risk_policies
                  WHERE user_id = ?
                 """, (resultSet, rowNum) -> new RiskPolicySnapshot(
@@ -62,6 +62,7 @@ public class RiskPolicyService {
                 resultSet.getBigDecimal("max_order_amount_usd"),
                 resultSet.getBigDecimal("max_quantity"),
                 resultSet.getBigDecimal("max_concentration"),
+                resultSet.getBigDecimal("soft_risk_budget"),
                 true
         ), userId).stream().findFirst().orElse(defaults);
     }
@@ -88,34 +89,38 @@ public class RiskPolicyService {
         if (currentVersion != expectedVersion) {
             throw new RiskPolicyException(RiskPolicyException.Code.VERSION_CONFLICT);
         }
+        var current = current(userId);
+        var softRiskBudget = normalized.softRiskBudget() == null
+                ? current.softRiskBudget() : normalized.softRiskBudget();
         var nextVersion = currentVersion + 1;
         var now = now();
         jdbc.update("""
                 INSERT INTO risk_policies (
                     user_id, version, max_order_amount_krw, max_order_amount_usd,
-                    max_quantity, max_concentration, updated_at, updated_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    max_quantity, max_concentration, soft_risk_budget, updated_at, updated_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (user_id) DO UPDATE SET
                     version = EXCLUDED.version,
                     max_order_amount_krw = EXCLUDED.max_order_amount_krw,
                     max_order_amount_usd = EXCLUDED.max_order_amount_usd,
                     max_quantity = EXCLUDED.max_quantity,
                     max_concentration = EXCLUDED.max_concentration,
+                    soft_risk_budget = EXCLUDED.soft_risk_budget,
                     updated_at = EXCLUDED.updated_at,
                     updated_by = EXCLUDED.updated_by
                 """, userId, nextVersion, normalized.maxOrderAmountKrw(), normalized.maxOrderAmountUsd(),
-                normalized.maxQuantity(), normalized.maxConcentration(), now, actor);
+                normalized.maxQuantity(), normalized.maxConcentration(), softRiskBudget, now, actor);
         jdbc.update("""
                 INSERT INTO risk_policy_history (
                     id, user_id, version, max_order_amount_krw, max_order_amount_usd,
-                    max_quantity, max_concentration, changed_by, changed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    max_quantity, max_concentration, soft_risk_budget, changed_by, changed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, UUID.randomUUID(), userId, nextVersion, normalized.maxOrderAmountKrw(),
                 normalized.maxOrderAmountUsd(), normalized.maxQuantity(), normalized.maxConcentration(),
-                actor, now);
+                softRiskBudget, actor, now);
         return new RiskPolicySnapshot(
                 nextVersion, normalized.maxOrderAmountKrw(), normalized.maxOrderAmountUsd(),
-                normalized.maxQuantity(), normalized.maxConcentration(), true);
+                normalized.maxQuantity(), normalized.maxConcentration(), softRiskBudget, true);
     }
 
     public List<RiskPolicyHistoryEntry> history(UUID userId, int limit) {
@@ -125,7 +130,7 @@ public class RiskPolicyService {
         }
         return jdbc.query("""
                 SELECT version, max_order_amount_krw, max_order_amount_usd,
-                       max_quantity, max_concentration, changed_by, changed_at
+                       max_quantity, max_concentration, soft_risk_budget, changed_by, changed_at
                   FROM risk_policy_history
                  WHERE user_id = ?
                  ORDER BY version DESC
@@ -136,6 +141,7 @@ public class RiskPolicyService {
                 resultSet.getBigDecimal("max_order_amount_usd"),
                 resultSet.getBigDecimal("max_quantity"),
                 resultSet.getBigDecimal("max_concentration"),
+                resultSet.getBigDecimal("soft_risk_budget"),
                 resultSet.getString("changed_by"),
                 resultSet.getObject("changed_at", OffsetDateTime.class).toInstant()
         ), userId, limit);
@@ -167,7 +173,8 @@ public class RiskPolicyService {
                 amount(input.maxOrderAmountKrw(), "maxOrderAmountKrw"),
                 amount(input.maxOrderAmountUsd(), "maxOrderAmountUsd"),
                 amount(input.maxQuantity(), "maxQuantity"),
-                concentration(input.maxConcentration()));
+                concentration(input.maxConcentration()),
+                input.softRiskBudget() == null ? null : softBudget(input.softRiskBudget()));
     }
 
     private static BigDecimal amount(BigDecimal value, String fieldName) {
@@ -192,6 +199,14 @@ public class RiskPolicyService {
         return scaled;
     }
 
+    private static BigDecimal softBudget(BigDecimal value) {
+        var scaled = value.setScale(CONCENTRATION_SCALE, RoundingMode.HALF_UP);
+        if (scaled.compareTo(BigDecimal.ZERO) <= 0 || scaled.compareTo(BigDecimal.ONE) > 0) {
+            throw new IllegalArgumentException("softRiskBudget must be greater than 0 and at most 1");
+        }
+        return scaled;
+    }
+
     private static void requireId(UUID userId) {
         if (userId == null) {
             throw new RiskPolicyException(RiskPolicyException.Code.INVALID_USER);
@@ -212,8 +227,17 @@ public class RiskPolicyService {
             BigDecimal maxOrderAmountKrw,
             BigDecimal maxOrderAmountUsd,
             BigDecimal maxQuantity,
-            BigDecimal maxConcentration
+            BigDecimal maxConcentration,
+            BigDecimal softRiskBudget
     ) {
+        public RiskPolicyInput(
+                BigDecimal maxOrderAmountKrw,
+                BigDecimal maxOrderAmountUsd,
+                BigDecimal maxQuantity,
+                BigDecimal maxConcentration
+        ) {
+            this(maxOrderAmountKrw, maxOrderAmountUsd, maxQuantity, maxConcentration, null);
+        }
     }
 
     public record RiskPolicySnapshot(
@@ -222,8 +246,15 @@ public class RiskPolicyService {
             BigDecimal maxOrderAmountUsd,
             BigDecimal maxQuantity,
             BigDecimal maxConcentration,
+            BigDecimal softRiskBudget,
             boolean customized
     ) {
+        public RiskPolicySnapshot(
+                long version, BigDecimal maxOrderAmountKrw, BigDecimal maxOrderAmountUsd,
+                BigDecimal maxQuantity, BigDecimal maxConcentration, boolean customized
+        ) {
+            this(version, maxOrderAmountKrw, maxOrderAmountUsd, maxQuantity, maxConcentration, null, customized);
+        }
     }
 
     public record RiskPolicyHistoryEntry(
@@ -232,8 +263,16 @@ public class RiskPolicyService {
             BigDecimal maxOrderAmountUsd,
             BigDecimal maxQuantity,
             BigDecimal maxConcentration,
+            BigDecimal softRiskBudget,
             String changedBy,
             Instant changedAt
     ) {
+        public RiskPolicyHistoryEntry(
+                long version, BigDecimal maxOrderAmountKrw, BigDecimal maxOrderAmountUsd,
+                BigDecimal maxQuantity, BigDecimal maxConcentration, String changedBy, Instant changedAt
+        ) {
+            this(version, maxOrderAmountKrw, maxOrderAmountUsd, maxQuantity, maxConcentration,
+                    null, changedBy, changedAt);
+        }
     }
 }

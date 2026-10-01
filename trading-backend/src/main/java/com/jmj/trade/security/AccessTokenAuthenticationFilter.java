@@ -23,7 +23,7 @@ final class AccessTokenAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         var path = request.getRequestURI();
-        return !path.startsWith("/api/")
+        return !(path.startsWith("/api/") || path.startsWith("/investment/"))
                 || path.equals("/api/v1/auth/refresh")
                 || path.equals("/api/v1/auth/logout")
                 || isConnectorApiKeyRequest(request)

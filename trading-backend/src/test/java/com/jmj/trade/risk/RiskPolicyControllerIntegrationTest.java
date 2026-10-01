@@ -97,6 +97,30 @@ class RiskPolicyControllerIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void persistsSoftRiskBudgetAndPreservesItForOlderClients() throws Exception {
+        mockMvc.perform(put("/api/v1/risk-policy")
+                        .with(user(USER_ID.toString())).with(csrf())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"expectedVersion":0,"maxOrderAmountKrw":500000,
+                                 "maxOrderAmountUsd":500,"maxQuantity":2,"maxConcentration":0.30,
+                                 "softRiskBudget":0.08}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.softRiskBudget").value(0.08));
+
+        update(USER_ID, 1, "400000", "400", "1", "0.20");
+
+        mockMvc.perform(get("/api/v1/risk-policy").with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.softRiskBudget").value(0.08));
+        mockMvc.perform(get("/api/v1/risk-policy/history").with(user(USER_ID.toString())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].softRiskBudget").value(0.08))
+                .andExpect(jsonPath("$[1].softRiskBudget").value(0.08));
+    }
+
+    @Test
     void rejectsAStaleExpectedVersion() throws Exception {
         mockMvc.perform(put("/api/v1/risk-policy")
                         .with(user(USER_ID.toString())).with(csrf())

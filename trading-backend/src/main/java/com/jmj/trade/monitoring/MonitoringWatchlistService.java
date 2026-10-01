@@ -21,7 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 
 @Service
-class MonitoringWatchlistService {
+public class MonitoringWatchlistService {
 
     private static final Set<String> CONDITION_KEYS = Set.of("add", "reduce", "exit", "invalidation");
 
@@ -39,7 +39,7 @@ class MonitoringWatchlistService {
         this.states = Objects.requireNonNull(states, "states");
     }
 
-    List<WatchlistEntry> list(UUID userId) {
+    public List<WatchlistEntry> list(UUID userId) {
         requireUser(userId);
         return jdbc.query("""
                 SELECT id, symbol, status, levels::text, evidence::text, observed_at, created_at, updated_at

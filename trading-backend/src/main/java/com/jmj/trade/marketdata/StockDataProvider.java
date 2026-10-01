@@ -12,4 +12,9 @@ public interface StockDataProvider {
     Set<String> fields();
 
     List<ProviderValue> fetch(ProviderRequest request);
+
+    default List<ProviderValue> fetch(ProviderRequest request, Set<String> selectedFields) {
+        if (selectedFields == null || selectedFields.isEmpty()) return List.of();
+        return fetch(request).stream().filter(value -> selectedFields.contains(value.field())).toList();
+    }
 }

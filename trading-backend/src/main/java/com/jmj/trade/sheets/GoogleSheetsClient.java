@@ -77,6 +77,78 @@ public final class GoogleSheetsClient {
         });
     }
 
+    public Map<String, Integer> sheetIdsByTitle(String spreadsheetId) {
+        requireText(spreadsheetId, "spreadsheetId");
+        return executeWithRefresh(token -> {
+            try {
+                var body = restClient.get()
+                        .uri(builder -> builder.path("/v4/spreadsheets/{id}")
+                                .queryParam("fields", "sheets.properties(sheetId,title)")
+                                .build(spreadsheetId))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .retrieve()
+                        .body(String.class);
+                if (body == null || body.isBlank()) {
+                    throw GoogleSheetsException.contract("Google Sheets metadata response was empty");
+                }
+                var result = new LinkedHashMap<String, Integer>();
+                var root = objectMapper.readTree(body);
+                var sheets = root.path("sheets");
+                if (!sheets.isArray()) throw GoogleSheetsException.contract("Google Sheets metadata was invalid");
+                for (var sheet : sheets) {
+                    var properties = sheet.path("properties");
+                    var title = properties.path("title");
+                    if (!title.isTextual()) continue;
+                    var sheetId = properties.path("sheetId");
+                    if (!sheetId.isIntegralNumber() || !sheetId.canConvertToInt() || sheetId.intValue() < 0) {
+                        throw GoogleSheetsException.contract("Google Sheets sheet metadata was invalid");
+                    }
+                    result.put(title.asText(), sheetId.intValue());
+                }
+                return Collections.unmodifiableMap(result);
+            } catch (GoogleSheetsException exception) {
+                throw exception;
+            } catch (RestClientResponseException exception) {
+                throw GoogleSheetsException.http("Google Sheets metadata read failed", exception.getStatusCode().value());
+            } catch (RestClientException exception) {
+                throw GoogleSheetsException.network("Google Sheets metadata read failed");
+            } catch (JacksonException exception) {
+                throw GoogleSheetsException.contract("Google Sheets metadata response was invalid");
+            }
+        });
+    }
+
+    public void duplicateSheets(String spreadsheetId, Map<String, Integer> archiveTitlesBySourceId) {
+        requireText(spreadsheetId, "spreadsheetId");
+        if (archiveTitlesBySourceId == null || archiveTitlesBySourceId.isEmpty()) return;
+        var requests = new ArrayList<Map<String, Object>>();
+        archiveTitlesBySourceId.forEach((archiveTitle, sourceSheetId) -> {
+            var title = requireSheetTitle(archiveTitle);
+            if (sourceSheetId == null || sourceSheetId < 0) {
+                throw new IllegalArgumentException("source sheet id is invalid");
+            }
+            requests.add(Map.of("duplicateSheet", Map.of(
+                    "sourceSheetId", sourceSheetId,
+                    "newSheetName", title)));
+        });
+        executeWithRefresh(token -> {
+            try {
+                restClient.post()
+                        .uri("/v4/spreadsheets/{id}:batchUpdate", spreadsheetId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(encode(Map.of("requests", requests)))
+                        .retrieve()
+                        .toBodilessEntity();
+                return null;
+            } catch (RestClientResponseException exception) {
+                throw GoogleSheetsException.http("Google Sheets archive failed", exception.getStatusCode().value());
+            } catch (RestClientException exception) {
+                throw GoogleSheetsException.network("Google Sheets archive failed");
+            }
+        });
+    }
+
     public void batchUpdateValues(String spreadsheetId, List<SheetValueRange> updates) {
         requireText(spreadsheetId, "spreadsheetId");
         if (updates == null || updates.isEmpty()) {
@@ -103,6 +175,63 @@ public final class GoogleSheetsClient {
                 throw GoogleSheetsException.http("Google Sheets update failed", exception.getStatusCode().value());
             } catch (RestClientException exception) {
                 throw GoogleSheetsException.network("Google Sheets update failed");
+            }
+        });
+    }
+
+    public void ensureSheets(String spreadsheetId, List<String> titles) {
+        requireText(spreadsheetId, "spreadsheetId");
+        if (titles == null || titles.isEmpty()) return;
+        var requested = titles.stream().map(title -> requireSheetTitle(title)).distinct().toList();
+        var existing = executeWithRefresh(token -> {
+            try {
+                var body = restClient.get()
+                        .uri(builder -> builder.path("/v4/spreadsheets/{id}")
+                                .queryParam("fields", "sheets.properties.title")
+                                .build(spreadsheetId))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .retrieve()
+                        .body(String.class);
+                if (body == null || body.isBlank()) {
+                    throw GoogleSheetsException.contract("Google Sheets metadata response was empty");
+                }
+                var result = new java.util.HashSet<String>();
+                var root = objectMapper.readTree(body);
+                var sheets = root.path("sheets");
+                if (!sheets.isArray()) throw GoogleSheetsException.contract("Google Sheets metadata was invalid");
+                for (var sheet : sheets) {
+                    var title = sheet.path("properties").path("title");
+                    if (title.isTextual()) result.add(title.asText());
+                }
+                return result;
+            } catch (GoogleSheetsException exception) {
+                throw exception;
+            } catch (RestClientResponseException exception) {
+                throw GoogleSheetsException.http("Google Sheets metadata read failed", exception.getStatusCode().value());
+            } catch (RestClientException exception) {
+                throw GoogleSheetsException.network("Google Sheets metadata read failed");
+            } catch (JacksonException exception) {
+                throw GoogleSheetsException.contract("Google Sheets metadata response was invalid");
+            }
+        });
+        var missing = requested.stream().filter(title -> !existing.contains(title)).toList();
+        if (missing.isEmpty()) return;
+        var requests = missing.stream().map(title -> Map.of("addSheet", Map.of("properties", Map.of("title", title))))
+                .toList();
+        executeWithRefresh(token -> {
+            try {
+                restClient.post()
+                        .uri("/v4/spreadsheets/{id}:batchUpdate", spreadsheetId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(encode(Map.of("requests", requests)))
+                        .retrieve()
+                        .toBodilessEntity();
+                return null;
+            } catch (RestClientResponseException exception) {
+                throw GoogleSheetsException.http("Google Sheets tab creation failed", exception.getStatusCode().value());
+            } catch (RestClientException exception) {
+                throw GoogleSheetsException.network("Google Sheets tab creation failed");
             }
         });
     }
@@ -180,6 +309,14 @@ public final class GoogleSheetsClient {
     private static String requireText(String value, String field) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(field + " is required");
+        }
+        return value;
+    }
+
+    private static String requireSheetTitle(String value) {
+        requireText(value, "sheet title");
+        if (value.length() > 100 || value.matches(".*[:\\\\/?*\\[\\]].*")) {
+            throw new IllegalArgumentException("sheet title is invalid");
         }
         return value;
     }

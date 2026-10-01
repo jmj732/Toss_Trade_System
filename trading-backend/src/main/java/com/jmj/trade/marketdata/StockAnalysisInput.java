@@ -32,8 +32,24 @@ public record StockAnalysisInput(
             StockDataProviderId provider,
             Instant asOf,
             Instant collectedAt,
-            List<String> missingData
+            List<String> missingData,
+            AsOfBasis asOfBasis
     ) {
+
+        public Observation(
+                String field,
+                JsonNode value,
+                String unit,
+                String period,
+                String identifier,
+                StockDataProviderId provider,
+                Instant asOf,
+                Instant collectedAt,
+                List<String> missingData
+        ) {
+            this(field, value, unit, period, identifier, provider, asOf, collectedAt, missingData,
+                    AsOfBasis.SOURCE_AS_OF);
+        }
 
         public Observation {
             Objects.requireNonNull(field, "field");
@@ -43,6 +59,7 @@ public record StockAnalysisInput(
                 value = null;
             }
             missingData = missingData == null ? List.of() : List.copyOf(missingData);
+            asOfBasis = asOfBasis == null ? AsOfBasis.SOURCE_AS_OF : asOfBasis;
             if (value == null && missingData.isEmpty()) {
                 throw new IllegalArgumentException("null value requires missingData");
             }
@@ -50,5 +67,10 @@ public record StockAnalysisInput(
                 throw new IllegalArgumentException("missing asOf requires missingData");
             }
         }
+    }
+
+    public enum AsOfBasis {
+        SOURCE_AS_OF,
+        OBSERVED_AT
     }
 }
