@@ -24,10 +24,31 @@ public final class StockAnalysisInputAssembler {
     }
 
     public StockAnalysisInput assemble(String symbol, Map<String, String> identifiers) {
+        return assemble(symbol, identifiers, null);
+    }
+
+    public StockAnalysisInput assemble(String symbol, Map<String, String> identifiers, Set<String> selectedFields) {
         var request = new ProviderRequest(symbol, identifiers);
         var observations = new ArrayList<StockAnalysisInput.Observation>();
         for (var provider : registry.providers()) {
-            collect(provider, request, observations);
+            if (selectedFields == null) {
+                collect(provider, request, observations, null);
+                continue;
+            }
+            final Set<String> declared;
+            try {
+                declared = provider.fields();
+            } catch (RuntimeException exception) {
+                collect(provider, request, observations, Set.of("provider"));
+                continue;
+            }
+            if (declared == null) {
+                collect(provider, request, observations, Set.of("provider"));
+                continue;
+            }
+            var selected = declared.stream().filter(selectedFields::contains)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            if (!selected.isEmpty()) collect(provider, request, observations, selected);
         }
         var collectedAt = clock.instant();
         return new StockAnalysisInput(
@@ -41,7 +62,8 @@ public final class StockAnalysisInputAssembler {
     private void collect(
             StockDataProvider provider,
             ProviderRequest request,
-            List<StockAnalysisInput.Observation> target
+            List<StockAnalysisInput.Observation> target,
+            Set<String> selectedFields
     ) {
         Set<String> declared = Set.of();
         try {
@@ -50,7 +72,7 @@ public final class StockAnalysisInputAssembler {
                 declared = Set.of("provider");
                 throw new IllegalStateException("provider fields are required");
             }
-            var values = provider.fetch(request);
+            var values = selectedFields == null ? provider.fetch(request) : provider.fetch(request, selectedFields);
             if (values == null) {
                 throw new IllegalStateException("provider returned null values");
             }
@@ -69,9 +91,11 @@ public final class StockAnalysisInputAssembler {
                         provider.id(),
                         value.asOf(),
                         collectedAt,
-                        value.missingData()));
+                        value.missingData(),
+                        value.asOfBasis()));
             }
             declared.stream()
+                    .filter(field -> selectedFields == null || selectedFields.contains(field))
                     .filter(field -> !returned.contains(field))
                     .sorted()
                     .forEach(field -> target.add(missing(
@@ -79,6 +103,7 @@ public final class StockAnalysisInputAssembler {
         } catch (ProviderUnavailableException exception) {
             var collectedAt = clock.instant();
             declared.stream()
+                    .filter(field -> selectedFields == null || selectedFields.contains(field))
                     .sorted()
                     .forEach(field -> target.add(missing(
                             field, provider.id(), collectedAt, "PROVIDER_UNAVAILABLE")));
@@ -86,6 +111,7 @@ public final class StockAnalysisInputAssembler {
             var collectedAt = clock.instant();
             var fields = declared.isEmpty() ? Set.of("provider") : declared;
             fields.stream()
+                    .filter(field -> selectedFields == null || selectedFields.contains(field))
                     .sorted()
                     .forEach(field -> target.add(missing(
                             field, provider.id(), collectedAt, "PROVIDER_FAILURE")));

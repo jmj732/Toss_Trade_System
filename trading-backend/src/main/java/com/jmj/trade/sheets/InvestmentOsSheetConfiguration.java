@@ -2,6 +2,8 @@ package com.jmj.trade.sheets;
 
 import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.connector.ConnectorService;
+import com.jmj.trade.investment.InvestmentContextService;
+import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -11,6 +13,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import java.time.Clock;
+import tools.jackson.databind.ObjectMapper;
 
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(prefix = "broker.credentials", name = "enabled", havingValue = "true")
@@ -40,15 +43,30 @@ public class InvestmentOsSheetConfiguration {
 
     @Bean
     @ConditionalOnProperty(prefix = "investment-os.sheet", name = "enabled", havingValue = "true")
+    InvestmentOsResearchSheetSync investmentOsResearchSheetSync(
+            InvestmentOsSheetProperties properties,
+            GoogleSheetsClient googleSheetsClient,
+            InvestmentContextService investmentContextService,
+            RiskPolicyService riskPolicyService,
+            JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper
+    ) {
+        return new InvestmentOsResearchSheetSync(properties, googleSheetsClient, investmentContextService,
+                riskPolicyService, jdbcTemplate, objectMapper);
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "investment-os.sheet", name = "enabled", havingValue = "true")
     InvestmentOsSheetSyncService investmentOsSheetSyncService(
             InvestmentOsSheetProperties properties,
             InvestmentOsSheetLease lease,
             ConnectorService connectorService,
             BrokerSurfaceService brokerSurfaceService,
-            GoogleSheetsClient googleSheetsClient
+            GoogleSheetsClient googleSheetsClient,
+            InvestmentOsResearchSheetSync investmentOsResearchSheetSync
     ) {
         return new InvestmentOsSheetSyncService(properties, lease, connectorService,
-                brokerSurfaceService, googleSheetsClient, Clock.systemUTC());
+                brokerSurfaceService, googleSheetsClient, Clock.systemUTC(), investmentOsResearchSheetSync);
     }
 
     @Bean

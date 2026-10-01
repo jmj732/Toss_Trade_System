@@ -38,6 +38,23 @@ The deploy uses `--no-build` and removes unreferenced commit-tagged images, prun
 parents, and transfer archives on both successful and failed exits; container image references
 are preserved.
 
+## Investment data provider mappings
+
+The credentialed overlay preserves the FMP quote, FRED, and SEC mappings and adds FMP daily
+regular-close history, quarterly balance-sheet fields, TTM income and cash-flow fields, and
+annual analyst estimates. The EOD endpoint carries explicit `REGULAR_CLOSE` metadata and its
+full dated response is passed through for history processing. FMP's quote endpoint has no
+verified session label, so it remains available to legacy `quote.*` consumers and is not
+classified as a live session price.
+
+Fundamental fiscal dates and filing dates come from the statement rows. Consensus uses the
+collection timestamp as `asOf`; the forecast row date is only its horizon. The current JSON
+pointer mapping reads the first annual-estimate row, and FMP's mapped estimate fields do not
+include FCF. Revenue growth uses the prior year's TTM row with the same fiscal year and period;
+it remains missing if the exact comparison row is unavailable. Revision fields stay missing
+until historical consensus snapshots exist. The investment scheduler and Sheets sync retain
+their separate default-off switches.
+
 ## GitHub Secrets
 
 Add these repository or environment secrets before enabling the first deploy:

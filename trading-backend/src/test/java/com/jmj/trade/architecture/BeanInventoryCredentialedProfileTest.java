@@ -106,6 +106,8 @@ class BeanInventoryCredentialedProfileTest extends PostgresIntegrationTest {
             "freshPortfolioReadService : com.jmj.trade.account.FreshPortfolioReadService",
             "inboxLedger : com.jmj.trade.inbox.InboxLedger",
             "internalOidcUserService : com.jmj.trade.security.InternalOidcUserService",
+            "investmentContextController : com.jmj.trade.investment.InvestmentContextController",
+            "investmentContextService : com.jmj.trade.investment.InvestmentContextService",
             "killSwitchController : com.jmj.trade.order.KillSwitchController",
             "killSwitchLedger : com.jmj.trade.order.KillSwitchLedger",
             "liveOrderActivationController : com.jmj.trade.order.LiveOrderActivationController",

@@ -27,6 +27,20 @@ class StockAnalysisSnapshotHasherTest {
         assertThat(hasher.hash(first)).isEqualTo(hasher.hash(reordered));
         assertThat(hasher.hash(first)).isNotEqualTo(hasher.hash(changed));
         assertThat(hasher.hashCanonical(hasher.canonicalJson(first))).isEqualTo(hasher.hash(first));
+        assertThat(hasher.canonicalJson(first)).doesNotContain("asOfBasis");
+    }
+
+    @Test
+    void observedAtBasisIsRecordedInRawSnapshot() {
+        var observation = new StockAnalysisInput.Observation(
+                "consensus.revenueConsensus", new ObjectMapper().readTree("510000000000"), null,
+                null, null, StockDataProviderId.FMP, AT, AT, List.of(),
+                StockAnalysisInput.AsOfBasis.OBSERVED_AT);
+
+        var canonical = new StockAnalysisSnapshotHasher(new ObjectMapper())
+                .canonicalJson(input(List.of(observation)));
+
+        assertThat(canonical).contains("\"asOfBasis\":\"OBSERVED_AT\"");
     }
 
     private static StockAnalysisInput input(List<StockAnalysisInput.Observation> observations) {

@@ -36,6 +36,7 @@ public final class InvestmentOsSheetSyncService {
     private final ConnectorService connector;
     private final BrokerSurfaceService brokerSurface;
     private final GoogleSheetsClient sheets;
+    private final InvestmentOsResearchSheetSync researchSheets;
     private final Supplier<Instant> now;
     private Instant closedOrdersFetchedAt;
     private Instant closedOrdersRetryNotBefore;
@@ -50,7 +51,20 @@ public final class InvestmentOsSheetSyncService {
             Clock clock
     ) {
         this(properties, lease, connector, brokerSurface, sheets,
-                Objects.requireNonNull(clock, "clock")::instant);
+                Objects.requireNonNull(clock, "clock")::instant, null);
+    }
+
+    InvestmentOsSheetSyncService(
+            InvestmentOsSheetProperties properties,
+            InvestmentOsSheetLease lease,
+            ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
+            GoogleSheetsClient sheets,
+            Clock clock,
+            InvestmentOsResearchSheetSync researchSheets
+    ) {
+        this(properties, lease, connector, brokerSurface, sheets,
+                Objects.requireNonNull(clock, "clock")::instant, researchSheets);
     }
 
     InvestmentOsSheetSyncService(
@@ -61,11 +75,24 @@ public final class InvestmentOsSheetSyncService {
             GoogleSheetsClient sheets,
             Supplier<Instant> now
     ) {
+        this(properties, lease, connector, brokerSurface, sheets, now, null);
+    }
+
+    InvestmentOsSheetSyncService(
+            InvestmentOsSheetProperties properties,
+            InvestmentOsSheetLease lease,
+            ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
+            GoogleSheetsClient sheets,
+            Supplier<Instant> now,
+            InvestmentOsResearchSheetSync researchSheets
+    ) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.lease = Objects.requireNonNull(lease, "lease");
         this.connector = Objects.requireNonNull(connector, "connector");
         this.brokerSurface = brokerSurface;
         this.sheets = Objects.requireNonNull(sheets, "sheets");
+        this.researchSheets = researchSheets;
         this.now = Objects.requireNonNull(now, "now");
     }
 
@@ -279,6 +306,7 @@ public final class InvestmentOsSheetSyncService {
             }
             updates.add(toRange("Reconciliation Log", current.reconciliation(), nextRecon));
             sheets.batchUpdateValues(properties.spreadsheetId(), updates);
+            if (researchSheets != null) researchSheets.sync(userId);
             var rowsChanged = rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
                     + rowDelta(orderHistory, nextOrderHistory)
                     + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics)

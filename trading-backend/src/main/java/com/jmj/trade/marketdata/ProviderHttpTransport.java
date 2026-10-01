@@ -46,11 +46,21 @@ final class ProviderHttpTransport {
     }
 
     String get(ProviderRequest request) {
+        return get(request, configuration.path(), configuration.queryParameters());
+    }
+
+    String get(ProviderRequest request, StockAnalysisProviderProperties.EndpointConfiguration endpoint) {
+        var queryParameters = new java.util.LinkedHashMap<>(configuration.queryParameters());
+        queryParameters.putAll(endpoint.queryParameters());
+        return get(request, endpoint.path(), queryParameters);
+    }
+
+    private String get(ProviderRequest request, String endpointPath, Map<String, String> queryParameters) {
         for (var attempt = 0; ; attempt++) {
             limiter.acquire();
             try {
                 var body = restClient.get()
-                        .uri(uri(request))
+                        .uri(uri(request, endpointPath, queryParameters))
                         .headers(headers -> {
                             if (!configuration.userAgent().isBlank()) {
                                 headers.set("User-Agent", configuration.userAgent());
@@ -85,8 +95,8 @@ final class ProviderHttpTransport {
         }
     }
 
-    private URI uri(ProviderRequest request) {
-        var path = configuration.path().replace("{symbol}", request.symbol());
+    private URI uri(ProviderRequest request, String endpointPath, Map<String, String> queryParameters) {
+        var path = endpointPath.replace("{symbol}", request.symbol());
         for (var entry : request.identifiers().entrySet()) {
             path = path.replace("{" + entry.getKey() + "}", entry.getValue());
         }
@@ -94,7 +104,7 @@ final class ProviderHttpTransport {
         if (configuration.includeSymbolQuery()) {
             builder.queryParam("symbol", request.symbol());
         }
-        configuration.queryParameters().forEach(builder::queryParam);
+        queryParameters.forEach(builder::queryParam);
         if (!apiKeyQueryParameter().isBlank()
                 && configuration.apiKey() != null
                 && !configuration.apiKey().isBlank()) {

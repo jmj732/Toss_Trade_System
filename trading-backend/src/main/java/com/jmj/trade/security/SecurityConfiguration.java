@@ -44,6 +44,7 @@ public class SecurityConfiguration {
                 .requestMatchers("/api/v1/auth/refresh", "/api/v1/auth/logout").permitAll()
                 .requestMatchers("/.well-known/**", "/api/v1/connector/oauth/**").permitAll()
                 .requestMatchers("/api/v1/connector/**").hasAuthority("SCOPE_CONNECTOR_READ")
+                .requestMatchers("/investment/**").authenticated()
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll());
         http.httpBasic(httpBasic -> httpBasic.disable());

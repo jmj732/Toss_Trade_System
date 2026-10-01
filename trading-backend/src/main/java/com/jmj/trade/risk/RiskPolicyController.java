@@ -47,7 +47,7 @@ public class RiskPolicyController {
                 request.expectedVersion(),
                 new RiskPolicyService.RiskPolicyInput(
                         request.maxOrderAmountKrw(), request.maxOrderAmountUsd(),
-                        request.maxQuantity(), request.maxConcentration()),
+                        request.maxQuantity(), request.maxConcentration(), request.softRiskBudget()),
                 userId.toString());
     }
 
@@ -82,7 +82,8 @@ public class RiskPolicyController {
             BigDecimal maxOrderAmountKrw,
             BigDecimal maxOrderAmountUsd,
             BigDecimal maxQuantity,
-            BigDecimal maxConcentration
+            BigDecimal maxConcentration,
+            BigDecimal softRiskBudget
     ) {
     }
 

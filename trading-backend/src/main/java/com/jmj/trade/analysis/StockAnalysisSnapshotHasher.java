@@ -65,6 +65,9 @@ public final class StockAnalysisSnapshotHasher {
         value.put("asOf", observation.asOf());
         value.put("collectedAt", observation.collectedAt());
         value.put("missingData", observation.missingData().stream().sorted().toList());
+        if (observation.asOfBasis() == StockAnalysisInput.AsOfBasis.OBSERVED_AT) {
+            value.put("asOfBasis", observation.asOfBasis());
+        }
         return value;
     }
 

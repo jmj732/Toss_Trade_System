@@ -12,4 +12,8 @@ public final class ProviderUnavailableException extends RuntimeException {
     public StockDataProviderId provider() {
         return provider;
     }
+
+    public String reasonCode() {
+        return getMessage().replaceAll("[^A-Za-z0-9]+", "_").toUpperCase(java.util.Locale.ROOT);
+    }
 }

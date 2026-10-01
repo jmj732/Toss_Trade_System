@@ -63,8 +63,9 @@ public final class StockAnalysisCoreContract {
     }
 
     /**
-     * 결정론적 판단 규칙(analysis-service {@code decision-rule-v1})의 결과.
-     * 판단 근거가 없으면 null 이다 — {@code HOLD} 같은 기본값으로 대체하지 않는다.
+     * Legacy signal returned only by {@code /api/v1/stock-analysis}.
+     * Investment OS context and decision ledger do not consume it; their actions are supplied
+     * by the LLM through {@code /investment/decisions}.
      */
     public record Decision(
             Action action,

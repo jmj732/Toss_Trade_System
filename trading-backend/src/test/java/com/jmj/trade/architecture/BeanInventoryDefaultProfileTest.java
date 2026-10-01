@@ -73,6 +73,8 @@ class BeanInventoryDefaultProfileTest extends PostgresIntegrationTest {
             "freshPortfolioReadService : com.jmj.trade.account.FreshPortfolioReadService",
             "inboxLedger : com.jmj.trade.inbox.InboxLedger",
             "internalOidcUserService : com.jmj.trade.security.InternalOidcUserService",
+            "investmentContextController : com.jmj.trade.investment.InvestmentContextController",
+            "investmentContextService : com.jmj.trade.investment.InvestmentContextService",
             "liveOrderActivationErrorHandler : com.jmj.trade.order.LiveOrderActivationErrorHandler",
             "loginRedirectController : com.jmj.trade.security.LoginRedirectController",
             "marketEventIngestionLease : com.jmj.trade.intelligence.ingestion.MarketEventIngestionLease",

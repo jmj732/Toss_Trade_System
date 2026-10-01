@@ -15,6 +15,7 @@ import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.containing;
@@ -83,6 +84,57 @@ class GoogleSheetsClientContractTest {
 
         server.verify(2, postRequestedFor(urlPathEqualTo("/v4/spreadsheets/sheet-1/values:batchUpdate")));
         server.verify(1, postRequestedFor(urlEqualTo("/token")));
+    }
+
+    @Test
+    void createsOnlyMissingInvestmentTabs() {
+        server.stubFor(post("/token")
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("{\"access_token\":\"sheet-token\",\"expires_in\":3600}")));
+        server.stubFor(get(urlPathEqualTo("/v4/spreadsheets/sheet-1"))
+                .withQueryParam("fields", equalTo("sheets.properties.title"))
+                .withHeader("Authorization", equalTo("Bearer sheet-token"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("{\"sheets\":[{\"properties\":{\"title\":\"Security Snapshot\"}}]}")));
+        server.stubFor(post(urlPathEqualTo("/v4/spreadsheets/sheet-1:batchUpdate"))
+                .withHeader("Authorization", equalTo("Bearer sheet-token"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json").withBody("{}")));
+
+        client().ensureSheets("sheet-1", List.of("Security Snapshot", "Decision Ledger"));
+
+        server.verify(1, postRequestedFor(urlPathEqualTo("/v4/spreadsheets/sheet-1:batchUpdate"))
+                .withRequestBody(containing("Decision Ledger")));
+    }
+
+    @Test
+    void readsSheetIdsAlongsideTitles() {
+        server.stubFor(post("/token")
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("{\"access_token\":\"sheet-token\",\"expires_in\":3600}")));
+        server.stubFor(get(urlPathEqualTo("/v4/spreadsheets/sheet-1"))
+                .withQueryParam("fields", equalTo("sheets.properties(sheetId,title)"))
+                .withHeader("Authorization", equalTo("Bearer sheet-token"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("{\"sheets\":[{\"properties\":{\"sheetId\":7,\"title\":\"Risk Policy\"}}]}")));
+
+        assertThat(client().sheetIdsByTitle("sheet-1")).containsExactly(Map.entry("Risk Policy", 7));
+    }
+
+    @Test
+    void duplicatesSheetsUsingAtomicSpreadsheetBatchUpdate() {
+        server.stubFor(post("/token")
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("{\"access_token\":\"sheet-token\",\"expires_in\":3600}")));
+        server.stubFor(post(urlPathEqualTo("/v4/spreadsheets/sheet-1:batchUpdate"))
+                .withHeader("Authorization", equalTo("Bearer sheet-token"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json").withBody("{}")));
+
+        client().duplicateSheets("sheet-1", Map.of("Security Snapshot Legacy before DB", 7));
+
+        server.verify(1, postRequestedFor(urlPathEqualTo("/v4/spreadsheets/sheet-1:batchUpdate"))
+                .withRequestBody(containing("duplicateSheet"))
+                .withRequestBody(containing("sourceSheetId"))
+                .withRequestBody(containing("Security Snapshot Legacy before DB")));
     }
 
     @Test
