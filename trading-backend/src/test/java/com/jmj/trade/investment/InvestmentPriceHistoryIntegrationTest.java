@@ -23,11 +23,13 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -200,6 +202,69 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
         assertThat((BigDecimal) price.get("latest_price")).isEqualByComparingTo("50");
     }
 
+    @Test
+    void quoteOnlyCapturePersistsTypedIntradayPriceAndRequestsOnlyQuoteFields() {
+        var sourceAsOf = Instant.now().minusSeconds(30).truncatedTo(ChronoUnit.MICROS);
+        var requestedFields = new AtomicReference<Set<String>>();
+        var fields = Set.of(
+                "quote.price", "quote.volume", "quote.change-percent",
+                "price.latestPrice", "price.session", "price.regularCloseHistory",
+                "fundamental.eps", "consensus.epsConsensus");
+        var values = List.of(
+                new ProviderValue("quote.price", mapper.valueToTree(123.45), sourceAsOf, List.of()),
+                new ProviderValue("quote.volume", mapper.valueToTree(1_000), sourceAsOf, List.of()),
+                new ProviderValue("quote.change-percent", mapper.valueToTree(1.2), sourceAsOf, List.of()),
+                new ProviderValue("price.latestPrice", mapper.valueToTree(new BigDecimal("123.45")),
+                        sourceAsOf, List.of()),
+                new ProviderValue("price.session", mapper.valueToTree("LIVE_REGULAR"), sourceAsOf, List.of()));
+        StockDataProvider provider = new StockDataProvider() {
+            @Override
+            public StockDataProviderId id() {
+                return StockDataProviderId.FMP;
+            }
+
+            @Override
+            public DataProviderRole role() {
+                return DataProviderRole.FUNDAMENTALS;
+            }
+
+            @Override
+            public Set<String> fields() {
+                return fields;
+            }
+
+            @Override
+            public List<ProviderValue> fetch(com.jmj.trade.marketdata.ProviderRequest request) {
+                return values;
+            }
+
+            @Override
+            public List<ProviderValue> fetch(com.jmj.trade.marketdata.ProviderRequest request,
+                                             Set<String> selectedFields) {
+                requestedFields.set(Set.copyOf(selectedFields));
+                return values.stream().filter(value -> selectedFields.contains(value.field())).toList();
+            }
+        };
+
+        service(provider).captureQuoteUpdates(USER_ID);
+
+        assertThat(requestedFields.get()).containsExactlyInAnyOrder(
+                "quote.price", "quote.volume", "quote.change-percent", "price.latestPrice", "price.session");
+        var price = jdbc.queryForMap("""
+                SELECT source, session, latest_price, latest_price_as_of
+                  FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL'
+                """, USER_ID);
+        assertThat(price.get("source")).isEqualTo("FMP");
+        assertThat(price.get("session")).isEqualTo("LIVE_REGULAR");
+        assertThat((BigDecimal) price.get("latest_price")).isEqualByComparingTo("123.45");
+        var persistedAsOf = jdbc.queryForObject("""
+                SELECT latest_price_as_of FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL'
+                """, OffsetDateTime.class, USER_ID);
+        assertThat(persistedAsOf.toInstant()).isEqualTo(sourceAsOf);
+    }
+
     private InvestmentContextService service(List<Map<String, Object>> history, boolean explicitSession) {
         var fields = new java.util.HashSet<>(Set.of("price.regularCloseHistory", "quote.price",
                 "quote.volume", "quote.change-percent"));
@@ -239,6 +304,10 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
                 return List.copyOf(values);
             }
         };
+        return service(provider);
+    }
+
+    private InvestmentContextService service(StockDataProvider provider) {
         return new InvestmentContextService(jdbc, mapper, new DataSourceTransactionManager(jdbc.getDataSource()),
                 new StockDataProviderRegistry(List.of(provider)), mock(PortfolioReadService.class),
                 mock(MonitoringWatchlistService.class), mock(RiskPolicyService.class), Duration.ofMinutes(15),

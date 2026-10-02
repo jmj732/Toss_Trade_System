@@ -53,7 +53,8 @@ public final class InvestmentContextService {
     private static final List<String> PRICE_SESSIONS = List.of(
             "REGULAR_CLOSE", "LIVE_REGULAR", "AFTER_HOURS", "PREMARKET");
     private static final Set<String> QUOTE_UPDATE_FIELDS = Set.of(
-            "quote.price", "quote.volume", "quote.change-percent");
+            "quote.price", "quote.volume", "quote.change-percent",
+            "price.latestPrice", "price.session");
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;

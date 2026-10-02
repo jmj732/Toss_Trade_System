@@ -46,7 +46,7 @@ class ConfiguredStockDataProviderSelectionTest {
         var quote = new StockAnalysisProviderProperties.EndpointConfiguration(
                 "/quote", Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), "INSTANT", "",
                 Map.of("quote.price", "/price", "quote.volume", "/volume",
-                        "quote.change-percent", "/change"),
+                        "quote.change-percent", "/change", "price.latestPrice", "/price"),
                 StockAnalysisProviderProperties.AsOfMode.OBSERVED_AT, null);
         var history = new StockAnalysisProviderProperties.EndpointConfiguration(
                 "/history", Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), "DATE", "/0/date",
@@ -66,10 +66,10 @@ class ConfiguredStockDataProviderSelectionTest {
                 StockDataProviderId.FMP, configuration, new tools.jackson.databind.ObjectMapper());
 
         var values = provider.fetch(new ProviderRequest("AAPL", Map.of()),
-                Set.of("quote.price", "quote.volume", "quote.change-percent"));
+                Set.of("quote.price", "quote.volume", "quote.change-percent", "price.latestPrice", "price.session"));
 
         assertThat(values).extracting(ProviderValue::field)
-                .containsExactlyInAnyOrder("quote.price", "quote.volume", "quote.change-percent");
+                .containsExactlyInAnyOrder("quote.price", "quote.volume", "quote.change-percent", "price.latestPrice");
         SERVER.verify(1, getRequestedFor(urlPathEqualTo("/quote")));
         SERVER.verify(0, getRequestedFor(urlPathEqualTo("/history")));
         SERVER.verify(0, getRequestedFor(urlPathEqualTo("/fundamentals")));
