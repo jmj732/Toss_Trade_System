@@ -66,7 +66,7 @@ class StockAnalysisDataFoundationTest {
             @Override
             public List<ProviderValue> fetch(ProviderRequest request) {
                 calls.incrementAndGet();
-                throw new ProviderUnavailableException(id(), "timeout");
+                throw new ProviderUnavailableException(id(), "authorization failed: api key=provider-secret");
             }
         };
 

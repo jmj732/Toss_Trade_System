@@ -89,7 +89,13 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
         var unavailable = service(provider(true));
         assertThat(unavailable.capture(USER_ID)).isEqualTo(1);
-        assertPipelineFailure("PROVIDER_UNAVAILABLE", lastSuccess);
+        assertPipelineFailure("PROVIDER_HTTP_402", lastSuccess);
+        assertThat(unavailable.context(USER_ID).pipeline().lastError()).isEqualTo("PROVIDER_HTTP_402");
+        var latestInput = jdbc.queryForObject("""
+                SELECT payload::text FROM analysis_input_snapshots
+                 WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID);
+        assertThat(latestInput).contains("PROVIDER_UNAVAILABLE", "PROVIDER_HTTP_402");
         assertThat(jdbc.queryForObject(
                 "SELECT count(*) FROM analysis_input_snapshots WHERE user_id = ?", Integer.class, USER_ID))
                 .isEqualTo(3);
@@ -350,9 +356,13 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
     }
 
     private InvestmentContextService service(StockDataProviderRegistry providers) {
+        var riskPolicies = mock(RiskPolicyService.class);
+        when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
+                0, new BigDecimal("10000000"), new BigDecimal("10000"),
+                new BigDecimal("100"), new BigDecimal("0.25"), false));
         return new InvestmentContextService(jdbc, mapper, transactions, providers,
                 mock(PortfolioReadService.class), mock(MonitoringWatchlistService.class),
-                mock(RiskPolicyService.class), Duration.ofMinutes(15), Duration.ofDays(7),
+                riskPolicies, Duration.ofMinutes(15), Duration.ofDays(7),
                 Duration.ofDays(210), Duration.ofDays(10));
     }
 
@@ -375,7 +385,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
             @Override
             public List<ProviderValue> fetch(ProviderRequest request) {
-                if (unavailable) throw new ProviderUnavailableException(id(), "HTTP_503");
+                if (unavailable) throw new ProviderUnavailableException(id(), "HTTP_402");
                 return List.of(new ProviderValue("price.latestPrice", null, null, null, null, null,
                         List.of("DATA_NOT_PRESENT")));
             }

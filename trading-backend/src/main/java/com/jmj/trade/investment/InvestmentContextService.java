@@ -245,10 +245,14 @@ public final class InvestmentContextService {
     }
 
     static String providerFailure(StockAnalysisInput input) {
-        return input.observations().stream()
+        var reasons = input.observations().stream()
                 .flatMap(observation -> observation.missingData().stream())
                 .filter(reason -> reason.startsWith("PROVIDER_"))
-                .findFirst().orElse(null);
+                .toList();
+        return reasons.stream()
+                .filter(reason -> reason.matches("PROVIDER_HTTP_[1-5][0-9]{2}"))
+                .findFirst()
+                .orElseGet(() -> reasons.stream().findFirst().orElse(null));
     }
 
     public ThesisView putThesis(UUID userId, String rawTicker, ThesisInput input) {
