@@ -83,7 +83,7 @@ class ConfiguredStockDataProviderTest {
         SERVER.stubFor(get(urlPathEqualTo("/quote"))
                 .willReturn(aResponse().withBody("{\"price\":189.4,\"timestamp\":1785614400}")));
         SERVER.stubFor(get(urlPathEqualTo("/statements"))
-                .willReturn(aResponse().withStatus(503).withBody("provider error")));
+                .willReturn(aResponse().withStatus(402).withBody("provider error")));
         var configuration = new StockAnalysisProviderProperties.ProviderConfiguration(
                 true, true, URI.create(SERVER.baseUrl()), "/unused", "provider-secret", "", "",
                 Map.of(), Set.of(), "stock-analysis-test", Map.of(), Map.of(), Map.of(), Map.of(), "INSTANT",
@@ -109,7 +109,7 @@ class ConfiguredStockDataProviderTest {
                     assertThat(item.value()).isNull();
                     assertThat(item.asOf()).isNull();
                     assertThat(item.provider()).isEqualTo(StockDataProviderId.FMP);
-                    assertThat(item.missingData()).containsExactly("PROVIDER_UNAVAILABLE", "PROVIDER_HTTP_503");
+                    assertThat(item.missingData()).containsExactly("PROVIDER_UNAVAILABLE", "PROVIDER_HTTP_402");
                 });
     }
 

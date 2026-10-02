@@ -102,11 +102,15 @@ public final class StockAnalysisInputAssembler {
                             field, provider.id(), collectedAt, "PROVIDER_FIELD_MISSING")));
         } catch (ProviderUnavailableException exception) {
             var collectedAt = clock.instant();
+            var reason = exception.reasonCode();
+            var missingData = reason.matches("HTTP_[1-5][0-9]{2}")
+                    ? List.of("PROVIDER_UNAVAILABLE", "PROVIDER_" + reason)
+                    : List.of("PROVIDER_UNAVAILABLE");
             declared.stream()
                     .filter(field -> selectedFields == null || selectedFields.contains(field))
                     .sorted()
                     .forEach(field -> target.add(missing(
-                            field, provider.id(), collectedAt, "PROVIDER_UNAVAILABLE")));
+                            field, provider.id(), collectedAt, missingData)));
         } catch (RuntimeException exception) {
             var collectedAt = clock.instant();
             var fields = declared.isEmpty() ? Set.of("provider") : declared;
@@ -124,7 +128,16 @@ public final class StockAnalysisInputAssembler {
             Instant collectedAt,
             String reason
     ) {
+        return missing(field, provider, collectedAt, List.of(reason));
+    }
+
+    private static StockAnalysisInput.Observation missing(
+            String field,
+            StockDataProviderId provider,
+            Instant collectedAt,
+            List<String> reasons
+    ) {
         return new StockAnalysisInput.Observation(
-                field, null, null, null, null, provider, null, collectedAt, List.of(reason));
+                field, null, null, null, null, provider, null, collectedAt, reasons);
     }
 }
