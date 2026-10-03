@@ -125,7 +125,7 @@ public final class OperationalReadinessService {
         }
         for (var providerId : StockDataProviderId.values()) {
             var configuration = providerConfiguration(providerId);
-            var configured = configured(configuration);
+            var configured = configured(providerId, configuration);
             var credential = configured && credentialConfigured(providerId, configuration);
             var observations = input == null ? List.<StockAnalysisInput.Observation>of()
                     : input.observations().stream()
@@ -223,12 +223,12 @@ public final class OperationalReadinessService {
         var views = new ArrayList<ProviderView>();
         for (var providerId : StockDataProviderId.values()) {
             var configuration = providerConfiguration(providerId);
-            var configured = configured(configuration);
+            var configured = configured(providerId, configuration);
             var credential = configured && credentialConfigured(providerId, configuration);
             var item = byId.get(providerId.name());
             var status = item == null ? (!configuration.enabled() ? "DISABLED"
                     : !configured ? "NOT_CONFIGURED" : !credential ? "SECRET_MISSING" : "NOT_CHECKED")
-                    : currentStatus(configuration, credential, item);
+                    : currentStatus(providerId, configuration, credential, item);
             var currentLag = item == null ? null : lag(item.asOf(), clock.instant());
             views.add(new ProviderView(providerId.name(), status, configuration.enabled(), configured,
                     credential, "HEALTHY".equals(status), currentLag,
@@ -238,12 +238,13 @@ public final class OperationalReadinessService {
     }
 
     private String currentStatus(
+            StockDataProviderId provider,
             ProviderConfiguration configuration,
             boolean credential,
             ProviderEvidence evidence
     ) {
         if (!configuration.enabled()) return "DISABLED";
-        if (!configured(configuration)) return "NOT_CONFIGURED";
+        if (!configured(provider, configuration)) return "NOT_CONFIGURED";
         return classify(true, credential, evidence.missingData(), evidence.asOf(),
                 evidence.collectedAt(), clock.instant(), maxDataAge).status();
     }
@@ -372,8 +373,10 @@ public final class OperationalReadinessService {
         }
     }
 
-    private static boolean configured(ProviderConfiguration configuration) {
-        return configuration != null && configuration.baseUrl() != null && !configuration.fields().isEmpty();
+    static boolean configured(StockDataProviderId provider, ProviderConfiguration configuration) {
+        return provider != null && configuration != null && configuration.baseUrl() != null
+                && (!configuration.fields().isEmpty()
+                || configuration.hasEndpoints() || provider == StockDataProviderId.ALPHA_VANTAGE);
     }
 
     private static boolean credentialConfigured(StockDataProviderId provider,
@@ -456,13 +459,14 @@ public final class OperationalReadinessService {
                                 Instant createdAt) {
     }
 
-    private record ProviderConfiguration(boolean enabled, java.net.URI baseUrl,
-                                         Map<String, String> fields, String apiKey, String userAgent) {
+    record ProviderConfiguration(boolean enabled, java.net.URI baseUrl,
+                                 Map<String, String> fields, boolean hasEndpoints,
+                                 String apiKey, String userAgent) {
         private static final ProviderConfiguration EMPTY =
-                new ProviderConfiguration(false, null, Map.of(), "", "");
+                new ProviderConfiguration(false, null, Map.of(), false, "", "");
 
         private ProviderConfiguration(StockAnalysisProviderProperties.ProviderConfiguration value) {
-            this(value.enabled(), value.baseUrl(), value.fields(),
+            this(value.enabled(), value.baseUrl(), value.fields(), !value.endpoints().isEmpty(),
                     value.apiKey() == null ? "" : value.apiKey(), value.userAgent());
         }
     }

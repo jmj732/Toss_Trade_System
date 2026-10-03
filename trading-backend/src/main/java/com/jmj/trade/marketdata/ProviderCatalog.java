@@ -4,29 +4,32 @@ import java.util.Map;
 
 public final class ProviderCatalog {
 
-    private static final Map<StockDataProviderId, DataProviderRole> ROLES = Map.of(
-            StockDataProviderId.TOSS, DataProviderRole.BROKER_ACCOUNT,
-            StockDataProviderId.SEC, DataProviderRole.REGULATORY_FILINGS,
-            StockDataProviderId.FRED, DataProviderRole.MACRO,
-            StockDataProviderId.BLS, DataProviderRole.MACRO,
-            StockDataProviderId.BEA, DataProviderRole.MACRO,
-            StockDataProviderId.FED, DataProviderRole.MACRO,
-            StockDataProviderId.FMP, DataProviderRole.FUNDAMENTALS,
-            StockDataProviderId.FINNHUB, DataProviderRole.NEWS,
-            StockDataProviderId.POLYGON, DataProviderRole.MARKET_DATA,
-            StockDataProviderId.TWELVE_DATA, DataProviderRole.MARKET_DATA);
+    private static final Map<StockDataProviderId, DataProviderRole> ROLES = Map.ofEntries(
+            Map.entry(StockDataProviderId.TOSS, DataProviderRole.BROKER_ACCOUNT),
+            Map.entry(StockDataProviderId.SEC, DataProviderRole.REGULATORY_FILINGS),
+            Map.entry(StockDataProviderId.FRED, DataProviderRole.MACRO),
+            Map.entry(StockDataProviderId.BLS, DataProviderRole.MACRO),
+            Map.entry(StockDataProviderId.BEA, DataProviderRole.MACRO),
+            Map.entry(StockDataProviderId.FED, DataProviderRole.MACRO),
+            Map.entry(StockDataProviderId.FMP, DataProviderRole.FUNDAMENTALS),
+            Map.entry(StockDataProviderId.ALPHA_VANTAGE, DataProviderRole.FUNDAMENTALS),
+            Map.entry(StockDataProviderId.FINNHUB, DataProviderRole.NEWS),
+            Map.entry(StockDataProviderId.POLYGON, DataProviderRole.MARKET_DATA),
+            Map.entry(StockDataProviderId.TWELVE_DATA, DataProviderRole.MARKET_DATA));
 
-    private static final Map<StockDataProviderId, ProviderTransportProfile> TRANSPORTS = Map.of(
-            StockDataProviderId.TOSS, new ProviderTransportProfile("Authorization", "", false),
-            StockDataProviderId.SEC, new ProviderTransportProfile("", "", true),
-            StockDataProviderId.FRED, new ProviderTransportProfile("", "api_key", false),
-            StockDataProviderId.BLS, new ProviderTransportProfile("", "", false),
-            StockDataProviderId.BEA, new ProviderTransportProfile("", "UserID", false),
-            StockDataProviderId.FED, new ProviderTransportProfile("", "", false),
-            StockDataProviderId.FMP, new ProviderTransportProfile("", "apikey", false),
-            StockDataProviderId.FINNHUB, new ProviderTransportProfile("", "token", false),
-            StockDataProviderId.POLYGON, new ProviderTransportProfile("", "apiKey", false),
-            StockDataProviderId.TWELVE_DATA, new ProviderTransportProfile("", "apikey", false));
+    private static final Map<StockDataProviderId, ProviderTransportProfile> TRANSPORTS = Map.ofEntries(
+            Map.entry(StockDataProviderId.TOSS, new ProviderTransportProfile("Authorization", "", false)),
+            Map.entry(StockDataProviderId.SEC, new ProviderTransportProfile("", "", true)),
+            Map.entry(StockDataProviderId.FRED, new ProviderTransportProfile("", "api_key", false)),
+            Map.entry(StockDataProviderId.BLS, new ProviderTransportProfile("", "", false)),
+            Map.entry(StockDataProviderId.BEA, new ProviderTransportProfile("", "UserID", false)),
+            Map.entry(StockDataProviderId.FED, new ProviderTransportProfile("", "", false)),
+            Map.entry(StockDataProviderId.FMP, new ProviderTransportProfile("", "apikey", false)),
+            Map.entry(StockDataProviderId.ALPHA_VANTAGE,
+                    new ProviderTransportProfile("", "apikey", false)),
+            Map.entry(StockDataProviderId.FINNHUB, new ProviderTransportProfile("", "token", false)),
+            Map.entry(StockDataProviderId.POLYGON, new ProviderTransportProfile("", "apiKey", false)),
+            Map.entry(StockDataProviderId.TWELVE_DATA, new ProviderTransportProfile("", "apikey", false)));
 
     private ProviderCatalog() {
     }

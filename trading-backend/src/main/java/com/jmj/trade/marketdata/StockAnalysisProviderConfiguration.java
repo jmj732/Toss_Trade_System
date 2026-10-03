@@ -20,7 +20,9 @@ public class StockAnalysisProviderConfiguration {
         properties.providers().forEach((name, configuration) -> {
             var id = StockDataProviderId.parse(name);
             if (configuration.enabled()) {
-                providers.add(new ConfiguredStockDataProvider(id, configuration, objectMapper));
+                providers.add(id == StockDataProviderId.ALPHA_VANTAGE
+                        ? new AlphaVantageEarningsEstimatesProvider(configuration, objectMapper)
+                        : new ConfiguredStockDataProvider(id, configuration, objectMapper));
             }
         });
         return new StockDataProviderRegistry(providers);

@@ -1057,7 +1057,15 @@ public final class InvestmentContextService {
                 : present == CONSENSUS_FIELDS.size() ? InvestmentDataCalculator.DataStatus.OK
                 : present == 0 ? InvestmentDataCalculator.DataStatus.DATA_MISSING
                 : InvestmentDataCalculator.DataStatus.PARTIAL;
+        if (consensusCurrencyUnverified(value) && status == InvestmentDataCalculator.DataStatus.OK) {
+            status = InvestmentDataCalculator.DataStatus.PARTIAL;
+        }
         return value.withStatus(status);
+    }
+
+    private static boolean consensusCurrencyUnverified(ConsensusData consensus) {
+        // ponytail: source gate until canonical consensus currency metadata is stored.
+        return StockDataProviderId.ALPHA_VANTAGE.name().equals(consensus.source());
     }
 
     private RevisionData revisions(UUID userId, String ticker, ConsensusData current) {
@@ -1130,14 +1138,18 @@ public final class InvestmentContextService {
         if (classification == null) return ValuationData.notApplicable();
         var marketCap = fundamental.marketCap();
         var enterpriseValue = fundamental.enterpriseValue();
+        var currencyUnverified = consensusCurrencyUnverified(consensus);
         var evSalesTTM = multiple(enterpriseValue, fundamental.revenueTTM());
-        var evSalesForward = multiple(enterpriseValue, consensus.revenueConsensus());
+        var evSalesForward = currencyUnverified ? null
+                : multiple(enterpriseValue, consensus.revenueConsensus());
         var evEbitdaTTM = multiple(enterpriseValue, fundamental.ebitdaTTM());
-        var evEbitdaForward = multiple(enterpriseValue, consensus.ebitdaConsensus());
+        var evEbitdaForward = currencyUnverified ? null
+                : multiple(enterpriseValue, consensus.ebitdaConsensus());
         var priceTrusted = price.status() == InvestmentDataCalculator.DataStatus.OK;
-        var forwardPe = priceTrusted ? multiple(price.latestPrice(), consensus.epsConsensus()) : null;
+        var forwardPe = !currencyUnverified && priceTrusted
+                ? multiple(price.latestPrice(), consensus.epsConsensus()) : null;
         var fcfYieldTTM = ratio(fundamental.fcfTTM(), marketCap);
-        var fcfYieldForward = ratio(consensus.fcfConsensus(), marketCap);
+        var fcfYieldForward = currencyUnverified ? null : ratio(consensus.fcfConsensus(), marketCap);
         var normalizedFcf = normalizedFcf(userId, ticker, fundamental.source());
         var normalizedFcfYield = ratio(normalizedFcf.value(), marketCap);
         var needed = switch (classification) {
@@ -1155,8 +1167,10 @@ public final class InvestmentContextService {
         var valuationStatuses = new ArrayList<InvestmentDataCalculator.DataStatus>();
         valuationStatuses.add(status);
         valuationStatuses.add(fundamental.status());
-        if ("COMPOUNDER".equals(classification)) {
+        if ("COMPOUNDER".equals(classification) || currencyUnverified) {
             valuationStatuses.add(consensus.status());
+        }
+        if ("COMPOUNDER".equals(classification)) {
             valuationStatuses.add(price.status());
         }
         status = overall(valuationStatuses);
@@ -1216,6 +1230,7 @@ public final class InvestmentContextService {
         }
         if (consensus.revenueConsensus() == null) missing.add("consensus.revenueConsensus");
         if (consensus.epsConsensus() == null) missing.add("consensus.epsConsensus");
+        if (consensusCurrencyUnverified(consensus)) missing.add("consensus.currency");
         if (revision.revenue30().value() == null) missing.add("revision.revenueRevision30D");
         if (revision.revenue90().value() == null) missing.add("revision.revenueRevision90D");
         if (revision.eps30().value() == null) missing.add("revision.epsRevision30D");

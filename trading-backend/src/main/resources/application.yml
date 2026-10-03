@@ -22,8 +22,7 @@ connector:
     default-scope: ${CONNECTOR_MCP_DEFAULT_SCOPE:connector:read}
 stock-analysis:
   running-timeout: ${STOCK_ANALYSIS_RUNNING_TIMEOUT:PT5M}
-  # Enabling a provider requires its base-url, path, fields, and provider policy
-  # under stock-analysis.providers.<id>; disabled entries construct no HTTP client.
+  # Configured providers require endpoint mappings; Alpha Vantage uses its response mapper.
   providers:
     toss:
       enabled: ${STOCK_ANALYSIS_TOSS_ENABLED:false}
@@ -39,6 +38,8 @@ stock-analysis:
       enabled: ${STOCK_ANALYSIS_FED_ENABLED:false}
     fmp:
       enabled: ${STOCK_ANALYSIS_FMP_ENABLED:false}
+    alpha-vantage:
+      enabled: ${STOCK_ANALYSIS_ALPHA_VANTAGE_ENABLED:false}
     finnhub:
       enabled: ${STOCK_ANALYSIS_FINNHUB_ENABLED:false}
     polygon:
