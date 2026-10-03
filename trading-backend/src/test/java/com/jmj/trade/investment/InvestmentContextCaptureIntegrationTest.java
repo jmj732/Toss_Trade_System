@@ -5,6 +5,7 @@ import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.marketdata.DataProviderRole;
+import com.jmj.trade.marketdata.ProviderCatalog;
 import com.jmj.trade.marketdata.ProviderRequest;
 import com.jmj.trade.marketdata.ProviderUnavailableException;
 import com.jmj.trade.marketdata.ProviderValue;
@@ -867,7 +868,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
             @Override
             public DataProviderRole role() {
-                return DataProviderRole.FUNDAMENTALS;
+                return ProviderCatalog.roleOf(providerId);
             }
 
             @Override
