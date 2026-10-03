@@ -32,14 +32,25 @@ grep -q '"path":"/fred/series/observations"' compose.staging.credentialed.yaml |
   fail "missing FRED observations endpoint"
 grep -q 'data.sec.gov' compose.staging.credentialed.yaml ||
   fail "missing SEC data endpoint"
+grep -q '"sec":{"enabled":true,' compose.staging.credentialed.yaml ||
+  fail "SEC fundamentals provider must be enabled"
+grep -q '"base-url":"${SEC_BASE_URL:-https://data.sec.gov}"' compose.staging.credentialed.yaml ||
+  fail "missing SEC base URL configuration"
+grep -q '"user-agent":"${SEC_USER_AGENT:?set SEC_USER_AGENT in Doppler}"' compose.staging.credentialed.yaml ||
+  fail "missing SEC User-Agent configuration"
 grep -q 'generativelanguage.googleapis.com/v1beta' compose.staging.credentialed.yaml ||
   fail "missing Gemini endpoint"
 grep -q '"as-of-path":"/0/timestamp"' compose.staging.credentialed.yaml ||
   fail "missing FMP freshness field"
 grep -q '"fields":{"macro.value":"/observations/0/value"}' compose.staging.credentialed.yaml ||
   fail "missing FRED value field"
-grep -q '/filings/recent/acceptanceDateTime/0' compose.staging.credentialed.yaml ||
-  fail "missing SEC freshness field"
+grep -q '"requests-per-window":10' compose.staging.credentialed.yaml &&
+grep -q '"rate-limit-window":"PT1S"' compose.staging.credentialed.yaml &&
+grep -q '"max-retries":0' compose.staging.credentialed.yaml ||
+  fail "missing SEC request policy"
+if grep -q '/submissions/CIK0000320193.json' compose.staging.credentialed.yaml; then
+  fail "SEC fundamentals must not pin the Apple CIK"
+fi
 grep -q '"api-key-query-parameter":"apikey"' compose.staging.credentialed.yaml ||
   fail "missing FMP API-key query configuration"
 grep -q '"api-key-query-parameter":"api_key"' compose.staging.credentialed.yaml ||
