@@ -53,7 +53,8 @@ public final class InvestmentContextService {
     private static final Pattern TOSS_MARKET_SYMBOL = Pattern.compile("[A-Z0-9.-]+");
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
     private static final List<String> FUNDAMENTAL_FIELDS = List.of(
-            "marketCap", "enterpriseValue", "cash", "debt", "dilutedShares",
+            "marketCap", "fullyDilutedMarketCap", "enterpriseValue", "cash", "debt",
+            "basicShares", "dilutedShares",
             "revenueTTM", "revenueGrowthYoY", "ebitdaTTM", "eps", "fcfTTM");
     private static final List<String> CONSENSUS_FIELDS = List.of(
             "revenueConsensus", "epsConsensus", "ebitdaConsensus", "fcfConsensus");
@@ -77,6 +78,9 @@ public final class InvestmentContextService {
     private final Duration regularCloseStaleAfter;
     private final Duration fundamentalStaleAfter;
     private final Duration consensusStaleAfter;
+
+    @Value("${investment.data.additional-symbols:}")
+    private String additionalSymbols = "";
 
     public InvestmentContextService(
             JdbcTemplate jdbc,
@@ -116,6 +120,7 @@ public final class InvestmentContextService {
         portfolio.positions().forEach(position -> symbols.add(position.ticker()));
         watchEntries.stream().filter(entry -> !"INVALIDATED".equals(entry.status()))
                 .map(MonitoringWatchlistService.WatchlistEntry::symbol).forEach(symbols::add);
+        additionalSymbols().forEach(symbols::add);
 
         var positions = new LinkedHashMap<String, PositionView>();
         portfolio.positions().forEach(position -> positions.put(position.ticker(), position));
@@ -164,7 +169,10 @@ public final class InvestmentContextService {
         try {
             var captured = 0;
             boolean sourceResponded = false;
+            boolean missingOptionalData = false;
             String providerFailure = null;
+            boolean canonicalMissing = false;
+            boolean quoteCanonicalMissing = false;
             var tossQuotes = tossQuotes(userId, List.copyOf(symbols));
             var calendars = new HashMap<LocalDate, JsonNode>();
             for (var symbol : symbols) {
@@ -176,18 +184,40 @@ public final class InvestmentContextService {
                     }
                 }
                 var capturedInput = input;
-                transaction.execute(status -> persistCapture(userId, capturedInput, selectedFields == null));
+                var missingReadinessFields = transaction.execute(
+                        status -> persistCapture(userId, capturedInput, selectedFields == null));
+                missingOptionalData |= Boolean.TRUE.equals(missingReadinessFields);
                 sourceResponded |= !input.observations().isEmpty();
+                missingOptionalData |= input.observations().isEmpty()
+                        || input.observations().stream().anyMatch(observation -> !observation.missingData().isEmpty());
                 if (providerFailure == null) providerFailure = providerFailure(input);
+                if (selectedFields != null && !hasTossLatestPrice(input)) quoteCanonicalMissing = true;
+                if (selectedFields == null && !canonicalDataReady(userId, symbol, input.collectedAt())) {
+                    canonicalMissing = true;
+                }
                 captured++;
             }
-            var error = providerFailure != null ? providerFailure
-                    : sourceResponded ? null : "NO_DATA_COLLECTED";
-            if (error != null) {
+            if (quoteCanonicalMissing) {
+                markPipeline(userId, pipeline, "FAILED", null,
+                        "CANONICAL_REQUIRED_DATA_MISSING:TOSS_LATEST_PRICE_MISSING");
+                return captured;
+            }
+            if (!sourceResponded) {
+                markPipeline(userId, pipeline, "FAILED", null, "NO_DATA_COLLECTED");
+                return captured;
+            }
+            if (selectedFields == null && canonicalMissing) {
+                var error = "CANONICAL_REQUIRED_DATA_MISSING"
+                        + (providerFailure == null ? "" : ":" + providerFailure);
                 markPipeline(userId, pipeline, "FAILED", null, error);
                 return captured;
             }
-            markPipeline(userId, pipeline, "SUCCEEDED", clock.instant(), null);
+            if (providerFailure != null || missingOptionalData) {
+                markPipeline(userId, pipeline, "PARTIAL", clock.instant(),
+                        providerFailure == null ? "OPTIONAL_PROVIDER_OR_FIELD_MISSING" : providerFailure);
+            } else {
+                markPipeline(userId, pipeline, "SUCCEEDED", clock.instant(), null);
+            }
             return captured;
         } catch (RuntimeException exception) {
             markPipeline(userId, pipeline, "FAILED", null, safeError(exception));
@@ -209,18 +239,27 @@ public final class InvestmentContextService {
                 var hasPrice = jdbc.queryForObject("""
                         SELECT EXISTS (
                             SELECT 1 FROM investment_price_snapshots
-                             WHERE user_id = ? AND ticker = ? AND session = 'REGULAR_CLOSE'
-                               AND regular_close > 0 AND regular_close_as_of IS NOT NULL
+                             WHERE user_id = ? AND ticker = ? AND source = 'TOSS'
+                               AND session = 'REGULAR_CLOSE' AND regular_close > 0
+                               AND regular_close_as_of >= ? AND regular_close_as_of <= ?
                         )
-                        """, Boolean.class, userId, ticker);
+                        """, Boolean.class, userId, ticker,
+                        timestamp(clock.instant().minus(regularCloseStaleAfter)), timestamp(clock.instant()));
                 var hasFundamental = jdbc.queryForObject("""
-                        SELECT EXISTS (SELECT 1 FROM fundamental_snapshots WHERE user_id = ? AND ticker = ?)
-                        """, Boolean.class, userId, ticker);
-                var hasConsensus = jdbc.queryForObject("""
-                        SELECT EXISTS (SELECT 1 FROM consensus_snapshots WHERE user_id = ? AND ticker = ?)
-                        """, Boolean.class, userId, ticker);
-                if (!Boolean.TRUE.equals(hasPrice) || !Boolean.TRUE.equals(hasFundamental)
-                        || !Boolean.TRUE.equals(hasConsensus)) return true;
+                        SELECT EXISTS (SELECT 1 FROM fundamental_snapshots
+                         WHERE user_id = ? AND ticker = ? AND source = 'SEC'
+                           AND cash IS NOT NULL AND revenue_ttm IS NOT NULL
+                           AND fiscal_period IS NOT NULL AND reported_at IS NOT NULL
+                           AND field_provenance #>> '{cash,asOf}' IS NOT NULL
+                           AND field_provenance #>> '{revenueTTM,asOf}' IS NOT NULL
+                           AND (field_provenance #>> '{cash,asOf}')::timestamptz >= ?
+                           AND (field_provenance #>> '{cash,asOf}')::timestamptz <= ?
+                           AND (field_provenance #>> '{revenueTTM,asOf}')::timestamptz >= ?
+                           AND (field_provenance #>> '{revenueTTM,asOf}')::timestamptz <= ?)
+                        """, Boolean.class, userId, ticker,
+                        timestamp(clock.instant().minus(fundamentalStaleAfter)), timestamp(clock.instant()),
+                        timestamp(clock.instant().minus(fundamentalStaleAfter)), timestamp(clock.instant()));
+                if (!Boolean.TRUE.equals(hasPrice) || !Boolean.TRUE.equals(hasFundamental)) return true;
             }
         }
         return false;
@@ -261,7 +300,22 @@ public final class InvestmentContextService {
                  WHERE user_id = ? AND status IN ('WATCH', 'PREPARE', 'ACTION_CANDIDATE')
                  ORDER BY symbol
                 """, (resultSet, rowNum) -> resultSet.getString(1), userId).forEach(symbols::add);
+        additionalSymbols().forEach(symbols::add);
         return symbols;
+    }
+
+    private Set<String> additionalSymbols() {
+        if (additionalSymbols == null || additionalSymbols.isBlank()) return Set.of();
+        var result = new LinkedHashSet<String>();
+        for (var raw : additionalSymbols.split(",")) {
+            if (raw.isBlank()) continue;
+            var symbol = ticker(raw);
+            if (!TOSS_MARKET_SYMBOL.matcher(symbol).matches()) {
+                throw new IllegalArgumentException("additional investment symbols must be US market symbols");
+            }
+            result.add(symbol);
+        }
+        return Set.copyOf(result);
     }
 
     private TossQuoteSource tossQuotes(UUID userId, List<String> symbols) {
@@ -620,9 +674,56 @@ public final class InvestmentContextService {
                 .filter(reason -> reason.startsWith("PROVIDER_"))
                 .toList();
         return reasons.stream()
+                .filter(reason -> reason.equals("PROVIDER_DAILY_QUOTA_EXHAUSTED")
+                        || reason.equals("PROVIDER_REQUEST_IN_PROGRESS")
+                        || reason.equals("PROVIDER_CACHE_UNAVAILABLE")
+                        || reason.equals("PROVIDER_CACHE_CORRUPT"))
+                .findFirst()
+                .orElseGet(() -> reasons.stream()
                 .filter(reason -> reason.matches("PROVIDER_HTTP_[1-5][0-9]{2}"))
                 .findFirst()
-                .orElseGet(() -> reasons.stream().findFirst().orElse(null));
+                .orElseGet(() -> reasons.stream().findFirst().orElse(null)));
+    }
+
+    private static boolean hasTossLatestPrice(StockAnalysisInput input) {
+        return input.observations().stream().anyMatch(observation ->
+                "price.latestPrice".equals(observation.field())
+                        && observation.provider() == StockDataProviderId.TOSS
+                        && "USD".equalsIgnoreCase(observation.unit())
+                        && observation.asOf() != null
+                        && !observation.asOf().isAfter(input.collectedAt())
+                        && observation.missingData().isEmpty()
+                        && decimal(observation.value()) != null
+                        && decimal(observation.value()).signum() > 0);
+    }
+
+    private boolean canonicalDataReady(UUID userId, String ticker, Instant capturedAt) {
+        var hasClose = jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM investment_price_snapshots
+                     WHERE user_id = ? AND ticker = ? AND source = 'TOSS'
+                       AND session = 'REGULAR_CLOSE' AND regular_close > 0
+                       AND regular_close_as_of <= ? AND regular_close_as_of >= ?
+                )
+                """, Boolean.class, userId, ticker, timestamp(capturedAt),
+                timestamp(capturedAt.minus(regularCloseStaleAfter)));
+        if (!Boolean.TRUE.equals(hasClose)) return false;
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM fundamental_snapshots
+                     WHERE user_id = ? AND ticker = ? AND source = 'SEC'
+                       AND fiscal_period IS NOT NULL AND reported_at IS NOT NULL
+                       AND field_provenance #>> '{cash,asOf}' IS NOT NULL
+                       AND field_provenance #>> '{revenueTTM,asOf}' IS NOT NULL
+                       AND (field_provenance #>> '{cash,asOf}')::timestamptz <= ?
+                       AND (field_provenance #>> '{cash,asOf}')::timestamptz >= ?
+                       AND (field_provenance #>> '{revenueTTM,asOf}')::timestamptz <= ?
+                       AND (field_provenance #>> '{revenueTTM,asOf}')::timestamptz >= ?
+                       AND cash IS NOT NULL AND revenue_ttm IS NOT NULL
+                )
+                """, Boolean.class, userId, ticker, timestamp(capturedAt),
+                timestamp(capturedAt.minus(fundamentalStaleAfter)), timestamp(capturedAt),
+                timestamp(capturedAt.minus(fundamentalStaleAfter))));
     }
 
     public ThesisView putThesis(UUID userId, String rawTicker, ThesisInput input) {
@@ -740,8 +841,21 @@ public final class InvestmentContextService {
         }
         var fundamentalConflict = false;
         if (persistFinancialSnapshots) {
+            var secValues = groups.get(StockDataProviderId.SEC);
+            if (secValues != null) {
+                var canonicalSecValues = new LinkedHashMap<>(secValues);
+                canonicalSecValues = mergePreviousSecFundamentalObservations(
+                        userId, input.symbol(), input.collectedAt(), canonicalSecValues);
+                var secDilutedShares = observation(canonicalSecValues, "fundamental.dilutedShares");
+                var alphaValues = groups.get(StockDataProviderId.ALPHA_VANTAGE);
+                var alphaDilutedShares = observation(alphaValues, "fundamental.dilutedShares");
+                if (!validShares(decimal(secDilutedShares == null ? null : secDilutedShares.value()))
+                        && validShares(decimal(alphaDilutedShares == null ? null : alphaDilutedShares.value()))) {
+                    canonicalSecValues.put("fundamental.dilutedShares", alphaDilutedShares);
+                }
+                fundamentalConflict |= persistFundamentals(userId, input, canonicalSecValues, now);
+            }
             for (var values : groups.values()) {
-                fundamentalConflict |= persistFundamentals(userId, input, values, now);
                 persistConsensus(userId, input, values, now);
             }
         }
@@ -771,7 +885,7 @@ public final class InvestmentContextService {
                 VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?)
                 ON CONFLICT (user_id, ticker, as_of) DO NOTHING
                 """, UUID.randomUUID(), userId, input.symbol(), timestamp(asOf), encode(snapshot), now);
-        return true;
+        return !readiness.missingFields().isEmpty();
     }
 
     private void persistPrice(UUID userId, StockAnalysisInput input,
@@ -795,92 +909,175 @@ public final class InvestmentContextService {
 
     private boolean persistFundamentals(UUID userId, StockAnalysisInput input,
                                         Map<String, StockAnalysisInput.Observation> values, OffsetDateTime now) {
-        var source = values.entrySet().stream().filter(entry -> entry.getKey().startsWith("fundamental."))
-                .map(Map.Entry::getValue).filter(Objects::nonNull)
-                .map(StockAnalysisInput.Observation::provider).findFirst().orElse(null);
-        if (source == null) return false;
-
-        var fmp = source == StockDataProviderId.FMP;
+        var sourceAnchor = java.util.stream.Stream.of(
+                        observation(values, "fundamental.fiscalPeriod"),
+                        observation(values, "fundamental.cash"),
+                        observation(values, "fundamental.revenueTTM"))
+                .filter(Objects::nonNull).findFirst().orElse(null);
+        var source = sourceAnchor == null ? null : sourceAnchor.provider();
+        if (source != StockDataProviderId.SEC) return false;
         var fiscalPeriod = text(value(values, "fundamental.fiscalPeriod"));
         var reportedAt = instant(value(values, "fundamental.reportedAt"));
         var fiscalYear = text(value(values, "fundamental.fiscalYear"));
         var fiscalPeriodCode = text(value(values, "fundamental.fiscalPeriodCode"));
-        var incomePeriod = text(value(values, "fundamental.incomeFiscalPeriod"));
-        var cashFlowPeriod = text(value(values, "fundamental.cashFlowFiscalPeriod"));
-        var incomeReportedAt = instant(value(values, "fundamental.incomeReportedAt"));
-        var cashFlowReportedAt = instant(value(values, "fundamental.cashFlowReportedAt"));
-
-        LocalDate financialDate = null;
-        if (fmp) {
-            var balanceDate = localDate(fiscalPeriod);
-            var incomeDate = localDate(incomePeriod);
-            var cashFlowDate = localDate(cashFlowPeriod);
-            if (balanceDate != null && incomeDate != null && cashFlowDate != null
-                    && (!balanceDate.equals(incomeDate) || !balanceDate.equals(cashFlowDate))) {
-                return true;
-            }
-            if (balanceDate == null || incomeDate == null || cashFlowDate == null) return false;
-            financialDate = balanceDate;
-            fiscalPeriod = balanceDate.toString();
-            var balanceReportedAt = reportedAt;
-            if (balanceReportedAt == null || incomeReportedAt == null || cashFlowReportedAt == null) return false;
-            reportedAt = List.of(balanceReportedAt, incomeReportedAt, cashFlowReportedAt)
-                    .stream().max(Comparator.naturalOrder()).orElse(null);
-        }
-
-        var marketCap = decimal(value(values, "fundamental.marketCap"));
         var cash = decimal(value(values, "fundamental.cash"));
         var debt = decimal(value(values, "fundamental.debt"));
-        var marketCapObservation = observation(values, "fundamental.marketCap");
-        var marketCapAsOf = marketCapObservation == null ? null : marketCapObservation.asOf();
-        var providedEnterpriseValue = decimal(value(values, "fundamental.enterpriseValue"));
-        var enterpriseValue = fmp && marketCap != null && cash != null && debt != null
-                ? marketCap.add(debt).subtract(cash) : providedEnterpriseValue;
-        var enterpriseValueObservation = observation(values, "fundamental.enterpriseValue");
-        var enterpriseValueAsOf = fmp && enterpriseValue != null ? marketCapAsOf
-                : enterpriseValueObservation == null ? null : enterpriseValueObservation.asOf();
-        var enterpriseValueSource = fmp && enterpriseValue != null
-                ? "FMP_MARKET_CAP_PLUS_BALANCE_SHEET"
-                : enterpriseValueObservation == null ? null : enterpriseValueObservation.provider().name();
         var revenue = decimal(value(values, "fundamental.revenueTTM"));
-        var revenueGrowth = fmp ? revenueGrowth(userId, input.symbol(), source.name(), fiscalPeriod,
-                fiscalYear, fiscalPeriodCode, value(values, "fundamental.incomeHistory"), revenue)
-                : decimal(value(values, "fundamental.revenueGrowthYoY"));
+        var revenueGrowth = decimal(value(values, "fundamental.revenueGrowthYoY"));
+        var basicSharesObservation = observation(values, "fundamental.basicShares");
+        var basicShares = decimal(value(values, "fundamental.basicShares"));
+        if (!validShares(basicShares)) {
+            basicShares = null;
+            basicSharesObservation = null;
+        }
+        var basicSharesBasis = basicSharesObservation == null ? null
+                : text(value(values, "fundamental.basicSharesBasis"));
         var dilutedSharesObservation = observation(values, "fundamental.dilutedShares");
-        var dilutedSharesBasis = fmp && dilutedSharesObservation != null ? "WEIGHTED_AVERAGE_TTM"
-                : source == StockDataProviderId.SEC && dilutedSharesObservation != null
-                ? text(value(values, "fundamental.dilutedSharesBasis")) : null;
-        var financialAsOf = fmp && financialDate != null
-                ? financialDate.atStartOfDay(ZoneOffset.UTC).toInstant() : latestAsOf(values, "fundamental.");
-        var count = marketCap != null ? 1 : 0;
-        count += enterpriseValue != null ? 1 : 0;
-        count += cash != null ? 1 : 0;
-        count += debt != null ? 1 : 0;
-        count += dilutedSharesObservation != null
-                && decimal(value(values, "fundamental.dilutedShares")) != null ? 1 : 0;
-        count += revenue != null ? 1 : 0;
-        count += revenueGrowth != null ? 1 : 0;
-        count += decimal(value(values, "fundamental.ebitdaTTM")) != null ? 1 : 0;
-        count += decimal(value(values, "fundamental.eps")) != null ? 1 : 0;
-        count += decimal(value(values, "fundamental.fcfTTM")) != null ? 1 : 0;
-        if (count == 0 || fiscalPeriod == null || reportedAt == null || financialAsOf == null) return false;
+        var dilutedShares = decimal(value(values, "fundamental.dilutedShares"));
+        if (!validShares(dilutedShares)) {
+            dilutedShares = null;
+            dilutedSharesObservation = null;
+        }
+        var dilutedSharesBasis = dilutedSharesObservation == null ? null
+                : text(value(values, "fundamental.dilutedSharesBasis"));
+        if (dilutedSharesObservation != null && dilutedSharesBasis == null
+                && dilutedSharesObservation.provider() == StockDataProviderId.ALPHA_VANTAGE) {
+            dilutedSharesBasis = "ALPHA_VANTAGE_" + cleanIdentifier(dilutedSharesObservation.identifier());
+        }
+        var priceClose = latestTossRegularClose(userId, input.symbol(), input.collectedAt());
+        var marketCap = priceClose != null && basicShares != null
+                ? priceClose.close().multiply(basicShares) : null;
+        var marketCapAsOf = marketCap == null ? null : priceClose.asOf();
+        var marketCapFormula = marketCap == null ? null : "TOSS_REGULAR_CLOSE * SEC_BASIC_SHARES";
+        var fullyDilutedMarketCap = priceClose != null && dilutedShares != null
+                ? priceClose.close().multiply(dilutedShares) : null;
+        var fullyDilutedMarketCapAsOf = fullyDilutedMarketCap == null ? null : priceClose.asOf();
+        var fullyDilutedFormula = fullyDilutedMarketCap == null ? null
+                : "TOSS_REGULAR_CLOSE * " + dilutedSharesObservation.provider().name() + "_DILUTED_SHARES";
+        var cashObservation = observation(values, "fundamental.cash");
+        var debtObservation = observation(values, "fundamental.debt");
+        var balanceSheetAsOf = latestObservationAsOf(cashObservation, debtObservation);
+        var balanceSheetCurrencyVerified = cashObservation != null && debtObservation != null
+                && "USD".equalsIgnoreCase(cashObservation.unit())
+                && "USD".equalsIgnoreCase(debtObservation.unit());
+        var enterpriseValue = marketCap != null && cash != null && debt != null && balanceSheetCurrencyVerified
+                ? marketCap.add(debt).subtract(cash) : null;
+        var enterpriseValueAsOf = enterpriseValue == null ? null
+                : latestInstant(marketCapAsOf, balanceSheetAsOf);
+        var enterpriseValueSource = enterpriseValue == null ? null : "MARKET_CAP_PLUS_LATEST_DEBT_MINUS_LATEST_CASH";
+        var ebitda = decimal(value(values, "fundamental.ebitdaTTM"));
+        var ebitdaType = text(value(values, "fundamental.ebitdaTTMType"));
+        var ebitdaFormula = text(value(values, "fundamental.ebitdaTTMFormula"));
+        var ebitdaSource = text(value(values, "fundamental.ebitdaTTMSource"));
+        var currency = text(value(values, "fundamental.currency"));
+        var financialAsOf = latestObservationAsOf(
+                observation(values, "fundamental.reportedAt"),
+                observation(values, "fundamental.fiscalPeriod"));
+        var hasFinancialValue = cash != null || debt != null || revenue != null || ebitda != null
+                || decimal(value(values, "fundamental.eps")) != null
+                || decimal(value(values, "fundamental.fcfTTM")) != null;
+        if (!hasFinancialValue || fiscalPeriod == null || reportedAt == null || financialAsOf == null) return false;
+        var provenance = fundamentalProvenance(values);
+        if (marketCap != null) provenance.put("marketCap", map(
+                "source", "TOSS+SEC", "asOf", marketCapAsOf, "unit", "USD",
+                "formula", marketCapFormula, "priceSource", "TOSS", "sharesSource", "SEC",
+                "sharesAsOf", basicSharesObservation.asOf(),
+                "sharesIdentifier", basicSharesObservation.identifier()));
+        if (fullyDilutedMarketCap != null) provenance.put("fullyDilutedMarketCap", map(
+                "source", "TOSS+" + dilutedSharesObservation.provider().name(),
+                "asOf", fullyDilutedMarketCapAsOf, "unit", "USD",
+                "formula", fullyDilutedFormula,
+                "sharesAsOf", dilutedSharesObservation.asOf(),
+                "sharesIdentifier", dilutedSharesObservation.identifier()));
+        if (enterpriseValue != null) provenance.put("enterpriseValue", map(
+                "source", enterpriseValueSource, "asOf", enterpriseValueAsOf,
+                "unit", "USD",
+                "marketCapAsOf", marketCapAsOf, "balanceSheetAsOf", balanceSheetAsOf,
+                "formula", "marketCap + latestDebt - latestCash"));
 
         jdbc.update("""
                 INSERT INTO fundamental_snapshots (
                     id, user_id, input_snapshot_id, ticker, fiscal_period, fiscal_year, fiscal_period_code,
                     reported_at, as_of, source, market_cap, market_cap_as_of, enterprise_value,
                     enterprise_value_as_of, enterprise_value_source, cash, debt, diluted_shares,
-                    diluted_shares_basis, revenue_ttm, revenue_growth_yoy, ebitda_ttm, eps, fcf_ttm, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    diluted_shares_basis, revenue_ttm, revenue_growth_yoy, ebitda_ttm, eps, fcf_ttm,
+                    basic_shares, basic_shares_basis, market_cap_formula,
+                    fully_diluted_market_cap, fully_diluted_market_cap_as_of,
+                    fully_diluted_market_cap_formula, balance_sheet_as_of, currency,
+                    ebitda_ttm_type, ebitda_ttm_formula, ebitda_ttm_source, field_provenance, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?)
                 ON CONFLICT (user_id, ticker, input_snapshot_id, source) DO NOTHING
                 """, UUID.randomUUID(), userId, input.snapshotId(), input.symbol(), fiscalPeriod,
                 fiscalYear, fiscalPeriodCode, timestamp(reportedAt), timestamp(financialAsOf), source.name(),
                 marketCap, timestampOrNull(marketCapAsOf), enterpriseValue, timestampOrNull(enterpriseValueAsOf),
-                enterpriseValueSource, cash, debt, decimal(value(values, "fundamental.dilutedShares")),
-                dilutedSharesBasis, revenue, revenueGrowth,
-                decimal(value(values, "fundamental.ebitdaTTM")), decimal(value(values, "fundamental.eps")),
-                decimal(value(values, "fundamental.fcfTTM")), now);
+                enterpriseValueSource, cash, debt, dilutedShares, dilutedSharesBasis, revenue, revenueGrowth,
+                ebitda, decimal(value(values, "fundamental.eps")), decimal(value(values, "fundamental.fcfTTM")),
+                basicShares, basicSharesBasis, marketCapFormula,
+                fullyDilutedMarketCap, timestampOrNull(fullyDilutedMarketCapAsOf), fullyDilutedFormula,
+                timestampOrNull(balanceSheetAsOf), currency, ebitdaType, ebitdaFormula, ebitdaSource,
+                encode(provenance), now);
         return false;
+    }
+
+    private LinkedHashMap<String, StockAnalysisInput.Observation> mergePreviousSecFundamentalObservations(
+            UUID userId, String ticker, Instant collectedAt,
+            Map<String, StockAnalysisInput.Observation> current
+    ) {
+        var merged = new LinkedHashMap<>(current);
+        var previous = jdbc.query("""
+                SELECT DISTINCT ON (observation->>'field') observation::text
+                  FROM analysis_input_snapshots snapshot
+                  CROSS JOIN LATERAL jsonb_array_elements(snapshot.payload->'observations') AS item(observation)
+                 WHERE snapshot.user_id = ? AND snapshot.symbol = ? AND snapshot.collected_at <= ?
+                   AND observation->>'provider' = 'SEC'
+                   AND observation->>'field' LIKE 'fundamental.%'
+                   AND observation->'value' IS NOT NULL
+                   AND observation->'value' <> 'null'::jsonb
+                   AND COALESCE(observation->'missingData', '[]'::jsonb) = '[]'::jsonb
+                   AND observation->>'asOf' IS NOT NULL
+                   AND (observation->>'asOf')::timestamptz <= ?
+                 ORDER BY observation->>'field', (observation->>'asOf')::timestamptz DESC,
+                          snapshot.collected_at DESC, snapshot.id DESC
+                """, (resultSet, rowNum) -> resultSet.getString(1), userId, ticker,
+                timestamp(collectedAt), timestamp(collectedAt));
+        for (var encoded : previous) {
+            try {
+                var node = objectMapper.readTree(encoded);
+                var observation = storedObservation(node);
+                if (observation != null) merged.putIfAbsent(observation.field(), observation);
+            } catch (RuntimeException ignored) {
+                // A malformed legacy observation is ignored; valid current SEC fields remain usable.
+            }
+        }
+        return merged;
+    }
+
+    private StockAnalysisInput.Observation storedObservation(JsonNode node) {
+        if (node == null || !node.isObject() || node.path("value").isNull()) return null;
+        var field = text(node.get("field"));
+        var provider = text(node.get("provider"));
+        var asOf = instant(node.get("asOf"));
+        var collectedAt = instant(node.get("collectedAt"));
+        if (field == null || !field.startsWith("fundamental.") || !"SEC".equals(provider)
+                || asOf == null || collectedAt == null) return null;
+        var missingData = new ArrayList<String>();
+        var missingNode = node.get("missingData");
+        if (missingNode != null && missingNode.isArray()) {
+            missingNode.forEach(reason -> {
+                if (reason != null && reason.isTextual()) missingData.add(reason.asText());
+            });
+        }
+        if (!missingData.isEmpty()) return null;
+        StockAnalysisInput.AsOfBasis asOfBasis;
+        try {
+            asOfBasis = StockAnalysisInput.AsOfBasis.valueOf(text(node.get("asOfBasis")));
+        } catch (RuntimeException ignored) {
+            asOfBasis = StockAnalysisInput.AsOfBasis.SOURCE_AS_OF;
+        }
+        return new StockAnalysisInput.Observation(field, node.get("value"),
+                text(node.get("unit")), text(node.get("period")), text(node.get("identifier")),
+                StockDataProviderId.SEC, asOf, collectedAt, List.of(), asOfBasis);
     }
 
     private BigDecimal revenueGrowth(UUID userId, String ticker, String source, String fiscalPeriod,
@@ -924,6 +1121,57 @@ public final class InvestmentContextService {
         return revenue.subtract(priorRevenue).divide(priorRevenue, MathContext.DECIMAL128);
     }
 
+    private PriceBar latestTossRegularClose(UUID userId, String ticker, Instant collectedAt) {
+        if (collectedAt == null) return null;
+        return jdbc.query("""
+                SELECT regular_close, regular_close_as_of
+                  FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = ? AND source = 'TOSS'
+                   AND session = 'REGULAR_CLOSE' AND regular_close > 0
+                   AND regular_close_as_of <= ? AND regular_close_as_of >= ?
+                 ORDER BY regular_close_as_of DESC, observed_at DESC
+                 LIMIT 1
+                """, resultSet -> resultSet.next()
+                ? new PriceBar(resultSet.getBigDecimal("regular_close"),
+                        resultSet.getTimestamp("regular_close_as_of").toInstant())
+                : null, userId, ticker, timestamp(collectedAt),
+                timestamp(collectedAt.minus(regularCloseStaleAfter)));
+    }
+
+    private static boolean validShares(BigDecimal value) {
+        return value != null && value.signum() > 0;
+    }
+
+    private static Instant latestObservationAsOf(StockAnalysisInput.Observation... observations) {
+        if (observations == null) return null;
+        return java.util.Arrays.stream(observations).filter(Objects::nonNull)
+                .map(StockAnalysisInput.Observation::asOf).filter(Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null);
+    }
+
+    private static LinkedHashMap<String, Object> fundamentalProvenance(
+            Map<String, StockAnalysisInput.Observation> values) {
+        var result = new LinkedHashMap<String, Object>();
+        values.entrySet().stream().filter(entry -> entry.getKey().startsWith("fundamental."))
+                .sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+                    var observation = entry.getValue();
+                    result.put(entry.getKey().substring("fundamental.".length()), map(
+                            "source", observation.provider().name(),
+                            "asOf", observation.asOf(),
+                            "collectedAt", observation.collectedAt(),
+                            "asOfBasis", observation.asOfBasis().name(),
+                            "period", observation.period(),
+                            "unit", observation.unit(),
+                            "identifier", observation.identifier()));
+                });
+        return result;
+    }
+
+    private static String cleanIdentifier(String value) {
+        if (value == null || value.isBlank()) return "DILUTED_SHARES";
+        return value.trim().toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]+", "_");
+    }
+
     private BigDecimal historyRevenue(JsonNode incomeHistory, LocalDate currentDate,
                                       String fiscalYear, String fiscalPeriodCode) {
         if (incomeHistory == null || !incomeHistory.isArray()) return null;
@@ -961,6 +1209,40 @@ public final class InvestmentContextService {
 
     private void persistConsensus(UUID userId, StockAnalysisInput input,
                                   Map<String, StockAnalysisInput.Observation> values, OffsetDateTime now) {
+        var observations = value(values, "consensus.observations");
+        if (observations != null && observations.isArray()) {
+            var arrayObservation = observation(values, "consensus.observations");
+            if (arrayObservation == null || arrayObservation.provider() != StockDataProviderId.ALPHA_VANTAGE) return;
+            for (var row : observations) {
+                if (!row.isObject()) continue;
+                var type = text(row.get("estimateType"));
+                if (!Set.of("ANNUAL", "QUARTERLY").contains(type)) continue;
+                var periodEnd = localDate(text(row.get("periodEnd")));
+                var rawHorizon = text(row.get("horizon"));
+                if (periodEnd == null || rawHorizon == null
+                        || !rawHorizon.equals(type + ":" + periodEnd)) continue;
+                var observedAt = instant(row.get("observedAt"));
+                if (observedAt == null || observedAt.isAfter(input.collectedAt())) continue;
+                var eps = decimal(row.get("epsConsensus"));
+                var revenue = decimal(row.get("revenueConsensus"));
+                if (eps == null && revenue == null) continue;
+                var label = text(row.get("sourceEstimateType"));
+                var currency = text(row.get("currency"));
+                jdbc.update("""
+                        INSERT INTO consensus_snapshots (
+                            id, user_id, input_snapshot_id, ticker, as_of, horizon, revenue_consensus,
+                            eps_consensus, ebitda_consensus, fcf_consensus, source, estimate_type,
+                            estimate_label, period_end, eps_analyst_count, revenue_analyst_count,
+                            currency, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'ALPHA_VANTAGE', ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT (user_id, ticker, as_of, horizon, estimate_type, source) DO NOTHING
+                        """, UUID.randomUUID(), userId, input.snapshotId(), input.symbol(), timestamp(observedAt),
+                        periodEnd.toString(), revenue, eps, type, label, periodEnd,
+                        nonNegativeInteger(row.get("epsAnalystCount")),
+                        nonNegativeInteger(row.get("revenueAnalystCount")), currency, now);
+            }
+            return;
+        }
         var horizon = text(value(values, "consensus.horizon"));
         if (horizon == null) {
             horizon = CONSENSUS_FIELDS.stream().map(field -> observation(values, "consensus." + field))
@@ -977,14 +1259,14 @@ public final class InvestmentContextService {
         jdbc.update("""
                 INSERT INTO consensus_snapshots (
                     id, user_id, input_snapshot_id, ticker, as_of, horizon, revenue_consensus,
-                    eps_consensus, ebitda_consensus, fcf_consensus, source, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (user_id, ticker, as_of, horizon, source) DO NOTHING
+                    eps_consensus, ebitda_consensus, fcf_consensus, source, estimate_type, period_end, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ANNUAL', ?, ?)
+                ON CONFLICT (user_id, ticker, as_of, horizon, estimate_type, source) DO NOTHING
                 """, UUID.randomUUID(), userId, input.snapshotId(), input.symbol(), timestamp(asOf), horizon,
                 decimal(value(values, "consensus.revenueConsensus")),
                 decimal(value(values, "consensus.epsConsensus")),
                 decimal(value(values, "consensus.ebitdaConsensus")),
-                decimal(value(values, "consensus.fcfConsensus")), source.name(), now);
+                decimal(value(values, "consensus.fcfConsensus")), source.name(), localDate(horizon), now);
     }
 
     private PortfolioView readPortfolio(UUID userId) {
@@ -1097,10 +1379,12 @@ public final class InvestmentContextService {
         var quotes = new ArrayList<InvestmentDataCalculator.SourceQuote>();
         groups.forEach((provider, values) -> {
             var latest = observation(values, "price.latestPrice");
-            var close = observation(values, "price.regularClose");
+            var close = provider == StockDataProviderId.TOSS
+                    ? observation(values, "price.regularClose") : null;
             var session = text(value(values, "price.session"));
-            var latestHistory = regularCloseBars(
-                    value(values, "price.regularCloseHistory"), session, provider, collectedAt)
+            var latestHistory = (provider == StockDataProviderId.TOSS
+                    ? regularCloseBars(value(values, "price.regularCloseHistory"), session, provider, collectedAt)
+                    : List.<PriceBar>of())
                     .stream().max(Comparator.comparing(PriceBar::asOf)).orElse(null);
             var closePrice = decimal(close == null ? null : close.value());
             var closeAsOf = close == null ? null : close.asOf();
@@ -1135,7 +1419,8 @@ public final class InvestmentContextService {
                 SELECT source, regular_close, regular_close_as_of
                  FROM investment_price_snapshots
                  WHERE user_id = ? AND ticker = ? AND session = 'REGULAR_CLOSE'
-                   AND regular_close > 0 AND regular_close_as_of IS NOT NULL AND regular_close_as_of <= ?
+                   AND source = 'TOSS' AND regular_close > 0
+                   AND regular_close_as_of IS NOT NULL AND regular_close_as_of <= ?
                  ORDER BY regular_close_as_of DESC, observed_at DESC, source
                  LIMIT 1
                 """, resultSet -> resultSet.next()
@@ -1153,7 +1438,7 @@ public final class InvestmentContextService {
                                             StockDataProviderId provider,
                                             Map<String, StockAnalysisInput.Observation> values,
                                             OffsetDateTime observedAt) {
-        if (provider == null) return;
+        if (provider != StockDataProviderId.TOSS) return;
         var session = normalizeSession(text(value(values, "price.session")));
         var history = observation(values, "price.regularCloseHistory");
         for (var bar : regularCloseBars(
@@ -1270,15 +1555,32 @@ public final class InvestmentContextService {
                 "REGULAR_CLOSE".equals(priceSession) ? regularCloseStaleAfter : priceStaleAfter, now);
         var technicalStatus = refreshStatus(object(snapshot, "technical"), "trendStatus", "asOf",
                 regularCloseStaleAfter, now);
-        var fundamentalStatus = refreshStatus(object(snapshot, "fundamentals"), "status", "asOf",
-                fundamentalStaleAfter, now);
+        var fundamentals = object(snapshot, "fundamentals");
+        var fundamentalStatus = refreshStatus(fundamentals, "status", "asOf", fundamentalStaleAfter, now);
+        var fieldProvenance = fundamentals.get("fieldProvenance");
+        if (hasFieldProvenance(fieldProvenance, "cash") || hasFieldProvenance(fieldProvenance, "revenueTTM")) {
+            var requiredStatus = requiredFundamentalStatus(fieldProvenance,
+                    fundamentals.get("cash") != null && !fundamentals.get("cash").isNull(),
+                    fundamentals.get("revenueTTM") != null && !fundamentals.get("revenueTTM").isNull(), now);
+            if (requiredStatus == InvestmentDataCalculator.DataStatus.STALE
+                    || requiredStatus == InvestmentDataCalculator.DataStatus.UNVERIFIED
+                    || requiredStatus == InvestmentDataCalculator.DataStatus.DATA_MISSING) {
+                fundamentalStatus = requiredStatus;
+                fundamentals.put("status", fundamentalStatus.name());
+            } else if (requiredStatus == InvestmentDataCalculator.DataStatus.PARTIAL
+                    && fundamentalStatus == InvestmentDataCalculator.DataStatus.OK) {
+                fundamentalStatus = requiredStatus;
+                fundamentals.put("status", fundamentalStatus.name());
+            }
+        }
         var consensusStatus = refreshStatus(object(snapshot, "consensus"), "status", "asOf",
                 consensusStaleAfter, now);
         var revision = object(snapshot, "revision");
         var revisionStatus = dataStatus(text(revision.get("status")));
         if (consensusStatus == InvestmentDataCalculator.DataStatus.STALE
                 && revisionStatus != InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT
-                && revisionStatus != InvestmentDataCalculator.DataStatus.DATA_MISSING) {
+                && revisionStatus != InvestmentDataCalculator.DataStatus.DATA_MISSING
+                && revisionStatus != InvestmentDataCalculator.DataStatus.INSUFFICIENT_HISTORY) {
             revisionStatus = InvestmentDataCalculator.DataStatus.STALE;
             revision.put("status", revisionStatus.name());
         }
@@ -1296,12 +1598,32 @@ public final class InvestmentContextService {
         }
         var readiness = object(snapshot, "readiness");
         var balanceStatus = dataStatus(text(readiness.get("balanceSheetStatus")));
-        if (fundamentalStatus == InvestmentDataCalculator.DataStatus.STALE
+        if (hasFieldProvenance(fieldProvenance, "cash") || hasFieldProvenance(fieldProvenance, "debt")) {
+            var cashStatus = fieldFreshness(fieldProvenance, "cash",
+                    fundamentals.get("cash") != null && !fundamentals.get("cash").isNull(), now);
+            var debtStatus = fieldFreshness(fieldProvenance, "debt",
+                    fundamentals.get("debt") != null && !fundamentals.get("debt").isNull(), now);
+            if (balanceStatus != InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT) {
+                balanceStatus = cashStatus == InvestmentDataCalculator.DataStatus.STALE
+                        || debtStatus == InvestmentDataCalculator.DataStatus.STALE
+                        ? InvestmentDataCalculator.DataStatus.STALE
+                        : cashStatus == InvestmentDataCalculator.DataStatus.DATA_MISSING
+                        && debtStatus == InvestmentDataCalculator.DataStatus.DATA_MISSING
+                        ? InvestmentDataCalculator.DataStatus.DATA_MISSING
+                        : cashStatus == InvestmentDataCalculator.DataStatus.UNVERIFIED
+                        || debtStatus == InvestmentDataCalculator.DataStatus.UNVERIFIED
+                        ? InvestmentDataCalculator.DataStatus.UNVERIFIED
+                        : cashStatus != InvestmentDataCalculator.DataStatus.OK
+                        || debtStatus != InvestmentDataCalculator.DataStatus.OK
+                        ? InvestmentDataCalculator.DataStatus.PARTIAL
+                        : InvestmentDataCalculator.DataStatus.OK;
+            }
+        } else if (fundamentalStatus == InvestmentDataCalculator.DataStatus.STALE
                 && balanceStatus != InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT
                 && balanceStatus != InvestmentDataCalculator.DataStatus.DATA_MISSING) {
             balanceStatus = InvestmentDataCalculator.DataStatus.STALE;
-            readiness.put("balanceSheetStatus", balanceStatus.name());
         }
+        readiness.put("balanceSheetStatus", balanceStatus.name());
         readiness.put("priceStatus", priceStatus.name());
         readiness.put("trendStatus", technicalStatus.name());
         readiness.put("fundamentalStatus", fundamentalStatus.name());
@@ -1388,10 +1710,14 @@ public final class InvestmentContextService {
         var rows = jdbc.query("""
                 SELECT fiscal_period, fiscal_year, fiscal_period_code, reported_at, as_of, source,
                        market_cap, market_cap_as_of, enterprise_value, enterprise_value_as_of,
-                       enterprise_value_source, cash, debt, diluted_shares, diluted_shares_basis,
-                       revenue_ttm, revenue_growth_yoy, ebitda_ttm, eps, fcf_ttm
-                  FROM fundamental_snapshots
-                 WHERE user_id = ? AND ticker = ?
+                       enterprise_value_source, cash, debt, basic_shares, basic_shares_basis,
+                       market_cap_formula, fully_diluted_market_cap, fully_diluted_market_cap_as_of,
+                       fully_diluted_market_cap_formula, balance_sheet_as_of, currency,
+                       diluted_shares, diluted_shares_basis, revenue_ttm, revenue_growth_yoy,
+                       ebitda_ttm, ebitda_ttm_type, ebitda_ttm_formula, ebitda_ttm_source,
+                       eps, fcf_ttm, field_provenance::text
+                 FROM fundamental_snapshots
+                 WHERE user_id = ? AND ticker = ? AND source = 'SEC'
                  ORDER BY fiscal_period DESC, reported_at DESC, market_cap_as_of DESC NULLS LAST,
                           created_at DESC, id DESC LIMIT 1
                 """, (resultSet, rowNum) -> new FundamentalData(
@@ -1404,39 +1730,134 @@ public final class InvestmentContextService {
                 resultSet.getBigDecimal("enterprise_value"),
                 instant(resultSet.getObject("enterprise_value_as_of", OffsetDateTime.class)),
                 resultSet.getString("enterprise_value_source"), resultSet.getBigDecimal("cash"),
-                resultSet.getBigDecimal("debt"), resultSet.getBigDecimal("diluted_shares"),
+                resultSet.getBigDecimal("debt"), resultSet.getBigDecimal("basic_shares"),
+                resultSet.getString("basic_shares_basis"), resultSet.getString("market_cap_formula"),
+                resultSet.getBigDecimal("fully_diluted_market_cap"),
+                instant(resultSet.getObject("fully_diluted_market_cap_as_of", OffsetDateTime.class)),
+                resultSet.getString("fully_diluted_market_cap_formula"),
+                instant(resultSet.getObject("balance_sheet_as_of", OffsetDateTime.class)),
+                resultSet.getString("currency"), resultSet.getBigDecimal("diluted_shares"),
                 resultSet.getString("diluted_shares_basis"),
                 resultSet.getBigDecimal("revenue_ttm"), resultSet.getBigDecimal("revenue_growth_yoy"),
-                resultSet.getBigDecimal("ebitda_ttm"), resultSet.getBigDecimal("eps"),
-                resultSet.getBigDecimal("fcf_ttm"), InvestmentDataCalculator.DataStatus.OK), userId, ticker);
+                resultSet.getBigDecimal("ebitda_ttm"), resultSet.getString("ebitda_ttm_type"),
+                resultSet.getString("ebitda_ttm_formula"), resultSet.getString("ebitda_ttm_source"),
+                resultSet.getBigDecimal("eps"), resultSet.getBigDecimal("fcf_ttm"),
+                decode(resultSet.getString("field_provenance")), InvestmentDataCalculator.DataStatus.OK),
+                userId, ticker);
         var value = rows.stream().findFirst().orElse(null);
         if (value == null) return FundamentalData.missing();
         var fields = java.util.Arrays.asList(value.marketCap(), value.enterpriseValue(), value.cash(), value.debt(),
-                value.dilutedShares(), value.revenueTTM(), value.revenueGrowthYoY(), value.ebitdaTTM(),
-                value.eps(), value.fcfTTM());
+                value.basicShares(), value.dilutedShares(), value.fullyDilutedMarketCap(), value.revenueTTM(),
+                value.revenueGrowthYoY(), value.ebitdaTTM(), value.eps(), value.fcfTTM());
         var present = fields.stream().filter(Objects::nonNull).count();
-        var status = value.asOf().isBefore(clock.instant().minus(fundamentalStaleAfter))
-                ? InvestmentDataCalculator.DataStatus.STALE
+        var requiredStatus = requiredFundamentalStatus(value.fieldProvenance(), value.cash() != null,
+                value.revenueTTM() != null, clock.instant());
+        var status = requiredStatus == InvestmentDataCalculator.DataStatus.STALE
+                ? requiredStatus
+                : requiredStatus == InvestmentDataCalculator.DataStatus.DATA_MISSING
+                ? requiredStatus
+                : requiredStatus == InvestmentDataCalculator.DataStatus.UNVERIFIED
+                ? requiredStatus
                 : present == fields.size() ? InvestmentDataCalculator.DataStatus.OK
-                : present == 0 ? InvestmentDataCalculator.DataStatus.DATA_MISSING
                 : InvestmentDataCalculator.DataStatus.PARTIAL;
         return value.withStatus(status);
     }
 
+    private InvestmentDataCalculator.DataStatus requiredFundamentalStatus(
+            JsonNode provenance, boolean hasCash, boolean hasRevenue, Instant now
+    ) {
+        var cashStatus = fieldFreshness(provenance, "cash", hasCash, now);
+        var revenueStatus = fieldFreshness(provenance, "revenueTTM", hasRevenue, now);
+        if (cashStatus == InvestmentDataCalculator.DataStatus.STALE
+                || revenueStatus == InvestmentDataCalculator.DataStatus.STALE) {
+            return InvestmentDataCalculator.DataStatus.STALE;
+        }
+        if (cashStatus == InvestmentDataCalculator.DataStatus.UNVERIFIED
+                || revenueStatus == InvestmentDataCalculator.DataStatus.UNVERIFIED) {
+            return InvestmentDataCalculator.DataStatus.UNVERIFIED;
+        }
+        if (cashStatus == InvestmentDataCalculator.DataStatus.DATA_MISSING
+                && revenueStatus == InvestmentDataCalculator.DataStatus.DATA_MISSING) {
+            return InvestmentDataCalculator.DataStatus.DATA_MISSING;
+        }
+        if (cashStatus != InvestmentDataCalculator.DataStatus.OK
+                || revenueStatus != InvestmentDataCalculator.DataStatus.OK) {
+            return InvestmentDataCalculator.DataStatus.PARTIAL;
+        }
+        return InvestmentDataCalculator.DataStatus.OK;
+    }
+
+    private InvestmentDataCalculator.DataStatus fieldFreshness(
+            JsonNode provenance, String field, boolean present, Instant now
+    ) {
+        if (!present) return InvestmentDataCalculator.DataStatus.DATA_MISSING;
+        var asOf = instant(node(provenance, field).get("asOf"));
+        if (asOf == null || asOf.isAfter(now)) return InvestmentDataCalculator.DataStatus.UNVERIFIED;
+        return asOf.isBefore(now.minus(fundamentalStaleAfter))
+                ? InvestmentDataCalculator.DataStatus.STALE : InvestmentDataCalculator.DataStatus.OK;
+    }
+
+    private static boolean hasFieldProvenance(JsonNode provenance, String field) {
+        return provenance != null && provenance.isObject() && provenance.get(field) != null
+                && provenance.get(field).isObject();
+    }
+
     private ConsensusData latestConsensus(UUID userId, String ticker) {
-        var rows = jdbc.query("""
-                SELECT as_of, horizon, source, revenue_consensus, eps_consensus,
-                       ebitda_consensus, fcf_consensus
+        var today = clock.instant().atZone(ZoneOffset.UTC).toLocalDate();
+        var horizonObservations = jdbc.query("""
+                SELECT DISTINCT ON (estimate_type, horizon)
+                       as_of, horizon, estimate_type, estimate_label,
+                       COALESCE(period_end, CASE WHEN horizon ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                           THEN horizon::date END) AS period_end,
+                       revenue_consensus, eps_consensus, eps_analyst_count,
+                       revenue_analyst_count, currency, source
                   FROM consensus_snapshots
+                 WHERE user_id = ? AND ticker = ? AND source = 'ALPHA_VANTAGE'
+                   AND COALESCE(period_end, CASE WHEN horizon ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                       THEN horizon::date END) > ?
+                   AND as_of <= ?
+                 ORDER BY estimate_type, horizon, as_of DESC, id DESC
+                """, (resultSet, rowNum) -> map(
+                "asOf", instant(resultSet.getObject("as_of", OffsetDateTime.class)),
+                "horizon", resultSet.getString("horizon"),
+                "estimateType", resultSet.getString("estimate_type"),
+                "estimateLabel", resultSet.getString("estimate_label"),
+                "periodEnd", resultSet.getObject("period_end", LocalDate.class),
+                "revenueConsensus", resultSet.getBigDecimal("revenue_consensus"),
+                "epsConsensus", resultSet.getBigDecimal("eps_consensus"),
+                "epsAnalystCount", resultSet.getObject("eps_analyst_count"),
+                "revenueAnalystCount", resultSet.getObject("revenue_analyst_count"),
+                "currency", resultSet.getString("currency"), "source", resultSet.getString("source")),
+                userId, ticker, today, timestamp(clock.instant()));
+        var rows = jdbc.query("""
+                SELECT as_of, horizon, source, estimate_type, estimate_label, period_end,
+                       revenue_consensus, eps_consensus, ebitda_consensus, fcf_consensus,
+                       eps_analyst_count, revenue_analyst_count, currency
+                 FROM consensus_snapshots
                  WHERE user_id = ? AND ticker = ?
-                 ORDER BY as_of DESC, id DESC LIMIT 1
+                   AND source = 'ALPHA_VANTAGE'
+                   AND COALESCE(period_end, CASE WHEN horizon ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                       THEN horizon::date END) > ?
+                   AND as_of <= ?
+                 ORDER BY CASE WHEN source = 'ALPHA_VANTAGE' THEN 0 ELSE 1 END,
+                          CASE WHEN estimate_type = 'ANNUAL' THEN 0 ELSE 1 END,
+                          COALESCE(period_end, CASE WHEN horizon ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                              THEN horizon::date END) ASC,
+                          as_of DESC, id DESC LIMIT 1
                 """, (resultSet, rowNum) -> new ConsensusData(
                 instant(resultSet.getObject("as_of", OffsetDateTime.class)),
                 resultSet.getString("horizon"), resultSet.getString("source"),
+                resultSet.getString("estimate_type"), resultSet.getString("estimate_label"),
+                resultSet.getObject("period_end", LocalDate.class),
                 resultSet.getBigDecimal("revenue_consensus"), resultSet.getBigDecimal("eps_consensus"),
                 resultSet.getBigDecimal("ebitda_consensus"), resultSet.getBigDecimal("fcf_consensus"),
-                InvestmentDataCalculator.DataStatus.OK), userId, ticker);
-        var value = rows.stream().findFirst().orElseGet(ConsensusData::missing);
+                (Integer) resultSet.getObject("eps_analyst_count"),
+                (Integer) resultSet.getObject("revenue_analyst_count"), resultSet.getString("currency"),
+                horizonObservations, null,
+                InvestmentDataCalculator.DataStatus.OK), userId, ticker, today, timestamp(clock.instant()));
+        var missingReason = latestAlphaConsensusFailure(userId, ticker);
+        var value = rows.stream().findFirst().orElseGet(ConsensusData::missing)
+                .withMissingReason(missingReason);
         if (value.asOf() == null) return value;
         var present = java.util.Arrays.asList(value.revenueConsensus(), value.epsConsensus(),
                 value.ebitdaConsensus(), value.fcfConsensus()).stream().filter(Objects::nonNull).count();
@@ -1451,9 +1872,40 @@ public final class InvestmentContextService {
         return value.withStatus(status);
     }
 
+    private String latestAlphaConsensusFailure(UUID userId, String ticker) {
+        var payload = jdbc.query("""
+                SELECT payload::text FROM analysis_input_snapshots
+                 WHERE user_id = ? AND symbol = ?
+                 ORDER BY collected_at DESC, created_at DESC, id DESC LIMIT 1
+                """, (resultSet, rowNum) -> resultSet.getString(1), userId, ticker)
+                .stream().findFirst().orElse(null);
+        if (payload == null) return null;
+        try {
+            var observations = objectMapper.readTree(payload).path("observations");
+            if (!observations.isArray()) return null;
+            for (var observation : observations) {
+                if (!"ALPHA_VANTAGE".equals(observation.path("provider").asText())
+                        || !observation.path("field").asText().startsWith("consensus.")) continue;
+                var reasons = observation.path("missingData");
+                if (!reasons.isArray()) continue;
+                for (var reason : reasons) {
+                    var value = reason.asText();
+                    if (!value.startsWith("PROVIDER_")) continue;
+                    var code = value.substring("PROVIDER_".length());
+                    if (Set.of("DAILY_QUOTA_EXHAUSTED", "REQUEST_IN_PROGRESS", "CACHE_UNAVAILABLE",
+                            "CACHE_CORRUPT", "API_ERROR", "INVALID_RESPONSE", "SOURCE_CONFLICT",
+                            "SYMBOL_MISMATCH", "NETWORK", "EMPTY_RESPONSE", "INTERRUPTED").contains(code)
+                            || code.matches("HTTP_[1-5][0-9]{2}")) return code;
+                }
+            }
+        } catch (JacksonException ignored) {
+            return null;
+        }
+        return null;
+    }
+
     private static boolean consensusCurrencyUnverified(ConsensusData consensus) {
-        // ponytail: source gate until canonical consensus currency metadata is stored.
-        return StockDataProviderId.ALPHA_VANTAGE.name().equals(consensus.source());
+        return consensus.currency() == null || !"USD".equalsIgnoreCase(consensus.currency());
     }
 
     private RevisionData revisions(UUID userId, String ticker, ConsensusData current) {
@@ -1463,13 +1915,13 @@ public final class InvestmentContextService {
         var history = jdbc.query("""
                 SELECT as_of, revenue_consensus, eps_consensus
                   FROM consensus_snapshots
-                 WHERE user_id = ? AND ticker = ? AND source = ? AND horizon = ?
+                 WHERE user_id = ? AND ticker = ? AND source = ? AND horizon = ? AND estimate_type = ?
                    AND as_of <= ? AND as_of >= ?
                  ORDER BY as_of
                 """, (resultSet, rowNum) -> new ConsensusHistory(
                 instant(resultSet.getObject("as_of", OffsetDateTime.class)),
                 resultSet.getBigDecimal("revenue_consensus"), resultSet.getBigDecimal("eps_consensus")),
-                userId, ticker, current.source(), current.horizon(), timestamp(current.asOf()),
+                userId, ticker, current.source(), current.horizon(), current.estimateType(), timestamp(current.asOf()),
                 timestamp(current.asOf().minus(Duration.ofDays(110))));
         var revenue = history.stream().map(item -> new InvestmentDataCalculator.ConsensusValue(
                 item.asOf(), item.revenue())).toList();
@@ -1485,8 +1937,13 @@ public final class InvestmentContextService {
                 Duration.ofDays(90));
         var present = List.of(revenue30, revenue90, eps30, eps90).stream()
                 .filter(item -> item.value() != null).count();
+        var anyCurrentValue = current.revenueConsensus() != null || current.epsConsensus() != null;
+        var insufficient = List.of(revenue30, revenue90, eps30, eps90).stream()
+                .anyMatch(item -> item.status() == InvestmentDataCalculator.DataStatus.INSUFFICIENT_HISTORY);
         return new RevisionData(revenue30, revenue90, eps30, eps90,
                 present == 4 ? InvestmentDataCalculator.DataStatus.OK
+                        : present == 0 && insufficient && anyCurrentValue
+                        ? InvestmentDataCalculator.DataStatus.INSUFFICIENT_HISTORY
                         : present == 0 ? InvestmentDataCalculator.DataStatus.DATA_MISSING
                         : InvestmentDataCalculator.DataStatus.PARTIAL);
     }
@@ -1496,6 +1953,7 @@ public final class InvestmentContextService {
                 SELECT regular_close, regular_close_as_of
                   FROM investment_price_snapshots
                  WHERE user_id = ? AND ticker = ? AND regular_close IS NOT NULL
+                   AND source = 'TOSS'
                    AND regular_close_as_of <= ?
                  ORDER BY regular_close_as_of DESC, source
                  LIMIT 1000
@@ -1592,15 +2050,26 @@ public final class InvestmentContextService {
     private ReadinessData readiness(InvestmentDataCalculator.PriceAssessment price, TechnicalData technical,
                                     FundamentalData fundamental, ConsensusData consensus,
                                     RevisionData revision, ValuationData valuation, StockAnalysisInput input) {
-        var balanceFields = java.util.Arrays.asList(fundamental.cash(), fundamental.debt(), fundamental.dilutedShares());
-        var balanceCount = balanceFields.stream().filter(Objects::nonNull).count();
+        var balanceFields = java.util.Arrays.asList(fundamental.cash(), fundamental.debt());
+        var cashFreshness = fieldFreshness(fundamental.fieldProvenance(), "cash",
+                fundamental.cash() != null, clock.instant());
+        var debtFreshness = fieldFreshness(fundamental.fieldProvenance(), "debt",
+                fundamental.debt() != null, clock.instant());
         var balanceStatus = fundamental.status() == InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT
                 ? InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT
-                : fundamental.status() == InvestmentDataCalculator.DataStatus.STALE
+                : cashFreshness == InvestmentDataCalculator.DataStatus.STALE
+                || debtFreshness == InvestmentDataCalculator.DataStatus.STALE
                 ? InvestmentDataCalculator.DataStatus.STALE
-                : balanceCount == 3 ? InvestmentDataCalculator.DataStatus.OK
-                : balanceCount == 0 ? InvestmentDataCalculator.DataStatus.DATA_MISSING
-                : InvestmentDataCalculator.DataStatus.PARTIAL;
+                : cashFreshness == InvestmentDataCalculator.DataStatus.DATA_MISSING
+                && debtFreshness == InvestmentDataCalculator.DataStatus.DATA_MISSING
+                ? InvestmentDataCalculator.DataStatus.DATA_MISSING
+                : cashFreshness == InvestmentDataCalculator.DataStatus.UNVERIFIED
+                || debtFreshness == InvestmentDataCalculator.DataStatus.UNVERIFIED
+                ? InvestmentDataCalculator.DataStatus.UNVERIFIED
+                : cashFreshness != InvestmentDataCalculator.DataStatus.OK
+                || debtFreshness != InvestmentDataCalculator.DataStatus.OK
+                ? InvestmentDataCalculator.DataStatus.PARTIAL
+                : InvestmentDataCalculator.DataStatus.OK;
         var revisionStatus = revision.status();
         var statuses = List.of(price.status(), technical.status(), fundamental.status(), consensus.status(), revisionStatus,
                 valuation.status(), balanceStatus);
@@ -1621,7 +2090,18 @@ public final class InvestmentContextService {
         if (technical.sma50() == null) missing.add("technical.sma50");
         if (technical.rsi14() == null) missing.add("technical.rsi14");
         for (var field : FUNDAMENTAL_FIELDS) {
-            if (fundamental.value(field) == null) missing.add("fundamentals." + field);
+            if (fundamental.value(field) == null) {
+                var readinessField = "fundamentals." + field;
+                missing.add(readinessField);
+                input.observations().stream()
+                        .filter(observation -> observation.provider() == StockDataProviderId.SEC
+                                && ("fundamental." + field).equals(observation.field())
+                                && observation.value() == null)
+                        .flatMap(observation -> observation.missingData().stream())
+                        .filter(InvestmentContextService::safeInlineXbrlMissingReason)
+                        .map(reason -> readinessField + "." + reason)
+                        .forEach(missing::add);
+            }
         }
         if (fundamental.status() == InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT) {
             missing.add("fundamentals.statementPeriodConflict");
@@ -1629,13 +2109,15 @@ public final class InvestmentContextService {
         if (consensus.revenueConsensus() == null) missing.add("consensus.revenueConsensus");
         if (consensus.epsConsensus() == null) missing.add("consensus.epsConsensus");
         if (consensusCurrencyUnverified(consensus)) missing.add("consensus.currency");
+        if (consensus.missingReason() != null) missing.add("consensus.provider." + consensus.missingReason());
         if (revision.revenue30().value() == null) missing.add("revision.revenueRevision30D");
         if (revision.revenue90().value() == null) missing.add("revision.revenueRevision90D");
         if (revision.eps30().value() == null) missing.add("revision.epsRevision30D");
         if (revision.eps90().value() == null) missing.add("revision.epsRevision90D");
         if (balanceFields.get(0) == null) missing.add("fundamentals.cash");
         if (balanceFields.get(1) == null) missing.add("fundamentals.debt");
-        if (balanceFields.get(2) == null) missing.add("fundamentals.dilutedShares");
+        if (fundamental.basicShares() == null) missing.add("fundamentals.basicShares");
+        if (fundamental.dilutedShares() == null) missing.add("fundamentals.dilutedShares");
         if ("TOSS".equals(price.source()) && price.session() == null) {
             input.observations().stream()
                     .filter(observation -> "price.session".equals(observation.field())
@@ -1663,10 +2145,21 @@ public final class InvestmentContextService {
             return InvestmentDataCalculator.DataStatus.DATA_MISSING;
         if (statuses.contains(InvestmentDataCalculator.DataStatus.UNVERIFIED))
             return InvestmentDataCalculator.DataStatus.UNVERIFIED;
+        if (statuses.contains(InvestmentDataCalculator.DataStatus.INSUFFICIENT_HISTORY))
+            return InvestmentDataCalculator.DataStatus.PARTIAL;
         if (statuses.contains(InvestmentDataCalculator.DataStatus.PARTIAL)
                 || statuses.contains(InvestmentDataCalculator.DataStatus.DATA_MISSING))
             return InvestmentDataCalculator.DataStatus.PARTIAL;
         return InvestmentDataCalculator.DataStatus.OK;
+    }
+
+    private static boolean safeInlineXbrlMissingReason(String reason) {
+        return reason != null && (reason.matches("INLINE_XBRL_HTTP_[1-5][0-9]{2}")
+                || Set.of("INLINE_XBRL_PARSE_FAILED", "INLINE_XBRL_REFERENCE_REJECTED",
+                "INLINE_XBRL_RESPONSE_TOO_LARGE", "INLINE_XBRL_NO_VERIFIED_FACTS",
+                "INLINE_XBRL_NETWORK_ERROR", "INLINE_XBRL_EMPTY_RESPONSE", "INLINE_XBRL_INTERRUPTED",
+                "INLINE_XBRL_FETCH_ERROR", "INLINE_XBRL_FETCH_FAILED",
+                "PARSE_FAILED", "REFERENCE_REJECTED").contains(reason));
     }
 
     private static InvestmentDataCalculator.DataStatus dataStatus(String value) {
@@ -1975,6 +2468,16 @@ public final class InvestmentContextService {
         return null;
     }
 
+    private static Integer nonNegativeInteger(JsonNode node) {
+        if (node == null || node.isNull()) return null;
+        try {
+            var value = node.isNumber() ? node.intValue() : Integer.parseInt(node.asText().trim());
+            return value < 0 ? null : value;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
     private static String text(JsonNode node) {
         if (node == null || node.isNull()) return null;
         var value = node.asText();
@@ -2015,6 +2518,11 @@ public final class InvestmentContextService {
         return java.util.stream.Stream.of(price.latestPriceAsOf(), price.regularCloseAsOf(), technical.asOf(),
                         fundamental.asOf(), consensus.asOf(), fallback)
                 .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(fallback);
+    }
+
+    private static Instant latestInstant(Instant first, Instant second) {
+        return java.util.stream.Stream.of(first, second).filter(Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null);
     }
 
     private static Instant instant(OffsetDateTime value) {
@@ -2172,22 +2680,30 @@ public final class InvestmentContextService {
             Instant reportedAt, Instant asOf, String source,
             BigDecimal marketCap, Instant marketCapAsOf,
             BigDecimal enterpriseValue, Instant enterpriseValueAsOf, String enterpriseValueSource,
-            BigDecimal cash, BigDecimal debt, BigDecimal dilutedShares, String dilutedSharesBasis,
+            BigDecimal cash, BigDecimal debt, BigDecimal basicShares, String basicSharesBasis,
+            String marketCapFormula, BigDecimal fullyDilutedMarketCap, Instant fullyDilutedMarketCapAsOf,
+            String fullyDilutedMarketCapFormula, Instant balanceSheetAsOf, String currency,
+            BigDecimal dilutedShares, String dilutedSharesBasis,
             BigDecimal revenueTTM, BigDecimal revenueGrowthYoY,
-            BigDecimal ebitdaTTM, BigDecimal eps, BigDecimal fcfTTM,
+            BigDecimal ebitdaTTM, String ebitdaTTMType, String ebitdaTTMFormula, String ebitdaTTMSource,
+            BigDecimal eps, BigDecimal fcfTTM, JsonNode fieldProvenance,
             InvestmentDataCalculator.DataStatus status
     ) {
         private static FundamentalData missing() {
-            return new FundamentalData(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, InvestmentDataCalculator.DataStatus.DATA_MISSING);
+            return new FundamentalData(null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    InvestmentDataCalculator.DataStatus.DATA_MISSING);
         }
 
         private FundamentalData withStatus(InvestmentDataCalculator.DataStatus status) {
             return new FundamentalData(fiscalPeriod, fiscalYear, fiscalPeriodCode, reportedAt, asOf, source,
                     marketCap, marketCapAsOf, enterpriseValue, enterpriseValueAsOf, enterpriseValueSource,
-                    cash, debt, dilutedShares, dilutedSharesBasis, revenueTTM, revenueGrowthYoY,
-                    ebitdaTTM, eps, fcfTTM, status);
+                    cash, debt, basicShares, basicSharesBasis, marketCapFormula,
+                    fullyDilutedMarketCap, fullyDilutedMarketCapAsOf, fullyDilutedMarketCapFormula,
+                    balanceSheetAsOf, currency, dilutedShares, dilutedSharesBasis,
+                    revenueTTM, revenueGrowthYoY, ebitdaTTM, ebitdaTTMType, ebitdaTTMFormula,
+                    ebitdaTTMSource, eps, fcfTTM, fieldProvenance, status);
         }
 
         private BigDecimal value(String field) {
@@ -2196,7 +2712,9 @@ public final class InvestmentContextService {
                 case "enterpriseValue" -> enterpriseValue;
                 case "cash" -> cash;
                 case "debt" -> debt;
+                case "basicShares" -> basicShares;
                 case "dilutedShares" -> dilutedShares;
+                case "fullyDilutedMarketCap" -> fullyDilutedMarketCap;
                 case "revenueTTM" -> revenueTTM;
                 case "revenueGrowthYoY" -> revenueGrowthYoY;
                 case "ebitdaTTM" -> ebitdaTTM;
@@ -2210,36 +2728,59 @@ public final class InvestmentContextService {
             var data = map("fiscalPeriod", fiscalPeriod, "fiscalYear", fiscalYear,
                     "fiscalPeriodCode", fiscalPeriodCode, "reportedAt", reportedAt,
                     "asOf", asOf, "source", source, "marketCap", marketCap,
-                    "marketCapAsOf", marketCapAsOf, "enterpriseValue", enterpriseValue,
+                    "marketCapAsOf", marketCapAsOf, "marketCapFormula", marketCapFormula,
+                    "enterpriseValue", enterpriseValue,
                     "enterpriseValueAsOf", enterpriseValueAsOf, "enterpriseValueSource", enterpriseValueSource,
-                    "cash", cash, "debt", debt, "dilutedShares", dilutedShares,
-                    "dilutedSharesBasis", dilutedSharesBasis, "revenueTTM", revenueTTM,
+                    "cash", cash, "debt", debt, "balanceSheetAsOf", balanceSheetAsOf,
+                    "currency", currency, "basicShares", basicShares, "basicSharesBasis", basicSharesBasis,
+                    "dilutedShares", dilutedShares, "dilutedSharesBasis", dilutedSharesBasis,
+                    "fullyDilutedMarketCap", fullyDilutedMarketCap,
+                    "fullyDilutedMarketCapAsOf", fullyDilutedMarketCapAsOf,
+                    "fullyDilutedMarketCapFormula", fullyDilutedMarketCapFormula,
+                    "revenueTTM", revenueTTM,
                     "revenueGrowthYoY", revenueGrowthYoY, "ebitdaTTM", ebitdaTTM,
-                    "eps", eps, "fcfTTM", fcfTTM, "status", status.name());
+                    "ebitdaTTMType", ebitdaTTMType, "ebitdaTTMFormula", ebitdaTTMFormula,
+                    "ebitdaTTMSource", ebitdaTTMSource, "eps", eps, "fcfTTM", fcfTTM,
+                    "fieldProvenance", fieldProvenance, "status", status.name());
             return data;
         }
     }
 
     private record ConsensusData(
-            Instant asOf, String horizon, String source, BigDecimal revenueConsensus,
-            BigDecimal epsConsensus, BigDecimal ebitdaConsensus, BigDecimal fcfConsensus,
+            Instant asOf, String horizon, String source, String estimateType, String estimateLabel,
+            LocalDate periodEnd, BigDecimal revenueConsensus, BigDecimal epsConsensus,
+            BigDecimal ebitdaConsensus, BigDecimal fcfConsensus, Integer epsAnalystCount,
+            Integer revenueAnalystCount, String currency, List<Map<String, Object>> observations,
+            String missingReason,
             InvestmentDataCalculator.DataStatus status
     ) {
         private static ConsensusData missing() {
-            return new ConsensusData(null, null, null, null, null, null, null,
+            return new ConsensusData(null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, List.of(), null,
                     InvestmentDataCalculator.DataStatus.DATA_MISSING);
         }
 
         private ConsensusData withStatus(InvestmentDataCalculator.DataStatus status) {
-            return new ConsensusData(asOf, horizon, source, revenueConsensus, epsConsensus,
-                    ebitdaConsensus, fcfConsensus, status);
+            return new ConsensusData(asOf, horizon, source, estimateType, estimateLabel, periodEnd,
+                    revenueConsensus, epsConsensus, ebitdaConsensus, fcfConsensus,
+                    epsAnalystCount, revenueAnalystCount, currency, observations, missingReason, status);
+        }
+
+        private ConsensusData withMissingReason(String reason) {
+            return new ConsensusData(asOf, horizon, source, estimateType, estimateLabel, periodEnd,
+                    revenueConsensus, epsConsensus, ebitdaConsensus, fcfConsensus,
+                    epsAnalystCount, revenueAnalystCount, currency, observations, reason, status);
         }
 
         private Map<String, Object> view() {
             return map("asOf", asOf, "horizon", horizon, "source", source,
+                    "estimateType", estimateType, "estimateLabel", estimateLabel,
+                    "periodEnd", periodEnd, "currency", currency,
+                    "missingReason", missingReason,
+                    "epsAnalystCount", epsAnalystCount, "revenueAnalystCount", revenueAnalystCount,
                     "revenueConsensus", revenueConsensus, "epsConsensus", epsConsensus,
                     "ebitdaConsensus", ebitdaConsensus, "fcfConsensus", fcfConsensus,
-                    "status", status.name());
+                    "observations", observations, "status", status.name());
         }
     }
 
@@ -2265,7 +2806,7 @@ public final class InvestmentContextService {
 
         private static Map<String, Object> revisionView(InvestmentDataCalculator.RevisionResult result) {
             return map("value", result.value(), "baselineAsOf", result.baselineAsOf(),
-                    "status", result.status().name());
+                    "status", result.status().name(), "reason", result.reason());
         }
     }
 

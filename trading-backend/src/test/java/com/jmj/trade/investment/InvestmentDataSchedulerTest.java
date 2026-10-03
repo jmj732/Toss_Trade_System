@@ -4,6 +4,7 @@ import com.jmj.trade.account.AccountSyncService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -16,6 +17,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class InvestmentDataSchedulerTest {
 
@@ -96,6 +98,21 @@ class InvestmentDataSchedulerTest {
         verify(investment).needsInitialCapture();
         verify(investment, never()).captureAll();
         verify(investment, never()).captureAllQuoteUpdates();
+    }
+
+    @Test
+    void canonicalConsensusCaptureRunsOnWeekdaysAndWeekends() throws NoSuchMethodException {
+        var weekday = InvestmentDataScheduler.class.getDeclaredMethod("afterClose")
+                .getAnnotation(Scheduled.class);
+        var weekend = InvestmentDataScheduler.class.getDeclaredMethod("weekendAfterClose")
+                .getAnnotation(Scheduled.class);
+
+        assertThat(weekday.cron()).isEqualTo(
+                "${investment.data.after-close-cron:0 15 16 * * MON-FRI}");
+        assertThat(weekend.cron()).isEqualTo(
+                "${investment.data.weekend-capture-cron:0 15 16 * * SAT,SUN}");
+        assertThat(weekday.zone()).isEqualTo("${investment.data.time-zone:America/New_York}");
+        assertThat(weekend.zone()).isEqualTo(weekday.zone());
     }
 
     private static InvestmentDataScheduler scheduler(InvestmentContextService investment) {

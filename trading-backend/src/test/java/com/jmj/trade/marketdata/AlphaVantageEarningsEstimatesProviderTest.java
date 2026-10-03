@@ -64,7 +64,7 @@ class AlphaVantageEarningsEstimatesProviderTest {
         var provider = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC));
         var values = provider.fetch(new ProviderRequest("AVT", Map.of()));
 
-        assertThat(values).filteredOn(value -> value.field().startsWith("consensus.")).hasSize(4);
+        assertThat(values).filteredOn(value -> value.field().startsWith("consensus.")).hasSize(5);
         assertThat(value(values, "consensus.horizon").value().asText()).isEqualTo("2027-06-30");
         assertThat(value(values, "consensus.epsConsensus").value().decimalValue())
                 .isEqualByComparingTo("3.2");
@@ -78,6 +78,20 @@ class AlphaVantageEarningsEstimatesProviderTest {
                 .isEqualTo("CURRENCY_UNVERIFIED");
         assertThat(value(values, "consensus.currency").missingData())
                 .containsExactly("CURRENCY_UNAVAILABLE");
+        var observations = value(values, "consensus.observations").value();
+        assertThat(observations.isArray()).isTrue();
+        assertThat(observations).hasSize(3);
+        assertThat(observations.get(0).path("horizon").asText()).isEqualTo("ANNUAL:2027-06-30");
+        assertThat(observations.get(0).path("estimateType").asText()).isEqualTo("ANNUAL");
+        assertThat(observations.get(0).path("sourceEstimateType").asText()).isEqualTo("fiscal year");
+        assertThat(observations.get(0).path("periodEnd").asText()).isEqualTo("2027-06-30");
+        assertThat(observations.get(0).path("epsAnalystCount").intValue()).isEqualTo(15);
+        assertThat(observations.get(0).path("revenueAnalystCount").intValue()).isEqualTo(12);
+        assertThat(observations.get(0).path("currency").isNull()).isTrue();
+        assertThat(observations.get(2).path("horizon").asText()).isEqualTo("QUARTERLY:2026-12-31");
+        assertThat(observations.get(2).path("estimateType").asText()).isEqualTo("QUARTERLY");
+        assertThat(observations.get(2).path("sourceEstimateType").asText()).isEqualTo("fiscal quarter");
+        assertThat(observations.get(2).path("observedAt").asText()).isEqualTo(OBSERVED_AT.toString());
         SERVER.verify(getRequestedFor(urlPathEqualTo("/query"))
                 .withQueryParam("function", equalTo("EARNINGS_ESTIMATES"))
                 .withQueryParam("symbol", equalTo("AVT"))
@@ -125,6 +139,204 @@ class AlphaVantageEarningsEstimatesProviderTest {
     }
 
     @Test
+    void retainsFutureQuarterlyObservationsWhenNoFutureAnnualEstimateExists() throws Exception {
+        var body = Map.of("symbol", "AVT", "estimates", List.of(
+                row("2026-09-30", "fiscal quarter", "0.8", "325"),
+                row("2026-12-31", "fiscal quarter", "0.9", "350")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
+
+        var values = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC))
+                .fetch(new ProviderRequest("AVT", Map.of()));
+
+        assertThat(value(values, "consensus.observations").value()).hasSize(1);
+        assertThat(value(values, "consensus.observations").value().get(0).path("horizon").asText())
+                .isEqualTo("QUARTERLY:2026-12-31");
+        assertThat(value(values, "consensus.horizon").value()).isNull();
+        assertThat(value(values, "consensus.epsConsensus").value()).isNull();
+        assertThat(value(values, "consensus.epsConsensus").missingData()).containsExactly("NO_FUTURE_FISCAL_YEAR");
+    }
+
+    @Test
+    void usesAlphaDilutedSharesEndpointOnlyWhenFallbackFieldIsSelected() throws Exception {
+        var body = Map.of("symbol", "AVT", "status", "success", "data", List.of(
+                Map.of("date", "2026-06-30", "shares_outstanding_diluted", "321000000",
+                        "shares_outstanding_basic", "318000000"),
+                Map.of("date", "2026-03-31", "shares_outstanding_diluted", "320000000")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING"))
+                .withQueryParam("symbol", equalTo("AVT"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
+
+        var provider = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC));
+        var values = provider.fetch(new ProviderRequest("AVT", Map.of()), Set.of("fundamental.dilutedShares"));
+
+        var dilutedShares = value(values, "fundamental.dilutedShares");
+        assertThat(dilutedShares.value().decimalValue()).isEqualByComparingTo("321000000");
+        assertThat(dilutedShares.asOf()).isEqualTo(Instant.parse("2026-06-30T00:00:00Z"));
+        assertThat(dilutedShares.asOfBasis()).isEqualTo(StockAnalysisInput.AsOfBasis.SOURCE_AS_OF);
+        assertThat(dilutedShares.period()).isEqualTo("2026-06-30");
+        assertThat(dilutedShares.identifier()).isEqualTo("shares_outstanding_diluted");
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING")));
+        SERVER.verify(0, getRequestedFor(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES")));
+    }
+
+    @Test
+    void doesNotTreatBasicSharesOutstandingAsDilutedShares() throws Exception {
+        var body = Map.of("symbol", "AVT", "status", "success", "data", List.of(
+                Map.of("date", "2026-06-30", "shares_outstanding_basic", "318000000")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
+
+        var values = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC))
+                .fetch(new ProviderRequest("AVT", Map.of()), Set.of("fundamental.dilutedShares"));
+
+        assertThat(value(values, "fundamental.dilutedShares").value()).isNull();
+        assertThat(value(values, "fundamental.dilutedShares").missingData())
+                .containsExactly("DILUTED_SHARES_NOT_PRESENT");
+    }
+
+    @Test
+    void rejectsConflictingDilutedSharesForOnePeriod() throws Exception {
+        var body = Map.of("symbol", "AVT", "status", "success", "data", List.of(
+                Map.of("date", "2026-06-30", "shares_outstanding_diluted", "321000000"),
+                Map.of("date", "2026-06-30", "shares_outstanding_diluted", "322000000")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
+
+        var values = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC))
+                .fetch(new ProviderRequest("AVT", Map.of()), Set.of("fundamental.dilutedShares"));
+
+        assertThat(value(values, "fundamental.dilutedShares").value()).isNull();
+        assertThat(value(values, "fundamental.dilutedShares").missingData()).containsExactly("SOURCE_CONFLICT");
+    }
+
+    @Test
+    void cachesAlphaResponseOncePerSymbolAndUtcDay() throws Exception {
+        var body = Map.of("symbol", "AVT", "estimates", List.of(
+                row("2027-06-30", "fiscal year", "3.2", "1400")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
+        var provider = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC));
+        var request = new ProviderRequest("AVT", Map.of());
+
+        provider.fetch(request);
+        provider.fetch(request);
+
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES")));
+    }
+
+    @Test
+    void cachesProviderErrorsForTheRemainderOfTheDay() {
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES"))
+                .willReturn(aResponse().withBody("{\"Note\":\"temporary provider message\"}")));
+        var provider = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC));
+        var request = new ProviderRequest("AVT", Map.of());
+
+        assertThatThrownBy(() -> provider.fetch(request)).hasMessage("API_ERROR");
+        assertThatThrownBy(() -> provider.fetch(request)).hasMessage("API_ERROR");
+
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES")));
+    }
+
+    @Test
+    void deduplicatesIdenticalEstimateRowsWithTheSameTypeAndPeriod() throws Exception {
+        var estimate = row("2027-06-30", "fiscal year", "3.2", "1400");
+        var body = Map.of("symbol", "AVT", "estimates", List.of(estimate, estimate));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
+
+        var values = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC))
+                .fetch(new ProviderRequest("AVT", Map.of()));
+
+        assertThat(value(values, "consensus.observations").value()).hasSize(1);
+    }
+
+    @Test
+    void rejectsConflictingEstimateRowsWithTheSameTypeAndPeriod() throws Exception {
+        var first = row("2027-06-30", "fiscal year", "3.2", "1400");
+        var conflicting = row("2027-06-30", "fiscal year", "3.3", "1400");
+        var body = Map.of("symbol", "AVT", "estimates", List.of(first, conflicting));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
+
+        assertThatThrownBy(() -> provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC))
+                .fetch(new ProviderRequest("AVT", Map.of())))
+                .isInstanceOf(ProviderUnavailableException.class)
+                .hasMessage("SOURCE_CONFLICT");
+    }
+
+    @Test
+    void rejectsNonSuccessSharesEndpointStatus() throws Exception {
+        var body = Map.of("symbol", "AVT", "status", "error", "data", List.of());
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
+
+        var values = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC))
+                .fetch(new ProviderRequest("AVT", Map.of()), Set.of("fundamental.dilutedShares"));
+
+        assertThat(value(values, "fundamental.dilutedShares").value()).isNull();
+        assertThat(value(values, "fundamental.dilutedShares").missingData()).containsExactly("API_ERROR");
+    }
+
+    @Test
+    void keepsConsensusWhenSelectedSharesFallbackEndpointFails() throws Exception {
+        var estimates = Map.of("symbol", "AVT", "estimates", List.of(
+                row("2027-06-30", "fiscal year", "3.2", "1400")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(estimates))));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING"))
+                .willReturn(aResponse().withBody("{\"Note\":\"provider quota detail\"}")));
+
+        var values = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC)).fetch(
+                new ProviderRequest("AVT", Map.of()), Set.of("consensus.observations", "fundamental.dilutedShares"));
+
+        assertThat(value(values, "consensus.observations").value()).isNotNull();
+        assertThat(value(values, "fundamental.dilutedShares").value()).isNull();
+        assertThat(value(values, "fundamental.dilutedShares").missingData()).containsExactly("API_ERROR");
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES")));
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING")));
+    }
+
+    @Test
+    void keepsDilutedSharesWhenSelectedConsensusEndpointFails() throws Exception {
+        var shares = Map.of("symbol", "AVT", "status", "success", "data", List.of(
+                Map.of("date", "2026-06-30", "shares_outstanding_diluted", "321000000")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES"))
+                .willReturn(aResponse().withBody("{\"Note\":\"provider quota detail\"}")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING"))
+                .willReturn(aResponse().withBody(MAPPER.writeValueAsString(shares))));
+
+        var values = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC)).fetch(
+                new ProviderRequest("AVT", Map.of()), Set.of("consensus.observations", "fundamental.dilutedShares"));
+
+        assertThat(value(values, "consensus.observations").value()).isNull();
+        assertThat(value(values, "consensus.observations").missingData()).containsExactly("API_ERROR");
+        assertThat(value(values, "fundamental.dilutedShares").value().decimalValue())
+                .isEqualByComparingTo("321000000");
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("EARNINGS_ESTIMATES")));
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query"))
+                .withQueryParam("function", equalTo("SHARES_OUTSTANDING")));
+    }
+
+    @Test
     void alphaAndSecMayUseDynamicMappingWithoutJsonPointers() {
         var configuration = configuration();
 
@@ -145,7 +357,8 @@ class AlphaVantageEarningsEstimatesProviderTest {
                 "fmp", configuration(Map.of("consensus.horizon", "/date"))));
 
         var providers = new StockAnalysisProviderConfiguration()
-                .stockDataProviderRegistry(properties, MAPPER).providers();
+                .stockDataProviderRegistry(properties, MAPPER,
+                        new AlphaVantageDailyRequestCache(MAPPER, Clock.systemUTC(), 25)).providers();
 
         assertThat(providers).filteredOn(provider -> provider.id() == StockDataProviderId.ALPHA_VANTAGE)
                 .singleElement().isInstanceOf(AlphaVantageEarningsEstimatesProvider.class);
@@ -156,7 +369,7 @@ class AlphaVantageEarningsEstimatesProviderTest {
 
         var legacySec = new StockAnalysisProviderConfiguration().stockDataProviderRegistry(
                 new StockAnalysisProviderProperties(Map.of("sec", secConfiguration(Map.of("filing.form", "/form")))),
-                MAPPER).providers();
+                MAPPER, new AlphaVantageDailyRequestCache(MAPPER, Clock.systemUTC(), 25)).providers();
         assertThat(legacySec).singleElement().isInstanceOf(ConfiguredStockDataProvider.class);
     }
 

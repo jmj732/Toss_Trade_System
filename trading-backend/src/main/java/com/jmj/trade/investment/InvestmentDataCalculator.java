@@ -104,14 +104,17 @@ public final class InvestmentDataCalculator {
                 .filter(value -> value.value() != null)
                 .max(Comparator.comparing(ConsensusValue::asOf))
                 .orElse(null);
-        if (prior == null || prior.value().signum() == 0) {
-            return RevisionResult.missing();
+        if (prior == null) {
+            return RevisionResult.insufficientHistory();
+        }
+        if (prior.value().signum() == 0) {
+            return RevisionResult.unverifiedZeroBaseline(prior.asOf());
         }
         var value = current.subtract(prior.value())
                 .divide(prior.value().abs(), MathContext.DECIMAL128)
                 .multiply(BigDecimal.valueOf(100))
                 .setScale(4, RoundingMode.HALF_UP);
-        return new RevisionResult(value, prior.asOf(), DataStatus.OK);
+        return new RevisionResult(value, prior.asOf(), DataStatus.OK, null);
     }
 
     public static BigDecimal invalidationDownside(BigDecimal currentPrice, BigDecimal triggerPrice) {
@@ -196,6 +199,7 @@ public final class InvestmentDataCalculator {
         DATA_MISSING,
         SOURCE_CONFLICT,
         STALE,
+        INSUFFICIENT_HISTORY,
         UNVERIFIED,
         NOT_APPLICABLE
     }
@@ -235,9 +239,21 @@ public final class InvestmentDataCalculator {
     public record ConsensusValue(Instant asOf, BigDecimal value) {
     }
 
-    public record RevisionResult(BigDecimal value, Instant baselineAsOf, DataStatus status) {
+    public record RevisionResult(BigDecimal value, Instant baselineAsOf, DataStatus status, String reason) {
+        public RevisionResult(BigDecimal value, Instant baselineAsOf, DataStatus status) {
+            this(value, baselineAsOf, status, null);
+        }
+
         private static RevisionResult missing() {
-            return new RevisionResult(null, null, DataStatus.DATA_MISSING);
+            return new RevisionResult(null, null, DataStatus.DATA_MISSING, null);
+        }
+
+        private static RevisionResult insufficientHistory() {
+            return new RevisionResult(null, null, DataStatus.INSUFFICIENT_HISTORY, null);
+        }
+
+        private static RevisionResult unverifiedZeroBaseline(Instant baselineAsOf) {
+            return new RevisionResult(null, baselineAsOf, DataStatus.UNVERIFIED, "ZERO_BASELINE");
         }
     }
 }

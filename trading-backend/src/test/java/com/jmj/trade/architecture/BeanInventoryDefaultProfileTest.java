@@ -56,6 +56,7 @@ class BeanInventoryDefaultProfileTest extends PostgresIntegrationTest {
      */
     private static final List<String> GOLDEN_BEANS = List.of(
             "accessTokenService : com.jmj.trade.security.AccessTokenService",
+            "alphaVantageDailyRequestCache : com.jmj.trade.marketdata.AlphaVantageDailyRequestCache",
             "analysisServiceHealthIndicator : com.jmj.trade.observability.AnalysisServiceHealthIndicator",
             "authController : com.jmj.trade.security.AuthController",
             "brokerConnectionErrorHandler : com.jmj.trade.broker.connection.BrokerConnectionErrorHandler",
