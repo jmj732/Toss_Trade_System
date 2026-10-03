@@ -598,6 +598,193 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void tossDailyCandlesPersistRegularClosesIndependentlyOfQuoteSessionAndFmpFailure() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var quoteTimestamp = Instant.parse("2026-10-02T23:50:00Z");
+        var candles = new java.util.ArrayList<>(java.util.stream.IntStream.range(0, 50)
+                .mapToObj(index -> {
+                    var close = BigDecimal.valueOf(100 + index);
+                    return new BrokerSurfaceResponse.CandleView(
+                            LocalDate.of(2025, 3, 1).minusDays(index)
+                                    .atStartOfDay(java.time.ZoneId.of("America/New_York")).toInstant(),
+                            close, close.add(BigDecimal.ONE), close.subtract(BigDecimal.ONE), close,
+                            BigDecimal.ZERO, "USD");
+                })
+                .toList());
+        candles.add(new BrokerSurfaceResponse.CandleView(
+                LocalDate.of(2025, 3, 1).atStartOfDay(java.time.ZoneId.of("America/New_York"))
+                        .toInstant().plusSeconds(60),
+                new BigDecimal("100"), new BigDecimal("101"), new BigDecimal("99"),
+                new BigDecimal("100"), BigDecimal.ZERO, "USD"));
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "USD", quoteTimestamp, quoteTimestamp))));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-10-02")))
+                .thenReturn(calendarResponse("2026-10-02", "2026-10-02T09:30:00-04:00",
+                        "2026-10-02T16:00:00-04:00", "2026-10-02T16:00:00-04:00",
+                        "2026-10-02T20:00:00-04:00"));
+        when(surface.candles(USER_ID, connectionId, "AAPL", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "AAPL", "1d", false, candles, null)));
+
+        assertThat(service(new StockDataProviderRegistry(List.of(provider(true))), surface).capture(USER_ID))
+                .isEqualTo(1);
+
+        var storedBars = jdbc.queryForList("""
+                SELECT regular_close, regular_close_as_of, source
+                  FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND session = 'REGULAR_CLOSE'
+                 ORDER BY regular_close_as_of
+                """, USER_ID);
+        assertThat(storedBars).hasSize(50);
+        assertThat(storedBars).allSatisfy(row -> assertThat(row.get("source")).isEqualTo("TOSS"));
+        assertThat((BigDecimal) storedBars.getLast().get("regular_close")).isEqualByComparingTo("100");
+        assertThat(((java.sql.Timestamp) storedBars.getLast().get("regular_close_as_of")).toInstant())
+                .isEqualTo(Instant.parse("2025-03-01T05:00:00Z"));
+        var tossQuote = jdbc.queryForMap("""
+                SELECT session, latest_price, latest_price_as_of
+                  FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS' AND session = 'AFTER_HOURS'
+                """, USER_ID);
+        assertThat(tossQuote.get("session")).isEqualTo("AFTER_HOURS");
+        assertThat((BigDecimal) tossQuote.get("latest_price")).isEqualByComparingTo("203.40");
+        assertThat(((java.sql.Timestamp) tossQuote.get("latest_price_as_of")).toInstant()).isEqualTo(quoteTimestamp);
+        var technical = jdbc.queryForObject("""
+                SELECT (payload -> 'technical')::text
+                  FROM investment_security_snapshots WHERE user_id = ? AND ticker = 'AAPL'
+                 ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID);
+        var technicalPayload = mapper.readTree(technical);
+        assertThat(technicalPayload.path("dailyObservations").asInt()).isEqualTo(50);
+        assertThat(technicalPayload.path("sma20").isNumber()).isTrue();
+        assertThat(technicalPayload.path("sma50").isNumber()).isTrue();
+        assertThat(technicalPayload.path("rsi14").isNumber()).isTrue();
+        assertThat(jdbc.queryForObject("""
+                SELECT last_error FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, String.class, USER_ID)).isEqualTo("PROVIDER_HTTP_402");
+        assertThat(jdbc.queryForObject("""
+                SELECT payload::text FROM analysis_input_snapshots
+                 WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID)).contains("TOSS_CANDLE_TIMESTAMP_INVALID");
+        verify(surface).candles(USER_ID, connectionId, "AAPL", "1d", 100, null, false);
+        service(new StockDataProviderRegistry(List.of(provider(true))), surface).captureQuoteUpdates(USER_ID);
+        verify(surface, org.mockito.Mockito.times(1)).candles(USER_ID, connectionId, "AAPL", "1d", 100, null, false);
+    }
+
+    @Test
+    void tossDailyCandleFailuresStayMissingAndExposeReasonsInReadiness() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var symbols = List.of("UNAV", "EMPTY", "CURR", "FUT", "DUP", "ZERO");
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        for (var symbol : symbols) {
+            jdbc.update("""
+                    INSERT INTO monitoring_watchlist (id, user_id, symbol, levels, evidence, observed_at, created_at, updated_at)
+                    VALUES (?, ?, ?, '{"prepare":1,"confirm":2,"pullback":3,"invalidate":0}'::jsonb,
+                            '{}'::jsonb, ?, ?, ?)
+                    """, UUID.randomUUID(), USER_ID, symbol, now, now, now);
+        }
+        var surface = mock(BrokerSurfaceService.class);
+        var date = LocalDate.of(2025, 3, 3);
+        var midnight = date.atStartOfDay(java.time.ZoneId.of("America/New_York")).toInstant();
+        var valid = new BrokerSurfaceResponse.CandleView(midnight,
+                new BigDecimal("100"), new BigDecimal("101"), new BigDecimal("99"),
+                new BigDecimal("100"), BigDecimal.ZERO, "USD");
+        when(surface.candles(USER_ID, connectionId, "AAPL", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "AAPL", "1d", false, List.of(valid), null)));
+        when(surface.candles(USER_ID, connectionId, "UNAV", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.unavailable("UPSTREAM_UNAVAILABLE"));
+        when(surface.candles(USER_ID, connectionId, "EMPTY", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "EMPTY", "1d", false, List.of(), null)));
+        when(surface.candles(USER_ID, connectionId, "CURR", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "CURR", "1d", false, List.of(new BrokerSurfaceResponse.CandleView(midnight,
+                                valid.openPrice(), valid.highPrice(), valid.lowPrice(), valid.closePrice(),
+                                valid.volume(), "JPY")), null)));
+        when(surface.candles(USER_ID, connectionId, "FUT", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "FUT", "1d", false, List.of(new BrokerSurfaceResponse.CandleView(
+                                LocalDate.now(java.time.ZoneId.of("America/New_York")).plusDays(30)
+                                        .atStartOfDay(java.time.ZoneId.of("America/New_York")).toInstant(),
+                                valid.openPrice(), valid.highPrice(), valid.lowPrice(), valid.closePrice(),
+                                valid.volume(), "USD")), null)));
+        when(surface.candles(USER_ID, connectionId, "DUP", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "DUP", "1d", false, List.of(valid, new BrokerSurfaceResponse.CandleView(midnight,
+                                new BigDecimal("100"), new BigDecimal("101"), new BigDecimal("99"),
+                                new BigDecimal("100.5"), BigDecimal.ZERO, "USD")), null)));
+        when(surface.candles(USER_ID, connectionId, "ZERO", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "ZERO", "1d", false, List.of(new BrokerSurfaceResponse.CandleView(midnight,
+                                BigDecimal.ZERO, BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ZERO,
+                                BigDecimal.ZERO, "USD")), null)));
+
+        assertThat(service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID))
+                .isEqualTo(symbols.size() + 1);
+
+        var reasons = Map.of(
+                "UNAV", "TOSS_CANDLES_UNAVAILABLE",
+                "EMPTY", "TOSS_CANDLES_EMPTY",
+                "CURR", "TOSS_CANDLE_CURRENCY_MISMATCH",
+                "FUT", "TOSS_CANDLE_FUTURE",
+                "DUP", "TOSS_CANDLE_DUPLICATE_CONFLICT",
+                "ZERO", "TOSS_CANDLE_PRICE_INVALID");
+        for (var entry : reasons.entrySet()) {
+            var payload = mapper.readTree(jdbc.queryForObject("""
+                    SELECT payload::text FROM investment_security_snapshots
+                     WHERE user_id = ? AND ticker = ? ORDER BY created_at DESC LIMIT 1
+                    """, String.class, USER_ID, entry.getKey()));
+            var missing = new java.util.ArrayList<String>();
+            payload.path("readiness").path("missingFields").forEach(item -> missing.add(item.asText()));
+            assertThat(missing).contains("price.regularClose", "price.regularClose." + entry.getValue());
+        }
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_price_snapshots
+                 WHERE user_id = ? AND session = 'REGULAR_CLOSE'
+                """, Integer.class, USER_ID)).isEqualTo(1);
+        var validWithoutQuote = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        assertThat(validWithoutQuote.path("price").path("regularClose").decimalValue())
+                .isEqualByComparingTo("100");
+        assertThat(validWithoutQuote.path("price").path("latestPrice").isNull()).isTrue();
+    }
+
+    @Test
+    void tossCandleFinalityRequiresOfficialCalendarEndAndUnambiguousTradeDate() throws Exception {
+        var tradeDate = LocalDate.parse("2026-10-02");
+        var regular = mapper.readTree("""
+                {"today":{"date":"2026-10-02","regularMarket":{
+                  "startTime":"2026-10-02T22:30:00.000+09:00",
+                  "endTime":"2026-10-03T05:00:00.000+09:00"}}}
+                """);
+        var end = Instant.parse("2026-10-02T20:00:00Z");
+        assertThat(InvestmentContextService.tossCandleFinalityReason(tradeDate, regular, end.minusNanos(1)))
+                .isEqualTo("TOSS_CANDLE_NOT_FINAL");
+        assertThat(InvestmentContextService.tossCandleFinalityReason(tradeDate, regular, end)).isNull();
+        assertThat(InvestmentContextService.tossCandleFinalityReason(tradeDate, null, end))
+                .isEqualTo("TOSS_CANDLE_SESSION_UNVERIFIED");
+        var mismatched = mapper.readTree("""
+                {"today":{"date":"2026-10-03","regularMarket":{
+                  "startTime":"2026-10-03T09:30:00-04:00","endTime":"2026-10-03T16:00:00-04:00"}}}
+                """);
+        assertThat(InvestmentContextService.tossCandleFinalityReason(tradeDate, mismatched, end))
+                .isEqualTo("TOSS_CANDLE_SESSION_UNVERIFIED");
+        var ambiguous = mapper.readTree("""
+                {"today":{"date":"2026-10-02","regularMarket":{
+                  "startTime":"2026-10-02T09:30:00-04:00","endTime":"2026-10-02T16:00:00-04:00"}},
+                 "previousBusinessDay":{"date":"2026-10-02","regularMarket":{
+                  "startTime":"2026-10-02T09:30:00-04:00","endTime":"2026-10-02T16:00:00-04:00"}}}
+                """);
+        assertThat(InvestmentContextService.tossCandleFinalityReason(tradeDate, ambiguous, end))
+                .isEqualTo("TOSS_CANDLE_SESSION_UNVERIFIED");
+    }
+
+    @Test
     void tossCalendarDateMismatchKeepsQuotePartialWithoutPersistingAClassifiedPrice() throws Exception {
         var connectionId = insertActiveTossConnection();
         var quoteTimestamp = Instant.parse("2026-07-06T14:00:00Z");

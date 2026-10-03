@@ -70,8 +70,9 @@ The [official TOSS OpenAPI spec](https://openapi.tossinvest.com/openapi-docs/lat
 (`2026-10-02T23:50:00Z`). AVT and CSTM quote timestamps were within that returned after-market
 interval; LUNR and RDW timestamps were after its end. Keep LUNR/RDW session null and `PARTIAL`
 until a returned calendar interval classifies the quote. Do not use wall-clock time to assign a
-session. An after-market quote is not a regular close; `regularClose` remains missing unless a
-dated EOD source supplies it.
+session. An after-market quote is not a regular close. The TOSS daily-candle endpoint is
+integrated in the backend source for full captures; deployment verification is pending, and
+stored rows remain missing until a full capture persists the daily bar.
 
 A read-only check at `2026-10-03T07:01:31Z` found backend image
 `e0111c6a4ae677bd9d21d593e899ad3497a78a11` healthy and ready with Flyway 52 successful. All
@@ -82,6 +83,49 @@ read-time view, or to the stored snapshot status as a separate target. New captu
 calendar-derived missing reason in input snapshots. Context and Sheet expose it after a new
 security snapshot is persisted and the normal Sheet sync runs; existing snapshots retain their
 original payload. No historical rewrite or manual capture was performed.
+
+### TOSS daily-candle evidence and EOD capture (2026-10-03)
+
+The [official FAQ](https://openapi.tossinvest.com/openapi-docs/faq.md) and [OpenAPI spec](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json)
+document `GET /api/v1/candles` daily bars, a maximum of 200 rows per page, and `adjusted=false`
+for unadjusted prices. The FAQ says daily `timestamp` is the trade-date label at 00:00, and US
+daily OHLC uses the official regular-session close; pre-market, after-market, and day-market
+trades are excluded from OHLC. This label is not a 16:00 close timestamp. The FAQ also warns
+that coverage is from selected US exchanges rather than consolidated NBBO and that daily volume
+can include off-session activity, so candle volume is not a whole-market regular-session total.
+
+A read-only provider probe at `2026-10-03T10:00:47Z` requested one `interval=1d`,
+`count=200`, `adjusted=false` page for AVT, CSTM, LUNR, and RDW. All four returned HTTP 200,
+200 valid USD rows, the documented OHLCV/timestamp/currency fields, and a pagination cursor.
+Each page spanned `2025-12-16` through `2026-10-02`; the latest bar was labeled
+`2026-10-02T13:00:00.000+09:00` (equivalent to `2026-10-02T00:00:00-04:00`). The preceding
+two labels were `2026-10-01T13:00:00.000+09:00` and `2026-09-30T13:00:00.000+09:00` for all
+four tickers. The US calendar returned the regular session for 2026-10-02 as
+`2026-10-02T22:30:00+09:00` through `2026-10-03T05:00:00+09:00` (09:30–16:00 New York); its
+2026-10-03 Saturday entry had no regular market. The read-only `/api/v1/stocks` response
+contained all four common-share records with positive `sharesOutstanding` fields. Those fields
+represent issued shares; they are not the SEC weighted-average `dilutedShares` field, and their
+as-of basis is unknown. No shares mapping is planned in this change.
+
+The DB/Sheet baseline at `2026-10-03T10:09:33Z` was on healthy image
+`ce5e0c1628d940509dae39a2bac6dbf8c2602f6a`, readiness was `UP`, and Flyway 52 had succeeded.
+The latest four DB snapshots had no `regularClose`, regular-close history, or SMA20/SMA50/RSI14
+values. Corresponding Sheet fields were blank and matched the DB. `SECURITY_DATA` was
+`FAILED/PROVIDER_HTTP_429`; the stored status was `STALE` for AVT/CSTM and `PARTIAL` for
+LUNR/RDW, while the Sheet showed `STALE` for all four. This baseline predates the EOD capture
+implementation and is not deployment validation. Deployment verification is pending.
+
+The implementation uses the existing backend surface during full `SECURITY_DATA` capture: it
+requests one 100-row daily page with `adjusted=false`, persists each candle's provider timestamp
+and the trade-date label obtained by converting that timestamp to `America/New_York`, and
+calculates only SMA20, SMA50, and RSI14 in the existing V52 fields. Quote-only updates make no
+candle request, and quote-session classification remains independent. Older trade-date bars are
+eligible as final. For the current New York date, a bar is eligible only when the official
+calendar returns a valid matching `regularMarket` whose `endTime` is at or before collection
+time. If no such market interval is available, including when `regularMarket` is null, omit
+today's bar with its missing reason. Derive the trade date from the actual candle timestamp;
+never guess a 16:00 close time or infer eligibility from wall-clock date alone. No new
+migration, dependency, sheet tab, or shares mapping is in scope.
 
 ### Route and symbol acceptance
 
@@ -110,6 +154,11 @@ The credentialed overlay calls these six FMP Stable API routes. Each request als
 ### Analyst-estimate probe
 
 The `2026-10-02 15:41 UTC` FMP/Finnhub probe remains historical. Alpha Vantage was tested on October 3; its fifth (AVT schema) response was captured at `2026-10-03T01:44:33.982953Z`. This checked provider access and response shape, not application integration or deployment.
+
+The official Alpha Vantage documentation and available MCP material do not establish an
+observation-time basis for its trailing EPS averages or revision counts. Those fields are not
+mapped as historical consensus observations; canonical revision fields remain `DATA_MISSING`,
+and no snapshots are backdated.
 
 | Provider and documented request | Result for AVT, CSTM, LUNR, and RDW |
 |---|---|

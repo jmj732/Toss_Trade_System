@@ -171,6 +171,9 @@ public final class InvestmentContextService {
                 var input = assembler.assemble(symbol, Map.of(), selectedFields);
                 if (tossQuotes != null) {
                     input = withTossQuote(userId, input, tossQuotes, calendars);
+                    if (selectedFields == null) {
+                        input = withTossCandles(userId, input, tossQuotes, calendars);
+                    }
                 }
                 var capturedInput = input;
                 transaction.execute(status -> persistCapture(userId, capturedInput, selectedFields == null));
@@ -332,9 +335,7 @@ public final class InvestmentContextService {
                 "price.latestPrice", priceValue, "USD", null, null, StockDataProviderId.TOSS,
                 asOf, collectedAt, List.of()));
         var marketDate = asOf.atZone(NEW_YORK).toLocalDate();
-        var calendar = calendars.containsKey(marketDate)
-                ? calendars.get(marketDate) : tossCalendar(userId, source.connectionId(), marketDate);
-        calendars.put(marketDate, calendar);
+        var calendar = tossCalendarCached(userId, source.connectionId(), marketDate, calendars);
         var sessionResult = tossSessionResult(asOf, marketDate, calendar);
         if (sessionResult.session() == null) {
             observations.add(tossMissing("price.session", sessionResult.missingReason(), collectedAt));
@@ -344,6 +345,163 @@ public final class InvestmentContextService {
                     StockDataProviderId.TOSS, asOf, collectedAt, List.of()));
         }
         return withObservations(input, observations);
+    }
+
+    private StockAnalysisInput withTossCandles(
+            UUID userId,
+            StockAnalysisInput input,
+            TossQuoteSource source,
+            Map<LocalDate, JsonNode> calendars
+    ) {
+        var observations = new ArrayList<>(input.observations());
+        var collectedAt = input.collectedAt();
+        try {
+            var response = brokerSurface.candles(
+                    userId, source.connectionId(), input.symbol(), "1d", 100, null, false);
+            if (response == null || response.unavailable() || response.data() == null) {
+                observations.add(tossMissing(
+                        "price.regularCloseHistory", "TOSS_CANDLES_UNAVAILABLE", collectedAt));
+                return withObservations(input, observations);
+            }
+            var series = response.data();
+            if (!input.symbol().equalsIgnoreCase(series.symbol()) || !"1d".equals(series.interval())
+                    || series.adjusted()) {
+                observations.add(tossMissing(
+                        "price.regularCloseHistory", "TOSS_CANDLES_CONTRACT_INVALID", collectedAt));
+                return withObservations(input, observations);
+            }
+            if (series.candles().isEmpty()) {
+                observations.add(tossMissing("price.regularCloseHistory", "TOSS_CANDLES_EMPTY", collectedAt));
+                return withObservations(input, observations);
+            }
+
+            var marketDate = collectedAt.atZone(NEW_YORK).toLocalDate();
+            var candlesByDate = new java.util.TreeMap<LocalDate, BrokerSurfaceResponse.CandleView>();
+            var conflictingDates = new java.util.HashSet<LocalDate>();
+            var rejected = new LinkedHashSet<String>();
+            for (var candle : series.candles()) {
+                if (candle == null || candle.timestamp() == null) {
+                    rejected.add("TOSS_CANDLE_TIMESTAMP_MISSING");
+                    continue;
+                }
+                if (candle.currency() == null || !"USD".equalsIgnoreCase(candle.currency())) {
+                    rejected.add("TOSS_CANDLE_CURRENCY_MISMATCH");
+                    continue;
+                }
+                if (candle.openPrice() == null || candle.highPrice() == null || candle.lowPrice() == null
+                        || candle.closePrice() == null || candle.openPrice().signum() <= 0
+                        || candle.highPrice().signum() <= 0 || candle.lowPrice().signum() <= 0
+                        || candle.closePrice().signum() <= 0
+                        || candle.highPrice().compareTo(candle.openPrice()) < 0
+                        || candle.highPrice().compareTo(candle.closePrice()) < 0
+                        || candle.lowPrice().compareTo(candle.openPrice()) > 0
+                        || candle.lowPrice().compareTo(candle.closePrice()) > 0
+                        || candle.highPrice().compareTo(candle.lowPrice()) < 0) {
+                    rejected.add("TOSS_CANDLE_PRICE_INVALID");
+                    continue;
+                }
+                if (candle.volume() == null || candle.volume().signum() < 0) {
+                    rejected.add("TOSS_CANDLE_VOLUME_INVALID");
+                    continue;
+                }
+                if (candle.timestamp().isAfter(collectedAt)) {
+                    rejected.add("TOSS_CANDLE_FUTURE");
+                    continue;
+                }
+                var candleTime = candle.timestamp().atZone(NEW_YORK);
+                if (!candleTime.toLocalTime().equals(java.time.LocalTime.MIDNIGHT)) {
+                    rejected.add("TOSS_CANDLE_TIMESTAMP_INVALID");
+                    continue;
+                }
+                var date = candleTime.toLocalDate();
+                if (date.isAfter(marketDate)) {
+                    rejected.add("TOSS_CANDLE_FUTURE");
+                    continue;
+                }
+                if (date.equals(marketDate)) {
+                    var calendar = tossCalendarCached(userId, source.connectionId(), date, calendars);
+                    var finality = tossCandleFinalityReason(date, calendar, collectedAt);
+                    if (finality != null) {
+                        rejected.add(finality);
+                        continue;
+                    }
+                }
+                var previous = candlesByDate.putIfAbsent(date, candle);
+                if (previous != null && !sameCandle(previous, candle)) conflictingDates.add(date);
+            }
+            conflictingDates.forEach(candlesByDate::remove);
+            if (!conflictingDates.isEmpty()) rejected.add("TOSS_CANDLE_DUPLICATE_CONFLICT");
+            if (candlesByDate.isEmpty()) {
+                if (rejected.isEmpty()) rejected.add("TOSS_CANDLES_EMPTY");
+                rejected.forEach(reason -> observations.add(
+                        tossMissing("price.regularCloseHistory", reason, collectedAt)));
+                return withObservations(input, observations);
+            }
+
+            var rows = objectMapper.createArrayNode();
+            candlesByDate.forEach((date, candle) -> {
+                var row = rows.addObject();
+                row.put("date", date.toString());
+                row.put("timestamp", candle.timestamp().toString());
+                row.put("session", "REGULAR_CLOSE");
+                row.put("open", candle.openPrice());
+                row.put("high", candle.highPrice());
+                row.put("low", candle.lowPrice());
+                row.put("close", candle.closePrice());
+                row.put("volume", candle.volume());
+                row.put("currency", candle.currency());
+            });
+            observations.add(new StockAnalysisInput.Observation(
+                    "price.regularCloseHistory", rows, null, null, null, StockDataProviderId.TOSS,
+                    null, collectedAt, List.of("AS_OF_UNAVAILABLE")));
+            rejected.forEach(reason -> observations.add(
+                    tossMissing("price.regularCloseHistory", reason, collectedAt)));
+        } catch (RuntimeException ignored) {
+            observations.add(tossMissing("price.regularCloseHistory", "TOSS_CANDLES_UNAVAILABLE", collectedAt));
+        }
+        return withObservations(input, observations);
+    }
+
+    private JsonNode tossCalendarCached(
+            UUID userId, UUID connectionId, LocalDate date, Map<LocalDate, JsonNode> calendars
+    ) {
+        if (!calendars.containsKey(date)) calendars.put(date, tossCalendar(userId, connectionId, date));
+        return calendars.get(date);
+    }
+
+    static String tossCandleFinalityReason(LocalDate date, JsonNode calendar, Instant now) {
+        if (date == null || calendar == null || now == null) return "TOSS_CANDLE_SESSION_UNVERIFIED";
+        JsonNode matchingDay = null;
+        var matchingDays = 0;
+        for (var dayName : List.of("today", "previousBusinessDay", "nextBusinessDay")) {
+            var day = calendar.path(dayName);
+            if (date.toString().equals(day.path("date").asText(null))) {
+                matchingDay = day;
+                matchingDays++;
+            }
+        }
+        if (matchingDays != 1) return "TOSS_CANDLE_SESSION_UNVERIFIED";
+        var interval = matchingDay.path("regularMarket");
+        if (!interval.isObject()) return "TOSS_CANDLE_SESSION_UNVERIFIED";
+        var start = tossCalendarBound(interval, "startTime", "open", "openTime", "start");
+        var end = tossCalendarBound(interval, "endTime", "close", "closeTime", "end");
+        if (start == null || end == null || !start.isBefore(end)
+                || !date.equals(start.atZone(NEW_YORK).toLocalDate())
+                || !date.equals(end.minusNanos(1).atZone(NEW_YORK).toLocalDate())) {
+            return "TOSS_CANDLE_SESSION_UNVERIFIED";
+        }
+        return end.isAfter(now) ? "TOSS_CANDLE_NOT_FINAL" : null;
+    }
+
+    private static boolean sameCandle(
+            BrokerSurfaceResponse.CandleView left, BrokerSurfaceResponse.CandleView right
+    ) {
+        return left.openPrice().compareTo(right.openPrice()) == 0
+                && left.highPrice().compareTo(right.highPrice()) == 0
+                && left.lowPrice().compareTo(right.lowPrice()) == 0
+                && left.closePrice().compareTo(right.closePrice()) == 0
+                && left.volume().compareTo(right.volume()) == 0
+                && left.currency().equalsIgnoreCase(right.currency());
     }
 
     private JsonNode tossCalendar(UUID userId, UUID connectionId, LocalDate date) {
@@ -941,7 +1099,8 @@ public final class InvestmentContextService {
             var latest = observation(values, "price.latestPrice");
             var close = observation(values, "price.regularClose");
             var session = text(value(values, "price.session"));
-            var latestHistory = regularCloseBars(value(values, "price.regularCloseHistory"), session, collectedAt)
+            var latestHistory = regularCloseBars(
+                    value(values, "price.regularCloseHistory"), session, provider, collectedAt)
                     .stream().max(Comparator.comparing(PriceBar::asOf)).orElse(null);
             var closePrice = decimal(close == null ? null : close.value());
             var closeAsOf = close == null ? null : close.asOf();
@@ -997,7 +1156,8 @@ public final class InvestmentContextService {
         if (provider == null) return;
         var session = normalizeSession(text(value(values, "price.session")));
         var history = observation(values, "price.regularCloseHistory");
-        for (var bar : regularCloseBars(history == null ? null : history.value(), session, input.collectedAt())) {
+        for (var bar : regularCloseBars(
+                history == null ? null : history.value(), session, provider, input.collectedAt())) {
             jdbc.update("""
                     INSERT INTO investment_price_snapshots (
                         id, user_id, input_snapshot_id, ticker, as_of, session,
@@ -1009,12 +1169,15 @@ public final class InvestmentContextService {
         }
     }
 
-    private static List<PriceBar> regularCloseBars(JsonNode value, String session, Instant collectedAt) {
-        if (!"REGULAR_CLOSE".equals(normalizeSession(session)) || value == null || !value.isArray()
-                || collectedAt == null) {
+    private static List<PriceBar> regularCloseBars(
+            JsonNode value, String session, StockDataProviderId provider, Instant collectedAt
+    ) {
+        var tossHistory = provider == StockDataProviderId.TOSS;
+        if ((!tossHistory && !"REGULAR_CLOSE".equals(normalizeSession(session)))
+                || value == null || !value.isArray() || collectedAt == null) {
             return List.of();
         }
-        var closesByDate = new java.util.TreeMap<LocalDate, BigDecimal>();
+        var closesByDate = new java.util.TreeMap<LocalDate, PriceBar>();
         var conflictingDates = new java.util.HashSet<LocalDate>();
         var latestAllowedDate = collectedAt.atZone(ZoneOffset.UTC).toLocalDate();
         for (var row : value) {
@@ -1028,14 +1191,26 @@ public final class InvestmentContextService {
             } catch (RuntimeException exception) {
                 continue;
             }
-            if (date.isAfter(latestAllowedDate)) continue;
-            var previous = closesByDate.putIfAbsent(date, close);
-            if (previous != null && previous.compareTo(close) != 0) conflictingDates.add(date);
+            final Instant asOf;
+            if (tossHistory) {
+                if (!"REGULAR_CLOSE".equals(normalizeSession(text(row.get("session"))))) continue;
+                try {
+                    asOf = OffsetDateTime.parse(text(row.get("timestamp"))).toInstant();
+                } catch (RuntimeException exception) {
+                    continue;
+                }
+                var candleTime = asOf.atZone(NEW_YORK);
+                if (asOf.isAfter(collectedAt) || !date.equals(candleTime.toLocalDate())
+                        || !candleTime.toLocalTime().equals(java.time.LocalTime.MIDNIGHT)) continue;
+            } else {
+                if (date.isAfter(latestAllowedDate)) continue;
+                asOf = date.atStartOfDay(ZoneOffset.UTC).toInstant();
+            }
+            var previous = closesByDate.putIfAbsent(date, new PriceBar(close, asOf));
+            if (previous != null && previous.close().compareTo(close) != 0) conflictingDates.add(date);
         }
         conflictingDates.forEach(closesByDate::remove);
-        return closesByDate.entrySet().stream()
-                .map(entry -> new PriceBar(entry.getValue(), entry.getKey().atStartOfDay(ZoneOffset.UTC).toInstant()))
-                .toList();
+        return List.copyOf(closesByDate.values());
     }
 
     private void markPipeline(UUID userId, String pipeline, String status, Instant lastSuccess, String error) {
@@ -1432,6 +1607,16 @@ public final class InvestmentContextService {
         var overall = overall(statuses);
         var missing = new ArrayList<String>();
         if (price.latestPrice() == null) missing.add("price.latestPrice");
+        if (price.regularClose() == null) {
+            missing.add("price.regularClose");
+            input.observations().stream()
+                    .filter(observation -> "price.regularCloseHistory".equals(observation.field())
+                            && observation.provider() == StockDataProviderId.TOSS && observation.value() == null)
+                    .flatMap(observation -> observation.missingData().stream())
+                    .filter(reason -> reason.startsWith("TOSS_CANDLE"))
+                    .map(reason -> "price.regularClose." + reason)
+                    .forEach(missing::add);
+        }
         if (technical.sma20() == null) missing.add("technical.sma20");
         if (technical.sma50() == null) missing.add("technical.sma50");
         if (technical.rsi14() == null) missing.add("technical.rsi14");
