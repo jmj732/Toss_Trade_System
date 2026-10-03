@@ -67,10 +67,13 @@ class OperationalReadinessServiceTest {
     }
 
     @Test
-    void dynamicAlphaAndEndpointOnlyProvidersAreConfiguredWithoutBroadeningEmptyGenericProviders() {
+    void dynamicAlphaSecAndEndpointOnlyProvidersAreConfiguredWithoutBroadeningEmptyGenericProviders() {
         var alpha = new OperationalReadinessService.ProviderConfiguration(true,
                 URI.create("https://www.alphavantage.co/query"), Map.of(), false, "key", "");
         assertThat(OperationalReadinessService.configured(StockDataProviderId.ALPHA_VANTAGE, alpha)).isTrue();
+        var sec = new OperationalReadinessService.ProviderConfiguration(true,
+                URI.create("https://data.sec.gov"), Map.of(), false, "", "support@example.com");
+        assertThat(OperationalReadinessService.configured(StockDataProviderId.SEC, sec)).isTrue();
         var alphaStatus = OperationalReadinessService.classify(true, true,
                 List.of("consensus.currency"), NOW.minusSeconds(1), NOW, NOW, Duration.ofMinutes(5));
         assertThat(alphaStatus.status()).isEqualTo("DEGRADED");

@@ -478,7 +478,9 @@ public final class InvestmentContextService {
                 fiscalYear, fiscalPeriodCode, value(values, "fundamental.incomeHistory"), revenue)
                 : decimal(value(values, "fundamental.revenueGrowthYoY"));
         var dilutedSharesObservation = observation(values, "fundamental.dilutedShares");
-        var dilutedSharesBasis = fmp && dilutedSharesObservation != null ? "WEIGHTED_AVERAGE_TTM" : null;
+        var dilutedSharesBasis = fmp && dilutedSharesObservation != null ? "WEIGHTED_AVERAGE_TTM"
+                : source == StockDataProviderId.SEC && dilutedSharesObservation != null
+                ? text(value(values, "fundamental.dilutedSharesBasis")) : null;
         var financialAsOf = fmp && financialDate != null
                 ? financialDate.atStartOfDay(ZoneOffset.UTC).toInstant() : latestAsOf(values, "fundamental.");
         var count = marketCap != null ? 1 : 0;

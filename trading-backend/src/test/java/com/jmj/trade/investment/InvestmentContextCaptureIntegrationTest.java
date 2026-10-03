@@ -175,6 +175,39 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void secPersistsAnnualWeightedShareBasisWithoutInventingMarketValue() {
+        var period = LocalDate.of(2025, 9, 30);
+        var provider = providerWithValues(List.of(
+                text("fundamental.fiscalPeriod", period.toString(), period),
+                text("fundamental.reportedAt", "2025-11-10T12:00:00Z", period),
+                text("fundamental.fiscalYear", "2025", period),
+                text("fundamental.fiscalPeriodCode", "FY", period),
+                decimal("fundamental.cash", "50", period),
+                decimal("fundamental.debt", "40", period),
+                decimal("fundamental.dilutedShares", "1000000", period),
+                text("fundamental.dilutedSharesBasis", "WEIGHTED_AVERAGE_FY", period),
+                decimal("fundamental.revenueTTM", "1000", period),
+                decimal("fundamental.eps", "5.2", period),
+                decimal("fundamental.fcfTTM", "90", period)), StockDataProviderId.SEC);
+
+        assertThat(service(provider).capture(USER_ID)).isEqualTo(1);
+
+        var row = jdbc.queryForMap("""
+                SELECT source, fiscal_period, reported_at, as_of, diluted_shares, diluted_shares_basis,
+                       market_cap, enterprise_value
+                  FROM fundamental_snapshots WHERE user_id = ? AND ticker = 'AAPL'
+                """, USER_ID);
+        assertThat(row.get("source")).isEqualTo("SEC");
+        assertThat(row.get("fiscal_period")).isEqualTo(period.toString());
+        assertThat(row.get("as_of").toString()).contains(period.toString());
+        assertThat(row.get("reported_at").toString()).contains("2025-11-10");
+        assertThat((BigDecimal) row.get("diluted_shares")).isEqualByComparingTo("1000000");
+        assertThat(row.get("diluted_shares_basis")).isEqualTo("WEIGHTED_AVERAGE_FY");
+        assertThat(row.get("market_cap")).isNull();
+        assertThat(row.get("enterprise_value")).isNull();
+    }
+
+    @Test
     void mismatchedFmpStatementPeriodsAreNotJoinedOrPersistedAsFundamentals() {
         var period = LocalDate.now(ZoneOffset.UTC).minusDays(45);
         var filingDate = period.plusDays(35);

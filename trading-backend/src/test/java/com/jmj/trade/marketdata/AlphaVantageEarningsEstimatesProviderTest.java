@@ -125,10 +125,12 @@ class AlphaVantageEarningsEstimatesProviderTest {
     }
 
     @Test
-    void onlyAlphaVantageMayUseDynamicMappingWithoutJsonPointers() {
+    void alphaAndSecMayUseDynamicMappingWithoutJsonPointers() {
         var configuration = configuration();
 
         assertThatCode(() -> new StockAnalysisProviderProperties(Map.of("alpha-vantage", configuration)))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> new StockAnalysisProviderProperties(Map.of("sec", configuration)))
                 .doesNotThrowAnyException();
         assertThatThrownBy(() -> new StockAnalysisProviderProperties(Map.of("fmp", configuration)))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -139,6 +141,7 @@ class AlphaVantageEarningsEstimatesProviderTest {
     void providerFactoryUsesAlphaMapperAndKeepsGenericFmpProvider() {
         var properties = new StockAnalysisProviderProperties(Map.of(
                 "alpha-vantage", configuration(),
+                "sec", secConfiguration(),
                 "fmp", configuration(Map.of("consensus.horizon", "/date"))));
 
         var providers = new StockAnalysisProviderConfiguration()
@@ -146,8 +149,15 @@ class AlphaVantageEarningsEstimatesProviderTest {
 
         assertThat(providers).filteredOn(provider -> provider.id() == StockDataProviderId.ALPHA_VANTAGE)
                 .singleElement().isInstanceOf(AlphaVantageEarningsEstimatesProvider.class);
+        assertThat(providers).filteredOn(provider -> provider.id() == StockDataProviderId.SEC)
+                .singleElement().isInstanceOf(SecCompanyFactsProvider.class);
         assertThat(providers).filteredOn(provider -> provider.id() == StockDataProviderId.FMP)
                 .singleElement().isInstanceOf(ConfiguredStockDataProvider.class);
+
+        var legacySec = new StockAnalysisProviderConfiguration().stockDataProviderRegistry(
+                new StockAnalysisProviderProperties(Map.of("sec", secConfiguration(Map.of("filing.form", "/form")))),
+                MAPPER).providers();
+        assertThat(legacySec).singleElement().isInstanceOf(ConfiguredStockDataProvider.class);
     }
 
     @Test
@@ -176,6 +186,18 @@ class AlphaVantageEarningsEstimatesProviderTest {
                 Map.of("function", "EARNINGS_ESTIMATES"), Set.of(), "", Map.of(), Map.of(), Map.of(), Map.of(),
                 "INSTANT", Duration.ofSeconds(1), Duration.ofSeconds(1), 0, Duration.ZERO,
                 1000, Duration.ofSeconds(1), "", fields);
+    }
+
+    private static StockAnalysisProviderProperties.ProviderConfiguration secConfiguration() {
+        return secConfiguration(Map.of());
+    }
+
+    private static StockAnalysisProviderProperties.ProviderConfiguration secConfiguration(Map<String, String> fields) {
+        return new StockAnalysisProviderProperties.ProviderConfiguration(
+                true, false, URI.create(SERVER.baseUrl()), "/", "", "", "", Map.of(), Set.of(),
+                "test@example.com", Map.of(), Map.of(), Map.of(), Map.of(), "INSTANT",
+                Duration.ofSeconds(1), Duration.ofSeconds(1), 0, Duration.ZERO,
+                10, Duration.ofSeconds(1), "", fields);
     }
 
     private static Map<String, Object> row(String date, String horizon, String eps, String revenue) {
