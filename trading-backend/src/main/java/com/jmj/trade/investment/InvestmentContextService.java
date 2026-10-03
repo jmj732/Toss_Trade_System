@@ -335,12 +335,12 @@ public final class InvestmentContextService {
         var calendar = calendars.containsKey(marketDate)
                 ? calendars.get(marketDate) : tossCalendar(userId, source.connectionId(), marketDate);
         calendars.put(marketDate, calendar);
-        var session = tossSession(asOf, marketDate, calendar);
-        if (session == null) {
-            observations.add(tossMissing("price.session", "TOSS_SESSION_UNVERIFIED", collectedAt));
+        var sessionResult = tossSessionResult(asOf, marketDate, calendar);
+        if (sessionResult.session() == null) {
+            observations.add(tossMissing("price.session", sessionResult.missingReason(), collectedAt));
         } else {
             observations.add(new StockAnalysisInput.Observation(
-                    "price.session", objectMapper.valueToTree(session), null, null, null,
+                    "price.session", objectMapper.valueToTree(sessionResult.session()), null, null, null,
                     StockDataProviderId.TOSS, asOf, collectedAt, List.of()));
         }
         return withObservations(input, observations);
@@ -358,9 +358,15 @@ public final class InvestmentContextService {
     }
 
     static String tossSession(Instant quoteTimestamp, LocalDate marketDate, JsonNode calendar) {
+        return tossSessionResult(quoteTimestamp, marketDate, calendar).session();
+    }
+
+    private static TossSessionResult tossSessionResult(
+            Instant quoteTimestamp, LocalDate marketDate, JsonNode calendar
+    ) {
         if (quoteTimestamp == null || marketDate == null || calendar == null
                 || !marketDate.equals(quoteTimestamp.atZone(NEW_YORK).toLocalDate())) {
-            return null;
+            return new TossSessionResult(null, "TOSS_SESSION_UNVERIFIED");
         }
         JsonNode matchingDay = null;
         var matchingDays = 0;
@@ -371,32 +377,54 @@ public final class InvestmentContextService {
                 matchingDays++;
             }
         }
-        if (matchingDays != 1) return null;
+        if (matchingDays != 1) return new TossSessionResult(null, "TOSS_SESSION_UNVERIFIED");
         var matches = new ArrayList<String>();
-        addTossSessionMatch(matches, matchingDay, "preMarket", "PREMARKET", quoteTimestamp, marketDate);
-        addTossSessionMatch(matches, matchingDay, "regularMarket", "LIVE_REGULAR", quoteTimestamp, marketDate);
-        addTossSessionMatch(matches, matchingDay, "afterMarket", "AFTER_HOURS", quoteTimestamp, marketDate);
-        return matches.size() == 1 ? matches.getFirst() : null;
-    }
-
-    private static void addTossSessionMatch(
-            List<String> matches, JsonNode today, String field, String session,
-            Instant quoteTimestamp, LocalDate marketDate
-    ) {
-        var interval = today.path(field);
-        if (!interval.isObject()) return;
-        try {
+        var intervalCount = 0;
+        var allIntervalsVerified = true;
+        var unsupportedSessionMatched = false;
+        for (var field : List.of("dayMarket", "preMarket", "regularMarket", "afterMarket")) {
+            var interval = matchingDay.get(field);
+            if (interval == null || interval.isNull()) continue;
+            intervalCount++;
+            if (!interval.isObject()) {
+                allIntervalsVerified = false;
+                continue;
+            }
             var start = tossCalendarBound(interval, "startTime", "open", "openTime", "start");
             var end = tossCalendarBound(interval, "endTime", "close", "closeTime", "end");
-            if (start == null || end == null || !start.isBefore(end)
-                    || !start.atZone(NEW_YORK).toLocalDate().equals(marketDate)
-                    || !end.minusNanos(1).atZone(NEW_YORK).toLocalDate().equals(marketDate)) {
-                return;
+            if (start == null || end == null || !start.isBefore(end)) {
+                allIntervalsVerified = false;
+                continue;
             }
-            if (!quoteTimestamp.isBefore(start) && quoteTimestamp.isBefore(end)) matches.add(session);
-        } catch (RuntimeException ignored) {
-            // A session without complete offset-aware bounds cannot classify this quote.
+            if (!"dayMarket".equals(field)
+                    && (!start.atZone(NEW_YORK).toLocalDate().equals(marketDate)
+                    || !end.minusNanos(1).atZone(NEW_YORK).toLocalDate().equals(marketDate))) {
+                allIntervalsVerified = false;
+                continue;
+            }
+            if (!quoteTimestamp.isBefore(start) && quoteTimestamp.isBefore(end)) {
+                if ("dayMarket".equals(field)) {
+                    unsupportedSessionMatched = true;
+                } else {
+                    matches.add(switch (field) {
+                        case "preMarket" -> "PREMARKET";
+                        case "regularMarket" -> "LIVE_REGULAR";
+                        case "afterMarket" -> "AFTER_HOURS";
+                        default -> throw new IllegalStateException("unexpected Toss session");
+                    });
+                }
+            }
         }
+        if (matches.size() == 1 && !unsupportedSessionMatched) {
+            return new TossSessionResult(matches.getFirst(), null);
+        }
+        if (matches.isEmpty() && !unsupportedSessionMatched && intervalCount > 0 && allIntervalsVerified) {
+            return new TossSessionResult(null, "TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS");
+        }
+        return new TossSessionResult(null, "TOSS_SESSION_UNVERIFIED");
+    }
+
+    private record TossSessionResult(String session, String missingReason) {
     }
 
     private static Instant tossCalendarBound(JsonNode interval, String... keys) {
@@ -569,7 +597,7 @@ public final class InvestmentContextService {
         var technical = technical(userId, input.symbol(), price.latestPrice());
         var revision = revisions(userId, input.symbol(), consensus);
         var valuation = valuation(userId, input.symbol(), price, fundamental, consensus, securityThesis);
-        var readiness = readiness(price, technical, fundamental, consensus, revision, valuation, input.collectedAt());
+        var readiness = readiness(price, technical, fundamental, consensus, revision, valuation, input);
         var asOf = latestAsOf(price, technical, fundamental, consensus, input.collectedAt());
         var snapshot = new LinkedHashMap<String, Object>();
         snapshot.put("asOf", asOf);
@@ -1388,7 +1416,7 @@ public final class InvestmentContextService {
 
     private ReadinessData readiness(InvestmentDataCalculator.PriceAssessment price, TechnicalData technical,
                                     FundamentalData fundamental, ConsensusData consensus,
-                                    RevisionData revision, ValuationData valuation, Instant now) {
+                                    RevisionData revision, ValuationData valuation, StockAnalysisInput input) {
         var balanceFields = java.util.Arrays.asList(fundamental.cash(), fundamental.debt(), fundamental.dilutedShares());
         var balanceCount = balanceFields.stream().filter(Objects::nonNull).count();
         var balanceStatus = fundamental.status() == InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT
@@ -1423,6 +1451,18 @@ public final class InvestmentContextService {
         if (balanceFields.get(0) == null) missing.add("fundamentals.cash");
         if (balanceFields.get(1) == null) missing.add("fundamentals.debt");
         if (balanceFields.get(2) == null) missing.add("fundamentals.dilutedShares");
+        if ("TOSS".equals(price.source()) && price.session() == null) {
+            input.observations().stream()
+                    .filter(observation -> "price.session".equals(observation.field())
+                            && observation.provider() == StockDataProviderId.TOSS && observation.value() == null)
+                    .flatMap(observation -> observation.missingData().stream())
+                    .filter(reason -> reason.startsWith("TOSS_"))
+                    .findFirst()
+                    .ifPresent(reason -> {
+                        missing.add("price.session");
+                        missing.add("price.session." + reason);
+                    });
+        }
         return new ReadinessData(price.status(), technical.status(), fundamental.status(), revisionStatus,
                 valuation.status(), balanceStatus, overall, List.copyOf(new LinkedHashSet<>(missing)));
     }
