@@ -9,6 +9,7 @@ import com.jmj.trade.marketdata.ProviderValue;
 import com.jmj.trade.marketdata.StockDataProvider;
 import com.jmj.trade.marketdata.StockDataProviderId;
 import com.jmj.trade.marketdata.StockDataProviderRegistry;
+import com.jmj.trade.marketdata.StockAnalysisInput;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.flywaydb.core.Flyway;
@@ -228,6 +229,78 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
             assertThat((BigDecimal) row.get("revenue_consensus")).isEqualByComparingTo("777");
             assertThat((BigDecimal) row.get("eps_consensus")).isEqualByComparingTo("77");
         });
+    }
+
+    @Test
+    void bareAlphaQuotaFailureIsVisibleWithoutChangingFourPriorConsensusSnapshots() throws Exception {
+        var today = LocalDate.now(ZoneOffset.UTC);
+        var nearAnnual = today.plusDays(120);
+        var farAnnual = today.plusDays(480);
+        var nearQuarter = today.plusDays(45);
+        var farQuarter = today.plusDays(135);
+        var observedAt = Instant.now().minus(Duration.ofDays(30));
+        insertConsensusHistory("AAPL", nearAnnual, "ANNUAL", "ALPHA_VANTAGE",
+                observedAt, "100", "10");
+        insertConsensusHistory("AAPL", farAnnual, "ANNUAL", "ALPHA_VANTAGE",
+                observedAt, "200", "20");
+        insertConsensusHistory("AAPL", nearQuarter, "QUARTERLY", "ALPHA_VANTAGE",
+                observedAt, "30", "3");
+        insertConsensusHistory("AAPL", farQuarter, "QUARTERLY", "ALPHA_VANTAGE",
+                observedAt, "40", "4");
+        var priorSnapshots = jdbc.queryForList("""
+                SELECT horizon, estimate_type, revenue_consensus, eps_consensus
+                  FROM consensus_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'ALPHA_VANTAGE'
+                 ORDER BY estimate_type, horizon
+                """, USER_ID);
+        var alphaQuotaFailure = provider(StockDataProviderId.ALPHA_VANTAGE, ALPHA_FIELDS, request -> {
+            var capturedAt = Instant.now().minusSeconds(1);
+            return List.of(
+                    missing("consensus.epsConsensus", "DAILY_QUOTA_EXHAUSTED", capturedAt),
+                    missing("consensus.revenueConsensus", "DAILY_QUOTA_EXHAUSTED", capturedAt));
+        });
+        var contextService = service(new StockDataProviderRegistry(
+                List.of(tossProvider(), secProvider(), alphaQuotaFailure)), null, "");
+
+        assertThat(contextService.capture(USER_ID)).isEqualTo(1);
+
+        var security = contextService.context(USER_ID).securities().getFirst();
+        assertThat(security.consensus().path("missingReason").asText())
+                .isEqualTo("DAILY_QUOTA_EXHAUSTED");
+        assertThat(security.readiness().path("missingFields").toString())
+                .contains("consensus.provider.DAILY_QUOTA_EXHAUSTED");
+        assertThat(jdbc.queryForObject("""
+                SELECT status FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, String.class, USER_ID)).isEqualTo("PARTIAL");
+        assertThat(jdbc.queryForObject("""
+                SELECT last_error FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, String.class, USER_ID)).isEqualTo("PROVIDER_DAILY_QUOTA_EXHAUSTED");
+        assertThat(jdbc.queryForList("""
+                SELECT horizon, estimate_type, revenue_consensus, eps_consensus
+                  FROM consensus_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'ALPHA_VANTAGE'
+                 ORDER BY estimate_type, horizon
+                """, USER_ID)).containsExactlyElementsOf(priorSnapshots);
+    }
+
+    @Test
+    void providerFailureNormalizationIgnoresOrdinaryBareMissingData() {
+        assertThat(InvestmentContextService.providerFailure(
+                inputWithMissingReason(StockDataProviderId.SEC, "fundamental.cash", "DATA_NOT_PRESENT")))
+                .isNull();
+        assertThat(InvestmentContextService.providerFailure(
+                inputWithMissingReason(StockDataProviderId.ALPHA_VANTAGE,
+                        "consensus.epsConsensus", "DATA_NOT_PRESENT")))
+                .isNull();
+        assertThat(InvestmentContextService.providerFailure(
+                inputWithMissingReason(StockDataProviderId.ALPHA_VANTAGE,
+                        "consensus.epsConsensus", "DAILY_QUOTA_EXHAUSTED")))
+                .isEqualTo("PROVIDER_DAILY_QUOTA_EXHAUSTED");
+        assertThat(InvestmentContextService.providerFailure(
+                inputWithMissingReason(StockDataProviderId.SEC, "fundamental.cash", "PROVIDER_HTTP_402")))
+                .isEqualTo("PROVIDER_HTTP_402");
     }
 
     @Test
@@ -559,6 +632,15 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
 
     private ProviderValue missing(String field, String reason, Instant asOf) {
         return new ProviderValue(field, null, null, null, null, asOf, List.of(reason));
+    }
+
+    private StockAnalysisInput inputWithMissingReason(
+            StockDataProviderId provider, String field, String reason
+    ) {
+        var now = Instant.now();
+        return new StockAnalysisInput(UUID.randomUUID(), "AAPL", "1", now, List.of(
+                new StockAnalysisInput.Observation(field, null, null, null, null,
+                        provider, now, now, List.of(reason))));
     }
 
     private Estimate estimate(String type, LocalDate periodEnd, String eps, String revenue) {
