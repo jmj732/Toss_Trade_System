@@ -63,6 +63,10 @@ public final class InvestmentContextService {
     private static final Set<String> QUOTE_UPDATE_FIELDS = Set.of(
             "quote.price", "quote.volume", "quote.change-percent",
             "price.latestPrice", "price.session");
+    private static final Set<String> ALPHA_PROVIDER_FAILURE_CODES = Set.of(
+            "DAILY_QUOTA_EXHAUSTED", "REQUEST_IN_PROGRESS", "CACHE_UNAVAILABLE", "CACHE_CORRUPT",
+            "API_ERROR", "INVALID_RESPONSE", "SOURCE_CONFLICT", "SYMBOL_MISMATCH",
+            "NETWORK", "EMPTY_RESPONSE", "INTERRUPTED");
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
@@ -670,8 +674,9 @@ public final class InvestmentContextService {
 
     static String providerFailure(StockAnalysisInput input) {
         var reasons = input.observations().stream()
-                .flatMap(observation -> observation.missingData().stream())
-                .filter(reason -> reason.startsWith("PROVIDER_"))
+                .flatMap(observation -> observation.missingData().stream()
+                        .map(reason -> normalizedProviderFailureReason(observation.provider(), reason)))
+                .filter(Objects::nonNull)
                 .toList();
         return reasons.stream()
                 .filter(reason -> reason.equals("PROVIDER_DAILY_QUOTA_EXHAUSTED")
@@ -1890,18 +1895,28 @@ public final class InvestmentContextService {
                 if (!reasons.isArray()) continue;
                 for (var reason : reasons) {
                     var value = reason.asText();
-                    if (!value.startsWith("PROVIDER_")) continue;
-                    var code = value.substring("PROVIDER_".length());
-                    if (Set.of("DAILY_QUOTA_EXHAUSTED", "REQUEST_IN_PROGRESS", "CACHE_UNAVAILABLE",
-                            "CACHE_CORRUPT", "API_ERROR", "INVALID_RESPONSE", "SOURCE_CONFLICT",
-                            "SYMBOL_MISMATCH", "NETWORK", "EMPTY_RESPONSE", "INTERRUPTED").contains(code)
-                            || code.matches("HTTP_[1-5][0-9]{2}")) return code;
+                    var normalized = normalizedProviderFailureReason(StockDataProviderId.ALPHA_VANTAGE, value);
+                    if (normalized == null) continue;
+                    var code = normalized.substring("PROVIDER_".length());
+                    if (isAlphaProviderFailureCode(code)) return code;
                 }
             }
         } catch (JacksonException ignored) {
             return null;
         }
         return null;
+    }
+
+    private static String normalizedProviderFailureReason(StockDataProviderId provider, String reason) {
+        if (reason.startsWith("PROVIDER_")) return reason;
+        if (provider == StockDataProviderId.ALPHA_VANTAGE && isAlphaProviderFailureCode(reason)) {
+            return "PROVIDER_" + reason;
+        }
+        return null;
+    }
+
+    private static boolean isAlphaProviderFailureCode(String reason) {
+        return ALPHA_PROVIDER_FAILURE_CODES.contains(reason) || reason.matches("HTTP_[1-5][0-9]{2}");
     }
 
     private static boolean consensusCurrencyUnverified(ConsensusData consensus) {
