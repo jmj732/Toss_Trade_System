@@ -44,15 +44,27 @@ grep -q '"as-of-path":"/0/timestamp"' compose.staging.credentialed.yaml ||
   fail "missing FMP freshness field"
 grep -q '"fields":{"macro.value":"/observations/0/value"}' compose.staging.credentialed.yaml ||
   fail "missing FRED value field"
-grep -q '"requests-per-window":10' compose.staging.credentialed.yaml &&
+grep -q '"requests-per-window":2' compose.staging.credentialed.yaml &&
 grep -q '"rate-limit-window":"PT1S"' compose.staging.credentialed.yaml &&
-grep -q '"max-retries":0' compose.staging.credentialed.yaml ||
+grep -q '"max-retries":3,"retry-backoff":"PT1S"' compose.staging.credentialed.yaml ||
   fail "missing SEC request policy"
 if grep -q '/submissions/CIK0000320193.json' compose.staging.credentialed.yaml; then
   fail "SEC fundamentals must not pin the Apple CIK"
 fi
 grep -q '"api-key-query-parameter":"apikey"' compose.staging.credentialed.yaml ||
   fail "missing FMP API-key query configuration"
+grep -q '"requests-per-window":1,"rate-limit-window":"PT1S","max-retries":0' compose.staging.credentialed.yaml ||
+  fail "missing conservative Alpha Vantage request policy"
+grep -q '"fmp":{"enabled":${STOCK_ANALYSIS_FMP_ENABLED:-false}' compose.staging.credentialed.yaml ||
+  fail "FMP must be disabled by default"
+grep -q '"api-key":"${FMP_API_KEY:-}"' compose.staging.credentialed.yaml ||
+  fail "FMP API key must be optional"
+grep -q 'INVESTMENT_DATA_ADDITIONAL_SYMBOLS: ${INVESTMENT_DATA_ADDITIONAL_SYMBOLS:-AVT,CSTM,GOOGL,LUNR,RDW,VST}' \
+  compose.staging.credentialed.yaml || fail "missing configured investment data targets"
+grep -q 'after-close-cron: .*0 15 16 \* \* MON-FRI' trading-backend/src/main/resources/application.yml ||
+  fail "weekday after-close capture must retain its existing schedule"
+grep -q 'weekend-capture-cron: .*0 15 16 \* \* SAT,SUN' trading-backend/src/main/resources/application.yml ||
+  fail "weekend full capture must provide daily consensus coverage"
 grep -q '"api-key-query-parameter":"api_key"' compose.staging.credentialed.yaml ||
   fail "missing FRED API-key query configuration"
 grep -q 'x-goog-api-key' scripts/credentialed-staging-preflight.sh ||

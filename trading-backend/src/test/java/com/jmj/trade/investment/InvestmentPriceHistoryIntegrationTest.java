@@ -22,6 +22,7 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
@@ -78,6 +79,13 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
         service.capture(USER_ID);
         service.capture(USER_ID);
 
+        var pipeline = jdbc.queryForMap("""
+                SELECT status, last_error FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, USER_ID);
+        assertThat(pipeline.get("status")).isEqualTo("FAILED");
+        assertThat(pipeline.get("last_error").toString()).startsWith("CANONICAL_REQUIRED_DATA_MISSING");
+
         var stored = jdbc.queryForList("""
                 SELECT regular_close, regular_close_as_of, source
                   FROM investment_price_snapshots
@@ -85,7 +93,7 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
                  ORDER BY regular_close_as_of
                 """, USER_ID);
         assertThat(stored).hasSize(50);
-        assertThat(stored).allSatisfy(row -> assertThat(row.get("source")).isEqualTo("FMP"));
+        assertThat(stored).allSatisfy(row -> assertThat(row.get("source")).isEqualTo("TOSS"));
         assertThat((BigDecimal) stored.getLast().get("regular_close")).isEqualByComparingTo("50");
         assertThat(stored.getLast().get("regular_close_as_of").toString())
                 .contains(LocalDate.now(ZoneOffset.UTC).minusDays(1).toString());
@@ -120,7 +128,7 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
     @Test
     void ignoresHistoryWithoutExplicitRegularCloseSessionMetadata() {
         var service = service(List.of(Map.of(
-                "date", LocalDate.now(ZoneOffset.UTC).minusDays(1).toString(), "close", 10)), false);
+                "date", LocalDate.now(ZoneOffset.UTC).minusDays(1).toString(), "close", 10)), false, false);
 
         service.capture(USER_ID);
 
@@ -134,6 +142,20 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
                  WHERE user_id = ? AND ticker = 'AAPL'
                 """, String.class, USER_ID);
         assertThat(status).isEqualTo("DATA_MISSING");
+    }
+
+    @Test
+    void verifiedBarSessionDoesNotDependOnGlobalQuoteSession() {
+        var service = service(List.of(Map.of(
+                "date", LocalDate.now(ZoneOffset.UTC).minusDays(1).toString(), "close", 10)), false, true);
+
+        service.capture(USER_ID);
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS'
+                   AND session = 'REGULAR_CLOSE' AND regular_close = 10
+                """, Integer.class, USER_ID)).isEqualTo(1);
     }
 
     @Test
@@ -157,7 +179,7 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void quoteOnlyCapturePreservesVerifiedCloseAndDoesNotWriteFundamentalOrConsensusRows() {
+    void fmpSnapshotsDoNotSatisfyCanonicalBootstrapAndQuoteUpdatesSkipFinancialPersistence() {
         var service = service(historyRows(), true);
         assertThat(service.needsInitialCapture()).isTrue();
         service.capture(USER_ID);
@@ -176,7 +198,7 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
                     id, user_id, input_snapshot_id, ticker, as_of, horizon, eps_consensus, source, created_at
                 ) VALUES (?, ?, ?, 'AAPL', ?, 'FY1', 2.5, 'FMP', ?)
                 """, UUID.randomUUID(), USER_ID, inputId, now, now);
-        assertThat(service.needsInitialCapture()).isFalse();
+        assertThat(service.needsInitialCapture()).isTrue();
 
         service.captureQuoteUpdates(USER_ID);
 
@@ -201,6 +223,14 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
         assertThat(price.get("status")).isEqualTo("OK");
         assertThat(price.get("session")).isEqualTo("REGULAR_CLOSE");
         assertThat((BigDecimal) price.get("latest_price")).isEqualByComparingTo("50");
+        assertThat(service.needsInitialCapture()).isTrue();
+        var pipeline = jdbc.queryForMap("""
+                SELECT status, last_error FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_QUOTE_UPDATE'
+                """, USER_ID);
+        assertThat(pipeline.get("status")).isEqualTo("FAILED");
+        assertThat(pipeline.get("last_error").toString())
+                .isEqualTo("CANONICAL_REQUIRED_DATA_MISSING:TOSS_LATEST_PRICE_MISSING");
     }
 
     @Test
@@ -267,18 +297,23 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
     }
 
     private InvestmentContextService service(List<Map<String, Object>> history, boolean explicitSession) {
+        return service(history, explicitSession, true);
+    }
+
+    private InvestmentContextService service(List<Map<String, Object>> history, boolean explicitSession,
+                                             boolean verifiedBarSession) {
         var fields = new java.util.HashSet<>(Set.of("price.regularCloseHistory", "quote.price",
                 "quote.volume", "quote.change-percent"));
         if (explicitSession) fields.add("price.session");
         StockDataProvider provider = new StockDataProvider() {
             @Override
             public StockDataProviderId id() {
-                return StockDataProviderId.FMP;
+                return StockDataProviderId.TOSS;
             }
 
             @Override
             public DataProviderRole role() {
-                return DataProviderRole.FUNDAMENTALS;
+                return DataProviderRole.BROKER_ACCOUNT;
             }
 
             @Override
@@ -290,7 +325,22 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
             public List<ProviderValue> fetch(com.jmj.trade.marketdata.ProviderRequest request) {
                 var asOf = Instant.now().minusSeconds(1);
                 var values = new ArrayList<ProviderValue>();
-                values.add(new ProviderValue("price.regularCloseHistory", mapper.valueToTree(history),
+                var verifiedHistory = history.stream().map(row -> {
+                    var bar = new java.util.LinkedHashMap<String, Object>();
+                    var dateText = (String) row.get("date");
+                    bar.put("date", dateText);
+                    try {
+                        var date = LocalDate.parse(dateText);
+                        bar.put("timestamp", date.atStartOfDay(ZoneId.of("America/New_York"))
+                                .toOffsetDateTime().toString());
+                    } catch (RuntimeException ignored) {
+                        // Keep malformed fixture rows in the payload so production validation rejects them.
+                    }
+                    bar.put("close", row.get("close"));
+                    if (verifiedBarSession) bar.put("session", "REGULAR_CLOSE");
+                    return Map.copyOf(bar);
+                }).toList();
+                values.add(new ProviderValue("price.regularCloseHistory", mapper.valueToTree(verifiedHistory),
                         null, null, null, asOf, List.of()));
                 values.add(new ProviderValue("quote.price", mapper.valueToTree(51), null, null, null,
                         asOf, List.of()));

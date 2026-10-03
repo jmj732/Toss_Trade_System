@@ -58,14 +58,17 @@ class InvestmentDataCalculatorTest {
     }
 
     @Test
-    void revisionNeedsAnActualSnapshotAtOrBeforeTheRequestedHorizon() {
+    void missingRevisionHistoryIsDistinctFromMissingCurrentConsensus() {
         var current = NOW;
         var result = InvestmentDataCalculator.revision(
                 bd("12"), current, List.of(new InvestmentDataCalculator.ConsensusValue(
                         NOW.minus(Duration.ofDays(29)), bd("10"))), Duration.ofDays(30));
 
-        assertThat(result.status()).isEqualTo(InvestmentDataCalculator.DataStatus.DATA_MISSING);
+        assertThat(result.status().name()).isEqualTo("INSUFFICIENT_HISTORY");
         assertThat(result.value()).isNull();
+
+        var noCurrent = InvestmentDataCalculator.revision(null, current, List.of(), Duration.ofDays(30));
+        assertThat(noCurrent.status()).isEqualTo(InvestmentDataCalculator.DataStatus.DATA_MISSING);
     }
 
     @Test
@@ -89,6 +92,18 @@ class InvestmentDataCalculatorTest {
 
         assertThat(result.status()).isEqualTo(InvestmentDataCalculator.DataStatus.OK);
         assertThat(result.value()).isEqualByComparingTo("50.0000");
+    }
+
+    @Test
+    void distinguishesAZeroBaselineFromMissingHistory() {
+        var baselineAsOf = NOW.minus(Duration.ofDays(31));
+        var result = InvestmentDataCalculator.revision(
+                bd("12"), NOW, List.of(new InvestmentDataCalculator.ConsensusValue(baselineAsOf, BigDecimal.ZERO)),
+                Duration.ofDays(30));
+
+        assertThat(result.status()).isEqualTo(InvestmentDataCalculator.DataStatus.UNVERIFIED);
+        assertThat(result.baselineAsOf()).isEqualTo(baselineAsOf);
+        assertThat(result.reason()).isEqualTo("ZERO_BASELINE");
     }
 
     @Test

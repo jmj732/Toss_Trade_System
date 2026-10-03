@@ -77,7 +77,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void providerFailureKeepsSnapshotAndLastSuccessfulCollectionTime() {
-        var completed = service(provider(false)).capture(USER_ID);
+        var completed = service(canonicalProviders()).capture(USER_ID);
         var lastSuccess = jdbc.queryForObject("""
                 SELECT last_success_at FROM investment_pipeline_state
                  WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
@@ -87,7 +87,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 SELECT status FROM investment_pipeline_state
                  WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
-                """, String.class, USER_ID)).isEqualTo("SUCCEEDED");
+                """, String.class, USER_ID)).isEqualTo("PARTIAL");
 
         var noProviders = service(new StockDataProviderRegistry(List.of()));
         assertThat(noProviders.capture(USER_ID)).isEqualTo(1);
@@ -95,8 +95,15 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
         var unavailable = service(provider(true));
         assertThat(unavailable.capture(USER_ID)).isEqualTo(1);
-        assertPipelineFailure("PROVIDER_HTTP_402", lastSuccess);
-        assertThat(unavailable.context(USER_ID).pipeline().lastError()).isEqualTo("PROVIDER_HTTP_402");
+        var unavailableState = jdbc.queryForMap("""
+                SELECT status, last_success_at, last_error FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, USER_ID);
+        assertThat(unavailableState.get("status")).isEqualTo("PARTIAL");
+        assertThat(unavailableState.get("last_success_at")).isNotNull();
+        assertThat(unavailableState.get("last_error").toString()).contains("PROVIDER_HTTP_402");
+        assertThat(unavailable.context(USER_ID).pipeline().lastError())
+                .contains("PROVIDER_HTTP_402");
         var latestInput = jdbc.queryForObject("""
                 SELECT payload::text FROM analysis_input_snapshots
                  WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
@@ -109,9 +116,94 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 "SELECT count(*) FROM investment_security_snapshots WHERE user_id = ?", Integer.class, USER_ID))
                 .isEqualTo(3);
 
-        assertThatThrownBy(unavailable::captureAll)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("one or more investment data captures failed");
+        assertThat(unavailable.captureAll()).isEqualTo(1);
+    }
+
+    @Test
+    void unavailableOptionalProviderIsPartialWhenTossAndSecCanonicalInputsArePresent() {
+        var fiscalPeriod = LocalDate.now(ZoneOffset.UTC).minusDays(35);
+        var asOf = Instant.parse("2026-10-02T20:00:00Z");
+        var toss = providerWithValues(List.of(
+                decimal("price.regularClose", "100", asOf),
+                observedText("price.session", "REGULAR_CLOSE", asOf)), StockDataProviderId.TOSS);
+        var sec = providerWithValues(List.of(
+                text("fundamental.fiscalPeriod", fiscalPeriod.toString(), fiscalPeriod),
+                text("fundamental.reportedAt", fiscalPeriod.plusDays(10) + "T12:00:00Z", fiscalPeriod),
+                decimal("fundamental.cash", "50", fiscalPeriod),
+                decimal("fundamental.debt", "40", fiscalPeriod),
+                decimal("fundamental.revenueTTM", "1000", fiscalPeriod),
+                decimal("fundamental.eps", "5", fiscalPeriod)), StockDataProviderId.SEC);
+
+        assertThat(service(new StockDataProviderRegistry(List.of(toss, sec, provider(true))))
+                .capture(USER_ID)).isEqualTo(1);
+
+        var state = jdbc.queryForMap("""
+                SELECT status, last_success_at, last_error FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, USER_ID);
+        assertThat(state.get("status")).isEqualTo("PARTIAL");
+        assertThat(state.get("last_success_at")).isNotNull();
+        assertThat(state.get("last_error").toString()).contains("PROVIDER_HTTP_402");
+    }
+
+    @Test
+    void readinessExposesOnlySafeInlineXbrlReasonsForMissingFieldsAndKeepsCarryForward() {
+        var firstPeriod = LocalDate.now(ZoneOffset.UTC).minusDays(35);
+        var secondPeriod = firstPeriod.plusDays(3);
+        var thirdPeriod = secondPeriod.plusDays(3);
+        var quoteAsOf = Instant.now().minusSeconds(30);
+        var toss = providerWithValues(List.of(
+                decimal("price.regularClose", "100", quoteAsOf),
+                observedText("price.session", "REGULAR_CLOSE", quoteAsOf)), StockDataProviderId.TOSS);
+        var secValues = new AtomicReference<>(List.<ProviderValue>of(
+                text("fundamental.fiscalPeriod", firstPeriod.toString(), firstPeriod),
+                text("fundamental.reportedAt", firstPeriod.plusDays(10) + "T12:00:00Z", firstPeriod),
+                new ProviderValue("fundamental.cash", null, "USD", firstPeriod.toString(), "CashAndCashEquivalents",
+                        firstPeriod.atStartOfDay().toInstant(ZoneOffset.UTC), List.of("INLINE_XBRL_HTTP_429")),
+                decimal("fundamental.debt", "40", firstPeriod),
+                decimal("fundamental.revenueTTM", "1000", firstPeriod)));
+        var context = service(new StockDataProviderRegistry(List.of(
+                toss, providerWithValues(secValues, StockDataProviderId.SEC))));
+
+        context.capture(USER_ID);
+        var missingReadiness = latestReadiness();
+        assertThat(missingReadiness.toString()).contains(
+                "fundamentals.cash", "fundamentals.cash.INLINE_XBRL_HTTP_429")
+                .doesNotContain("PROVIDER_FAILURE", "HTTP response");
+
+        secValues.set(List.of(
+                text("fundamental.fiscalPeriod", secondPeriod.toString(), secondPeriod),
+                text("fundamental.reportedAt", secondPeriod.plusDays(10) + "T12:00:00Z", secondPeriod),
+                decimal("fundamental.cash", "50", secondPeriod),
+                decimal("fundamental.debt", "40", secondPeriod),
+                decimal("fundamental.revenueTTM", "1000", secondPeriod)));
+        context.capture(USER_ID);
+
+        secValues.set(List.of(
+                text("fundamental.fiscalPeriod", thirdPeriod.toString(), thirdPeriod),
+                text("fundamental.reportedAt", thirdPeriod.plusDays(10) + "T12:00:00Z", thirdPeriod),
+                new ProviderValue("fundamental.cash", null, "USD", thirdPeriod.toString(), "CashAndCashEquivalents",
+                        thirdPeriod.atStartOfDay().toInstant(ZoneOffset.UTC), List.of("INLINE_XBRL_HTTP_429")),
+                decimal("fundamental.debt", "40", thirdPeriod),
+                decimal("fundamental.revenueTTM", "1000", thirdPeriod)));
+        context.capture(USER_ID);
+
+        var carriedSnapshot = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        assertThat(carriedSnapshot.path("fundamentals").path("cash").decimalValue())
+                .isEqualByComparingTo("50");
+        assertThat(carriedSnapshot.path("readiness").path("missingFields").toString())
+                .doesNotContain("fundamentals.cash");
+    }
+
+    private String latestReadiness() {
+        return jdbc.queryForObject("""
+                SELECT (payload -> 'readiness' -> 'missingFields')::text
+                  FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID);
     }
 
     @Test
@@ -146,7 +238,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void coherentFmpStatementsPersistDerivedEvWithoutUsingQuoteTimeAsFinancialAsOf() {
+    void fmpFundamentalsNeverPopulateCanonicalSecSnapshot() {
         var period = LocalDate.now(ZoneOffset.UTC).minusDays(45);
         var filingDate = period.plusDays(35);
         var quoteAsOf = Instant.now().minusSeconds(30);
@@ -156,28 +248,21 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
         assertThat(service(provider).capture(USER_ID)).isEqualTo(1);
 
-        var row = jdbc.queryForMap("""
-                SELECT fiscal_period, reported_at, as_of, market_cap, enterprise_value
-                  FROM fundamental_snapshots WHERE user_id = ? AND ticker = 'AAPL'
-                """, USER_ID);
-        assertThat(row.get("fiscal_period")).isEqualTo(period.toString());
-        assertThat(row.get("as_of").toString()).contains(period.toString());
-        assertThat(row.get("reported_at").toString()).contains(filingDate.toString());
-        assertThat((BigDecimal) row.get("market_cap")).isEqualByComparingTo("1000000");
-        assertThat((BigDecimal) row.get("enterprise_value")).isEqualByComparingTo("1000200");
-        assertThat(row.get("revenue_growth_yoy")).isNull();
-
-        var persistedQuoteAsOf = quoteAsOf.truncatedTo(ChronoUnit.MICROS);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM fundamental_snapshots WHERE user_id = ? AND ticker = 'AAPL'
+                """, Integer.class, USER_ID)).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT status FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, String.class, USER_ID)).isEqualTo("FAILED");
         var snapshot = jdbc.queryForMap("""
-                SELECT payload -> 'fundamentals' AS fundamentals
+                SELECT payload -> 'fundamentals' AS fundamentals, payload -> 'readiness' AS readiness
                   FROM investment_security_snapshots WHERE user_id = ? AND ticker = 'AAPL'
                 ORDER BY created_at DESC LIMIT 1
-                """, USER_ID).get("fundamentals").toString();
-        assertThat(snapshot).contains("\"asOf\": \"" + period + "T00:00:00Z\"")
-                .contains("\"marketCapAsOf\": \"" + persistedQuoteAsOf + "\"")
-                .contains("\"enterpriseValueAsOf\": \"" + persistedQuoteAsOf + "\"")
-                .contains("\"enterpriseValueSource\": \"FMP_MARKET_CAP_PLUS_BALANCE_SHEET\"")
-                .contains("\"dilutedSharesBasis\": \"WEIGHTED_AVERAGE_TTM\"");
+                """, USER_ID);
+        assertThat(snapshot.get("fundamentals").toString()).contains("\"status\": \"DATA_MISSING\"")
+                .doesNotContain("1000000", "1000200");
+        assertThat(snapshot.get("readiness").toString()).contains("fundamentals.cash", "fundamentals.revenueTTM");
     }
 
     @Test
@@ -214,7 +299,116 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void mismatchedFmpStatementPeriodsAreNotJoinedOrPersistedAsFundamentals() {
+    void missingLatestFilingFieldsCarryForwardWithTheirOriginalProvenance() throws Exception {
+        var oldPeriod = LocalDate.of(2026, 6, 30);
+        var currentPeriod = LocalDate.of(2026, 9, 30);
+        var currentFiledAt = Instant.parse("2026-10-01T12:00:00Z");
+        var shareAsOf = Instant.parse("2026-10-02T20:00:00Z");
+        var secValues = new AtomicReference<>(List.of(
+                text("fundamental.fiscalPeriod", oldPeriod.toString(), oldPeriod),
+                text("fundamental.reportedAt", "2026-07-30T12:00:00Z", oldPeriod),
+                decimal("fundamental.cash", "50", oldPeriod),
+                decimal("fundamental.debt", "40", oldPeriod),
+                decimal("fundamental.revenueTTM", "1000", oldPeriod),
+                decimal("fundamental.basicShares", "10000", oldPeriod)));
+        var toss = providerWithValues(List.of(
+                decimal("price.regularClose", "100", shareAsOf),
+                observedText("price.session", "REGULAR_CLOSE", shareAsOf)), StockDataProviderId.TOSS);
+        var sec = providerWithValues(secValues, StockDataProviderId.SEC);
+        var context = service(new StockDataProviderRegistry(List.of(toss, sec)));
+
+        assertThat(context.capture(USER_ID)).isEqualTo(1);
+        secValues.set(List.of(
+                text("fundamental.fiscalPeriod", currentPeriod.toString(), currentPeriod),
+                observedText("fundamental.reportedAt", currentFiledAt.toString(), currentFiledAt),
+                decimal("fundamental.basicShares", "12000", shareAsOf)));
+        assertThat(context.capture(USER_ID)).isEqualTo(1);
+
+        var row = jdbc.queryForMap("""
+                SELECT fiscal_period, cash, debt, revenue_ttm, basic_shares, field_provenance::text
+                  FROM fundamental_snapshots WHERE user_id = ? AND ticker = 'AAPL' AND source = 'SEC'
+                 ORDER BY fiscal_period DESC LIMIT 1
+        """, USER_ID);
+        assertThat(row.get("fiscal_period")).isEqualTo(currentPeriod.toString());
+        assertThat(jdbc.queryForObject("""
+                SELECT as_of FROM fundamental_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'SEC'
+                 ORDER BY fiscal_period DESC LIMIT 1
+                """, OffsetDateTime.class, USER_ID).toInstant()).isEqualTo(currentFiledAt);
+        assertThat((BigDecimal) row.get("cash")).isEqualByComparingTo("50");
+        assertThat((BigDecimal) row.get("debt")).isEqualByComparingTo("40");
+        assertThat((BigDecimal) row.get("revenue_ttm")).isEqualByComparingTo("1000");
+        assertThat((BigDecimal) row.get("basic_shares")).isEqualByComparingTo("12000");
+        var provenance = mapper.readTree((String) row.get("field_provenance"));
+        assertThat(provenance.path("cash").path("asOf").asText()).isEqualTo("2026-06-30T00:00:00Z");
+        assertThat(provenance.path("revenueTTM").path("asOf").asText()).isEqualTo("2026-06-30T00:00:00Z");
+        assertThat(provenance.path("basicShares").path("asOf").asText()).isEqualTo(shareAsOf.toString());
+
+        var snapshot = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        assertThat(snapshot.path("fundamentals").path("asOf").asText()).isEqualTo(currentFiledAt.toString());
+        assertThat(snapshot.path("readiness").path("fundamentalStatus").asText()).isEqualTo("PARTIAL");
+        assertThat(snapshot.path("readiness").path("balanceSheetStatus").asText()).isEqualTo("OK");
+    }
+
+    @Test
+    void recentSharesCannotMakeStaleCashOrRevenueFresh() throws Exception {
+        var oldPeriod = LocalDate.of(2025, 12, 31);
+        var currentPeriod = LocalDate.of(2026, 9, 30);
+        var currentFiledAt = Instant.parse("2026-10-01T12:00:00Z");
+        var shareAsOf = Instant.parse("2026-10-02T20:00:00Z");
+        var secValues = new AtomicReference<>(List.of(
+                text("fundamental.fiscalPeriod", oldPeriod.toString(), oldPeriod),
+                text("fundamental.reportedAt", "2026-02-15T12:00:00Z", oldPeriod),
+                decimal("fundamental.cash", "50", oldPeriod),
+                decimal("fundamental.debt", "40", oldPeriod),
+                decimal("fundamental.revenueTTM", "1000", oldPeriod),
+                decimal("fundamental.basicShares", "10000", oldPeriod)));
+        var toss = providerWithValues(List.of(
+                decimal("price.regularClose", "100", shareAsOf),
+                observedText("price.session", "REGULAR_CLOSE", shareAsOf)), StockDataProviderId.TOSS);
+        var sec = providerWithValues(secValues, StockDataProviderId.SEC);
+        var context = service(new StockDataProviderRegistry(List.of(toss, sec)));
+
+        assertThat(context.capture(USER_ID)).isEqualTo(1);
+        secValues.set(List.of(
+                text("fundamental.fiscalPeriod", currentPeriod.toString(), currentPeriod),
+                observedText("fundamental.reportedAt", currentFiledAt.toString(), currentFiledAt),
+                decimal("fundamental.basicShares", "12000", shareAsOf)));
+        assertThat(context.capture(USER_ID)).isEqualTo(1);
+
+        var row = jdbc.queryForMap("""
+                SELECT cash, basic_shares, field_provenance::text
+                  FROM fundamental_snapshots WHERE user_id = ? AND ticker = 'AAPL' AND source = 'SEC'
+                 ORDER BY fiscal_period DESC LIMIT 1
+                """, USER_ID);
+        assertThat(jdbc.queryForObject("""
+                SELECT as_of FROM fundamental_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'SEC'
+                 ORDER BY fiscal_period DESC LIMIT 1
+                """, OffsetDateTime.class, USER_ID).toInstant()).isEqualTo(currentFiledAt);
+        assertThat((BigDecimal) row.get("cash")).isEqualByComparingTo("50");
+        assertThat((BigDecimal) row.get("basic_shares")).isEqualByComparingTo("12000");
+        var provenance = mapper.readTree((String) row.get("field_provenance"));
+        assertThat(provenance.path("cash").path("asOf").asText()).isEqualTo("2025-12-31T00:00:00Z");
+        assertThat(provenance.path("basicShares").path("asOf").asText()).isEqualTo(shareAsOf.toString());
+
+        var snapshot = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        assertThat(snapshot.path("readiness").path("fundamentalStatus").asText()).isEqualTo("STALE");
+        assertThat(snapshot.path("readiness").path("balanceSheetStatus").asText()).isEqualTo("STALE");
+        assertThat(jdbc.queryForObject("""
+                SELECT status FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, String.class, USER_ID)).isEqualTo("FAILED");
+    }
+
+    @Test
+    void mismatchedFmpStatementsCannotContaminateCanonicalSecReadiness() {
         var period = LocalDate.now(ZoneOffset.UTC).minusDays(45);
         var filingDate = period.plusDays(35);
         var provider = providerWithValues(fmpFundamentals(period, period.plusDays(1), period,
@@ -232,41 +426,41 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                   FROM investment_security_snapshots WHERE user_id = ? AND ticker = 'AAPL'
                 ORDER BY created_at DESC LIMIT 1
                 """, USER_ID);
-        assertThat(snapshot.get("fundamentals").toString()).contains("\"status\": \"SOURCE_CONFLICT\"");
-        assertThat(snapshot.get("readiness").toString()).contains("\"overallDataStatus\": \"SOURCE_CONFLICT\"")
-                .contains("fundamentals.statementPeriodConflict");
+        assertThat(snapshot.get("fundamentals").toString()).contains("\"status\": \"DATA_MISSING\"")
+                .doesNotContain("SOURCE_CONFLICT");
+        assertThat(snapshot.get("readiness").toString()).contains("fundamentals.cash", "fundamentals.revenueTTM")
+                .doesNotContain("fundamentals.statementPeriodConflict");
         assertThat(snapshot.get("price").toString()).doesNotContain("SOURCE_CONFLICT");
     }
 
     @Test
-    void revenueGrowthUsesOnlyMatchingPriorFiscalYearAndQuarter() {
+    void optionalFmpRevenueGrowthCannotOverrideSecFundamentals() {
         var period = LocalDate.now(ZoneOffset.UTC).minusDays(45);
-        var priorPeriod = period.minusYears(1);
-        var priorFilingDate = priorPeriod.plusDays(35);
-        var currentFilingDate = period.plusDays(35);
-        var values = new AtomicReference<>(fmpFundamentals(priorPeriod, priorPeriod, priorPeriod,
-                priorFilingDate, priorFilingDate, priorFilingDate, Instant.now().minusSeconds(60),
-                "1000000", "100", "300", "1000", "200", "4.2", "100", "120"));
-        var service = service(providerWithValues(values));
+        var sec = providerWithValues(List.of(
+                text("fundamental.fiscalPeriod", period.toString(), period),
+                text("fundamental.reportedAt", period.plusDays(35).toString(), period),
+                text("fundamental.fiscalYear", Integer.toString(period.getYear()), period),
+                text("fundamental.fiscalPeriodCode", "Q2", period),
+                decimal("fundamental.cash", "100", period),
+                decimal("fundamental.debt", "300", period),
+                decimal("fundamental.revenueTTM", "1200", period)), StockDataProviderId.SEC);
+        var fmp = providerWithValues(List.of(
+                decimal("fundamental.revenueTTM", "9999", period),
+                decimal("fundamental.revenueGrowthYoY", "0.2", period)), StockDataProviderId.FMP);
 
-        service.capture(USER_ID);
-        values.set(fmpFundamentals(period, period, period, currentFilingDate, currentFilingDate, currentFilingDate,
-                Instant.now().minusSeconds(30), "1000000", "100", "300", "1200", "200", "4.2", "100", "120"));
-        service.capture(USER_ID);
+        assertThat(service(new StockDataProviderRegistry(List.of(sec, fmp))).capture(USER_ID)).isEqualTo(1);
 
-        var rows = jdbc.queryForList("""
-                SELECT fiscal_year, fiscal_period_code, revenue_ttm, revenue_growth_yoy
-                  FROM fundamental_snapshots WHERE user_id = ? AND ticker = 'AAPL'
-                 ORDER BY fiscal_period
+        var row = jdbc.queryForMap("""
+                SELECT source, revenue_ttm, revenue_growth_yoy FROM fundamental_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL'
                 """, USER_ID);
-        assertThat(rows).hasSize(2);
-        assertThat(rows.get(0)).containsEntry("fiscal_year", "2025").containsEntry("fiscal_period_code", "Q2");
-        assertThat(rows.get(1)).containsEntry("fiscal_year", "2026").containsEntry("fiscal_period_code", "Q2");
-        assertThat((BigDecimal) rows.get(1).get("revenue_growth_yoy")).isEqualByComparingTo("0.2");
+        assertThat(row.get("source")).isEqualTo("SEC");
+        assertThat((BigDecimal) row.get("revenue_ttm")).isEqualByComparingTo("1200");
+        assertThat(row.get("revenue_growth_yoy")).isNull();
     }
 
     @Test
-    void incomeHistoryRequiresExactFiscalYearAndPeriodAndRejectsFutureRows() {
+    void optionalFmpIncomeHistoryCannotJoinToSecRevenue() {
         var period = LocalDate.now(ZoneOffset.UTC).minusDays(45);
         var priorPeriod = period.minusYears(1);
         var filingDate = period.plusDays(35);
@@ -280,10 +474,19 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         history.addObject().put("date", period.plusDays(90).toString())
                 .put("fiscalYear", Integer.toString(period.getYear() + 1))
                 .put("period", "Q2").put("revenue", 9000);
-        var values = new AtomicReference<>(withIncomeHistory(fmpFundamentals(period, period, period,
+        var sec = providerWithValues(List.of(
+                text("fundamental.fiscalPeriod", period.toString(), period),
+                text("fundamental.reportedAt", filingDate.toString(), period),
+                text("fundamental.fiscalYear", Integer.toString(period.getYear()), period),
+                text("fundamental.fiscalPeriodCode", "Q2", period),
+                decimal("fundamental.cash", "100", period),
+                decimal("fundamental.debt", "300", period),
+                decimal("fundamental.revenueTTM", "1200", period)), StockDataProviderId.SEC);
+        var fmpValues = new AtomicReference<>(withIncomeHistory(fmpFundamentals(period, period, period,
                 filingDate, filingDate, filingDate, Instant.now().minusSeconds(30),
-                "1000000", "100", "300", "1200", "200", "4.2", "100", "120"), history, period));
-        var service = service(providerWithValues(values));
+                "1000000", "100", "300", "9999", "200", "4.2", "100", "120"), history, period));
+        var service = service(new StockDataProviderRegistry(List.of(sec,
+                providerWithValues(fmpValues, StockDataProviderId.FMP))));
 
         service.capture(USER_ID);
         assertThat(jdbc.queryForObject("""
@@ -294,9 +497,9 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         history.addObject().put("date", priorPeriod.toString())
                 .put("fiscalYear", Integer.toString(priorPeriod.getYear()))
                 .put("period", "Q2").put("revenue", 1000);
-        values.set(withIncomeHistory(fmpFundamentals(period, period, period,
+        fmpValues.set(withIncomeHistory(fmpFundamentals(period, period, period,
                 filingDate, filingDate, filingDate, Instant.now().minusSeconds(20),
-                "1000000", "100", "300", "1200", "200", "4.2", "100", "120"), history, period));
+                "1000000", "100", "300", "9999", "200", "4.2", "100", "120"), history, period));
         service.capture(USER_ID);
 
         var growthValues = jdbc.queryForList("""
@@ -306,37 +509,45 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 """, USER_ID);
         assertThat(growthValues).hasSize(2);
         assertThat(growthValues.get(0).get("revenue_growth_yoy")).isNull();
-        assertThat((BigDecimal) growthValues.get(1).get("revenue_growth_yoy")).isEqualByComparingTo("0.2");
+        assertThat(growthValues.get(1).get("revenue_growth_yoy")).isNull();
     }
 
     @Test
-    void incomeHistoryUsesExactIsoPriorDateOnlyWhenCurrentFiscalMetadataIsMissing() {
+    void fmpIncomeHistoryCannotFillMissingSecFiscalMetadata() {
         var period = LocalDate.now(ZoneOffset.UTC).minusDays(45);
         var priorPeriod = period.minusYears(1);
         var filingDate = period.plusDays(35);
         var history = mapper.createArrayNode();
         history.addObject().put("date", priorPeriod.plusDays(1).toString()).put("revenue", 5000);
         history.addObject().put("date", priorPeriod.toString()).put("revenue", 1000);
+        var sec = providerWithValues(List.of(
+                text("fundamental.fiscalPeriod", period.toString(), period),
+                text("fundamental.reportedAt", filingDate.toString(), period),
+                decimal("fundamental.cash", "100", period),
+                decimal("fundamental.debt", "300", period),
+                decimal("fundamental.revenueTTM", "1200", period)), StockDataProviderId.SEC);
         var currentValues = fmpFundamentals(period, period, period,
                 filingDate, filingDate, filingDate, Instant.now().minusSeconds(30),
-                "1000000", "100", "300", "1200", "200", "4.2", "100", "120").stream()
+                "1000000", "100", "300", "9999", "200", "4.2", "100", "120").stream()
                 .filter(value -> !value.field().equals("fundamental.fiscalYear")
                         && !value.field().equals("fundamental.fiscalPeriodCode"))
                 .toList();
-        var provider = providerWithValues(withIncomeHistory(currentValues, history, period));
+        var provider = new StockDataProviderRegistry(List.of(sec,
+                providerWithValues(withIncomeHistory(currentValues, history, period), StockDataProviderId.FMP)));
 
         assertThat(service(provider).capture(USER_ID)).isEqualTo(1);
         assertThat(jdbc.queryForObject("""
                 SELECT revenue_growth_yoy FROM fundamental_snapshots
                  WHERE user_id = ? AND ticker = 'AAPL'
-                """, BigDecimal.class, USER_ID)).isEqualByComparingTo("0.2");
+                """, BigDecimal.class, USER_ID)).isNull();
 
         var partialMetadata = fmpFundamentals(period, period, period,
                 filingDate, filingDate, filingDate, Instant.now().minusSeconds(20),
                 "1000000", "100", "300", "1200", "200", "4.2", "100", "120").stream()
                 .filter(value -> !value.field().equals("fundamental.fiscalPeriodCode"))
                 .toList();
-        assertThat(service(providerWithValues(withIncomeHistory(partialMetadata, history, period)))
+        assertThat(service(new StockDataProviderRegistry(List.of(sec,
+                providerWithValues(withIncomeHistory(partialMetadata, history, period), StockDataProviderId.FMP))))
                 .capture(USER_ID)).isEqualTo(1);
         var growthValues = jdbc.queryForList("""
                 SELECT revenue_growth_yoy FROM fundamental_snapshots
@@ -380,11 +591,22 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 ) VALUES (?, 'AAPL', 'Growth thesis', 'NOT_REVIEWED', 'GROWTH', ?)
                 """, USER_ID, now);
 
-        var fmpValues = new java.util.ArrayList<>(fmpFundamentals(period, period, period,
-                period.plusDays(35), period.plusDays(35), period.plusDays(35), observedAt,
-                "1000000", "100", "300", "1000", "200", "4.2", "100", "120"));
-        fmpValues.add(observedDecimal("price.latestPrice", "100", observedAt));
-        fmpValues.add(observedText("price.session", "LIVE_REGULAR", observedAt));
+        var tossValues = List.of(
+                usdDecimal("price.regularClose", "100", observedAt),
+                observedText("price.session", "REGULAR_CLOSE", observedAt));
+        var secValues = List.of(
+                text("fundamental.fiscalPeriod", period.toString(), period),
+                observedText("fundamental.reportedAt", period.plusDays(35).atStartOfDay()
+                        .toInstant(ZoneOffset.UTC).toString(), observedAt),
+                usdDecimal("fundamental.cash", "100", period),
+                usdDecimal("fundamental.debt", "300", period),
+                usdDecimal("fundamental.revenueTTM", "1000", period),
+                decimal("fundamental.basicShares", "10000", period),
+                text("fundamental.basicSharesBasis", "ENTITY_COMMON_STOCK_SHARES_OUTSTANDING", period),
+                decimal("fundamental.dilutedShares", "12000", period),
+                text("fundamental.dilutedSharesBasis", "WEIGHTED_AVERAGE_FY", period),
+                decimal("fundamental.eps", "4.2", period),
+                decimal("fundamental.fcfTTM", "200", period));
         var alphaValues = List.of(
                 observedText("consensus.horizon", LocalDate.now(ZoneOffset.UTC).plusYears(1).toString(), observedAt),
                 observedDecimal("consensus.revenueConsensus", "2000", observedAt),
@@ -393,7 +615,9 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 observedDecimal("consensus.fcfConsensus", "200", observedAt));
 
         var providers = new StockDataProviderRegistry(List.of(
-                providerWithValues(fmpValues), providerWithValues(alphaValues, StockDataProviderId.ALPHA_VANTAGE)));
+                providerWithValues(tossValues, StockDataProviderId.TOSS),
+                providerWithValues(secValues, StockDataProviderId.SEC),
+                providerWithValues(alphaValues, StockDataProviderId.ALPHA_VANTAGE)));
         assertThat(service(providers).capture(USER_ID))
                 .isEqualTo(1);
 
@@ -482,7 +706,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 SELECT last_error FROM investment_pipeline_state
                  WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
-                """, String.class, USER_ID)).isEqualTo("PROVIDER_HTTP_402");
+                """, String.class, USER_ID)).isEqualTo("CANONICAL_REQUIRED_DATA_MISSING:PROVIDER_HTTP_402");
     }
 
     @Test
@@ -663,7 +887,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat(jdbc.queryForObject("""
                 SELECT last_error FROM investment_pipeline_state
                  WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
-                """, String.class, USER_ID)).isEqualTo("PROVIDER_HTTP_402");
+                """, String.class, USER_ID)).isEqualTo("CANONICAL_REQUIRED_DATA_MISSING:PROVIDER_HTTP_402");
         assertThat(jdbc.queryForObject("""
                 SELECT payload::text FROM analysis_input_snapshots
                  WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
@@ -1003,7 +1227,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                  WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
                 """, USER_ID);
         assertThat(row.get("status")).isEqualTo("FAILED");
-        assertThat(row.get("last_error")).isEqualTo(error);
+        assertThat(row.get("last_error").toString()).contains(error);
         assertThat(jdbc.queryForObject("""
                 SELECT last_success_at FROM investment_pipeline_state
                  WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
@@ -1110,6 +1334,20 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         };
     }
 
+    private StockDataProviderRegistry canonicalProviders() {
+        var fiscalPeriod = LocalDate.now(ZoneOffset.UTC).minusDays(35);
+        var toss = providerWithValues(List.of(
+                decimal("price.regularClose", "100", Instant.parse("2026-10-02T20:00:00Z")),
+                observedText("price.session", "REGULAR_CLOSE", Instant.parse("2026-10-02T20:00:00Z"))),
+                StockDataProviderId.TOSS);
+        var sec = providerWithValues(List.of(
+                text("fundamental.fiscalPeriod", fiscalPeriod.toString(), fiscalPeriod),
+                text("fundamental.reportedAt", fiscalPeriod.plusDays(10) + "T12:00:00Z", fiscalPeriod),
+                decimal("fundamental.cash", "50", fiscalPeriod),
+                decimal("fundamental.revenueTTM", "1000", fiscalPeriod)), StockDataProviderId.SEC);
+        return new StockDataProviderRegistry(List.of(toss, sec));
+    }
+
     private StockDataProvider providerWithValues(List<ProviderValue> values) {
         return providerWithValues(new AtomicReference<>(values));
     }
@@ -1180,6 +1418,15 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
     private ProviderValue decimal(String field, String value, Instant asOf) {
         return new ProviderValue(field, mapper.valueToTree(new BigDecimal(value)), null, null, null, asOf, List.of());
+    }
+
+    private ProviderValue usdDecimal(String field, String value, Instant asOf) {
+        return new ProviderValue(field, mapper.valueToTree(new BigDecimal(value)), "USD", null, null,
+                asOf, List.of());
+    }
+
+    private ProviderValue usdDecimal(String field, String value, LocalDate asOf) {
+        return usdDecimal(field, value, asOf.atStartOfDay().toInstant(ZoneOffset.UTC));
     }
 
     private ProviderValue decimal(String field, String value, LocalDate asOf) {

@@ -59,6 +59,12 @@ final class InvestmentDataScheduler {
         capture("after_close", false);
     }
 
+    @Scheduled(cron = "${investment.data.weekend-capture-cron:0 15 16 * * SAT,SUN}",
+            zone = "${investment.data.time-zone:America/New_York}")
+    void weekendAfterClose() {
+        capture("weekend_after_close", false);
+    }
+
     @Scheduled(cron = "${investment.data.pre-market-cron:0 0 8 * * MON-FRI}",
             zone = "${investment.data.time-zone:America/New_York}")
     void beforeMarket() {

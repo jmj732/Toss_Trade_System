@@ -30,11 +30,22 @@ public final class StockAnalysisInputAssembler {
     public StockAnalysisInput assemble(String symbol, Map<String, String> identifiers, Set<String> selectedFields) {
         var request = new ProviderRequest(symbol, identifiers);
         var observations = new ArrayList<StockAnalysisInput.Observation>();
-        for (var provider : registry.providers()) {
-            if (selectedFields == null) {
-                collect(provider, request, observations, null);
-                continue;
-            }
+        var providers = registry.providers();
+        for (var provider : providers) {
+            if (provider.id() == StockDataProviderId.ALPHA_VANTAGE) continue;
+            collectSelected(provider, request, observations, selectedFields);
+        }
+        var shareFallbackCheckAt = clock.instant();
+        var secDilutedSharesPresent = observations.stream()
+                .anyMatch(observation -> observation.provider() == StockDataProviderId.SEC
+                        && "fundamental.dilutedShares".equals(observation.field())
+                        && observation.value() != null && decimalPositive(observation.value())
+                        && "shares".equalsIgnoreCase(observation.unit())
+                        && observation.asOf() != null
+                        && !observation.asOf().isAfter(shareFallbackCheckAt)
+                        && observation.missingData().isEmpty());
+        for (var provider : providers) {
+            if (provider.id() != StockDataProviderId.ALPHA_VANTAGE) continue;
             final Set<String> declared;
             try {
                 declared = provider.fields();
@@ -46,7 +57,9 @@ public final class StockAnalysisInputAssembler {
                 collect(provider, request, observations, Set.of("provider"));
                 continue;
             }
-            var selected = declared.stream().filter(selectedFields::contains)
+            var selected = declared.stream()
+                    .filter(field -> selectedFields == null || selectedFields.contains(field))
+                    .filter(field -> !secDilutedSharesPresent || !"fundamental.dilutedShares".equals(field))
                     .collect(java.util.stream.Collectors.toUnmodifiableSet());
             if (!selected.isEmpty()) collect(provider, request, observations, selected);
         }
@@ -57,6 +70,38 @@ public final class StockAnalysisInputAssembler {
                 "1",
                 collectedAt,
                 List.copyOf(observations));
+    }
+
+    private void collectSelected(StockDataProvider provider, ProviderRequest request,
+                                 List<StockAnalysisInput.Observation> observations,
+                                 Set<String> selectedFields) {
+        if (selectedFields == null) {
+            collect(provider, request, observations, null);
+            return;
+        }
+        final Set<String> declared;
+        try {
+            declared = provider.fields();
+        } catch (RuntimeException exception) {
+            collect(provider, request, observations, Set.of("provider"));
+            return;
+        }
+        if (declared == null) {
+            collect(provider, request, observations, Set.of("provider"));
+            return;
+        }
+        var selected = declared.stream().filter(selectedFields::contains)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (!selected.isEmpty()) collect(provider, request, observations, selected);
+    }
+
+    private static boolean decimalPositive(tools.jackson.databind.JsonNode value) {
+        if (value == null || value.isNull()) return false;
+        try {
+            return new java.math.BigDecimal(value.asText()).signum() > 0;
+        } catch (NumberFormatException exception) {
+            return false;
+        }
     }
 
     private void collect(
@@ -103,7 +148,7 @@ public final class StockAnalysisInputAssembler {
         } catch (ProviderUnavailableException exception) {
             var collectedAt = clock.instant();
             var reason = exception.reasonCode();
-            var missingData = reason.matches("HTTP_[1-5][0-9]{2}")
+            var missingData = safeProviderReason(reason)
                     ? List.of("PROVIDER_UNAVAILABLE", "PROVIDER_" + reason)
                     : List.of("PROVIDER_UNAVAILABLE");
             declared.stream()
@@ -120,6 +165,14 @@ public final class StockAnalysisInputAssembler {
                     .forEach(field -> target.add(missing(
                             field, provider.id(), collectedAt, "PROVIDER_FAILURE")));
         }
+    }
+
+    private static boolean safeProviderReason(String reason) {
+        return reason != null && (reason.matches("HTTP_[1-5][0-9]{2}")
+                || Set.of("DAILY_QUOTA_EXHAUSTED", "REQUEST_IN_PROGRESS", "CACHE_UNAVAILABLE",
+                "CACHE_CORRUPT", "API_ERROR", "INVALID_RESPONSE", "SOURCE_CONFLICT", "SYMBOL_MISMATCH",
+                "CLIENT", "EMPTY_RESPONSE", "INTERRUPTED", "NETWORK", "ISSUER_MISMATCH",
+                "NO_RECENT_FILING", "SYMBOL_NOT_FOUND").contains(reason));
     }
 
     private static StockAnalysisInput.Observation missing(

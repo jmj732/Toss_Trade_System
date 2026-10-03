@@ -8,6 +8,8 @@ import org.springframework.jdbc.core.RowMapper;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -34,6 +36,13 @@ class InvestmentOsResearchSheetSyncTest {
                 new GoogleSheetsClient.SheetValues("range", List.of()));
         when(sheets.sheetIdsByTitle("sheet-1")).thenReturn(sheetIds());
         doReturn(List.of()).when(jdbc).query(anyString(), any(RowMapper.class), eq(USER_ID));
+        doAnswer(invocation -> {
+            var sql = (String) invocation.getArgument(0);
+            if (!sql.contains("FROM consensus_snapshots")) return List.of();
+            @SuppressWarnings("unchecked")
+            var mapper = (RowMapper<Object>) invocation.getArgument(1);
+            return List.of(mapConsensusRow(mapper));
+        }).when(jdbc).query(anyString(), any(RowMapper.class), eq(USER_ID));
         when(riskPolicies.history(USER_ID, 100)).thenReturn(List.of());
         when(investment.context(USER_ID)).thenReturn(context());
 
@@ -56,15 +65,58 @@ class InvestmentOsResearchSheetSyncTest {
         var security = tabs.getFirst().values();
         assertThat(security.getFirst()).contains("Ticker", "Latest Price", "Price Status", "Fundamental Status",
                 "Fundamental Fiscal Period", "Fundamental Reported At", "Fundamental As Of", "Fundamental Source",
-                "EBITDA Consensus", "FCF Consensus");
+                "Basic Shares", "Basic Shares Basis", "Market Cap As Of", "Market Cap Formula",
+                "Fully Diluted Market Cap", "Fully Diluted Market Cap As Of", "Fully Diluted Market Cap Formula",
+                "Enterprise Value As Of", "Enterprise Value Source", "Enterprise Value Formula",
+                "Balance Sheet As Of", "Fundamental Currency",
+                "Field Provenance", "EBITDA TTM Type", "EBITDA TTM Formula", "EBITDA TTM Source",
+                "EBITDA Consensus", "FCF Consensus", "Consensus Missing Reason",
+                "Revenue Revision 30D Status", "Revenue Revision 90D Status",
+                "EPS Revision 30D Status", "EPS Revision 90D Status");
+        assertThat(security.getFirst()).startsWith("Ticker", "As Of", "Quantity", "Weight", "Currency");
+        assertThat(security.getFirst().stream().filter("Currency"::equals).count()).isEqualTo(1L);
         assertThat(security.get(1)).contains("AAPL", new BigDecimal("101"), "REGULAR_CLOSE", "SOURCE_CONFLICT",
                 "PARTIAL", "FY2025", "2026-02-01T00:00:00Z", "2026-02-02T00:00:00Z", "FMP",
-                "2026-09-15T00:00:00Z", "FY2026", "CONSENSUS", new BigDecimal("10"), new BigDecimal("8"));
+                new BigDecimal("50"), "SEC_INSTANT", "2026-02-03T00:00:00Z",
+                "TOSS_REGULAR_CLOSE * SEC_BASIC_SHARES", new BigDecimal("250"),
+                "2026-02-04T00:00:00Z", "TOSS_REGULAR_CLOSE * SEC_DILUTED_SHARES",
+                "2026-02-05T00:00:00Z", "MARKET_CAP_PLUS_LATEST_DEBT_MINUS_LATEST_CASH",
+                "marketCap + latestDebt - latestCash", "2026-02-05T00:00:00Z", "USD",
+                "{\"marketCap\":{\"source\":\"TOSS+SEC\"},\"enterpriseValue\":{\"source\":\"MARKET_CAP_PLUS_LATEST_DEBT_MINUS_LATEST_CASH\",\"formula\":\"marketCap + latestDebt - latestCash\"},\"cash\":{\"source\":\"SEC\",\"asOf\":\"2026-02-05T00:00:00Z\"},\"debt\":{\"source\":\"SEC\",\"asOf\":\"2026-02-06T00:00:00Z\"}}",
+                "TTM_REPORTED", "REPORTED", "SEC",
+                "2026-09-15T00:00:00Z", "FY2026", "CONSENSUS", new BigDecimal("10"), new BigDecimal("8"),
+                "DAILY_QUOTA_EXHAUSTED");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Revenue Revision 30D Status")))
+                .isEqualTo("OK");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Revenue Revision 90D Status")))
+                .isEqualTo("INSUFFICIENT_HISTORY");
+        assertThat(security.get(1).get(security.getFirst().indexOf("EPS Revision 30D Status")))
+                .isEqualTo("DATA_MISSING");
+        assertThat(security.get(1).get(security.getFirst().indexOf("EPS Revision 90D Status")))
+                .isEqualTo("OK");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Revenue Revision 30D")))
+                .isEqualTo(new BigDecimal("12.5"));
+        assertThat(security.get(1).get(security.getFirst().indexOf("Revenue Revision 90D")))
+                .isEqualTo("");
+        assertThat(security.get(1).get(security.getFirst().indexOf("EPS Revision 30D")))
+                .isEqualTo("");
+        var consensusHistory = tabs.get(2).values();
+        assertThat(consensusHistory.getFirst())
+                .startsWith("Ticker", "As Of", "Horizon", "Revenue Consensus", "EPS Consensus",
+                        "EBITDA Consensus", "FCF Consensus", "Source")
+                .contains("Estimate Type", "Estimate Label", "Period End", "Revenue Analyst Count",
+                        "EPS Analyst Count", "Currency");
+        assertThat(consensusHistory.get(1)).containsExactly("AAPL", "2026-10-01T00:00:00Z", "2027-12-31",
+                new BigDecimal("100"), new BigDecimal("2"), new BigDecimal("10"), new BigDecimal("8"),
+                "ALPHA_VANTAGE", "ANNUAL", "FY2027", "2027-12-31", 18, 21, "USD");
         assertThat(tabs.get(1).values().get(1)).contains("AAPL", "Keep growing subscriptions");
 
         var queries = org.mockito.ArgumentCaptor.forClass(String.class);
         verify(jdbc, times(3)).query(queries.capture(), any(RowMapper.class), eq(USER_ID));
         assertThat(queries.getAllValues()).anyMatch(sql -> sql.contains("FROM consensus_snapshots"))
+                .anyMatch(sql -> sql.contains("estimate_type") && sql.contains("estimate_label")
+                        && sql.contains("period_end") && sql.contains("revenue_analyst_count")
+                        && sql.contains("eps_analyst_count") && sql.contains("currency"))
                 .anyMatch(sql -> sql.contains("FROM investment_decision_ledger"))
                 .anyMatch(sql -> sql.contains("FROM monitoring_position_contexts"));
     }
@@ -103,6 +155,9 @@ class InvestmentOsResearchSheetSyncTest {
             var values = range.startsWith("'Watchlist'")
                     ? List.of(List.<Object>of("Ticker", "Status", "Levels", "Evidence", "Observed At",
                     "Created At", "Updated At"))
+                    : range.startsWith("'Consensus History'")
+                    ? List.of(List.<Object>of("Ticker", "As Of", "Horizon", "Revenue Consensus",
+                    "EPS Consensus", "EBITDA Consensus", "FCF Consensus", "Source"))
                     : List.<List<Object>>of();
             return new GoogleSheetsClient.SheetValues(range, values);
         });
@@ -111,7 +166,50 @@ class InvestmentOsResearchSheetSyncTest {
         sync.sync(USER_ID);
 
         verify(sheets, never()).duplicateSheets(anyString(), anyMap());
-        verify(sheets).batchUpdateValues(eq("sheet-1"), any());
+        var updates = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        @SuppressWarnings("unchecked")
+        var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        assertThat(tabs.get(2).values().getFirst())
+                .startsWith("Ticker", "As Of", "Horizon", "Revenue Consensus", "EPS Consensus",
+                        "EBITDA Consensus", "FCF Consensus", "Source")
+                .contains("Estimate Type", "Currency");
+    }
+
+    @Test
+    void appendsNewSecurityColumnsToExistingHeaderWithoutArchivingOrRebuildingTab() throws Exception {
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.sheetIdsByTitle("sheet-1")).thenReturn(sheetIds());
+        when(sheets.readValues(eq("sheet-1"), anyString())).thenAnswer(invocation -> {
+            var range = (String) invocation.getArgument(1);
+            var oldSecurityHeaders = List.of("Ticker", "As Of", "Quantity", "Weight", "Currency",
+                    "Regular Close", "Regular Close As Of", "Latest Price", "Latest Price As Of", "Session",
+                    "Source", "Secondary Source", "Price Status", "Trend Status", "SMA20", "SMA50", "RSI14",
+                    "Fundamental Fiscal Period", "Fundamental Reported At", "Fundamental As Of", "Fundamental Source",
+                    "Market Cap", "Enterprise Value", "Cash", "Debt", "Diluted Shares", "Revenue TTM",
+                    "Revenue Growth YoY", "EBITDA TTM", "EPS", "FCF TTM", "Fundamental Status",
+                    "Balance Sheet Status", "Consensus As Of", "Consensus Horizon", "Consensus Source",
+                    "Revenue Consensus", "EPS Consensus", "EBITDA Consensus", "FCF Consensus",
+                    "Revenue Revision 30D", "Revenue Revision 90D", "EPS Revision 30D", "EPS Revision 90D",
+                    "Valuation Status", "EV/Sales TTM", "EV/Sales Forward", "EV/EBITDA TTM",
+                    "EV/EBITDA Forward", "Forward P/E", "FCF Yield TTM", "FCF Yield Forward",
+                    "Normalized FCF", "Overall Data Status", "Missing Fields", "Thesis", "Risk");
+            var values = range.equals("'Security Snapshot'!A:ZZ")
+                    ? List.<List<Object>>of(new java.util.ArrayList<>(oldSecurityHeaders))
+                    : List.<List<Object>>of();
+            return new GoogleSheetsClient.SheetValues(range, values);
+        });
+        var sync = sync(sheets, mock(InvestmentContextService.class), mock(RiskPolicyService.class), mock(JdbcTemplate.class));
+
+        sync.sync(USER_ID);
+
+        verify(sheets, never()).duplicateSheets(anyString(), anyMap());
+        var updates = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        @SuppressWarnings("unchecked")
+        var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        assertThat(tabs.getFirst().values().getFirst()).startsWith("Ticker", "As Of", "Quantity", "Weight")
+                .contains("Basic Shares", "Market Cap Formula", "Field Provenance");
     }
 
     @Test
@@ -214,13 +312,34 @@ class InvestmentOsResearchSheetSyncTest {
                         """),
                 mapper.readTree("{}"), mapper.readTree("""
                         {"fiscalPeriod":"FY2025","reportedAt":"2026-02-01T00:00:00Z",
-                         "asOf":"2026-02-02T00:00:00Z","source":"FMP"}
+                         "asOf":"2026-02-02T00:00:00Z","source":"FMP",
+                         "basicShares":50,"basicSharesBasis":"SEC_INSTANT",
+                         "marketCap":150,"marketCapAsOf":"2026-02-03T00:00:00Z",
+                         "marketCapFormula":"TOSS_REGULAR_CLOSE * SEC_BASIC_SHARES",
+                         "fullyDilutedMarketCap":250,"fullyDilutedMarketCapAsOf":"2026-02-04T00:00:00Z",
+                         "fullyDilutedMarketCapFormula":"TOSS_REGULAR_CLOSE * SEC_DILUTED_SHARES",
+                         "enterpriseValue":175,"enterpriseValueAsOf":"2026-02-05T00:00:00Z",
+                         "enterpriseValueSource":"MARKET_CAP_PLUS_LATEST_DEBT_MINUS_LATEST_CASH",
+                         "balanceSheetAsOf":"2026-02-05T00:00:00Z","currency":"USD",
+                         "fieldProvenance":{"marketCap":{"source":"TOSS+SEC"},
+                           "enterpriseValue":{"source":"MARKET_CAP_PLUS_LATEST_DEBT_MINUS_LATEST_CASH",
+                             "formula":"marketCap + latestDebt - latestCash"},
+                           "cash":{"source":"SEC","asOf":"2026-02-05T00:00:00Z"},
+                           "debt":{"source":"SEC","asOf":"2026-02-06T00:00:00Z"}},
+                         "ebitdaTTMType":"TTM_REPORTED","ebitdaTTMFormula":"REPORTED",
+                         "ebitdaTTMSource":"SEC"}
                         """),
                 mapper.readTree("""
                         {"asOf":"2026-09-15T00:00:00Z","horizon":"FY2026","source":"CONSENSUS",
-                         "revenueConsensus":100,"epsConsensus":2,"ebitdaConsensus":10,"fcfConsensus":8}
+                         "revenueConsensus":100,"epsConsensus":2,"ebitdaConsensus":10,"fcfConsensus":8,
+                         "missingReason":"DAILY_QUOTA_EXHAUSTED"}
                         """),
-                mapper.readTree("{}"), mapper.readTree("{}"), mapper.readTree("""
+                mapper.readTree("""
+                        {"revenueRevision30D":{"value":12.5,"baselineAsOf":"2026-08-15T00:00:00Z","status":"OK"},
+                         "revenueRevision90D":{"value":null,"baselineAsOf":null,"status":"INSUFFICIENT_HISTORY"},
+                         "epsRevision30D":{"value":null,"baselineAsOf":null,"status":"DATA_MISSING"},
+                         "epsRevision90D":{"value":2.5,"baselineAsOf":"2026-07-15T00:00:00Z","status":"OK"}}
+                        """), mapper.readTree("{}"), mapper.readTree("""
                         {"fundamentalStatus":"OK","balanceSheetStatus":"OK","overallDataStatus":"PARTIAL"}
                         """),
                 new InvestmentContextService.ThesisView("AAPL", "Keep growing subscriptions", null, null,
@@ -231,5 +350,26 @@ class InvestmentOsResearchSheetSyncTest {
         var policy = new RiskPolicyService.RiskPolicySnapshot(0, BigDecimal.TEN, BigDecimal.TEN,
                 BigDecimal.ONE, BigDecimal.ONE, null, false);
         return new InvestmentContextService.ContextView(portfolio, List.of(security), List.of(), policy, List.of(), null);
+    }
+
+    private static Object mapConsensusRow(RowMapper<Object> mapper) throws SQLException {
+        var resultSet = mock(ResultSet.class);
+        when(resultSet.getString("ticker")).thenReturn("AAPL");
+        when(resultSet.getObject("as_of", java.time.OffsetDateTime.class))
+                .thenReturn(java.time.OffsetDateTime.parse("2026-10-01T00:00:00Z"));
+        when(resultSet.getString("horizon")).thenReturn("2027-12-31");
+        when(resultSet.getString("estimate_type")).thenReturn("ANNUAL");
+        when(resultSet.getString("estimate_label")).thenReturn("FY2027");
+        when(resultSet.getObject("period_end", java.time.LocalDate.class))
+                .thenReturn(java.time.LocalDate.parse("2027-12-31"));
+        when(resultSet.getBigDecimal("revenue_consensus")).thenReturn(new BigDecimal("100"));
+        when(resultSet.getObject("revenue_analyst_count", Integer.class)).thenReturn(18);
+        when(resultSet.getBigDecimal("eps_consensus")).thenReturn(new BigDecimal("2"));
+        when(resultSet.getObject("eps_analyst_count", Integer.class)).thenReturn(21);
+        when(resultSet.getBigDecimal("ebitda_consensus")).thenReturn(new BigDecimal("10"));
+        when(resultSet.getBigDecimal("fcf_consensus")).thenReturn(new BigDecimal("8"));
+        when(resultSet.getString("currency")).thenReturn("USD");
+        when(resultSet.getString("source")).thenReturn("ALPHA_VANTAGE");
+        return mapper.mapRow(resultSet, 0);
     }
 }

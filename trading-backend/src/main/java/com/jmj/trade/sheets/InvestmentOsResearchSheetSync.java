@@ -67,7 +67,8 @@ final class InvestmentOsResearchSheetSync {
             var range = quote(tab) + "!A:ZZ";
             var current = sheets.readValues(spreadsheetId, range).values();
             currentValues.put(tab, current);
-            if (current.isEmpty() || current.getFirst().equals(table.headers())) return;
+            if (current.isEmpty() || current.getFirst().equals(table.headers())
+                    || (supportsHeaderAppend(tab) && isHeaderPrefix(current.getFirst(), table.headers()))) return;
 
             var archiveTitle = tab + " Legacy before DB";
             if (sheetIds.containsKey(archiveTitle)) {
@@ -115,6 +116,14 @@ final class InvestmentOsResearchSheetSync {
                 "EPS Revision 30D", "EPS Revision 90D", "Valuation Status", "EV/Sales TTM",
                 "EV/Sales Forward", "EV/EBITDA TTM", "EV/EBITDA Forward", "Forward P/E", "FCF Yield TTM",
                 "FCF Yield Forward", "Normalized FCF", "Overall Data Status", "Missing Fields", "Thesis", "Risk");
+        var extendedHeaders = new ArrayList<>(headers);
+        extendedHeaders.addAll(List.of("Basic Shares", "Basic Shares Basis", "Market Cap As Of", "Market Cap Formula",
+                "Fully Diluted Market Cap", "Fully Diluted Market Cap As Of", "Fully Diluted Market Cap Formula",
+                "Enterprise Value As Of", "Enterprise Value Source", "Enterprise Value Formula",
+                "Balance Sheet As Of", "Fundamental Currency", "Field Provenance", "EBITDA TTM Type",
+                "EBITDA TTM Formula", "EBITDA TTM Source", "Consensus Missing Reason",
+                "Revenue Revision 30D Status", "Revenue Revision 90D Status",
+                "EPS Revision 30D Status", "EPS Revision 90D Status"));
         var rows = securities.stream().map(security -> {
             var price = security.price();
             var technical = security.technical();
@@ -145,9 +154,19 @@ final class InvestmentOsResearchSheetSync {
                     value(valuation, "evEbitdaTTM"), value(valuation, "evEbitdaForward"), value(valuation, "forwardPE"),
                     value(valuation, "fcfYieldTTM"), value(valuation, "fcfYieldForward"), value(valuation, "normalizedFcf"),
                     value(readiness, "overallDataStatus"), value(readiness, "missingFields"), json(security.thesis()),
-                    json(security.risk()));
+                    json(security.risk()), value(fundamental, "basicShares"), value(fundamental, "basicSharesBasis"),
+                    value(fundamental, "marketCapAsOf"), value(fundamental, "marketCapFormula"),
+                    value(fundamental, "fullyDilutedMarketCap"), value(fundamental, "fullyDilutedMarketCapAsOf"),
+                    value(fundamental, "fullyDilutedMarketCapFormula"), value(fundamental, "enterpriseValueAsOf"),
+                    value(fundamental, "enterpriseValueSource"), pathValue(fundamental, "fieldProvenance", "enterpriseValue", "formula"),
+                    value(fundamental, "balanceSheetAsOf"), value(fundamental, "currency"),
+                    value(fundamental, "fieldProvenance"), value(fundamental, "ebitdaTTMType"),
+                    value(fundamental, "ebitdaTTMFormula"), value(fundamental, "ebitdaTTMSource"),
+                    value(consensus, "missingReason"), nested(revision, "revenueRevision30D", "status"),
+                    nested(revision, "revenueRevision90D", "status"), nested(revision, "epsRevision30D", "status"),
+                    nested(revision, "epsRevision90D", "status"));
         }).toList();
-        return new Table(headers, rows);
+        return new Table(List.copyOf(extendedHeaders), rows);
     }
 
     private static Table thesis(List<InvestmentContextService.SecurityView> securities) {
@@ -167,16 +186,22 @@ final class InvestmentOsResearchSheetSync {
 
     private Table consensusHistory(UUID userId) {
         var headers = List.of("Ticker", "As Of", "Horizon", "Revenue Consensus", "EPS Consensus",
-                "EBITDA Consensus", "FCF Consensus", "Source");
+                "EBITDA Consensus", "FCF Consensus", "Source", "Estimate Type", "Estimate Label",
+                "Period End", "Revenue Analyst Count", "EPS Analyst Count", "Currency");
         var rows = jdbc.query("""
-                SELECT ticker, as_of, horizon, revenue_consensus, eps_consensus,
-                       ebitda_consensus, fcf_consensus, source
+                SELECT ticker, as_of, horizon, estimate_type, estimate_label, period_end,
+                       revenue_consensus, revenue_analyst_count, eps_consensus, eps_analyst_count,
+                       ebitda_consensus, fcf_consensus, currency, source
                   FROM consensus_snapshots WHERE user_id = ?
-                 ORDER BY ticker, horizon, as_of, source
-                """, (resultSet, rowNum) -> row(resultSet.getString("ticker"), instant(resultSet.getObject("as_of", OffsetDateTime.class)),
-                resultSet.getString("horizon"), resultSet.getBigDecimal("revenue_consensus"),
-                resultSet.getBigDecimal("eps_consensus"), resultSet.getBigDecimal("ebitda_consensus"),
-                resultSet.getBigDecimal("fcf_consensus"), resultSet.getString("source")), userId);
+                 ORDER BY ticker, estimate_type, period_end, as_of, source
+                """, (resultSet, rowNum) -> row(resultSet.getString("ticker"),
+                instant(resultSet.getObject("as_of", OffsetDateTime.class)), resultSet.getString("horizon"),
+                resultSet.getBigDecimal("revenue_consensus"), resultSet.getBigDecimal("eps_consensus"),
+                resultSet.getBigDecimal("ebitda_consensus"), resultSet.getBigDecimal("fcf_consensus"),
+                resultSet.getString("source"), resultSet.getString("estimate_type"),
+                resultSet.getString("estimate_label"), date(resultSet.getObject("period_end", java.time.LocalDate.class)),
+                resultSet.getObject("revenue_analyst_count", Integer.class),
+                resultSet.getObject("eps_analyst_count", Integer.class), resultSet.getString("currency")), userId);
         return new Table(headers, rows);
     }
 
@@ -256,12 +281,40 @@ final class InvestmentOsResearchSheetSync {
         return node == null ? "" : value(node.get(name), field);
     }
 
+    private static Object pathValue(JsonNode node, String... path) {
+        var current = node;
+        for (var name : path) {
+            if (current == null || current.isNull()) return "";
+            current = current.get(name);
+        }
+        if (current == null || current.isNull()) return "";
+        if (current.isArray() || current.isObject()) return current.toString();
+        if (current.isNumber()) return current.decimalValue();
+        return current.asText();
+    }
+
+    private static boolean isHeaderPrefix(List<?> existing, List<String> expected) {
+        if (existing.isEmpty() || existing.size() > expected.size()) return false;
+        for (int i = 0; i < existing.size(); i++) {
+            if (!Objects.equals(existing.get(i), expected.get(i))) return false;
+        }
+        return true;
+    }
+
+    private static boolean supportsHeaderAppend(String tab) {
+        return "Security Snapshot".equals(tab) || "Consensus History".equals(tab);
+    }
+
     private static String instant(Instant value) {
         return value == null ? "" : value.toString();
     }
 
     private static String instant(OffsetDateTime value) {
         return value == null ? "" : value.toInstant().toString();
+    }
+
+    private static String date(java.time.LocalDate value) {
+        return value == null ? "" : value.toString();
     }
 
     private static List<Object> row(Object... values) {

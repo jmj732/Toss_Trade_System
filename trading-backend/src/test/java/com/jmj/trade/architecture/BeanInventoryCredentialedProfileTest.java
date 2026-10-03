@@ -69,6 +69,7 @@ class BeanInventoryCredentialedProfileTest extends PostgresIntegrationTest {
             "accessTokenService : com.jmj.trade.security.AccessTokenService",
             "accountSyncService : com.jmj.trade.account.AccountSyncService",
             "accountSyncTransactions : com.jmj.trade.account.AccountSyncTransactions",
+            "alphaVantageDailyRequestCache : com.jmj.trade.marketdata.AlphaVantageDailyRequestCache",
             "analysisPredictionController : com.jmj.trade.prediction.AnalysisPredictionController",
             "analysisPredictionService : com.jmj.trade.prediction.AnalysisPredictionService",
             "analysisServiceHealthIndicator : com.jmj.trade.observability.AnalysisServiceHealthIndicator",
