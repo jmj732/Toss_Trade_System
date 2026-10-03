@@ -1,7 +1,9 @@
 package com.jmj.trade.investment;
 
 import com.jmj.trade.PostgresIntegrationTest;
+import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.account.PortfolioReadService;
+import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.marketdata.DataProviderRole;
 import com.jmj.trade.marketdata.ProviderRequest;
 import com.jmj.trade.marketdata.ProviderUnavailableException;
@@ -12,6 +14,7 @@ import com.jmj.trade.marketdata.StockDataProviderRegistry;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.flywaydb.core.Flyway;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
@@ -117,7 +121,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 0, new BigDecimal("10000000"), new BigDecimal("10000"),
                 new BigDecimal("100"), new BigDecimal("0.25"), false));
         var service = new InvestmentContextService(jdbc, mapper, transactions,
-                new StockDataProviderRegistry(List.of()), mock(PortfolioReadService.class),
+                new StockDataProviderRegistry(List.of()), mock(ObjectProvider.class), mock(PortfolioReadService.class),
                 watchlist, riskPolicies, Duration.ofMinutes(15), Duration.ofDays(7),
                 Duration.ofDays(210), Duration.ofDays(10));
         var decisionId = UUID.randomUUID();
@@ -414,6 +418,319 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat(readiness.get("missingFields").toString()).contains("consensus.currency");
     }
 
+    @Test
+    void tossQuoteUsesBrokerTimestampAndMatchingEdtCalendarInterval() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var quoteTimestamp = Instant.parse("2026-07-06T13:30:00Z");
+        var observedAt = Instant.parse("2026-07-06T13:30:01Z");
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.degraded(
+                List.of(new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "USD", observedAt, quoteTimestamp)), false, true,
+                List.of("AAPL.bidPrice", "AAPL.askPrice"), "PRICE_PARTIAL"));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-07-06")))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.MarketCalendarView(
+                        "US", mapper.readTree("""
+                                {"today":{"date":"2026-07-06",
+                                  "preMarket":{"startTime":"2026-07-06T04:00:00-04:00","endTime":"2026-07-06T09:30:00-04:00"},
+                                  "regularMarket":{"startTime":"2026-07-06T09:30:00-04:00","endTime":"2026-07-06T16:00:00-04:00"},
+                                  "afterMarket":{"startTime":"2026-07-06T16:00:00-04:00","endTime":"2026-07-06T20:00:00-04:00"}}}
+                                """))));
+
+        assertThat(service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID)).isEqualTo(1);
+
+        var price = jdbc.queryForMap("""
+                SELECT source, session, latest_price, latest_price_as_of, regular_close, regular_close_as_of
+                  FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL'
+                """, USER_ID);
+        assertThat(price).containsEntry("source", "TOSS").containsEntry("session", "LIVE_REGULAR");
+        assertThat((BigDecimal) price.get("latest_price")).isEqualByComparingTo("203.40");
+        assertThat(((java.sql.Timestamp) price.get("latest_price_as_of")).toInstant()).isEqualTo(quoteTimestamp);
+        assertThat(price.get("regular_close")).isNull();
+        assertThat(price.get("regular_close_as_of")).isNull();
+        verify(surface).prices(USER_ID, connectionId, "AAPL");
+        verify(surface).marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-07-06"));
+    }
+
+    @Test
+    void tossQuotePersistsWhenFmpPriceProviderFails() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var quoteTimestamp = Instant.parse("2026-07-06T13:30:00Z");
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.degraded(
+                List.of(new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "USD", Instant.now(), quoteTimestamp)), false, true,
+                List.of("AAPL.bidPrice", "AAPL.askPrice"), "PRICE_PARTIAL"));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-07-06")))
+                .thenReturn(calendarResponse("US", "2026-07-06",
+                        "2026-07-06T09:30:00-04:00", "2026-07-06T16:00:00-04:00", null, null));
+
+        assertThat(service(new StockDataProviderRegistry(List.of(provider(true))), surface).capture(USER_ID))
+                .isEqualTo(1);
+
+        var price = jdbc.queryForMap("""
+                SELECT source, session, latest_price, latest_price_as_of
+                  FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL'
+                """, USER_ID);
+        assertThat(price).containsEntry("source", "TOSS").containsEntry("session", "LIVE_REGULAR");
+        assertThat((BigDecimal) price.get("latest_price")).isEqualByComparingTo("203.40");
+        assertThat(((java.sql.Timestamp) price.get("latest_price_as_of")).toInstant()).isEqualTo(quoteTimestamp);
+        assertThat(jdbc.queryForObject("""
+                SELECT last_error FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, String.class, USER_ID)).isEqualTo("PROVIDER_HTTP_402");
+    }
+
+    @Test
+    void tossConnectionLookupIsScopedToCapturedUser() {
+        var otherUser = UUID.randomUUID();
+        jdbc.update("INSERT INTO users (id) VALUES (?)", otherUser);
+        insertActiveTossConnection(otherUser);
+        var surface = mock(BrokerSurfaceService.class);
+
+        service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID);
+
+        verify(surface, org.mockito.Mockito.never()).prices(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void badWatchlistSymbolDoesNotDiscardOtherTossQuote() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO monitoring_watchlist (id, user_id, symbol, levels, evidence, observed_at, created_at, updated_at)
+                VALUES (?, ?, 'MSFT', '{"prepare":1,"confirm":2,"pullback":3,"invalidate":0}'::jsonb,
+                        '{}'::jsonb, ?, ?, ?)
+                """, UUID.randomUUID(), USER_ID, now, now, now);
+        var quoteTimestamp = Instant.parse("2026-07-06T13:30:00Z");
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL,MSFT"))
+                .thenThrow(new IllegalStateException("MSFT quote unavailable"));
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "USD", Instant.now(), quoteTimestamp))));
+        when(surface.prices(USER_ID, connectionId, "MSFT"))
+                .thenThrow(new IllegalStateException("MSFT quote unavailable"));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-07-06")))
+                .thenReturn(calendarResponse("US", "2026-07-06",
+                        "2026-07-06T09:30:00-04:00", "2026-07-06T16:00:00-04:00", null, null));
+
+        assertThat(service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID)).isEqualTo(2);
+
+        assertThat(jdbc.queryForObject("""
+                SELECT source FROM investment_price_snapshots WHERE user_id = ? AND ticker = 'AAPL'
+                """, String.class, USER_ID)).isEqualTo("TOSS");
+        verify(surface).prices(USER_ID, connectionId, "AAPL");
+        verify(surface).prices(USER_ID, connectionId, "MSFT");
+    }
+
+    @Test
+    void tossQuoteWithoutEventTimestampIsDiagnosticOnly() {
+        var connectionId = insertActiveTossConnection();
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "USD", Instant.now(), null))));
+
+        service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID);
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS'
+                """, Integer.class, USER_ID)).isZero();
+        var input = jdbc.queryForObject("""
+                SELECT payload::text FROM analysis_input_snapshots
+                 WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID);
+        assertThat(input).contains("TOSS_TIMESTAMP_MISSING");
+        verify(surface, org.mockito.Mockito.never()).marketCalendar(
+                org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq(connectionId),
+                org.mockito.ArgumentMatchers.eq("US"), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void nonUsdTossQuoteIsNotClassifiedWithUsCalendar() {
+        var connectionId = insertActiveTossConnection();
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "KRW", Instant.now(), Instant.now().minusSeconds(30)))));
+
+        service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID);
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS'
+                """, Integer.class, USER_ID)).isZero();
+        verify(surface, org.mockito.Mockito.never()).marketCalendar(
+                org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq(connectionId),
+                org.mockito.ArgumentMatchers.eq("US"), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void futureTossQuoteIsNotUsedAsCurrentPrice() {
+        var connectionId = insertActiveTossConnection();
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "USD", Instant.now(), Instant.now().plus(Duration.ofHours(1))))));
+
+        service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID);
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS'
+                """, Integer.class, USER_ID)).isZero();
+        var input = jdbc.queryForObject("""
+                SELECT payload::text FROM analysis_input_snapshots
+                 WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID);
+        assertThat(input).contains("TOSS_TIMESTAMP_FUTURE");
+        verify(surface, org.mockito.Mockito.never()).marketCalendar(
+                org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq(connectionId),
+                org.mockito.ArgumentMatchers.eq("US"), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void tossCalendarDateMismatchKeepsQuotePartialWithoutPersistingAClassifiedPrice() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var quoteTimestamp = Instant.parse("2026-07-06T14:00:00Z");
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "USD", Instant.now(), quoteTimestamp))));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-07-06")))
+                .thenReturn(calendarResponse("2026-07-07",
+                        "2026-07-07T09:30:00-04:00", "2026-07-07T16:00:00-04:00", null, null));
+
+        assertThat(service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID)).isEqualTo(1);
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS'
+                """, Integer.class, USER_ID)).isZero();
+        var payload = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        assertThat(payload.path("price").path("source").asText()).isEqualTo("TOSS");
+        assertThat(payload.path("price").path("latestPrice").decimalValue()).isEqualByComparingTo("203.40");
+        assertThat(payload.path("price").path("latestPriceAsOf").asText()).isEqualTo(quoteTimestamp.toString());
+        assertThat(payload.path("price").path("session").isNull()).isTrue();
+        assertThat(payload.path("price").path("status").asText()).isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void tossCalendarForWrongMarketDoesNotClassifyOrPersistQuote() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var quoteTimestamp = Instant.parse("2026-07-06T14:00:00Z");
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("203.40"), null, null,
+                        "USD", Instant.now(), quoteTimestamp))));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-07-06")))
+                .thenReturn(calendarResponse("CA", "2026-07-06",
+                        "2026-07-06T09:30:00-04:00", "2026-07-06T16:00:00-04:00", null, null));
+
+        assertThat(service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID)).isEqualTo(1);
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_price_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS'
+                """, Integer.class, USER_ID)).isZero();
+        var payload = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        assertThat(payload.path("price").path("source").asText()).isEqualTo("TOSS");
+        assertThat(payload.path("price").path("session").isNull()).isTrue();
+        assertThat(payload.path("price").path("status").asText()).isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void tossSessionClassificationUsesOffsetRangesAndExclusiveEnd() throws Exception {
+        var edt = mapper.readTree("""
+                {"today":{"date":"2026-07-06",
+                  "preMarket":{"startTime":"2026-07-06T04:00:00-04:00","endTime":"2026-07-06T09:30:00-04:00"},
+                  "regularMarket":{"startTime":"2026-07-06T09:30:00-04:00","endTime":"2026-07-06T16:00:00-04:00"}}}
+                """);
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-07-06T13:30:00Z"), LocalDate.parse("2026-07-06"), edt))
+                .isEqualTo("LIVE_REGULAR");
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-07-06T20:00:00Z"), LocalDate.parse("2026-07-06"), edt)).isNull();
+
+        var est = mapper.readTree("""
+                {"today":{"date":"2026-11-03",
+                  "regularMarket":{"startTime":"2026-11-03T09:30:00-05:00","endTime":"2026-11-03T16:00:00-05:00"},
+                  "afterMarket":{"startTime":"2026-11-03T16:00:00-05:00","endTime":"2026-11-03T20:00:00-05:00"}}}
+                """);
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-11-03T14:30:00Z"), LocalDate.parse("2026-11-03"), est))
+                .isEqualTo("LIVE_REGULAR");
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-11-03T21:00:00Z"), LocalDate.parse("2026-11-03"), est))
+                .isEqualTo("AFTER_HOURS");
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-11-03T14:30:00Z"), LocalDate.parse("2026-11-04"), est)).isNull();
+
+        var overlapping = mapper.readTree("""
+                {"today":{"date":"2026-07-06",
+                  "preMarket":{"startTime":"2026-07-06T09:00:00-04:00","endTime":"2026-07-06T10:00:00-04:00"},
+                  "regularMarket":{"startTime":"2026-07-06T09:30:00-04:00","endTime":"2026-07-06T16:00:00-04:00"}}}
+                """);
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-07-06T13:45:00Z"), LocalDate.parse("2026-07-06"), overlapping)).isNull();
+
+        var corruptBounds = mapper.readTree("""
+                {"today":{"date":"2026-07-06",
+                  "regularMarket":{"startTime":"2026-07-06T16:00:00-04:00","endTime":"2026-07-06T09:30:00-04:00"}}}
+                """);
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-07-06T13:45:00Z"), LocalDate.parse("2026-07-06"), corruptBounds)).isNull();
+
+        var dayMarketOnly = mapper.readTree("""
+                {"today":{"date":"2026-07-06",
+                  "dayMarket":{"startTime":"2026-07-06T09:00:00+09:00","endTime":"2026-07-06T16:50:00+09:00"}}}
+                """);
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-07-06T05:00:00Z"), LocalDate.parse("2026-07-06"), dayMarketOnly)).isNull();
+    }
+
+    @Test
+    void tossSessionSupportsOfficialKstAndLegacyAdjacentBusinessDayWindows() throws Exception {
+        var official = mapper.readTree("""
+                {"previousBusinessDay":{"date":"2026-08-05",
+                  "regularMarket":{"startTime":"2026-08-05T22:30:00+09:00","endTime":"2026-08-06T05:00:00+09:00"}},
+                 "today":{"date":"2026-08-06","regularMarket":null},
+                 "nextBusinessDay":{"date":"2026-08-07","regularMarket":null}}
+                """);
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-08-05T19:30:00Z"), LocalDate.parse("2026-08-05"), official))
+                .isEqualTo("LIVE_REGULAR");
+
+        var legacy = mapper.readTree("""
+                {"previousBusinessDay":{"date":"2026-08-05",
+                  "regularMarket":{"open":"2026-08-05T22:30:00+09:00","close":"2026-08-06T05:00:00+09:00"}},
+                 "today":{"date":"2026-08-06","regularMarket":null}}
+                """);
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-08-05T19:30:00Z"), LocalDate.parse("2026-08-05"), legacy))
+                .isEqualTo("LIVE_REGULAR");
+
+        var conflictingAliases = mapper.readTree("""
+                {"today":{"date":"2026-08-05",
+                  "regularMarket":{"startTime":"2026-08-05T22:30:00+09:00","open":"2026-08-05T22:31:00+09:00",
+                    "endTime":"2026-08-06T05:00:00+09:00"}}}
+                """);
+        assertThat(InvestmentContextService.tossSession(
+                Instant.parse("2026-08-05T19:30:00Z"), LocalDate.parse("2026-08-05"), conflictingAliases)).isNull();
+    }
+
     private void assertPipelineFailure(String error, OffsetDateTime lastSuccess) {
         var row = jdbc.queryForMap("""
                 SELECT status, last_error FROM investment_pipeline_state
@@ -445,9 +762,60 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 0, new BigDecimal("10000000"), new BigDecimal("10000"),
                 new BigDecimal("100"), new BigDecimal("0.25"), false));
         return new InvestmentContextService(jdbc, mapper, transactions, providers,
-                mock(PortfolioReadService.class), mock(MonitoringWatchlistService.class),
+                mock(ObjectProvider.class), mock(PortfolioReadService.class), mock(MonitoringWatchlistService.class),
                 riskPolicies, Duration.ofMinutes(15), Duration.ofDays(7),
                 Duration.ofDays(210), Duration.ofDays(10));
+    }
+
+    private InvestmentContextService service(
+            StockDataProviderRegistry providers, BrokerSurfaceService surface
+    ) {
+        var surfaces = mock(ObjectProvider.class);
+        when(surfaces.getIfAvailable()).thenReturn(surface);
+        return new InvestmentContextService(jdbc, mapper, transactions, providers, surfaces,
+                mock(PortfolioReadService.class), mock(MonitoringWatchlistService.class),
+                mock(RiskPolicyService.class), Duration.ofMinutes(15), Duration.ofDays(7),
+                Duration.ofDays(210), Duration.ofDays(10));
+    }
+
+    private UUID insertActiveTossConnection() {
+        return insertActiveTossConnection(USER_ID);
+    }
+
+    private UUID insertActiveTossConnection(UUID userId) {
+        var connectionId = UUID.randomUUID();
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO broker_connections (
+                    id, user_id, broker_type, status, credential_ciphertext, credential_nonce,
+                    credential_key_version, created_at, updated_at, version, credential_revision
+                ) VALUES (?, ?, 'TOSS_INVEST', 'ACTIVE', ?, ?, 1, ?, ?, 0, 1)
+                """, connectionId, userId, new byte[32], new byte[12], now, now);
+        return connectionId;
+    }
+
+    private BrokerSurfaceResponse<BrokerSurfaceResponse.MarketCalendarView> calendarResponse(
+            String date, String regularStart, String regularEnd, String afterStart, String afterEnd
+    ) throws Exception {
+        return calendarResponse("US", date, regularStart, regularEnd, afterStart, afterEnd);
+    }
+
+    private BrokerSurfaceResponse<BrokerSurfaceResponse.MarketCalendarView> calendarResponse(
+            String market, String date, String regularStart, String regularEnd, String afterStart, String afterEnd
+    ) throws Exception {
+        var today = mapper.createObjectNode().put("date", date);
+        if (regularStart != null && regularEnd != null) {
+            today.putObject("regularMarket").put("startTime", regularStart).put("endTime", regularEnd);
+        } else {
+            today.putNull("regularMarket");
+        }
+        if (afterStart != null && afterEnd != null) {
+            today.putObject("afterMarket").put("startTime", afterStart).put("endTime", afterEnd);
+        } else {
+            today.putNull("afterMarket");
+        }
+        var payload = mapper.createObjectNode().set("today", today);
+        return BrokerSurfaceResponse.available(new BrokerSurfaceResponse.MarketCalendarView(market, payload));
     }
 
     private StockDataProvider provider(boolean unavailable) {

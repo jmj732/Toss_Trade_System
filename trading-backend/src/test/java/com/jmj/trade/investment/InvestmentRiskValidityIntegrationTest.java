@@ -6,6 +6,7 @@ import com.jmj.trade.marketdata.StockDataProviderRegistry;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.flywaydb.core.Flyway;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -182,7 +183,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
                 """, UUID.randomUUID(), USER_ID, now, mapper.writeValueAsString(payload), now);
         var service = new InvestmentContextService(
                 jdbc, mapper, new DataSourceTransactionManager(jdbc.getDataSource()),
-                new StockDataProviderRegistry(List.of()), portfolios, watchlist, riskPolicies,
+                new StockDataProviderRegistry(List.of()), mock(ObjectProvider.class), portfolios, watchlist, riskPolicies,
                 Duration.ofMinutes(15), Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10));
         return service.context(USER_ID);
     }

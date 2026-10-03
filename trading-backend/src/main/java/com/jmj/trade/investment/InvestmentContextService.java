@@ -1,6 +1,8 @@
 package com.jmj.trade.investment;
 
+import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.account.PortfolioReadService;
+import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.analysis.StockAnalysisSnapshotHasher;
 import com.jmj.trade.marketdata.StockAnalysisInput;
 import com.jmj.trade.marketdata.StockAnalysisInputAssembler;
@@ -9,6 +11,7 @@ import com.jmj.trade.marketdata.StockDataProviderRegistry;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Service;
@@ -27,10 +30,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -45,6 +50,8 @@ import java.util.regex.Pattern;
 public final class InvestmentContextService {
 
     private static final Pattern TICKER = Pattern.compile("[A-Z0-9._-]{1,32}");
+    private static final Pattern TOSS_MARKET_SYMBOL = Pattern.compile("[A-Z0-9.-]+");
+    private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
     private static final List<String> FUNDAMENTAL_FIELDS = List.of(
             "marketCap", "enterpriseValue", "cash", "debt", "dilutedShares",
             "revenueTTM", "revenueGrowthYoY", "ebitdaTTM", "eps", "fcfTTM");
@@ -59,6 +66,7 @@ public final class InvestmentContextService {
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;
     private final StockAnalysisInputAssembler assembler;
+    private final BrokerSurfaceService brokerSurface;
     private final StockAnalysisSnapshotHasher hasher;
     private final PortfolioReadService portfolios;
     private final MonitoringWatchlistService watchlist;
@@ -75,6 +83,7 @@ public final class InvestmentContextService {
             ObjectMapper objectMapper,
             PlatformTransactionManager transactionManager,
             StockDataProviderRegistry providers,
+            ObjectProvider<BrokerSurfaceService> brokerSurfaceProvider,
             PortfolioReadService portfolios,
             MonitoringWatchlistService watchlist,
             RiskPolicyService riskPolicies,
@@ -86,6 +95,7 @@ public final class InvestmentContextService {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.assembler = new StockAnalysisInputAssembler(Objects.requireNonNull(providers, "providers"), Clock.systemUTC());
+        this.brokerSurface = brokerSurfaceProvider == null ? null : brokerSurfaceProvider.getIfAvailable();
         this.hasher = new StockAnalysisSnapshotHasher(objectMapper);
         this.portfolios = Objects.requireNonNull(portfolios, "portfolios");
         this.watchlist = Objects.requireNonNull(watchlist, "watchlist");
@@ -155,9 +165,15 @@ public final class InvestmentContextService {
             var captured = 0;
             boolean sourceResponded = false;
             String providerFailure = null;
+            var tossQuotes = tossQuotes(userId, List.copyOf(symbols));
+            var calendars = new HashMap<LocalDate, JsonNode>();
             for (var symbol : symbols) {
                 var input = assembler.assemble(symbol, Map.of(), selectedFields);
-                transaction.execute(status -> persistCapture(userId, input, selectedFields == null));
+                if (tossQuotes != null) {
+                    input = withTossQuote(userId, input, tossQuotes, calendars);
+                }
+                var capturedInput = input;
+                transaction.execute(status -> persistCapture(userId, capturedInput, selectedFields == null));
                 sourceResponded |= !input.observations().isEmpty();
                 if (providerFailure == null) providerFailure = providerFailure(input);
                 captured++;
@@ -243,6 +259,173 @@ public final class InvestmentContextService {
                  ORDER BY symbol
                 """, (resultSet, rowNum) -> resultSet.getString(1), userId).forEach(symbols::add);
         return symbols;
+    }
+
+    private TossQuoteSource tossQuotes(UUID userId, List<String> symbols) {
+        if (brokerSurface == null || symbols.isEmpty()) return null;
+        var connectionId = jdbc.query("""
+                SELECT id FROM broker_connections
+                 WHERE user_id = ? AND broker_type = 'TOSS_INVEST' AND status = 'ACTIVE'
+                   AND deleted_at IS NULL
+                 ORDER BY id
+                """, (resultSet, rowNum) -> resultSet.getObject(1, UUID.class), userId)
+                .stream().findFirst().orElse(null);
+        if (connectionId == null) return null;
+
+        var requested = symbols.stream()
+                .map(symbol -> symbol.toUpperCase(Locale.ROOT))
+                .filter(symbol -> TOSS_MARKET_SYMBOL.matcher(symbol).matches())
+                .toList();
+        var quotes = new LinkedHashMap<String, BrokerSurfaceResponse.PriceView>();
+        for (var symbol : requested) {
+            try {
+                var response = brokerSurface.prices(userId, connectionId, symbol);
+                if (response == null || response.unavailable() || response.data() == null) continue;
+                for (var price : response.data()) {
+                    if (price == null || price.symbol() == null) continue;
+                    if (symbol.equalsIgnoreCase(price.symbol())) quotes.putIfAbsent(symbol, price);
+                }
+            } catch (RuntimeException ignored) {
+                // The broker quote is supplemental; preserve independent provider capture.
+            }
+        }
+        return new TossQuoteSource(connectionId, Map.copyOf(quotes));
+    }
+
+    private StockAnalysisInput withTossQuote(
+            UUID userId,
+            StockAnalysisInput input,
+            TossQuoteSource source,
+            Map<LocalDate, JsonNode> calendars
+    ) {
+        var quote = source.quotes().get(input.symbol().toUpperCase(Locale.ROOT));
+        if (quote == null) return input;
+        var observations = new ArrayList<>(input.observations());
+        var asOf = quote.brokerTimestamp();
+        var collectedAt = input.collectedAt();
+        if (!"USD".equalsIgnoreCase(quote.currency())) {
+            observations.add(tossMissing("price.latestPrice", "TOSS_CURRENCY_NOT_USD", collectedAt));
+            return withObservations(input, observations);
+        }
+        if (quote.lastPrice() == null || quote.lastPrice().signum() <= 0) {
+            observations.add(tossMissing("price.latestPrice", "TOSS_PRICE_INVALID", collectedAt));
+            return withObservations(input, observations);
+        }
+
+        var priceValue = objectMapper.valueToTree(quote.lastPrice());
+        if (asOf == null) {
+            observations.add(new StockAnalysisInput.Observation(
+                    "price.latestPrice", priceValue, "USD", null, null, StockDataProviderId.TOSS,
+                    null, collectedAt, List.of("TOSS_TIMESTAMP_MISSING")));
+            observations.add(tossMissing("price.session", "TOSS_TIMESTAMP_MISSING", collectedAt));
+            return withObservations(input, observations);
+        }
+        if (asOf.isAfter(collectedAt)) {
+            observations.add(new StockAnalysisInput.Observation(
+                    "price.latestPrice", priceValue, "USD", null, null, StockDataProviderId.TOSS,
+                    asOf, collectedAt, List.of("TOSS_TIMESTAMP_FUTURE")));
+            observations.add(tossMissing("price.session", "TOSS_TIMESTAMP_FUTURE", collectedAt));
+            return withObservations(input, observations);
+        }
+
+        observations.add(new StockAnalysisInput.Observation(
+                "price.latestPrice", priceValue, "USD", null, null, StockDataProviderId.TOSS,
+                asOf, collectedAt, List.of()));
+        var marketDate = asOf.atZone(NEW_YORK).toLocalDate();
+        var calendar = calendars.containsKey(marketDate)
+                ? calendars.get(marketDate) : tossCalendar(userId, source.connectionId(), marketDate);
+        calendars.put(marketDate, calendar);
+        var session = tossSession(asOf, marketDate, calendar);
+        if (session == null) {
+            observations.add(tossMissing("price.session", "TOSS_SESSION_UNVERIFIED", collectedAt));
+        } else {
+            observations.add(new StockAnalysisInput.Observation(
+                    "price.session", objectMapper.valueToTree(session), null, null, null,
+                    StockDataProviderId.TOSS, asOf, collectedAt, List.of()));
+        }
+        return withObservations(input, observations);
+    }
+
+    private JsonNode tossCalendar(UUID userId, UUID connectionId, LocalDate date) {
+        try {
+            var response = brokerSurface.marketCalendar(userId, connectionId, "US", date);
+            return response == null || response.unavailable() || response.data() == null
+                    || !"US".equals(response.data().market())
+                    ? null : response.data().payload();
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    static String tossSession(Instant quoteTimestamp, LocalDate marketDate, JsonNode calendar) {
+        if (quoteTimestamp == null || marketDate == null || calendar == null
+                || !marketDate.equals(quoteTimestamp.atZone(NEW_YORK).toLocalDate())) {
+            return null;
+        }
+        JsonNode matchingDay = null;
+        var matchingDays = 0;
+        for (var dayName : List.of("today", "previousBusinessDay", "nextBusinessDay")) {
+            var day = calendar.path(dayName);
+            if (marketDate.toString().equals(day.path("date").asText(null))) {
+                matchingDay = day;
+                matchingDays++;
+            }
+        }
+        if (matchingDays != 1) return null;
+        var matches = new ArrayList<String>();
+        addTossSessionMatch(matches, matchingDay, "preMarket", "PREMARKET", quoteTimestamp, marketDate);
+        addTossSessionMatch(matches, matchingDay, "regularMarket", "LIVE_REGULAR", quoteTimestamp, marketDate);
+        addTossSessionMatch(matches, matchingDay, "afterMarket", "AFTER_HOURS", quoteTimestamp, marketDate);
+        return matches.size() == 1 ? matches.getFirst() : null;
+    }
+
+    private static void addTossSessionMatch(
+            List<String> matches, JsonNode today, String field, String session,
+            Instant quoteTimestamp, LocalDate marketDate
+    ) {
+        var interval = today.path(field);
+        if (!interval.isObject()) return;
+        try {
+            var start = tossCalendarBound(interval, "startTime", "open", "openTime", "start");
+            var end = tossCalendarBound(interval, "endTime", "close", "closeTime", "end");
+            if (start == null || end == null || !start.isBefore(end)
+                    || !start.atZone(NEW_YORK).toLocalDate().equals(marketDate)
+                    || !end.minusNanos(1).atZone(NEW_YORK).toLocalDate().equals(marketDate)) {
+                return;
+            }
+            if (!quoteTimestamp.isBefore(start) && quoteTimestamp.isBefore(end)) matches.add(session);
+        } catch (RuntimeException ignored) {
+            // A session without complete offset-aware bounds cannot classify this quote.
+        }
+    }
+
+    private static Instant tossCalendarBound(JsonNode interval, String... keys) {
+        Instant bound = null;
+        for (var key : keys) {
+            var value = interval.get(key);
+            if (value == null || value.isNull()) continue;
+            try {
+                var parsed = OffsetDateTime.parse(value.asText()).toInstant();
+                if (bound != null && !bound.equals(parsed)) return null;
+                bound = parsed;
+            } catch (RuntimeException ignored) {
+                return null;
+            }
+        }
+        return bound;
+    }
+
+    private StockAnalysisInput.Observation tossMissing(String field, String reason, Instant collectedAt) {
+        return new StockAnalysisInput.Observation(
+                field, null, null, null, null, StockDataProviderId.TOSS,
+                null, collectedAt, List.of(reason));
+    }
+
+    private static StockAnalysisInput withObservations(
+            StockAnalysisInput input, List<StockAnalysisInput.Observation> observations
+    ) {
+        return new StockAnalysisInput(input.snapshotId(), input.symbol(), input.schemaVersion(),
+                input.collectedAt(), observations);
     }
 
     static String providerFailure(StockAnalysisInput input) {
@@ -1931,6 +2114,11 @@ public final class InvestmentContextService {
     }
 
     private record PriceBar(BigDecimal close, Instant asOf) {
+    }
+
+    private record TossQuoteSource(
+            UUID connectionId, Map<String, BrokerSurfaceResponse.PriceView> quotes
+    ) {
     }
 
     private record RiskExposure(String ticker, BigDecimal loss, InvestmentDataCalculator.DataStatus status) {
