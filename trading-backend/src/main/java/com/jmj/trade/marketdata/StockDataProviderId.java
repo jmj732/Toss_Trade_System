@@ -8,6 +8,7 @@ public enum StockDataProviderId {
     BEA,
     FED,
     FMP,
+    ALPHA_VANTAGE,
     FINNHUB,
     POLYGON,
     TWELVE_DATA;

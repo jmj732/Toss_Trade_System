@@ -134,17 +134,18 @@ class StockAnalysisDataFoundationTest {
 
     @Test
     void catalogCoversAllRequestedProvidersByRole() {
-        assertThat(ProviderCatalog.roles()).containsExactlyInAnyOrderEntriesOf(Map.of(
-                StockDataProviderId.TOSS, DataProviderRole.BROKER_ACCOUNT,
-                StockDataProviderId.SEC, DataProviderRole.REGULATORY_FILINGS,
-                StockDataProviderId.FRED, DataProviderRole.MACRO,
-                StockDataProviderId.BLS, DataProviderRole.MACRO,
-                StockDataProviderId.BEA, DataProviderRole.MACRO,
-                StockDataProviderId.FED, DataProviderRole.MACRO,
-                StockDataProviderId.FMP, DataProviderRole.FUNDAMENTALS,
-                StockDataProviderId.FINNHUB, DataProviderRole.NEWS,
-                StockDataProviderId.POLYGON, DataProviderRole.MARKET_DATA,
-                StockDataProviderId.TWELVE_DATA, DataProviderRole.MARKET_DATA));
+        assertThat(ProviderCatalog.roles()).containsExactlyInAnyOrderEntriesOf(Map.ofEntries(
+                Map.entry(StockDataProviderId.TOSS, DataProviderRole.BROKER_ACCOUNT),
+                Map.entry(StockDataProviderId.SEC, DataProviderRole.REGULATORY_FILINGS),
+                Map.entry(StockDataProviderId.FRED, DataProviderRole.MACRO),
+                Map.entry(StockDataProviderId.BLS, DataProviderRole.MACRO),
+                Map.entry(StockDataProviderId.BEA, DataProviderRole.MACRO),
+                Map.entry(StockDataProviderId.FED, DataProviderRole.MACRO),
+                Map.entry(StockDataProviderId.FMP, DataProviderRole.FUNDAMENTALS),
+                Map.entry(StockDataProviderId.ALPHA_VANTAGE, DataProviderRole.FUNDAMENTALS),
+                Map.entry(StockDataProviderId.FINNHUB, DataProviderRole.NEWS),
+                Map.entry(StockDataProviderId.POLYGON, DataProviderRole.MARKET_DATA),
+                Map.entry(StockDataProviderId.TWELVE_DATA, DataProviderRole.MARKET_DATA)));
     }
 
     @Test

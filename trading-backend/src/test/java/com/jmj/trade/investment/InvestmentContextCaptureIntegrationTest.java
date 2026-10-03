@@ -330,6 +330,57 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat(snapshotAsOf).isAfter(observedAt.minusSeconds(1));
     }
 
+    @Test
+    void alphaVantageConsensusWithoutCurrencyKeepsEstimatesButSuppressesForwardValuation() throws Exception {
+        var period = LocalDate.now(ZoneOffset.UTC).minusDays(45);
+        var observedAt = Instant.now().minusSeconds(30);
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO investment_thesis_states (
+                    user_id, ticker, core_thesis, invalidation_status, classification, updated_at
+                ) VALUES (?, 'AAPL', 'Growth thesis', 'NOT_REVIEWED', 'GROWTH', ?)
+                """, USER_ID, now);
+
+        var fmpValues = new java.util.ArrayList<>(fmpFundamentals(period, period, period,
+                period.plusDays(35), period.plusDays(35), period.plusDays(35), observedAt,
+                "1000000", "100", "300", "1000", "200", "4.2", "100", "120"));
+        fmpValues.add(observedDecimal("price.latestPrice", "100", observedAt));
+        fmpValues.add(observedText("price.session", "LIVE_REGULAR", observedAt));
+        var alphaValues = List.of(
+                observedText("consensus.horizon", LocalDate.now(ZoneOffset.UTC).plusYears(1).toString(), observedAt),
+                observedDecimal("consensus.revenueConsensus", "2000", observedAt),
+                observedDecimal("consensus.epsConsensus", "5", observedAt),
+                observedDecimal("consensus.ebitdaConsensus", "500", observedAt),
+                observedDecimal("consensus.fcfConsensus", "200", observedAt));
+
+        var providers = new StockDataProviderRegistry(List.of(
+                providerWithValues(fmpValues), providerWithValues(alphaValues, StockDataProviderId.ALPHA_VANTAGE)));
+        assertThat(service(providers).capture(USER_ID))
+                .isEqualTo(1);
+
+        var snapshot = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL'
+                 ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        var consensus = snapshot.get("consensus");
+        var valuation = snapshot.get("valuation");
+        var readiness = snapshot.get("readiness");
+
+        assertThat(consensus.get("source").asText()).isEqualTo("ALPHA_VANTAGE");
+        assertThat(consensus.get("revenueConsensus").decimalValue()).isEqualByComparingTo("2000");
+        assertThat(consensus.get("epsConsensus").decimalValue()).isEqualByComparingTo("5");
+        assertThat(consensus.get("status").asText()).isEqualTo("PARTIAL");
+        assertThat(valuation.get("evSalesTTM").decimalValue()).isEqualByComparingTo("1000.2");
+        assertThat(valuation.get("evSalesForward").isNull()).isTrue();
+        assertThat(valuation.get("evEbitdaForward").isNull()).isTrue();
+        assertThat(valuation.get("forwardPE").isNull()).isTrue();
+        assertThat(valuation.get("fcfYieldForward").isNull()).isTrue();
+        assertThat(valuation.get("status").asText()).isEqualTo("PARTIAL");
+        assertThat(readiness.get("overallDataStatus").asText()).isEqualTo("PARTIAL");
+        assertThat(readiness.get("missingFields").toString()).contains("consensus.currency");
+    }
+
     private void assertPipelineFailure(String error, OffsetDateTime lastSuccess) {
         var row = jdbc.queryForMap("""
                 SELECT status, last_error FROM investment_pipeline_state
@@ -396,11 +447,21 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         return providerWithValues(new AtomicReference<>(values));
     }
 
+    private StockDataProvider providerWithValues(List<ProviderValue> values, StockDataProviderId providerId) {
+        return providerWithValues(new AtomicReference<>(values), providerId);
+    }
+
     private StockDataProvider providerWithValues(AtomicReference<List<ProviderValue>> values) {
+        return providerWithValues(values, StockDataProviderId.FMP);
+    }
+
+    private StockDataProvider providerWithValues(
+            AtomicReference<List<ProviderValue>> values, StockDataProviderId providerId
+    ) {
         return new StockDataProvider() {
             @Override
             public StockDataProviderId id() {
-                return StockDataProviderId.FMP;
+                return providerId;
             }
 
             @Override

@@ -14,6 +14,12 @@ public record StockAnalysisProviderProperties(Map<String, ProviderConfiguration>
 
     public StockAnalysisProviderProperties {
         providers = providers == null ? Map.of() : Map.copyOf(providers);
+        providers.forEach((name, configuration) -> {
+            if (configuration.enabled() && configuration.fields().isEmpty() && configuration.endpoints().isEmpty()
+                    && StockDataProviderId.parse(name) != StockDataProviderId.ALPHA_VANTAGE) {
+                throw new IllegalArgumentException("enabled provider requires fields or endpoints");
+            }
+        });
     }
 
     public record ProviderConfiguration(
@@ -104,9 +110,6 @@ public record StockAnalysisProviderProperties(Map<String, ProviderConfiguration>
                     rateLimitWindow);
             if (enabled) {
                 requireHttpUrl(baseUrl);
-                if (fields.isEmpty() && endpoints.isEmpty()) {
-                    throw new IllegalArgumentException("enabled provider requires fields or endpoints");
-                }
                 if (!fields.isEmpty()) {
                     validateEndpoint(new EndpointConfiguration(path, Map.of(), units, periods, identifiers,
                             asOfPaths, asOfFormat, asOfPath, fields));

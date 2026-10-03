@@ -1,10 +1,13 @@
 package com.jmj.trade.observability;
 
+import com.jmj.trade.marketdata.StockDataProviderId;
 import org.junit.jupiter.api.Test;
 
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -61,5 +64,23 @@ class OperationalReadinessServiceTest {
                         "FMP", "NOT_CONFIGURED", null, List.of(), null, NOW)));
 
         assertThat(overall).isEqualTo("NOT_CONFIGURED");
+    }
+
+    @Test
+    void dynamicAlphaAndEndpointOnlyProvidersAreConfiguredWithoutBroadeningEmptyGenericProviders() {
+        var alpha = new OperationalReadinessService.ProviderConfiguration(true,
+                URI.create("https://www.alphavantage.co/query"), Map.of(), false, "key", "");
+        assertThat(OperationalReadinessService.configured(StockDataProviderId.ALPHA_VANTAGE, alpha)).isTrue();
+        var alphaStatus = OperationalReadinessService.classify(true, true,
+                List.of("consensus.currency"), NOW.minusSeconds(1), NOW, NOW, Duration.ofMinutes(5));
+        assertThat(alphaStatus.status()).isEqualTo("DEGRADED");
+
+        var endpointOnlyFmp = new OperationalReadinessService.ProviderConfiguration(true,
+                URI.create("https://financialmodelingprep.com"), Map.of(), true, "key", "");
+        assertThat(OperationalReadinessService.configured(StockDataProviderId.FMP, endpointOnlyFmp)).isTrue();
+
+        var emptyGeneric = new OperationalReadinessService.ProviderConfiguration(true,
+                URI.create("https://finnhub.io"), Map.of(), false, "key", "");
+        assertThat(OperationalReadinessService.configured(StockDataProviderId.FINNHUB, emptyGeneric)).isFalse();
     }
 }
