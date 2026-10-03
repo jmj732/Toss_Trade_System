@@ -62,6 +62,27 @@ their separate default-off switches.
 
 As of the runtime evidence captured at `2026-10-02T13:21:14Z`, deployed image `93be55cc1656f01d79f3139b21927eb34b64dc4f` was healthy, V52 had succeeded, and the investment data scheduler was enabled. This is a dated snapshot, not a claim about live status. The `SECURITY_DATA` pipeline failed with `PROVIDER_HTTP_402`. The current held symbols in that evidence were AVT, CSTM, LUNR, and RDW; prior requests for all four returned HTTP 402. The detailed examples include AVT quote and a separate EOD light probe; the configured full EOD route is `/historical-price-eod/full`. AAPL quote returned HTTP 200 as a control, which does not establish plan or route coverage for the held symbols. The account portal was signed out, so the key's account plan could not be independently verified.
 
+### Toss session calendar evidence (2026-10-03)
+
+The [official TOSS OpenAPI spec](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json)
+`GET /api/v1/market-calendar/US` response for 2026-10-02 reported an after-market end of
+`2026-10-03T08:50:00+09:00`
+(`2026-10-02T23:50:00Z`). AVT and CSTM quote timestamps were within that returned after-market
+interval; LUNR and RDW timestamps were after its end. Keep LUNR/RDW session null and `PARTIAL`
+until a returned calendar interval classifies the quote. Do not use wall-clock time to assign a
+session. An after-market quote is not a regular close; `regularClose` remains missing unless a
+dated EOD source supplies it.
+
+A read-only check at `2026-10-03T07:01:31Z` found backend image
+`e0111c6a4ae677bd9d21d593e899ad3497a78a11` healthy and ready with Flyway 52 successful. All
+four latest security snapshots lacked a regular close. Their stored price status was `STALE`
+for AVT/CSTM and `PARTIAL` for LUNR/RDW; the Sheet displayed `STALE` for all four because its
+sync reads the context view after freshness recalculation. Compare a Sheet status to that
+read-time view, or to the stored snapshot status as a separate target. New captures record the
+calendar-derived missing reason in input snapshots. Context and Sheet expose it after a new
+security snapshot is persisted and the normal Sheet sync runs; existing snapshots retain their
+original payload. No historical rewrite or manual capture was performed.
+
 ### Route and symbol acceptance
 
 The credentialed overlay calls these six FMP Stable API routes. Each request also carries `symbol=<ticker>` and the API key as the `apikey` query parameter; examples intentionally omit the key.

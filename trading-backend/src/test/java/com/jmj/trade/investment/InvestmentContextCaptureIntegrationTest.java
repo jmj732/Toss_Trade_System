@@ -31,6 +31,7 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -650,6 +651,83 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat(payload.path("price").path("source").asText()).isEqualTo("TOSS");
         assertThat(payload.path("price").path("session").isNull()).isTrue();
         assertThat(payload.path("price").path("status").asText()).isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void tossCalendarOutsideIntervalsKeepsSessionMissingAndExposesExactReason() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var quoteTimestamps = Map.of(
+                "AAPL", Instant.parse("2026-10-02T23:50:00Z"),
+                "AVT", Instant.parse("2026-10-02T23:40:52Z"),
+                "CSTM", Instant.parse("2026-10-02T23:30:08Z"),
+                "LUNR", Instant.parse("2026-10-02T23:58:29Z"),
+                "RDW", Instant.parse("2026-10-02T23:59:55Z"),
+                "TSLA", Instant.parse("2026-10-02T04:00:00Z"));
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        for (var symbol : List.of("AVT", "CSTM", "LUNR", "RDW", "TSLA")) {
+            jdbc.update("""
+                    INSERT INTO monitoring_watchlist (id, user_id, symbol, levels, evidence, observed_at, created_at, updated_at)
+                    VALUES (?, ?, ?, '{"prepare":1,"confirm":2,"pullback":3,"invalidate":0}'::jsonb,
+                            '{}'::jsonb, ?, ?, ?)
+                    """, UUID.randomUUID(), USER_ID, symbol, now, now, now);
+        }
+
+        var surface = mock(BrokerSurfaceService.class);
+        quoteTimestamps.forEach((symbol, timestamp) -> when(surface.prices(USER_ID, connectionId, symbol))
+                .thenReturn(BrokerSurfaceResponse.available(List.of(new BrokerSurfaceResponse.PriceView(
+                        symbol, BigDecimal.ONE, null, null, "USD", timestamp.plusSeconds(1), timestamp)))));
+        var calendar = mapper.readTree("""
+                {"today":{"date":"2026-10-02",
+                  "dayMarket":{"startTime":"2026-10-02T09:00:00.000+09:00","endTime":"2026-10-02T17:00:00.000+09:00"},
+                  "preMarket":{"startTime":"2026-10-02T17:00:00.000+09:00","endTime":"2026-10-02T22:30:00.000+09:00"},
+                  "regularMarket":{"startTime":"2026-10-02T22:30:00.000+09:00","endTime":"2026-10-03T05:00:00.000+09:00"},
+                  "afterMarket":{"startTime":"2026-10-03T05:00:00.000+09:00","endTime":"2026-10-03T08:50:00.000+09:00"}}}
+                """);
+        when(surface.marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-10-02")))
+                .thenReturn(BrokerSurfaceResponse.available(
+                        new BrokerSurfaceResponse.MarketCalendarView("US", calendar)));
+
+        assertThat(service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID))
+                .isEqualTo(quoteTimestamps.size());
+
+        for (var entry : quoteTimestamps.entrySet()) {
+            var payload = mapper.readTree(jdbc.queryForObject("""
+                    SELECT payload::text FROM investment_security_snapshots
+                     WHERE user_id = ? AND ticker = ? ORDER BY created_at DESC LIMIT 1
+                    """, String.class, USER_ID, entry.getKey()));
+            var price = payload.path("price");
+            assertThat(price.path("source").asText()).isEqualTo("TOSS");
+            var missingFields = new java.util.ArrayList<String>();
+            payload.path("readiness").path("missingFields").forEach(item -> missingFields.add(item.asText()));
+            if ("TSLA".equals(entry.getKey())) {
+                assertThat(price.path("session").isNull()).isTrue();
+                assertThat(price.path("status").asText()).isEqualTo("PARTIAL");
+                assertThat(missingFields).contains("price.session.TOSS_SESSION_UNVERIFIED")
+                        .doesNotContain("price.session.TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS");
+            } else if (entry.getValue().isBefore(Instant.parse("2026-10-02T23:50:00Z"))) {
+                assertThat(price.path("session").asText()).isEqualTo("AFTER_HOURS");
+                assertThat(missingFields).doesNotContain("price.session.TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS");
+            } else {
+                assertThat(price.path("session").isNull()).isTrue();
+                assertThat(price.path("status").asText()).isEqualTo("PARTIAL");
+                assertThat(missingFields).contains(
+                        "price.session", "price.session.TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS");
+                var input = jdbc.queryForObject("""
+                        SELECT payload::text FROM analysis_input_snapshots
+                         WHERE user_id = ? AND symbol = ? ORDER BY created_at DESC LIMIT 1
+                        """, String.class, USER_ID, entry.getKey());
+                assertThat(input).contains("TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS");
+            }
+        }
+        assertThat(jdbc.queryForList("""
+                SELECT ticker FROM investment_price_snapshots
+                 WHERE user_id = ? AND source = 'TOSS' ORDER BY ticker
+                """, String.class, USER_ID)).containsExactly("AVT", "CSTM");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_price_snapshots
+                 WHERE user_id = ? AND source = 'TOSS' AND regular_close IS NOT NULL
+                """, Integer.class, USER_ID)).isZero();
+        verify(surface).marketCalendar(USER_ID, connectionId, "US", LocalDate.parse("2026-10-02"));
     }
 
     @Test
