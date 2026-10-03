@@ -22,12 +22,14 @@ connector:
     default-scope: ${CONNECTOR_MCP_DEFAULT_SCOPE:connector:read}
 stock-analysis:
   running-timeout: ${STOCK_ANALYSIS_RUNNING_TIMEOUT:PT5M}
-  # Configured providers require endpoint mappings; Alpha Vantage uses its response mapper.
+  # Alpha Vantage and SEC use provider-specific response mappers when no generic fields are set.
   providers:
     toss:
       enabled: ${STOCK_ANALYSIS_TOSS_ENABLED:false}
     sec:
       enabled: ${STOCK_ANALYSIS_SEC_ENABLED:false}
+      base-url: ${SEC_BASE_URL:https://data.sec.gov}
+      user-agent: ${SEC_USER_AGENT:}
     fred:
       enabled: ${STOCK_ANALYSIS_FRED_ENABLED:false}
     bls:

@@ -20,9 +20,14 @@ public class StockAnalysisProviderConfiguration {
         properties.providers().forEach((name, configuration) -> {
             var id = StockDataProviderId.parse(name);
             if (configuration.enabled()) {
-                providers.add(id == StockDataProviderId.ALPHA_VANTAGE
-                        ? new AlphaVantageEarningsEstimatesProvider(configuration, objectMapper)
-                        : new ConfiguredStockDataProvider(id, configuration, objectMapper));
+                if (id == StockDataProviderId.ALPHA_VANTAGE) {
+                    providers.add(new AlphaVantageEarningsEstimatesProvider(configuration, objectMapper));
+                } else if (id == StockDataProviderId.SEC && configuration.fields().isEmpty()
+                        && configuration.endpoints().isEmpty()) {
+                    providers.add(new SecCompanyFactsProvider(configuration, objectMapper));
+                } else {
+                    providers.add(new ConfiguredStockDataProvider(id, configuration, objectMapper));
+                }
             }
         });
         return new StockDataProviderRegistry(providers);

@@ -376,7 +376,8 @@ public final class OperationalReadinessService {
     static boolean configured(StockDataProviderId provider, ProviderConfiguration configuration) {
         return provider != null && configuration != null && configuration.baseUrl() != null
                 && (!configuration.fields().isEmpty()
-                || configuration.hasEndpoints() || provider == StockDataProviderId.ALPHA_VANTAGE);
+                || configuration.hasEndpoints() || provider == StockDataProviderId.ALPHA_VANTAGE
+                || provider == StockDataProviderId.SEC);
     }
 
     private static boolean credentialConfigured(StockDataProviderId provider,

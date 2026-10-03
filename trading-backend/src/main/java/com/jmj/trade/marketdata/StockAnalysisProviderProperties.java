@@ -16,7 +16,8 @@ public record StockAnalysisProviderProperties(Map<String, ProviderConfiguration>
         providers = providers == null ? Map.of() : Map.copyOf(providers);
         providers.forEach((name, configuration) -> {
             if (configuration.enabled() && configuration.fields().isEmpty() && configuration.endpoints().isEmpty()
-                    && StockDataProviderId.parse(name) != StockDataProviderId.ALPHA_VANTAGE) {
+                    && StockDataProviderId.parse(name) != StockDataProviderId.ALPHA_VANTAGE
+                    && StockDataProviderId.parse(name) != StockDataProviderId.SEC) {
                 throw new IllegalArgumentException("enabled provider requires fields or endpoints");
             }
         });

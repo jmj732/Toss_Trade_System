@@ -10,6 +10,7 @@ import com.jmj.trade.marketdata.StockDataProviderRegistry;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.flywaydb.core.Flyway;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -309,7 +310,8 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
 
     private InvestmentContextService service(StockDataProvider provider) {
         return new InvestmentContextService(jdbc, mapper, new DataSourceTransactionManager(jdbc.getDataSource()),
-                new StockDataProviderRegistry(List.of(provider)), mock(PortfolioReadService.class),
+                new StockDataProviderRegistry(List.of(provider)), mock(ObjectProvider.class),
+                mock(PortfolioReadService.class),
                 mock(MonitoringWatchlistService.class), mock(RiskPolicyService.class), Duration.ofMinutes(15),
                 Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10));
     }

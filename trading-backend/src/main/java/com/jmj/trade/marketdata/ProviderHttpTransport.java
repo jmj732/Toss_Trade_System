@@ -46,21 +46,21 @@ final class ProviderHttpTransport {
     }
 
     String get(ProviderRequest request) {
-        return get(request, configuration.path(), configuration.queryParameters());
+        return get(uri(request, configuration.path(), configuration.queryParameters()));
     }
 
     String get(ProviderRequest request, StockAnalysisProviderProperties.EndpointConfiguration endpoint) {
         var queryParameters = new java.util.LinkedHashMap<>(configuration.queryParameters());
         queryParameters.putAll(endpoint.queryParameters());
-        return get(request, endpoint.path(), queryParameters);
+        return get(uri(request, endpoint.path(), queryParameters));
     }
 
-    private String get(ProviderRequest request, String endpointPath, Map<String, String> queryParameters) {
+    String get(URI uri) {
         for (var attempt = 0; ; attempt++) {
             limiter.acquire();
             try {
                 var body = restClient.get()
-                        .uri(uri(request, endpointPath, queryParameters))
+                        .uri(uri)
                         .headers(headers -> {
                             if (!configuration.userAgent().isBlank()) {
                                 headers.set("User-Agent", configuration.userAgent());
