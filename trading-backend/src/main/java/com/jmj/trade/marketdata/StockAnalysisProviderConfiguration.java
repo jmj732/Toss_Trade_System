@@ -3,6 +3,7 @@ package com.jmj.trade.marketdata;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import tools.jackson.databind.ObjectMapper;
@@ -28,7 +29,8 @@ public class StockAnalysisProviderConfiguration {
     StockDataProviderRegistry stockDataProviderRegistry(
             StockAnalysisProviderProperties properties,
             ObjectMapper objectMapper,
-            AlphaVantageDailyRequestCache alphaVantageDailyRequestCache
+            AlphaVantageDailyRequestCache alphaVantageDailyRequestCache,
+            @Value("${ALPHA_VANTAGE_ADDITIONAL_API_KEYS:}") String additionalApiKeys
     ) {
         var providers = new ArrayList<StockDataProvider>();
         properties.providers().forEach((name, configuration) -> {
@@ -36,7 +38,8 @@ public class StockAnalysisProviderConfiguration {
             if (configuration.enabled()) {
                 if (id == StockDataProviderId.ALPHA_VANTAGE) {
                     providers.add(new AlphaVantageEarningsEstimatesProvider(
-                            configuration, objectMapper, Clock.systemUTC(), alphaVantageDailyRequestCache));
+                            configuration, objectMapper, Clock.systemUTC(), alphaVantageDailyRequestCache,
+                            additionalApiKeys));
                 } else if (id == StockDataProviderId.SEC && configuration.fields().isEmpty()
                         && configuration.endpoints().isEmpty()) {
                     providers.add(new SecCompanyFactsProvider(configuration, objectMapper));
@@ -46,5 +49,13 @@ public class StockAnalysisProviderConfiguration {
             }
         });
         return new StockDataProviderRegistry(providers);
+    }
+
+    StockDataProviderRegistry stockDataProviderRegistry(
+            StockAnalysisProviderProperties properties,
+            ObjectMapper objectMapper,
+            AlphaVantageDailyRequestCache alphaVantageDailyRequestCache
+    ) {
+        return stockDataProviderRegistry(properties, objectMapper, alphaVantageDailyRequestCache, "");
     }
 }

@@ -20,6 +20,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
@@ -61,50 +62,126 @@ final class AlphaVantageDailyRequestCache {
 
     List<ProviderValue> get(String symbol, String function, String apiKey,
                             Supplier<List<ProviderValue>> loader) {
-        var key = new Key(clock.instant().atZone(ZoneOffset.UTC).toLocalDate(), fingerprint(apiKey),
-                symbol.toUpperCase(Locale.ROOT), function.toUpperCase(Locale.ROOT));
-        var reservation = jdbc == null ? reserveMemory(key) : reserveDatabase(key);
-        if (reservation.failureCode() != null) throw unavailable(reservation.failureCode());
-        if (reservation.state() == State.SUCCEEDED) return decode(reservation.payload());
-        if (reservation.state() == State.FAILED) throw unavailable(readFailureCode(reservation.payload()));
-        if (!reservation.owner()) throw unavailable("REQUEST_IN_PROGRESS");
-
-        final List<ProviderValue> values;
-        try {
-            values = List.copyOf(loader.get());
-        } catch (RuntimeException exception) {
-            var code = exception instanceof ProviderUnavailableException unavailable
-                    && unavailable.provider() == PROVIDER ? unavailable.reasonCode() : "API_ERROR";
-            storeFailure(key, code);
-            throw unavailable(code);
-        }
-
-        var payload = encode(values);
-        if (jdbc == null) {
-            completeMemory(key, new Entry(State.SUCCEEDED, payload, false));
-        } else {
-            try {
-                jdbc.update("""
-                        UPDATE alpha_vantage_daily_cache
-                           SET state = 'SUCCEEDED', payload = CAST(? AS jsonb), completed_at = ?
-                         WHERE request_date = ? AND credential_fingerprint = ?
-                           AND symbol = ? AND function = ? AND state = 'REQUESTED'
-                        """, write(payload), timestamp(clock.instant()), key.date(), key.fingerprint(), key.symbol(),
-                        key.function());
-            } catch (RuntimeException exception) {
-                throw unavailable(CACHE_UNAVAILABLE);
-            }
-        }
-        return values;
+        return get(symbol, function, List.of(apiKey == null ? "" : apiKey), ignored -> loader.get());
     }
 
-    private Reservation reserveMemory(Key key) {
+    List<ProviderValue> get(String symbol, String function, List<String> apiKeys,
+                            Function<String, List<ProviderValue>> loader) {
+        var keys = normalizeKeys(apiKeys);
+        var primaryKey = keys.isEmpty() ? null : keys.getFirst();
+        return get(symbol, function, keys, primaryKey, loader);
+    }
+
+    List<ProviderValue> get(String symbol, String function, List<String> apiKeys, String legacyPrimaryApiKey,
+                            Function<String, List<ProviderValue>> loader) {
+        var keys = normalizeKeys(apiKeys);
+        if (keys.isEmpty()) throw unavailable("API_KEY_UNAVAILABLE");
+        var primaryKey = legacyPrimaryApiKey == null || legacyPrimaryApiKey.isBlank()
+                ? null : legacyPrimaryApiKey.trim();
+        String lastRotatableFailure = null;
+        for (int index = 0; index < keys.size(); index++) {
+            var apiKey = keys.get(index);
+            var key = new Key(clock.instant().atZone(ZoneOffset.UTC).toLocalDate(), fingerprint(apiKey),
+                    symbol.toUpperCase(Locale.ROOT), function.toUpperCase(Locale.ROOT));
+            var includeLegacyUsage = primaryKey != null && primaryKey.equals(apiKey);
+            var reservation = jdbc == null ? reserveMemory(key, includeLegacyUsage)
+                    : reserveDatabase(key, includeLegacyUsage);
+            if (reservation.failureCode() != null) {
+                if (isRotatableFailure(reservation.failureCode())) {
+                    lastRotatableFailure = preferDailyExhaustion(lastRotatableFailure, reservation.failureCode());
+                    continue;
+                }
+                throw unavailable(reservation.failureCode());
+            }
+            if (reservation.state() == State.SUCCEEDED) return decode(reservation.payload());
+            if (reservation.state() == State.FAILED) {
+                var code = readFailureCode(reservation.payload());
+                if (isRotatableFailure(code)) {
+                    lastRotatableFailure = preferDailyExhaustion(lastRotatableFailure, code);
+                    continue;
+                }
+                throw unavailable(code);
+            }
+            if (!reservation.owner()) throw unavailable("REQUEST_IN_PROGRESS");
+
+            final List<ProviderValue> values;
+            try {
+                values = List.copyOf(loader.apply(apiKey));
+            } catch (RuntimeException exception) {
+                var code = exception instanceof ProviderUnavailableException unavailable
+                        && unavailable.provider() == PROVIDER ? unavailable.reasonCode() : "API_ERROR";
+                if (!storeFailure(key, code)) throw unavailable(CACHE_UNAVAILABLE);
+                if (isRotatableFailure(code)) {
+                    lastRotatableFailure = preferDailyExhaustion(lastRotatableFailure, code);
+                    continue;
+                }
+                throw unavailable(code);
+            }
+
+            var payload = encode(values);
+            if (jdbc == null) {
+                completeMemory(key, new Entry(State.SUCCEEDED, payload, false));
+            } else {
+                try {
+                    var updated = jdbc.update("""
+                            UPDATE alpha_vantage_daily_cache
+                               SET state = 'SUCCEEDED', payload = CAST(? AS jsonb), completed_at = ?
+                             WHERE request_date = ? AND credential_fingerprint = ?
+                               AND symbol = ? AND function = ? AND state = 'REQUESTED'
+                            """, write(payload), timestamp(clock.instant()), key.date(), key.fingerprint(), key.symbol(),
+                            key.function());
+                    if (updated != 1) throw unavailable(CACHE_UNAVAILABLE);
+                } catch (RuntimeException exception) {
+                    if (exception instanceof ProviderUnavailableException unavailable) throw unavailable;
+                    throw unavailable(CACHE_UNAVAILABLE);
+                }
+            }
+            return values;
+        }
+        throw unavailable(lastRotatableFailure == null ? "DAILY_QUOTA_EXHAUSTED" : lastRotatableFailure);
+    }
+
+    private static List<String> normalizeKeys(List<String> apiKeys) {
+        if (apiKeys == null) return List.of();
+        var normalized = new java.util.LinkedHashSet<String>();
+        for (var key : apiKeys) {
+            if (key != null && !key.isBlank()) normalized.add(key.trim());
+        }
+        return List.copyOf(normalized);
+    }
+
+    private static boolean isRotatableFailure(String code) {
+        return "DAILY_QUOTA_EXHAUSTED".equals(code) || "INVALID_API_KEY".equals(code);
+    }
+
+    private static String preferDailyExhaustion(String current, String candidate) {
+        if (current == null || "DAILY_QUOTA_EXHAUSTED".equals(candidate)) return candidate;
+        return current;
+    }
+
+    private Reservation reserveMemory(Key key, boolean includeLegacyUsage) {
         synchronized (memoryReservationLock) {
             memoryEntries.keySet().removeIf(existing -> existing.date().isBefore(key.date()));
+            var logical = memoryEntries.entrySet().stream()
+                    .filter(entry -> sameLogicalRequest(entry.getKey(), key))
+                    .toList();
+            var completed = logical.stream().filter(entry -> entry.getValue().state() == State.SUCCEEDED)
+                    .findFirst();
+            if (completed.isPresent()) {
+                return new Reservation(State.SUCCEEDED, completed.get().getValue().payload(), false, null);
+            }
+            if (logical.stream().anyMatch(entry -> entry.getValue().state() == State.REQUESTED)) {
+                return Reservation.denied("REQUEST_IN_PROGRESS");
+            }
+            var terminalFailure = logical.stream().filter(entry -> entry.getValue().state() == State.FAILED)
+                    .map(entry -> readFailureCode(entry.getValue().payload()))
+                    .filter(code -> !isRotatableFailure(code)).findFirst();
+            if (terminalFailure.isPresent()) return Reservation.denied(terminalFailure.get());
             var existing = memoryEntries.get(key);
             if (existing != null) {
                 return new Reservation(existing.state(), existing.payload(), false, null);
             }
+            if (hasRotatableMemoryFailure(key)) return Reservation.denied(rotatableMemoryFailure(key));
             var used = memoryEntries.keySet().stream()
                     .filter(existingKey -> existingKey.date().equals(key.date())
                             && existingKey.fingerprint().equals(key.fingerprint()))
@@ -115,9 +192,29 @@ final class AlphaVantageDailyRequestCache {
         }
     }
 
-    private Reservation reserveDatabase(Key key) {
+    private boolean hasRotatableMemoryFailure(Key key) {
+        return memoryEntries.entrySet().stream().anyMatch(entry -> entry.getKey().date().equals(key.date())
+                && entry.getKey().fingerprint().equals(key.fingerprint())
+                && entry.getValue().state() == State.FAILED
+                && isRotatableFailure(readFailureCode(entry.getValue().payload())));
+    }
+
+    private String rotatableMemoryFailure(Key key) {
+        return memoryEntries.entrySet().stream().filter(entry -> entry.getKey().date().equals(key.date())
+                        && entry.getKey().fingerprint().equals(key.fingerprint())
+                        && entry.getValue().state() == State.FAILED)
+                .map(entry -> readFailureCode(entry.getValue().payload()))
+                .filter(AlphaVantageDailyRequestCache::isRotatableFailure)
+                .reduce(null, AlphaVantageDailyRequestCache::preferDailyExhaustion);
+    }
+
+    private Reservation reserveDatabase(Key key, boolean includeLegacyUsage) {
         try {
             return transactions.execute(status -> {
+                var logicalLockKey = "alpha-vantage-logical:" + key.date() + ":" + key.symbol() + ":"
+                        + key.function();
+                jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", resultSet -> null,
+                        logicalLockKey);
                 var lockKey = "alpha-vantage:" + key.date() + ":" + key.fingerprint();
                 jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", resultSet -> null, lockKey);
                 jdbc.update("""
@@ -125,6 +222,29 @@ final class AlphaVantageDailyRequestCache {
                          WHERE request_date < ?
                            AND (state <> 'REQUESTED' OR requested_at < ?)
                         """, key.date(), timestamp(clock.instant().minus(java.time.Duration.ofDays(1))));
+                var logical = jdbc.query("""
+                        SELECT state, payload::text
+                          FROM alpha_vantage_daily_cache
+                         WHERE request_date = ? AND symbol = ? AND function = ?
+                         ORDER BY CASE state WHEN 'SUCCEEDED' THEN 0 WHEN 'REQUESTED' THEN 1 ELSE 2 END,
+                                  requested_at
+                        """, resultSet -> {
+                    var entries = new ArrayList<Reservation>();
+                    while (resultSet.next()) {
+                        entries.add(new Reservation(State.valueOf(resultSet.getString(1)),
+                                parse(resultSet.getString(2)), false, null));
+                    }
+                    return entries;
+                }, key.date(), key.symbol(), key.function());
+                var completed = logical.stream().filter(entry -> entry.state() == State.SUCCEEDED).findFirst();
+                if (completed.isPresent()) return completed.get();
+                if (logical.stream().anyMatch(entry -> entry.state() == State.REQUESTED)) {
+                    return Reservation.denied("REQUEST_IN_PROGRESS");
+                }
+                var terminalFailure = logical.stream().filter(entry -> entry.state() == State.FAILED)
+                        .map(entry -> readFailureCode(entry.payload()))
+                        .filter(code -> !isRotatableFailure(code)).findFirst();
+                if (terminalFailure.isPresent()) return Reservation.denied(terminalFailure.get());
                 var cached = jdbc.query("""
                         SELECT state, payload::text
                           FROM alpha_vantage_daily_cache
@@ -135,8 +255,11 @@ final class AlphaVantageDailyRequestCache {
                                 false, null)
                         : null, key.date(), key.fingerprint(), key.symbol(), key.function());
                 if (cached != null) return cached;
+                if (hasRotatableDatabaseFailure(key)) {
+                    return Reservation.denied(rotatableDatabaseFailure(key));
+                }
                 var used = jdbc.queryForObject(DAILY_USAGE_SQL, Long.class,
-                        key.date(), key.fingerprint(), key.date(), key.date());
+                        key.date(), key.fingerprint(), includeLegacyUsage, key.date(), key.date(), key.date());
                 if (used != null && used >= dailyLimit) {
                     return Reservation.denied("DAILY_QUOTA_EXHAUSTED");
                 }
@@ -154,23 +277,52 @@ final class AlphaVantageDailyRequestCache {
         }
     }
 
-    private void storeFailure(Key key, String failureCode) {
+    private boolean hasRotatableDatabaseFailure(Key key) {
+        var count = jdbc.queryForObject("""
+                SELECT count(*) FROM alpha_vantage_daily_cache
+                 WHERE request_date = ? AND credential_fingerprint = ? AND state = 'FAILED'
+                   AND payload->0->>'failureCode' IN ('DAILY_QUOTA_EXHAUSTED', 'INVALID_API_KEY')
+                """, Long.class, key.date(), key.fingerprint());
+        return count != null && count > 0;
+    }
+
+    private String rotatableDatabaseFailure(Key key) {
+        var code = jdbc.query("""
+                SELECT payload->0->>'failureCode'
+                  FROM alpha_vantage_daily_cache
+                 WHERE request_date = ? AND credential_fingerprint = ? AND state = 'FAILED'
+                   AND payload->0->>'failureCode' IN ('DAILY_QUOTA_EXHAUSTED', 'INVALID_API_KEY')
+                 ORDER BY CASE payload->0->>'failureCode'
+                          WHEN 'DAILY_QUOTA_EXHAUSTED' THEN 0 ELSE 1 END
+                 LIMIT 1
+                """, resultSet -> resultSet.next() ? resultSet.getString(1) : null,
+                key.date(), key.fingerprint());
+        return code == null ? "DAILY_QUOTA_EXHAUSTED" : code;
+    }
+
+    private static boolean sameLogicalRequest(Key left, Key right) {
+        return left.date().equals(right.date()) && left.symbol().equals(right.symbol())
+                && left.function().equals(right.function());
+    }
+
+    private boolean storeFailure(Key key, String failureCode) {
         var payload = mapper.createArrayNode();
         payload.addObject().put("failureCode", failureCode);
         if (jdbc == null) {
             completeMemory(key, new Entry(State.FAILED, payload, false));
-            return;
+            return true;
         }
         try {
-            jdbc.update("""
+            return jdbc.update("""
                     UPDATE alpha_vantage_daily_cache
                        SET state = 'FAILED', payload = CAST(? AS jsonb), completed_at = ?
                      WHERE request_date = ? AND credential_fingerprint = ?
                        AND symbol = ? AND function = ? AND state = 'REQUESTED'
                     """, write(payload), timestamp(clock.instant()), key.date(), key.fingerprint(), key.symbol(),
-                    key.function());
+                    key.function()) == 1;
         } catch (RuntimeException ignored) {
             // REQUESTED remains a durable reservation; after restart it will not trigger another call.
+            return false;
         }
     }
 
@@ -295,10 +447,17 @@ final class AlphaVantageDailyRequestCache {
                            THEN s.payload->'observations' ELSE '[]'::jsonb END
                   ) AS observation(value)
                  WHERE observation.value->>'provider' = 'ALPHA_VANTAGE'
+                   AND ?
                    AND observation.value->>'field' LIKE 'consensus.%'
                    AND observation.value->'value' IS NOT NULL
                    AND observation.value->'value' <> 'null'::jsonb
                    AND observation.value->'missingData' = '[]'::jsonb
+                   AND NOT EXISTS (
+                       SELECT 1 FROM alpha_vantage_daily_cache captured
+                        WHERE captured.request_date = ? AND captured.symbol = s.symbol
+                          AND captured.function = 'EARNINGS_ESTIMATES' AND captured.state = 'SUCCEEDED'
+                          AND captured.payload->0->>'asOf' = observation.value->>'asOf'
+                   )
                    AND NULLIF(observation.value->>'asOf', '')::timestamptz
                        >= (CAST(? AS date)::timestamp AT TIME ZONE 'UTC')
                    AND NULLIF(observation.value->>'asOf', '')::timestamptz

@@ -66,7 +66,8 @@ public final class InvestmentContextService {
     private static final Set<String> ALPHA_PROVIDER_FAILURE_CODES = Set.of(
             "DAILY_QUOTA_EXHAUSTED", "REQUEST_IN_PROGRESS", "CACHE_UNAVAILABLE", "CACHE_CORRUPT",
             "API_ERROR", "INVALID_RESPONSE", "SOURCE_CONFLICT", "SYMBOL_MISMATCH",
-            "NETWORK", "EMPTY_RESPONSE", "INTERRUPTED");
+            "NETWORK", "EMPTY_RESPONSE", "INTERRUPTED", "INVALID_API_KEY", "API_KEY_UNAVAILABLE",
+            "RATE_LIMITED", "PREMIUM_ENDPOINT");
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper objectMapper;

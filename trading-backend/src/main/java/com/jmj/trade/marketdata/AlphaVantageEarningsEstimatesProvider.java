@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -46,6 +47,7 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final AlphaVantageDailyRequestCache dailyCache;
+    private final List<String> apiKeys;
 
     AlphaVantageEarningsEstimatesProvider(
             StockAnalysisProviderProperties.ProviderConfiguration configuration,
@@ -69,11 +71,22 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
             Clock clock,
             AlphaVantageDailyRequestCache dailyCache
     ) {
+        this(configuration, objectMapper, clock, dailyCache, "");
+    }
+
+    AlphaVantageEarningsEstimatesProvider(
+            StockAnalysisProviderProperties.ProviderConfiguration configuration,
+            ObjectMapper objectMapper,
+            Clock clock,
+            AlphaVantageDailyRequestCache dailyCache,
+            String additionalApiKeys
+    ) {
         this.configuration = configuration;
         this.transport = new ProviderHttpTransport(ID, withoutRetries(configuration));
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.dailyCache = dailyCache;
+        this.apiKeys = configuredApiKeys(configuration.apiKey(), additionalApiKeys);
     }
 
     @Override
@@ -94,8 +107,8 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
     /** Fetches consensus by default; diluted shares are only fetched through the selected-field fallback path. */
     @Override
     public List<ProviderValue> fetch(ProviderRequest request) {
-        return dailyCache.get(request.symbol(), "EARNINGS_ESTIMATES", configuration.apiKey(),
-                () -> readEstimates(request));
+        return dailyCache.get(request.symbol(), "EARNINGS_ESTIMATES", apiKeys, configuration.apiKey(),
+                apiKey -> readEstimates(request, apiKey));
     }
 
     @Override
@@ -114,8 +127,9 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
         }
         if (selectedFields.contains(DILUTED_SHARES_FIELD)) {
             try {
-                values.addAll(dailyCache.get(request.symbol(), "SHARES_OUTSTANDING", configuration.apiKey(),
-                        () -> readDilutedShares(request)));
+                values.addAll(dailyCache.get(request.symbol(), "SHARES_OUTSTANDING", apiKeys,
+                        configuration.apiKey(),
+                        apiKey -> readDilutedShares(request, apiKey)));
             } catch (RuntimeException exception) {
                 values.add(missing(DILUTED_SHARES_FIELD, clock.instant(), safeFailureCode(exception)));
             }
@@ -133,10 +147,10 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
                 && unavailable.provider() == ID ? unavailable.reasonCode() : "API_ERROR";
     }
 
-    private List<ProviderValue> readEstimates(ProviderRequest request) {
+    private List<ProviderValue> readEstimates(ProviderRequest request, String apiKey) {
         final JsonNode root;
         try {
-            root = objectMapper.readTree(transport.get(request));
+            root = objectMapper.readTree(transport.get(request, apiKey));
         } catch (JacksonException exception) {
             throw unavailable("INVALID_RESPONSE");
         }
@@ -198,10 +212,10 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
         return List.copyOf(values);
     }
 
-    private List<ProviderValue> readDilutedShares(ProviderRequest request) {
+    private List<ProviderValue> readDilutedShares(ProviderRequest request, String apiKey) {
         final JsonNode root;
         try {
-            root = objectMapper.readTree(transport.get(request, sharesOutstandingEndpoint()));
+            root = objectMapper.readTree(transport.get(request, sharesOutstandingEndpoint(), apiKey));
         } catch (JacksonException exception) {
             throw unavailable("INVALID_RESPONSE");
         }
@@ -313,7 +327,8 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
 
     private void validateRoot(JsonNode root, ProviderRequest request) {
         if (root == null || !root.isObject()) throw unavailable("INVALID_RESPONSE");
-        if (hasProviderMessage(root, "Information", "Note", "Error Message")) throw unavailable("API_ERROR");
+        var message = providerMessage(root, "Information", "Note", "Error Message");
+        if (message != null) throw unavailable(classifyProviderMessage(message));
         var symbol = root.get("symbol");
         if (symbol == null || !symbol.isTextual() || !request.symbol().equalsIgnoreCase(symbol.asText())) {
             throw unavailable("SYMBOL_MISMATCH");
@@ -324,7 +339,8 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
         var status = root.get("status");
         if (status != null && !status.isNull()
                 && (!status.isTextual() || !"success".equalsIgnoreCase(status.asText()))) {
-            throw unavailable("API_ERROR");
+            var message = providerMessage(root, "Information", "Note", "Error Message");
+            throw unavailable(message == null ? "API_ERROR" : classifyProviderMessage(message));
         }
     }
 
@@ -369,12 +385,50 @@ final class AlphaVantageEarningsEstimatesProvider implements StockDataProvider {
                 StockAnalysisInput.AsOfBasis.OBSERVED_AT);
     }
 
-    private static boolean hasProviderMessage(JsonNode root, String... fields) {
+    private static String providerMessage(JsonNode root, String... fields) {
         for (var field : fields) {
             var message = root.get(field);
-            if (message != null && !message.isNull() && !message.asText().isBlank()) return true;
+            if (message != null && !message.isNull() && !message.asText().isBlank()) return message.asText();
         }
-        return false;
+        return null;
+    }
+
+    static List<String> configuredApiKeys(String primaryApiKey, String additionalApiKeys) {
+        var keys = new LinkedHashSet<String>();
+        addKey(keys, primaryApiKey);
+        if (additionalApiKeys != null) {
+            for (var key : additionalApiKeys.split(",", -1)) addKey(keys, key);
+        }
+        return List.copyOf(keys);
+    }
+
+    private static void addKey(LinkedHashSet<String> keys, String value) {
+        if (value != null && !value.isBlank()) keys.add(value.trim());
+    }
+
+    static String classifyProviderMessage(String message) {
+        if (message == null || message.isBlank()) return "API_ERROR";
+        var normalized = message.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]+", " ").trim();
+        if (normalized.contains("invalid api key") || normalized.contains("api key is invalid")
+                || normalized.contains("apikey is invalid") || normalized.contains("invalid apikey")) {
+            return "INVALID_API_KEY";
+        }
+        if (normalized.contains("premium endpoint")) {
+            return "PREMIUM_ENDPOINT";
+        }
+        var dailyWindow = normalized.contains("per day") || normalized.contains("daily");
+        var quotaLimit = normalized.contains("quota") || normalized.contains("rate limit")
+                || normalized.contains("request limit");
+        var limitReached = normalized.contains("exceed") || normalized.contains("reached")
+                || normalized.contains("maximum") || normalized.contains("subscribe");
+        var standardDailyLimit = normalized.contains("25 requests per day");
+        if (standardDailyLimit || dailyWindow && quotaLimit && limitReached) {
+            return "DAILY_QUOTA_EXHAUSTED";
+        }
+        if (normalized.contains("premium subscription")) return "PREMIUM_ENDPOINT";
+        if (normalized.contains("per minute") || normalized.contains("per second")
+                || normalized.contains("rate limit")) return "RATE_LIMITED";
+        return "API_ERROR";
     }
 
     private static ProviderUnavailableException unavailable(String reason) {

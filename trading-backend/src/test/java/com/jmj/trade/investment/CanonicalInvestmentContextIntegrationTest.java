@@ -232,7 +232,7 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
     }
 
     @Test
-    void bareAlphaQuotaFailureIsVisibleWithoutChangingFourPriorConsensusSnapshots() throws Exception {
+    void bareAlphaFailuresAreVisibleWithoutChangingFourPriorConsensusSnapshots() throws Exception {
         var today = LocalDate.now(ZoneOffset.UTC);
         var nearAnnual = today.plusDays(120);
         var farAnnual = today.plusDays(480);
@@ -253,11 +253,12 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                  WHERE user_id = ? AND ticker = 'AAPL' AND source = 'ALPHA_VANTAGE'
                  ORDER BY estimate_type, horizon
                 """, USER_ID);
+        var alphaFailureReason = new AtomicReference<>("DAILY_QUOTA_EXHAUSTED");
         var alphaQuotaFailure = provider(StockDataProviderId.ALPHA_VANTAGE, ALPHA_FIELDS, request -> {
             var capturedAt = Instant.now().minusSeconds(1);
             return List.of(
-                    missing("consensus.epsConsensus", "DAILY_QUOTA_EXHAUSTED", capturedAt),
-                    missing("consensus.revenueConsensus", "DAILY_QUOTA_EXHAUSTED", capturedAt));
+                    missing("consensus.epsConsensus", alphaFailureReason.get(), capturedAt),
+                    missing("consensus.revenueConsensus", alphaFailureReason.get(), capturedAt));
         });
         var contextService = service(new StockDataProviderRegistry(
                 List.of(tossProvider(), secProvider(), alphaQuotaFailure)), null, "");
@@ -283,6 +284,23 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                  WHERE user_id = ? AND ticker = 'AAPL' AND source = 'ALPHA_VANTAGE'
                  ORDER BY estimate_type, horizon
                 """, USER_ID)).containsExactlyElementsOf(priorSnapshots);
+
+        alphaFailureReason.set("INVALID_API_KEY");
+        assertThat(contextService.capture(USER_ID)).isEqualTo(1);
+        security = contextService.context(USER_ID).securities().getFirst();
+        assertThat(security.consensus().path("missingReason").asText()).isEqualTo("INVALID_API_KEY");
+        assertThat(security.readiness().path("missingFields").toString())
+                .contains("consensus.provider.INVALID_API_KEY");
+        assertThat(jdbc.queryForObject("""
+                SELECT last_error FROM investment_pipeline_state
+                 WHERE user_id = ? AND pipeline = 'SECURITY_DATA'
+                """, String.class, USER_ID)).isEqualTo("PROVIDER_INVALID_API_KEY");
+        assertThat(jdbc.queryForList("""
+                SELECT horizon, estimate_type, revenue_consensus, eps_consensus
+                  FROM consensus_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'ALPHA_VANTAGE'
+                 ORDER BY estimate_type, horizon
+                """, USER_ID)).containsExactlyElementsOf(priorSnapshots);
     }
 
     @Test
@@ -298,6 +316,16 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                 inputWithMissingReason(StockDataProviderId.ALPHA_VANTAGE,
                         "consensus.epsConsensus", "DAILY_QUOTA_EXHAUSTED")))
                 .isEqualTo("PROVIDER_DAILY_QUOTA_EXHAUSTED");
+        assertThat(InvestmentContextService.providerFailure(
+                inputWithMissingReason(StockDataProviderId.ALPHA_VANTAGE,
+                        "consensus.epsConsensus", "INVALID_API_KEY")))
+                .isEqualTo("PROVIDER_INVALID_API_KEY");
+        for (var code : List.of("API_KEY_UNAVAILABLE", "RATE_LIMITED", "PREMIUM_ENDPOINT")) {
+            assertThat(InvestmentContextService.providerFailure(
+                    inputWithMissingReason(StockDataProviderId.ALPHA_VANTAGE,
+                            "consensus.epsConsensus", code)))
+                    .isEqualTo("PROVIDER_" + code);
+        }
         assertThat(InvestmentContextService.providerFailure(
                 inputWithMissingReason(StockDataProviderId.SEC, "fundamental.cash", "PROVIDER_HTTP_402")))
                 .isEqualTo("PROVIDER_HTTP_402");

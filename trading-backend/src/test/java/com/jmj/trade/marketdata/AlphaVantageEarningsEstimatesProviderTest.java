@@ -112,6 +112,105 @@ class AlphaVantageEarningsEstimatesProviderTest {
     }
 
     @Test
+    void rotatesOnExplicitDailyLimitMessageButNotBareBurst429() throws Exception {
+        var dailyMessage = "Our standard API rate limit is 25 requests per day. Upgrade to a premium subscription.";
+        var estimates = MAPPER.writeValueAsString(Map.of("symbol", "AVT", "estimates", List.of(
+                row("2027-06-30", "fiscal year", "3.2", "1400"))));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("apikey", equalTo("primary"))
+                .willReturn(aResponse().withStatus(429).withBody(dailyMessage)));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("apikey", equalTo("secondary"))
+                .willReturn(aResponse().withBody(estimates)));
+
+        var provider = providerWithKeys(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC), "primary", "secondary, secondary,, tertiary");
+        var values = provider.fetch(new ProviderRequest("AVT", Map.of()));
+
+        assertThat(value(values, "consensus.epsConsensus").value().decimalValue()).isEqualByComparingTo("3.2");
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query")).withQueryParam("apikey", equalTo("primary")));
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query")).withQueryParam("apikey", equalTo("secondary")));
+        SERVER.verify(0, getRequestedFor(urlPathEqualTo("/query")).withQueryParam("apikey", equalTo("tertiary")));
+    }
+
+    @Test
+    void burst429StopsWithoutTryingAdditionalCredential() {
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("apikey", equalTo("primary"))
+                .willReturn(aResponse().withStatus(429).withBody("rate limit per minute")));
+
+        assertThatThrownBy(() -> providerWithKeys(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC), "primary", "secondary")
+                .fetch(new ProviderRequest("AVT", Map.of())))
+                .isInstanceOf(ProviderUnavailableException.class)
+                .hasMessage("HTTP_429")
+                .hasMessageNotContaining("rate limit per minute");
+
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query")).withQueryParam("apikey", equalTo("primary")));
+        SERVER.verify(0, getRequestedFor(urlPathEqualTo("/query")).withQueryParam("apikey", equalTo("secondary")));
+    }
+
+    @Test
+    void invalidKeyMessageRotatesAndIsRememberedForOtherSymbols() throws Exception {
+        var estimates = MAPPER.writeValueAsString(Map.of("symbol", "AVT", "estimates", List.of(
+                row("2027-06-30", "fiscal year", "3.2", "1400"))));
+        var secondSymbolEstimates = MAPPER.writeValueAsString(Map.of("symbol", "BVT", "estimates", List.of(
+                row("2027-06-30", "fiscal year", "3.2", "1400"))));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("apikey", equalTo("primary"))
+                .willReturn(aResponse().withBody("{\"Information\":\"Invalid API key\"}")));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("apikey", equalTo("secondary"))
+                .withQueryParam("symbol", equalTo("AVT"))
+                .willReturn(aResponse().withBody(estimates)));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("apikey", equalTo("secondary"))
+                .withQueryParam("symbol", equalTo("BVT"))
+                .willReturn(aResponse().withBody(secondSymbolEstimates)));
+        var provider = providerWithKeys(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC), "primary", "secondary");
+
+        provider.fetch(new ProviderRequest("AVT", Map.of()));
+        provider.fetch(new ProviderRequest("BVT", Map.of()));
+
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query")).withQueryParam("apikey", equalTo("primary")));
+        SERVER.verify(2, getRequestedFor(urlPathEqualTo("/query")).withQueryParam("apikey", equalTo("secondary")));
+    }
+
+    @Test
+    void classifiesQuotaBurstInvalidKeyAndPremiumMessagesWithoutExposingText() {
+        assertThat(AlphaVantageEarningsEstimatesProvider.classifyProviderMessage(
+                "25 requests per day; upgrade to premium subscription")).isEqualTo("DAILY_QUOTA_EXHAUSTED");
+        assertThat(AlphaVantageEarningsEstimatesProvider.classifyProviderMessage(
+                "rate limit per minute reached")).isEqualTo("RATE_LIMITED");
+        assertThat(AlphaVantageEarningsEstimatesProvider.classifyProviderMessage(
+                "the provided api_key is invalid")).isEqualTo("INVALID_API_KEY");
+        assertThat(AlphaVantageEarningsEstimatesProvider.classifyProviderMessage(
+                "premium endpoint requires subscription")).isEqualTo("PREMIUM_ENDPOINT");
+    }
+
+    @Test
+    void normalizesAdditionalCredentialListWithoutDuplicatesOrBlanks() {
+        assertThat(AlphaVantageEarningsEstimatesProvider.configuredApiKeys(
+                " primary ", "secondary, ,primary, secondary , tertiary"))
+                .containsExactly("primary", "secondary", "tertiary");
+        assertThat(AlphaVantageEarningsEstimatesProvider.configuredApiKeys("", "secondary"))
+                .containsExactly("secondary");
+    }
+
+    @Test
+    void additionalCredentialWorksWhenPrimaryIsUnconfigured() throws Exception {
+        var estimates = MAPPER.writeValueAsString(Map.of("symbol", "AVT", "estimates", List.of(
+                row("2027-06-30", "fiscal year", "3.2", "1400"))));
+        SERVER.stubFor(get(urlPathEqualTo("/query"))
+                .withQueryParam("apikey", equalTo("secondary"))
+                .willReturn(aResponse().withBody(estimates)));
+
+        var values = providerWithKeys(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC), "", "secondary")
+                .fetch(new ProviderRequest("AVT", Map.of()));
+
+        assertThat(value(values, "consensus.epsConsensus").value().decimalValue()).isEqualByComparingTo("3.2");
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/query")).withQueryParam("apikey", equalTo("secondary")));
+    }
+
+    @Test
     void rejectsNullJsonRootAsInvalidResponse() {
         SERVER.stubFor(get(urlPathEqualTo("/query"))
                 .willReturn(aResponse().withBody("null")));
@@ -389,13 +488,24 @@ class AlphaVantageEarningsEstimatesProviderTest {
         return new AlphaVantageEarningsEstimatesProvider(configuration(), MAPPER, clock);
     }
 
+    private static AlphaVantageEarningsEstimatesProvider providerWithKeys(
+            Clock clock, String primaryKey, String additionalKeys) {
+        return new AlphaVantageEarningsEstimatesProvider(configuration(primaryKey, Map.of()), MAPPER, clock,
+                new AlphaVantageDailyRequestCache(MAPPER, clock, 25), additionalKeys);
+    }
+
     private static StockAnalysisProviderProperties.ProviderConfiguration configuration() {
         return configuration(Map.of());
     }
 
     private static StockAnalysisProviderProperties.ProviderConfiguration configuration(Map<String, String> fields) {
+        return configuration("test-token", fields);
+    }
+
+    private static StockAnalysisProviderProperties.ProviderConfiguration configuration(
+            String apiKey, Map<String, String> fields) {
         return new StockAnalysisProviderProperties.ProviderConfiguration(
-                true, true, URI.create(SERVER.baseUrl()), "/query", "test-token", "", "apikey",
+                true, true, URI.create(SERVER.baseUrl()), "/query", apiKey, "", "apikey",
                 Map.of("function", "EARNINGS_ESTIMATES"), Set.of(), "", Map.of(), Map.of(), Map.of(), Map.of(),
                 "INSTANT", Duration.ofSeconds(1), Duration.ofSeconds(1), 0, Duration.ZERO,
                 1000, Duration.ofSeconds(1), "", fields);

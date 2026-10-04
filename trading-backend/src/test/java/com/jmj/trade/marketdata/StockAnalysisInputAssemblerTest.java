@@ -63,6 +63,54 @@ class StockAnalysisInputAssemblerTest {
         }
     }
 
+    @Test
+    void alphaKeyFailuresKeepTheirSafeReasonAndOrdinarySecAbsenceStaysGeneric() {
+        for (var code : List.of("INVALID_API_KEY", "API_KEY_UNAVAILABLE", "RATE_LIMITED", "PREMIUM_ENDPOINT")) {
+            var input = new StockAnalysisInputAssembler(
+                    new StockDataProviderRegistry(List.of(failingProvider(
+                            StockDataProviderId.ALPHA_VANTAGE, "consensus.epsConsensus", code))), CLOCK)
+                    .assemble("AVT", Map.of());
+
+            assertThat(input.observations()).singleElement().satisfies(observation -> {
+                assertThat(observation.missingData()).containsExactly("PROVIDER_UNAVAILABLE", "PROVIDER_" + code);
+            });
+        }
+
+        var secInput = new StockAnalysisInputAssembler(
+                new StockDataProviderRegistry(List.of(failingProvider(
+                        StockDataProviderId.SEC, "fundamental.cash", "DATA_NOT_PRESENT"))), CLOCK)
+                .assemble("AVT", Map.of());
+
+        assertThat(secInput.observations()).singleElement().satisfies(observation -> {
+            assertThat(observation.provider()).isEqualTo(StockDataProviderId.SEC);
+            assertThat(observation.missingData()).containsExactly("PROVIDER_UNAVAILABLE");
+        });
+    }
+
+    private static StockDataProvider failingProvider(StockDataProviderId id, String field, String reason) {
+        return new StockDataProvider() {
+            @Override
+            public StockDataProviderId id() {
+                return id;
+            }
+
+            @Override
+            public DataProviderRole role() {
+                return ProviderCatalog.roleOf(id);
+            }
+
+            @Override
+            public Set<String> fields() {
+                return Set.of(field);
+            }
+
+            @Override
+            public List<ProviderValue> fetch(ProviderRequest request) {
+                throw new ProviderUnavailableException(id, reason);
+            }
+        };
+    }
+
     private static StockAnalysisInput assemble(StockDataProvider sec, StockDataProvider alpha) {
         return new StockAnalysisInputAssembler(
                 new StockDataProviderRegistry(List.of(sec, alpha)), CLOCK)

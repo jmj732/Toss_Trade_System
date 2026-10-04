@@ -19,6 +19,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.net.URI;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -74,6 +78,258 @@ class AlphaVantageDailyRequestCacheIntegrationTest extends PostgresIntegrationTe
         assertThat(jdbc.queryForObject(
                 "SELECT credential_fingerprint FROM alpha_vantage_daily_cache", String.class))
                 .isNotEqualTo("secret-token");
+    }
+
+    @Test
+    void reusesSuccessfulLogicalResponseAcrossCredentialFingerprints() {
+        var calls = new AtomicInteger();
+        var originalAsOf = Instant.parse("2026-10-03T11:58:00Z");
+
+        var first = helper(25).get("AVT", "EARNINGS_ESTIMATES", "primary-key", () -> {
+            calls.incrementAndGet();
+            return List.of(value(originalAsOf));
+        });
+        var second = helper(25).get("AVT", "EARNINGS_ESTIMATES", "additional-key", () -> {
+            calls.incrementAndGet();
+            return List.of(value(TODAY));
+        });
+
+        assertThat(calls).hasValue(1);
+        assertThat(second).containsExactlyElementsOf(first);
+        assertThat(second.getFirst().asOf()).isEqualTo(originalAsOf);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM alpha_vantage_daily_cache", Integer.class))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void rotatesAfterPrimaryQuotaAndUsesAdditionalKeysOwnBudget() throws Exception {
+        for (int index = 0; index < 24; index++) {
+            insertLegacyCapture("BASE" + index, Instant.parse("2026-10-03T08:00:00Z"));
+        }
+        var cache = helper(25);
+        var calls = new java.util.ArrayList<String>();
+
+        cache.get("LAST_PRIMARY", "EARNINGS_ESTIMATES", List.of("primary", "secondary"), key -> {
+            calls.add(key);
+            return List.of(value(TODAY));
+        });
+        cache.get("SECONDARY", "EARNINGS_ESTIMATES", List.of("primary", "secondary"), key -> {
+            calls.add(key);
+            return List.of(value(TODAY));
+        });
+
+        assertThat(calls).containsExactly("primary", "secondary");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM alpha_vantage_daily_cache", Integer.class))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void twentyFiveLegacyReceiptsBlockPrimaryButNotAdditionalCredential() throws Exception {
+        for (int index = 0; index < 25; index++) {
+            insertLegacyCapture("BASE" + index, Instant.parse("2026-10-03T08:00:00Z"));
+        }
+        var calls = new java.util.ArrayList<String>();
+
+        helper(25).get("AVT", "EARNINGS_ESTIMATES", List.of("primary", "secondary"), key -> {
+            calls.add(key);
+            return List.of(value(TODAY));
+        });
+
+        assertThat(calls).containsExactly("secondary");
+    }
+
+    @Test
+    void blankConfiguredPrimaryDoesNotChargeLegacyFloorToAdditionalKey() throws Exception {
+        for (int index = 0; index < 25; index++) {
+            insertLegacyCapture("BASE" + index, Instant.parse("2026-10-03T08:00:00Z"));
+        }
+        var calls = new java.util.ArrayList<String>();
+
+        helper(25).get("AVT", "EARNINGS_ESTIMATES", List.of("secondary"), "", key -> {
+            calls.add(key);
+            return List.of(value(TODAY));
+        });
+
+        assertThat(calls).containsExactly("secondary");
+    }
+
+    @Test
+    void doesNotRetryOnHttp429AndStoresSanitizedFailure() {
+        var calls = new java.util.ArrayList<String>();
+
+        assertThatThrownBy(() -> helper(25).get("AVT", "EARNINGS_ESTIMATES",
+                List.of("primary", "secondary"), key -> {
+                    calls.add(key);
+                    throw new ProviderUnavailableException(StockDataProviderId.ALPHA_VANTAGE, "HTTP_429");
+                }))
+                .isInstanceOf(ProviderUnavailableException.class)
+                .hasMessage("HTTP_429");
+
+        assertThat(calls).containsExactly("primary");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM alpha_vantage_daily_cache", Integer.class))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void providerDailyQuotaFailureIsRememberedAcrossSymbolsAndRotatesOnce() {
+        var primaryCalls = new AtomicInteger();
+        var secondaryCalls = new AtomicInteger();
+
+        helper(25).get("AVT", "EARNINGS_ESTIMATES", List.of("primary", "secondary"), key -> {
+            if (key.equals("primary")) {
+                primaryCalls.incrementAndGet();
+                throw new ProviderUnavailableException(StockDataProviderId.ALPHA_VANTAGE,
+                        "DAILY_QUOTA_EXHAUSTED");
+            }
+            secondaryCalls.incrementAndGet();
+            return List.of(value(TODAY));
+        });
+        helper(25).get("BVT", "EARNINGS_ESTIMATES", List.of("primary", "secondary"), key -> {
+            if (key.equals("primary")) primaryCalls.incrementAndGet();
+            secondaryCalls.incrementAndGet();
+            return List.of(value(TODAY));
+        });
+
+        assertThat(primaryCalls).hasValue(1);
+        assertThat(secondaryCalls).hasValue(2);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM alpha_vantage_daily_cache
+                 WHERE credential_fingerprint = ? AND state = 'FAILED'
+                """, Integer.class, fingerprintForTest("primary"))).isEqualTo(1);
+    }
+
+    @Test
+    void allExhaustedKeysStayBlockedAfterRestartWithoutRepeatingCalls() {
+        var calls = new AtomicInteger();
+        var keys = List.of("primary", "secondary");
+        assertThatThrownBy(() -> helper(25).get("AVT", "EARNINGS_ESTIMATES", keys, key -> {
+            calls.incrementAndGet();
+            throw new ProviderUnavailableException(StockDataProviderId.ALPHA_VANTAGE,
+                    "DAILY_QUOTA_EXHAUSTED");
+        }))
+                .isInstanceOf(ProviderUnavailableException.class)
+                .hasMessage("DAILY_QUOTA_EXHAUSTED");
+
+        assertThatThrownBy(() -> helper(25).get("BVT", "EARNINGS_ESTIMATES", keys, key -> {
+            calls.incrementAndGet();
+            return List.of(value(TODAY));
+        }))
+                .isInstanceOf(ProviderUnavailableException.class)
+                .hasMessage("DAILY_QUOTA_EXHAUSTED");
+
+        assertThat(calls).hasValue(2);
+    }
+
+    @Test
+    void invalidKeyTombstoneExpiresAtUtcDateRollover() {
+        var calls = new AtomicInteger();
+        assertThatThrownBy(() -> helper(25).get("AVT", "EARNINGS_ESTIMATES", List.of("primary"), key -> {
+            calls.incrementAndGet();
+            throw new ProviderUnavailableException(StockDataProviderId.ALPHA_VANTAGE, "INVALID_API_KEY");
+        }))
+                .isInstanceOf(ProviderUnavailableException.class)
+                .hasMessage("INVALID_API_KEY");
+
+        clock = Clock.fixed(Instant.parse("2026-10-04T00:00:01Z"), ZoneOffset.UTC);
+        helper(25).get("BVT", "EARNINGS_ESTIMATES", List.of("primary"), key -> {
+            calls.incrementAndGet();
+            return List.of(value(clock.instant()));
+        });
+
+        assertThat(calls).hasValue(2);
+    }
+
+    @Test
+    void concurrentSymbolsCannotExceedOneCredentialDailyLimit() throws Exception {
+        var cache = helper(2);
+        var calls = new AtomicInteger();
+        var ready = new CountDownLatch(8);
+        var start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(8);
+        var results = new java.util.ArrayList<Future<Boolean>>();
+        for (int index = 0; index < 8; index++) {
+            var symbol = "CONCURRENT" + index;
+            results.add(executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(10, TimeUnit.SECONDS)) return false;
+                try {
+                    cache.get(symbol, "EARNINGS_ESTIMATES", "primary", () -> {
+                        calls.incrementAndGet();
+                        return List.of(value(TODAY));
+                    });
+                    return true;
+                } catch (ProviderUnavailableException exception) {
+                    if (!"DAILY_QUOTA_EXHAUSTED".equals(exception.reasonCode())) throw exception;
+                    return false;
+                }
+            }));
+        }
+        try {
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(results.stream().map(result -> {
+                try {
+                    return result.get(10, TimeUnit.SECONDS);
+                } catch (Exception exception) {
+                    throw new IllegalStateException(exception);
+                }
+            }).filter(Boolean::booleanValue).count()).isEqualTo(2);
+        } finally {
+            start.countDown();
+            executor.shutdown();
+        }
+
+        assertThat(calls).hasValue(2);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM alpha_vantage_daily_cache", Integer.class))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void additionalKeyReceiptDoesNotBecomePrimaryLegacyUsage() throws Exception {
+        var secondaryCache = helper(1);
+        var observed = List.of(value(TODAY));
+        secondaryCache.get("AVT", "EARNINGS_ESTIMATES", List.of("secondary"), ignored -> observed);
+        insertCapturedConsensus("AVT", observed.getFirst());
+
+        var calls = new AtomicInteger();
+        helper(1).get("NEW", "EARNINGS_ESTIMATES", "primary", () -> {
+            calls.incrementAndGet();
+            return List.of(value(TODAY));
+        });
+
+        assertThat(calls).hasValue(1);
+    }
+
+    @Test
+    void requestInProgressUnderOneFingerprintBlocksAnotherFingerprint() throws Exception {
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var executor = Executors.newSingleThreadExecutor();
+        var primary = executor.submit(() -> helper(25).get("AVT", "EARNINGS_ESTIMATES", "primary-key", () -> {
+            started.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("test loader timed out");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("test loader interrupted", exception);
+            }
+            return List.of(value(TODAY));
+        }));
+
+        try {
+            assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> helper(25).get("AVT", "EARNINGS_ESTIMATES", "additional-key", () ->
+                    List.of(value(TODAY))))
+                    .isInstanceOf(ProviderUnavailableException.class)
+                    .hasMessage("REQUEST_IN_PROGRESS");
+        } finally {
+            release.countDown();
+            executor.shutdown();
+        }
+
+        assertThat(primary.get(10, TimeUnit.SECONDS)).hasSize(1);
     }
 
     @Test
@@ -230,6 +486,26 @@ class AlphaVantageDailyRequestCacheIntegrationTest extends PostgresIntegrationTe
                 ) VALUES (?, ?, ?, '1', CAST(? AS jsonb), ?, ?, ?)
                 """, UUID.randomUUID(), USER_ID, symbol, mapper.writeValueAsString(root), "0".repeat(64),
                 capture, capture);
+    }
+
+    private void insertCapturedConsensus(String symbol, ProviderValue value) throws Exception {
+        var root = mapper.createObjectNode();
+        root.putArray("observations").addObject()
+                .put("provider", "ALPHA_VANTAGE")
+                .put("field", value.field())
+                .put("asOf", value.asOf().toString())
+                .put("value", value.value().asText())
+                .putArray("missingData");
+        insertLegacyPayload(symbol, root);
+    }
+
+    private String fingerprintForTest(String apiKey) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(apiKey.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     private static ProviderValue value(Instant asOf) {
