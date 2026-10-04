@@ -393,6 +393,7 @@ final class SecInlineXbrlParser {
                 "http://www.xbrl.org/inlineXBRL/transformation/2011-07-31",
                 "http://www.xbrl.org/inlineXBRL/transformation/2010-04-20",
                 "http://www.xbrl.org/2008/inlineXBRL/transformation",
+                "http://www.xbrl.org/inlineXBRL/transformation/2020-02-12",
                 "http://www.xbrl.org/inlineXBRL/transformation/2022-02-16"
         ).contains(namespace);
     }

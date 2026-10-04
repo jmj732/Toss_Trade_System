@@ -58,6 +58,26 @@ class SecInlineXbrlParserTest {
     }
 
     @Test
+    void acceptsTheSec2020TransformationRegistryNamespaceForNumericFacts() {
+        var source = document("""
+                <ix:nonFraction name="us-gaap:CashAndCashEquivalentsAtCarryingValue" contextRef="FY"
+                    unitRef="USD" format="ixt:num-dot-decimal">1,234.50</ix:nonFraction>
+                <ix:nonFraction name="us-gaap:CashAndCashEquivalentsAtCarryingValue" contextRef="FY"
+                    unitRef="USD" scale="2" sign="-" format="ixt:num-dot-decimal">1,234.50</ix:nonFraction>
+                <ix:nonFraction name="us-gaap:CashAndCashEquivalentsAtCarryingValue" contextRef="FY"
+                    unitRef="USD" sign="-" format="ixt:num-dot-decimal">-7</ix:nonFraction>
+                """).replace("http://www.xbrl.org/inlineXBRL/transformation/2015-02-26",
+                "http://www.xbrl.org/inlineXBRL/transformation/2020-02-12");
+
+        var facts = parser.parse(source, ACCESSION, FILED, FORM, ISSUER_CIK,
+                Set.of("CashAndCashEquivalentsAtCarryingValue"), Map.of());
+
+        assertThat(facts).hasSize(2);
+        assertThat(facts.getFirst().value()).isEqualByComparingTo("1234.50");
+        assertThat(facts.get(1).value()).isEqualByComparingTo("-123450.00");
+    }
+
+    @Test
     void acceptsCustomConceptOnlyWhenItsExactQNameWasTaxonomyVerifiedAndPreservesDimensions() {
         var custom = new QName("https://example.test/taxonomy/2026", "NetSales");
         var source = document("""
