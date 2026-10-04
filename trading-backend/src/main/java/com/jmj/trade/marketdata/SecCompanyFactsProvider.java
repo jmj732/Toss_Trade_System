@@ -193,7 +193,8 @@ final class SecCompanyFactsProvider implements StockDataProvider {
         }
         var securitizationDebt = securitizationDebt(facts, cutoff);
         FactValue extendedDebt = null;
-        if (currentDebt == null && noncurrentDebt != null && securitizationDebt != null
+        if (noncurrentDebt != null && (currentDebt == null || currentDebt.end().isBefore(noncurrentDebt.end()))
+                && securitizationDebt != null
                 && sameDebtInstant(noncurrentDebt, securitizationDebt)) {
             extendedDebt = calculatedValue(noncurrentDebt.value().add(securitizationDebt.value()), USD,
                     noncurrentDebt.end(), "INSTANT", "LongTermDebtNoncurrent+SecuritizationLiability",
@@ -634,12 +635,7 @@ final class SecCompanyFactsProvider implements StockDataProvider {
     private boolean needsInlineFallback(JsonNode facts, Filing filing, LocalDate cutoff) {
         if (!facts.isObject()) return true;
         if (!hasAnyTag(facts.path(TAGS), "CashAndCashEquivalentsAtCarryingValue", USD)
-                || !(hasAnyTag(facts.path(TAGS), "DebtLongtermAndShorttermCombinedAmount", USD)
-                || (hasAnyTag(facts.path(TAGS), "DebtCurrent", USD)
-                || hasAnyTag(facts.path(TAGS), "LongTermDebtCurrent", USD)
-                || hasAnyTag(facts.path(TAGS), "LongTermDebtAndCapitalLeaseObligationsCurrent", USD))
-                && (hasAnyTag(facts.path(TAGS), "LongTermDebtNoncurrent", USD)
-                || hasAnyTag(facts.path(TAGS), "LongTermDebtAndCapitalLeaseObligations", USD)))
+                || !hasCompleteDebtForReportDate(facts.path(TAGS), filing.reportDate(), cutoff)
                 || !hasAnyTag(facts.path(TAGS), "RevenueFromContractWithCustomerExcludingAssessedTax", USD)
                 && !hasAnyTag(facts.path(TAGS), "Revenues", USD)
                 && !hasAnyTag(facts.path(TAGS), "SalesRevenueNet", USD)
@@ -664,6 +660,18 @@ final class SecCompanyFactsProvider implements StockDataProvider {
                     "WeightedAverageNumberOfDilutedSharesOutstanding", SHARES, filing, cutoff);
         }
         return eps == null || dilutedShares == null || ebitdaTtm(facts.path(TAGS), filing, cutoff) == null;
+    }
+
+    private boolean hasCompleteDebtForReportDate(JsonNode facts, LocalDate reportDate, LocalDate cutoff) {
+        if (reportDate == null) return false;
+        var direct = latestReportedInstant(facts, List.of("DebtLongtermAndShorttermCombinedAmount"), USD, cutoff);
+        if (direct != null && direct.end().equals(reportDate)) return true;
+        var current = latestReportedInstant(facts,
+                List.of("DebtCurrent", "LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent"),
+                USD, cutoff);
+        var noncurrent = latestReportedInstant(facts,
+                List.of("LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"), USD, cutoff);
+        return sameDebtInstant(current, noncurrent) && current.end().equals(reportDate);
     }
 
     private static boolean hasAnyTag(JsonNode namespace, String tag, String unit) {

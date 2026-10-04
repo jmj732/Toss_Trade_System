@@ -550,6 +550,94 @@ class SecCompanyFactsProviderTest {
     }
 
     @Test
+    void ignoresStaleCurrentDebtWhenJoiningVerifiedSecuritizationWithLatestLongTermDebt() throws Exception {
+        var facts = (ObjectNode) alignedDebtAndEbitdaFacts();
+        var gaap = (ObjectNode) facts.path("facts").path("us-gaap");
+        gaap.remove("DebtCurrent");
+        appendInstantFact(gaap, "LongTermDebtCurrent", "2024-12-31", "2025-03-25", "10-K",
+                "0000001234-25-000005", 10, 2025, "FY");
+        var filing = filingWithPrimaryDocument("10-Q", CURRENT_Q, "2026-04-29", "2026-03-31",
+                "2026-04-29T12:00:00Z", 2026, "Q1", "example.htm");
+        stubSecuritizationDebtFiling(filing, true, false, false);
+        stubCompany("XYZ", submissions("XYZ", 1234, List.of(filing)), facts);
+
+        var debt = value(provider().fetch(new ProviderRequest("XYZ", Map.of())), "fundamental.debt");
+
+        assertThat(debt.value()).isNotNull();
+        assertThat(debt.value().decimalValue()).isEqualByComparingTo("185");
+        assertThat(debt.asOf()).isEqualTo(Instant.parse("2026-03-31T00:00:00Z"));
+        assertThat(debt.identifier()).contains("LongTermDebtNoncurrent")
+                .contains("{https://example.test/lunr/2026}SecuritizationLiability");
+        SERVER.verify(1, getRequestedFor(urlPathEqualTo("/Archives/edgar/data/1234/"
+                + CURRENT_Q.replace("-", "") + "/example.htm")));
+    }
+
+    @Test
+    void requiresCurrentAndNoncurrentDebtComponentsAtTheSelectedReportDate() throws Exception {
+        var completeDebt = SecCompanyFactsProvider.class.getDeclaredMethod(
+                "hasCompleteDebtForReportDate", tools.jackson.databind.JsonNode.class,
+                LocalDate.class, LocalDate.class);
+        completeDebt.setAccessible(true);
+        var provider = provider();
+        var reportDate = LocalDate.parse("2026-03-31");
+        var cutoff = LocalDate.parse("2026-04-29");
+        var rows = new LinkedHashMap<String, List<Map<String, Object>>>();
+        rows.put("DebtCurrent", List.of(instantFact(USD, reportDate.toString(), cutoff.toString(),
+                "10-Q", CURRENT_Q, BigDecimal.ONE, 2026, "Q1")));
+        rows.put("LongTermDebtNoncurrent", List.of(instantFact(USD, reportDate.toString(), cutoff.toString(),
+                "10-Q", CURRENT_Q, BigDecimal.ONE, 2026, "Q1")));
+        var facts = MAPPER.readTree(MAPPER.writeValueAsString(companyFacts(1234, rows)));
+        var usGaap = facts.path("facts").path("us-gaap");
+
+        assertThat((Boolean) completeDebt.invoke(provider, usGaap, reportDate, cutoff)).isTrue();
+
+        var staleFacts = (ObjectNode) facts.deepCopy();
+        var staleNoncurrent = (ObjectNode) staleFacts.path("facts").path("us-gaap")
+                .path("LongTermDebtNoncurrent").path("units").path(USD).path(0);
+        staleNoncurrent.put("end", "2025-12-31");
+        assertThat((Boolean) completeDebt.invoke(provider,
+                staleFacts.path("facts").path("us-gaap"), reportDate, cutoff)).isFalse();
+    }
+
+    @Test
+    void keepsSameDateCurrentDebtAndDoesNotUseExtendedJoin() throws Exception {
+        var facts = (ObjectNode) quarterlyFacts();
+        var gaap = (ObjectNode) facts.path("facts").path("us-gaap");
+        gaap.remove("DebtCurrent");
+        appendInstantFact(gaap, "LongTermDebtCurrent", "2026-03-31", "2026-04-29", "10-Q",
+                CURRENT_Q, 40, 2026, "Q1");
+        var filing = filingWithPrimaryDocument("10-Q", CURRENT_Q, "2026-04-29", "2026-03-31",
+                "2026-04-29T12:00:00Z", 2026, "Q1", "example.htm");
+        stubSecuritizationDebtFiling(filing, true, false, false);
+        stubCompany("XYZ", submissions("XYZ", 1234, List.of(filing)), facts);
+
+        var debt = value(provider().fetch(new ProviderRequest("XYZ", Map.of())), "fundamental.debt");
+
+        assertThat(debt.value()).isNotNull();
+        assertThat(debt.value().decimalValue()).isEqualByComparingTo("190");
+        assertThat(debt.identifier()).contains("LongTermDebtCurrent")
+                .contains("LongTermDebtNoncurrent")
+                .doesNotContain("SecuritizationLiability");
+    }
+
+    @Test
+    void newerCurrentDebtBlocksOlderExtendedDebtJoin() throws Exception {
+        var facts = (ObjectNode) quarterlyFacts();
+        var gaap = (ObjectNode) facts.path("facts").path("us-gaap");
+        gaap.remove("DebtCurrent");
+        appendInstantFact(gaap, "LongTermDebtCurrent", "2026-04-30", "2026-05-15", "10-Q",
+                "0000001234-26-000020", 40, 2026, "Q2");
+        var filing = filingWithPrimaryDocument("10-Q", CURRENT_Q, "2026-04-29", "2026-03-31",
+                "2026-04-29T12:00:00Z", 2026, "Q1", "example.htm");
+        stubSecuritizationDebtFiling(filing, true, false, false);
+        stubCompany("XYZ", submissions("XYZ", 1234, List.of(filing)), facts);
+
+        var debt = value(provider().fetch(new ProviderRequest("XYZ", Map.of())), "fundamental.debt");
+
+        assertThat(debt.value()).isNull();
+    }
+
+    @Test
     void sumsAlignedCurrentAndNoncurrentSecuritizationFactsWhenTotalIsAbsent() throws Exception {
         var facts = (ObjectNode) quarterlyFacts();
         ((ObjectNode) facts.path("facts").path("us-gaap")).remove("DebtCurrent");
@@ -955,6 +1043,36 @@ class SecCompanyFactsProviderTest {
         return companyFacts(1234, rows);
     }
 
+    private static tools.jackson.databind.JsonNode alignedDebtAndEbitdaFacts() {
+        var facts = (ObjectNode) companyFacts(1234, alignedEbitdaBaseRows());
+        var target = (ObjectNode) facts.path("facts").path("us-gaap");
+        var supplement = quarterlyFacts().path("facts").path("us-gaap");
+        for (var tag : List.of("CashAndCashEquivalentsAtCarryingValue", "DebtCurrent",
+                "LongTermDebtNoncurrent", "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "NetCashProvidedByUsedInOperatingActivities", "PaymentsToAcquirePropertyPlantAndEquipment")) {
+            target.set(tag, supplement.path(tag).deepCopy());
+        }
+        appendDurationFact(target, "DepreciationDepletionAndAmortization", USD,
+                "2025-04-01", "2025-06-30", "2025-08-01", "10-Q",
+                "0000001234-25-000002", "5", 2025, "Q2");
+        appendDurationFact(target, "DepreciationDepletionAndAmortization", USD,
+                "2025-07-01", "2025-09-30", "2025-11-01", "10-Q",
+                "0000001234-25-000003", "5", 2025, "Q3");
+        appendDurationFact(target, "DepreciationDepletionAndAmortization", USD,
+                "2025-10-01", "2025-12-31", "2026-02-01", "10-Q",
+                "0000001234-25-000004", "5", 2026, "Q1");
+        appendDurationFact(target, "DepreciationDepletionAndAmortization", USD,
+                "2026-01-01", "2026-03-31", "2026-04-29", "10-Q", CURRENT_Q,
+                "5", 2026, "Q1");
+        appendDurationFact(target, "EarningsPerShareDiluted", "USD/shares", "2026-01-01", "2026-03-31",
+                "2026-04-29", "10-Q", CURRENT_Q, "1", 2026, "Q1");
+        appendDurationFact(target, "WeightedAverageNumberOfDilutedSharesOutstanding", "shares",
+                "2026-01-01", "2026-03-31", "2026-04-29", "10-Q", CURRENT_Q, "100", 2026, "Q1");
+        appendInstantFact(target, "CommonStockSharesOutstanding", "2026-03-31", "2026-04-29", "10-Q",
+                CURRENT_Q, 100, 2026, "Q1");
+        return facts;
+    }
+
     private static tools.jackson.databind.JsonNode companyFacts(int cik,
                                                                 Map<String, List<Map<String, Object>>> rows) {
         return companyFacts(cik, rows, Map.of());
@@ -988,6 +1106,27 @@ class SecCompanyFactsProviderTest {
                 });
             });
         });
+    }
+
+    private static void appendInstantFact(ObjectNode namespace, String tag, String end, String filed,
+                                          String form, String accession, Object amount, int fy, String fp) {
+        var fact = namespace.get(tag) instanceof ObjectNode existing ? existing : namespace.putObject(tag);
+        var units = fact.get("units") instanceof ObjectNode existingUnits
+                ? existingUnits : fact.putObject("units");
+        var rows = units.get(USD) instanceof tools.jackson.databind.node.ArrayNode existingRows
+                ? existingRows : units.putArray(USD);
+        rows.add(MAPPER.valueToTree(instantFact(USD, end, filed, form, accession, amount, fy, fp)));
+    }
+
+    private static void appendDurationFact(ObjectNode namespace, String tag, String unit, String start,
+                                           String end, String filed, String form, String accession,
+                                           Object amount, int fy, String fp) {
+        var fact = namespace.get(tag) instanceof ObjectNode existing ? existing : namespace.putObject(tag);
+        var units = fact.get("units") instanceof ObjectNode existingUnits
+                ? existingUnits : fact.putObject("units");
+        var rows = units.get(unit) instanceof tools.jackson.databind.node.ArrayNode existingRows
+                ? existingRows : units.putArray(unit);
+        rows.add(MAPPER.valueToTree(durationFact(unit, start, end, filed, form, accession, amount, fy, fp)));
     }
 
     private static Map<String, Object> instantFact(String unit, String end, String filed, String form,
