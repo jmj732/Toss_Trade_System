@@ -123,7 +123,17 @@ final class InvestmentOsResearchSheetSync {
                 "Balance Sheet As Of", "Fundamental Currency", "Field Provenance", "EBITDA TTM Type",
                 "EBITDA TTM Formula", "EBITDA TTM Source", "Consensus Missing Reason",
                 "Revenue Revision 30D Status", "Revenue Revision 90D Status",
-                "EPS Revision 30D Status", "EPS Revision 90D Status"));
+                "EPS Revision 30D Status", "EPS Revision 90D Status",
+                "Consensus Status", "Consensus Estimate Type", "Consensus Estimate Label",
+                "Consensus Period End", "Consensus Currency", "Consensus EPS Analyst Count",
+                "Consensus Revenue Analyst Count", "Valuation TTM As Of", "Valuation TTM Source",
+                "Valuation Forward As Of", "Valuation Forward Horizon", "Valuation Forward Source",
+                "Valuation Forward Estimate Type", "Valuation Forward Period End", "Valuation Forward Currency",
+                "Valuation Metric Statuses", "Valuation Metric Reasons", "Valuation Metric Provenance",
+                "Display Currency", "Display Currency Source", "Display Currency Source As Of",
+                "Display Currency Period", "Display Currency Status", "Risk Status",
+                "Thesis Failure Stress Status", "Top Two Correlated Status", "Risk Soft Budget Status",
+                "Risk Sizing Eligible"));
         var rows = securities.stream().map(security -> {
             var price = security.price();
             var technical = security.technical();
@@ -164,7 +174,23 @@ final class InvestmentOsResearchSheetSync {
                     value(fundamental, "ebitdaTTMFormula"), value(fundamental, "ebitdaTTMSource"),
                     value(consensus, "missingReason"), nested(revision, "revenueRevision30D", "status"),
                     nested(revision, "revenueRevision90D", "status"), nested(revision, "epsRevision30D", "status"),
-                    nested(revision, "epsRevision90D", "status"));
+                    nested(revision, "epsRevision90D", "status"), value(consensus, "status"),
+                    value(consensus, "estimateType"), value(consensus, "estimateLabel"),
+                    value(consensus, "periodEnd"), value(consensus, "currency"),
+                    value(consensus, "epsAnalystCount"), value(consensus, "revenueAnalystCount"),
+                    value(valuation, "ttmAsOf"), value(valuation, "ttmSource"),
+                    value(valuation, "forwardAsOf"), value(valuation, "forwardHorizon"),
+                    value(valuation, "forwardSource"), value(valuation, "forwardEstimateType"),
+                    value(valuation, "forwardPeriodEnd"), value(valuation, "forwardCurrency"),
+                    value(valuation, "metricStatuses"), value(valuation, "metricReasons"),
+                    value(valuation, "metricProvenance"), value(valuation, "displayCurrency"),
+                    value(valuation, "displayCurrencySource"), value(valuation, "displayCurrencySourceAsOf"),
+                    value(valuation, "displayCurrencyPeriod"), value(valuation, "displayCurrencyStatus"),
+                    security.risk() == null ? "" : security.risk().status().name(),
+                    security.risk() == null ? "" : security.risk().thesisFailureStressStatus().name(),
+                    security.risk() == null ? "" : security.risk().top2CorrelatedStatus().name(),
+                    security.risk() == null ? "" : security.risk().softBudgetStatus(),
+                    security.risk() == null ? "" : security.risk().sizingEligible());
         }).toList();
         return new Table(List.copyOf(extendedHeaders), rows);
     }

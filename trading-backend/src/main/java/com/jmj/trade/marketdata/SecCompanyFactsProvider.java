@@ -191,7 +191,16 @@ final class SecCompanyFactsProvider implements StockDataProvider {
             componentDebt = calculatedValue(currentDebt.value().add(noncurrentDebt.value()), USD, currentDebt.end(),
                     "INSTANT", currentDebt.tag() + "+" + noncurrentDebt.tag(), List.of(currentDebt, noncurrentDebt));
         }
-        var debt = latestTotalDebt(directDebt, componentDebt);
+        var securitizationDebt = securitizationDebt(facts, cutoff);
+        FactValue extendedDebt = null;
+        if (currentDebt == null && noncurrentDebt != null && securitizationDebt != null
+                && sameDebtInstant(noncurrentDebt, securitizationDebt)) {
+            extendedDebt = calculatedValue(noncurrentDebt.value().add(securitizationDebt.value()), USD,
+                    noncurrentDebt.end(), "INSTANT", "LongTermDebtNoncurrent+SecuritizationLiability",
+                    List.of(noncurrentDebt, securitizationDebt));
+        }
+        var components = latestTotalDebt(componentDebt, extendedDebt);
+        var debt = latestTotalDebt(directDebt, components);
         addDecimal(result, "fundamental.debt", debt, USD, null,
                 debt == null ? "DebtLongtermAndShorttermCombinedAmount" : debt.tag());
 
@@ -486,6 +495,8 @@ final class SecCompanyFactsProvider implements StockDataProvider {
             }
             var parser = new SecInlineXbrlParser();
             var standardNames = standardInlineNames();
+            var verifiedSecuritizationDebtSchedule =
+                    hasVerifiedSecuritizationDebtSchedule(document, filing.reportDate());
             var verifiedTaxonomy = new HashMap<QName, SecInlineXbrlParser.ConceptInfo>();
             var conflictedConcepts = new HashSet<QName>();
             var referenceRejected = false;
@@ -513,7 +524,8 @@ final class SecCompanyFactsProvider implements StockDataProvider {
                         continue;
                     }
                     parser.parseTaxonomy(schema, labelLinkbase).forEach((concept, details) -> {
-                        var semantic = verifiedCustomSemantic(details.label(), details.definition());
+                        var semantic = verifiedCustomSemantic(concept, details.label(), details.definition(),
+                                verifiedSecuritizationDebtSchedule);
                         if (semantic != null) {
                             var verified = new SecInlineXbrlParser.ConceptInfo(
                                     semantic, details.label(), details.definition(), true);
@@ -686,9 +698,26 @@ final class SecCompanyFactsProvider implements StockDataProvider {
                 && hasAnyTag(facts, "AmortizationOfIntangibleAssets", USD);
     }
 
-    private static String verifiedCustomSemantic(String label, String definition) {
+    private static String verifiedCustomSemantic(QName concept, String label, String definition,
+                                                 boolean verifiedSecuritizationDebtSchedule) {
         var normalizedLabel = normalizeTaxonomyText(label);
         var normalizedDefinition = normalizeTaxonomyText(definition);
+        var localName = concept.getLocalPart();
+        if (verifiedSecuritizationDebtSchedule) {
+            var customText = normalizedLabel.isBlank() ? normalizedDefinition : normalizedLabel;
+            if (localName.equals("SecuritizationLiabilityCurrent")
+                    && customText.startsWith("securitization liability current")) {
+                return "SecuritizationLiabilityCurrent";
+            }
+            if (localName.equals("SecuritizationLiabilityNoncurrent")
+                    && customText.startsWith("securitization liability noncurrent")) {
+                return "SecuritizationLiabilityNoncurrent";
+            }
+            if (localName.equals("SecuritizationLiability")
+                    && Set.of("securitization liability", "total securitization liability").contains(customText)) {
+                return "SecuritizationLiability";
+            }
+        }
         if (normalizedLabel.isBlank() || normalizedDefinition.isBlank()) return null;
         if (Set.of("revenue", "revenue from contracts with customers", "sales revenue")
                 .contains(normalizedLabel)
@@ -738,6 +767,24 @@ final class SecCompanyFactsProvider implements StockDataProvider {
         return null;
     }
 
+    private static boolean hasVerifiedSecuritizationDebtSchedule(String filingDocument, LocalDate reportDate) {
+        if (reportDate == null) return false;
+        var renderedText = filingDocument.replaceAll("(?is)<script\\b[^>]*>.*?</script>", " ")
+                .replaceAll("(?is)<style\\b[^>]*>.*?</style>", " ")
+                .replaceAll("(?s)<[^>]*>", " ")
+                .replaceAll("(?i)&nbsp;|&#0*160;", " ");
+        var text = normalizeTaxonomyText(renderedText);
+        var month = reportDate.getMonth().getDisplayName(java.time.format.TextStyle.FULL, Locale.ENGLISH)
+                .toLowerCase(Locale.ROOT);
+        var noDebtAtReportDate = "as of " + month + " " + reportDate.getDayOfMonth() + " "
+                + reportDate.getYear() + " there was no outstanding debt under the stifel loan agreement";
+        return text.contains("securitization liabilities")
+                && text.contains("accounted for as secured borrowings")
+                && text.contains("following table summarizes our outstanding debt")
+                && text.contains(noDebtAtReportDate)
+                && text.contains("convertible notes");
+    }
+
     private static String normalizeTaxonomyText(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]", " ")
                 .replaceAll("\\s+", " ").trim();
@@ -758,9 +805,32 @@ final class SecCompanyFactsProvider implements StockDataProvider {
                     "EarningsPerShareDiluted", "WeightedAverageNumberOfDilutedSharesOutstanding",
                     "NetCashProvidedByUsedInOperatingActivities", "PaymentsToAcquirePropertyPlantAndEquipment",
                     "NetIncomeLoss", "IncomeTaxExpenseBenefit", "InterestExpenseNonOperating",
-                    "DepreciationDepletionAndAmortization" -> semantic;
+                    "DepreciationDepletionAndAmortization", "SecuritizationLiabilityCurrent",
+                    "SecuritizationLiabilityNoncurrent", "SecuritizationLiability" -> semantic;
             default -> null;
         };
+    }
+
+    private FactValue securitizationDebt(JsonNode facts, LocalDate cutoff) {
+        var total = latestReportedInstant(facts, List.of("SecuritizationLiability"), USD, cutoff);
+        var current = latestReportedInstant(facts, List.of("SecuritizationLiabilityCurrent"), USD, cutoff);
+        var noncurrent = latestReportedInstant(facts, List.of("SecuritizationLiabilityNoncurrent"), USD, cutoff);
+        if (total != null) {
+            if (current != null && noncurrent != null && sameDebtInstant(total, current)
+                    && sameDebtInstant(total, noncurrent)
+                    && current.value().add(noncurrent.value()).compareTo(total.value()) != 0) return null;
+            return total;
+        }
+        if (!sameDebtInstant(current, noncurrent)) return null;
+        return calculatedValue(current.value().add(noncurrent.value()), USD, current.end(), "INSTANT",
+                "SecuritizationLiabilityCurrent+SecuritizationLiabilityNoncurrent", List.of(current, noncurrent));
+    }
+
+    private static boolean sameDebtInstant(FactValue left, FactValue right) {
+        return left != null && right != null && left.start() == null && right.start() == null
+                && left.end().equals(right.end()) && left.accession().equals(right.accession())
+                && left.filed().equals(right.filed()) && left.form().equals(right.form())
+                && left.unit().equals(right.unit());
     }
 
     private FactValue ebitdaTtm(JsonNode facts, Filing filing, LocalDate cutoff) {

@@ -201,7 +201,8 @@ public final class InvestmentDataCalculator {
         STALE,
         INSUFFICIENT_HISTORY,
         UNVERIFIED,
-        NOT_APPLICABLE
+        NOT_APPLICABLE,
+        NOT_CONFIGURED
     }
 
     public enum PriceSession {

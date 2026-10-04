@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.xml.namespace.QName;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
@@ -518,6 +519,193 @@ class SecCompanyFactsProviderTest {
         assertThat(value(values, "fundamental.basicShares").identifier()).contains("{http://xbrl.sec.gov/dei/2025}")
                 .contains("SHARES").contains(CURRENT_Q);
         SERVER.verify(getRequestedFor(urlPathEqualTo(path)));
+    }
+
+    @Test
+    void includesVerifiedSecuritizationBorrowingsWithLongTermDebtWithoutDoubleCounting() throws Exception {
+        var taxonomy = new SecInlineXbrlParser().parseTaxonomy(securitizationDebtSchema(),
+                securitizationDebtLabels());
+        assertThat(taxonomy.get(new QName("https://example.test/lunr/2026", "SecuritizationLiabilityCurrent")))
+                .isNotNull();
+        var facts = (ObjectNode) quarterlyFacts();
+        ((ObjectNode) facts.path("facts").path("us-gaap")).remove("DebtCurrent");
+        var filing = filingWithPrimaryDocument("10-Q", CURRENT_Q, "2026-04-29", "2026-03-31",
+                "2026-04-29T12:00:00Z", 2026, "Q1", "example.htm");
+        stubSecuritizationDebtFiling(filing, true, false, false);
+        stubCompany("XYZ", submissions("XYZ", 1234, List.of(filing)), facts);
+
+        var values = provider().fetch(new ProviderRequest("XYZ", Map.of()));
+
+        var debt = value(values, "fundamental.debt");
+        SERVER.verify(getRequestedFor(urlPathEqualTo("/Archives/edgar/data/1234/"
+                + CURRENT_Q.replace("-", "") + "/lunr.xsd")));
+        SERVER.verify(getRequestedFor(urlPathEqualTo("/Archives/edgar/data/1234/"
+                + CURRENT_Q.replace("-", "") + "/lunr-lab.xml")));
+        assertThat(debt.value()).as("missingData=%s", debt.missingData()).isNotNull();
+        assertThat(debt.value().decimalValue()).isEqualByComparingTo("185");
+        assertThat(debt.asOf()).isEqualTo(Instant.parse("2026-03-31T00:00:00Z"));
+        assertThat(debt.identifier()).contains("LongTermDebtNoncurrent")
+                .contains("{https://example.test/lunr/2026}SecuritizationLiability")
+                .doesNotContain("SecuritizationLiabilityCurrent+");
+    }
+
+    @Test
+    void sumsAlignedCurrentAndNoncurrentSecuritizationFactsWhenTotalIsAbsent() throws Exception {
+        var facts = (ObjectNode) quarterlyFacts();
+        ((ObjectNode) facts.path("facts").path("us-gaap")).remove("DebtCurrent");
+        var filing = filingWithPrimaryDocument("10-Q", CURRENT_Q, "2026-04-29", "2026-03-31",
+                "2026-04-29T12:00:00Z", 2026, "Q1", "example.htm");
+        stubSecuritizationDebtFiling(filing, false, false, false);
+        stubCompany("XYZ", submissions("XYZ", 1234, List.of(filing)), facts);
+
+        var values = provider().fetch(new ProviderRequest("XYZ", Map.of()));
+
+        assertThat(value(values, "fundamental.debt").value().decimalValue()).isEqualByComparingTo("185");
+        assertThat(value(values, "fundamental.debt").identifier())
+                .contains("SecuritizationLiabilityCurrent")
+                .contains("SecuritizationLiabilityNoncurrent");
+    }
+
+    @Test
+    void doesNotUseAStaleComparativeZeroDebtStatementToCompleteCurrentTotalDebt() throws Exception {
+        var facts = (ObjectNode) quarterlyFacts();
+        ((ObjectNode) facts.path("facts").path("us-gaap")).remove("DebtCurrent");
+        var filing = filingWithPrimaryDocument("10-Q", CURRENT_Q, "2026-04-29", "2026-03-31",
+                "2026-04-29T12:00:00Z", 2026, "Q1", "example.htm");
+        stubSecuritizationDebtFiling(filing, true, false, false, true);
+        stubCompany("XYZ", submissions("XYZ", 1234, List.of(filing)), facts);
+
+        var values = provider().fetch(new ProviderRequest("XYZ", Map.of()));
+
+        assertThat(value(values, "fundamental.debt").value()).isNull();
+        assertThat(value(values, "fundamental.debt").missingData()).contains("INLINE_XBRL_NO_VERIFIED_FACTS");
+    }
+
+    @Test
+    void doesNotCombineSecuritizationDebtFromDifferentDatesOrDimensionalContexts() throws Exception {
+        for (var mismatchedDate : List.of(true, false)) {
+            SERVER.resetAll();
+            var facts = (ObjectNode) quarterlyFacts();
+            ((ObjectNode) facts.path("facts").path("us-gaap")).remove("DebtCurrent");
+            var filing = filingWithPrimaryDocument("10-Q", CURRENT_Q, "2026-04-29", "2026-03-31",
+                    "2026-04-29T12:00:00Z", 2026, "Q1", "example.htm");
+            stubSecuritizationDebtFiling(filing, false, mismatchedDate, !mismatchedDate);
+            stubCompany("XYZ", submissions("XYZ", 1234, List.of(filing)), facts);
+
+            var values = provider().fetch(new ProviderRequest("XYZ", Map.of()));
+
+            assertThat(value(values, "fundamental.debt").value()).isNull();
+        }
+    }
+
+    private static void stubSecuritizationDebtFiling(Map<String, Object> filing, boolean includeTotal,
+                                                     boolean mismatchedDate, boolean dimensional) {
+        stubSecuritizationDebtFiling(filing, includeTotal, mismatchedDate, dimensional, false);
+    }
+
+    private static void stubSecuritizationDebtFiling(Map<String, Object> filing, boolean includeTotal,
+                                                     boolean mismatchedDate, boolean dimensional,
+                                                     boolean staleStifelDisclosure) {
+        var accession = ((String) filing.get("accessionNumber")).replace("-", "");
+        var folder = "/Archives/edgar/data/1234/" + accession + "/";
+        SERVER.stubFor(get(urlPathEqualTo(folder + "example.htm"))
+                .willReturn(aResponse().withBody(securitizationDebtDocument(includeTotal, mismatchedDate,
+                        dimensional, staleStifelDisclosure))));
+        SERVER.stubFor(get(urlPathEqualTo(folder + "lunr.xsd"))
+                .willReturn(aResponse().withBody(securitizationDebtSchema())));
+        SERVER.stubFor(get(urlPathEqualTo(folder + "lunr-lab.xml"))
+                .willReturn(aResponse().withBody(securitizationDebtLabels())));
+    }
+
+    private static String securitizationDebtDocument(boolean includeTotal, boolean mismatchedDate,
+                                                     boolean dimensional, boolean staleStifelDisclosure) {
+        var end = mismatchedDate ? "2026-02-28" : "2026-03-31";
+        var segment = dimensional ? "<xbrli:segment><xbrldi:explicitMember dimension=\"lunr:DebtTypeAxis\">"
+                + "lunr:SecuredBorrowingMember</xbrldi:explicitMember></xbrli:segment>" : "";
+        var total = includeTotal ? "<ix:nonFraction name=\"lunr:SecuritizationLiability\" contextRef=\"DEBT\" "
+                + "unitRef=\"USD\" format=\"ixt:num-dot-decimal\">35</ix:nonFraction>" : "";
+        var stifelDisclosure = staleStifelDisclosure
+                ? "<p>As of December 31, 2025, there was no outstanding debt under the Stifel Loan Agreement.</p>"
+                : "<p>As of March <span>31</span>, <strong>2026</strong>, there was no outstanding debt under "
+                + "the Stifel Loan Agreement.</p>";
+        return """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <html xmlns="http://www.w3.org/1999/xhtml"
+                      xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+                      xmlns:link="http://www.xbrl.org/2003/linkbase"
+                      xmlns:xlink="http://www.w3.org/1999/xlink"
+                      xmlns:xbrli="http://www.xbrl.org/2003/instance"
+                      xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+                      xmlns:lunr="https://example.test/lunr/2026"
+                      xmlns:iso4217="http://www.xbrl.org/2003/iso4217"
+                      xmlns:ixt="http://www.xbrl.org/inlineXBRL/transformation/2015-02-26">
+                  <ix:header><ix:references><link:schemaRef xlink:type="simple" xlink:href="lunr.xsd"/></ix:references>
+                    <ix:resources>
+                      <xbrli:context id="DEBT"><xbrli:entity>
+                        <xbrli:identifier scheme="http://www.sec.gov/CIK">0000001234</xbrli:identifier>
+                        %s
+                      </xbrli:entity><xbrli:period><xbrli:instant>%s</xbrli:instant></xbrli:period></xbrli:context>
+                      <xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+                    </ix:resources>
+                  </ix:header>
+                  <body>
+                    <p>Our securitization liabilities are accounted for as secured borrowings.</p>
+                    <p>The following table summarizes our outstanding debt.</p>
+                    %s
+                    <p>Our convertible notes are included in long-term debt.</p>
+                    <ix:nonFraction name="lunr:SecuritizationLiabilityCurrent" contextRef="DEBT"
+                      unitRef="USD" format="ixt:num-dot-decimal">15</ix:nonFraction>
+                    <ix:nonFraction name="lunr:SecuritizationLiabilityNoncurrent" contextRef="DEBT"
+                      unitRef="USD" format="ixt:num-dot-decimal">20</ix:nonFraction>
+                    %s
+                    <ix:nonFraction name="lunr:SecuritizationAsset" contextRef="DEBT"
+                      unitRef="USD" format="ixt:num-dot-decimal">900</ix:nonFraction>
+                  </body>
+                </html>
+                """.formatted(segment, end, stifelDisclosure, total);
+    }
+
+    private static String securitizationDebtSchema() {
+        return """
+                <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                    xmlns:link="http://www.xbrl.org/2003/linkbase"
+                    xmlns:xlink="http://www.w3.org/1999/xlink"
+                    targetNamespace="https://example.test/lunr/2026">
+                  <xs:element id="lunr_SecuritizationLiabilityCurrent" name="SecuritizationLiabilityCurrent"/>
+                  <xs:element id="lunr_SecuritizationLiabilityNoncurrent" name="SecuritizationLiabilityNoncurrent"/>
+                  <xs:element id="lunr_SecuritizationLiability" name="SecuritizationLiability"/>
+                  <xs:element id="lunr_SecuritizationAsset" name="SecuritizationAsset"/>
+                  <link:linkbaseRef xlink:type="simple" xlink:role="http://www.xbrl.org/2003/role/labelLinkbaseRef"
+                    xlink:href="lunr-lab.xml"/>
+                </xs:schema>
+                """;
+    }
+
+    private static String securitizationDebtLabels() {
+        return """
+                <link:linkbase xmlns:link="http://www.xbrl.org/2003/linkbase"
+                    xmlns:xlink="http://www.w3.org/1999/xlink">
+                  <link:labelLink xlink:type="extended" xlink:role="http://www.xbrl.org/2003/role/label">
+                    %s
+                  </link:labelLink>
+                </link:linkbase>
+                """.formatted(String.join("", List.of(
+                taxonomyDocumentation("SecuritizationLiabilityCurrent", "Securitization Liability, Current"),
+                taxonomyDocumentation("SecuritizationLiabilityNoncurrent", "Securitization Liability, Noncurrent"),
+                taxonomyDocumentation("SecuritizationLiability", "Securitization Liability"),
+                taxonomyDocumentation("SecuritizationAsset", "Securitization Asset"))));
+    }
+
+    private static String taxonomyDocumentation(String concept, String text) {
+        var locator = "concept_" + concept;
+        var resource = "documentation_" + concept;
+        return "<link:loc xlink:type=\"locator\" xlink:href=\"lunr.xsd#lunr_" + concept
+                + "\" xlink:label=\"" + locator + "\"/>"
+                + "<link:label xlink:type=\"resource\" xlink:label=\"" + resource
+                + "\" xlink:role=\"http://www.xbrl.org/2003/role/documentation\" xml:lang=\"en-US\">"
+                + text + "</link:label>"
+                + "<link:labelArc xlink:type=\"arc\" xlink:from=\"" + locator + "\" xlink:to=\""
+                + resource + "\"/>";
     }
 
     @Test
