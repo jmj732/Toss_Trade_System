@@ -59,16 +59,29 @@ final class ProviderHttpTransport {
     }
 
     String get(ProviderRequest request) {
-        return get(uri(request, configuration.path(), configuration.queryParameters()));
+        return get(request, configuration.apiKey());
+    }
+
+    String get(ProviderRequest request, String apiKey) {
+        return get(uri(request, configuration.path(), configuration.queryParameters(), apiKey), apiKey);
     }
 
     String get(ProviderRequest request, StockAnalysisProviderProperties.EndpointConfiguration endpoint) {
+        return get(request, endpoint, configuration.apiKey());
+    }
+
+    String get(ProviderRequest request, StockAnalysisProviderProperties.EndpointConfiguration endpoint,
+               String apiKey) {
         var queryParameters = new java.util.LinkedHashMap<>(configuration.queryParameters());
         queryParameters.putAll(endpoint.queryParameters());
-        return get(uri(request, endpoint.path(), queryParameters));
+        return get(uri(request, endpoint.path(), queryParameters, apiKey), apiKey);
     }
 
     String get(URI uri) {
+        return get(uri, configuration.apiKey());
+    }
+
+    String get(URI uri, String apiKey) {
         for (var attempt = 0; ; attempt++) {
             limiter.acquire();
             try {
@@ -79,9 +92,9 @@ final class ProviderHttpTransport {
                                 headers.set("User-Agent", configuration.userAgent());
                             }
                             if (apiKeyQueryParameter().isBlank()
-                                    && configuration.apiKey() != null
-                                    && !configuration.apiKey().isBlank()) {
-                                headers.set(apiKeyHeader(), configuration.apiKey());
+                                    && apiKey != null
+                                    && !apiKey.isBlank()) {
+                                headers.set(apiKeyHeader(), apiKey);
                             }
                         })
                         .retrieve()
@@ -94,6 +107,15 @@ final class ProviderHttpTransport {
                 throw exception;
             } catch (RestClientResponseException exception) {
                 var status = exception.getStatusCode().value();
+                if ((status == 429 || status == 401 || status == 403)
+                        && provider == StockDataProviderId.ALPHA_VANTAGE) {
+                    var alphaFailure = AlphaVantageEarningsEstimatesProvider.classifyProviderMessage(
+                            exception.getResponseBodyAsString());
+                    if ("DAILY_QUOTA_EXHAUSTED".equals(alphaFailure)
+                            && status == 429 || "INVALID_API_KEY".equals(alphaFailure)) {
+                        throw unavailable(alphaFailure);
+                    }
+                }
                 var retryAfter = status == 429 ? retryAfter(exception) : Duration.ZERO;
                 var exponentialDelay = status == 429 ? retryDelay(policy.retryBackoff(), attempt) : Duration.ZERO;
                 if (status == 429 && retryAfter.compareTo(MAX_429_BACKOFF) > 0) {
@@ -121,7 +143,8 @@ final class ProviderHttpTransport {
         }
     }
 
-    private URI uri(ProviderRequest request, String endpointPath, Map<String, String> queryParameters) {
+    private URI uri(ProviderRequest request, String endpointPath, Map<String, String> queryParameters,
+                    String apiKey) {
         var path = endpointPath.replace("{symbol}", request.symbol());
         for (var entry : request.identifiers().entrySet()) {
             path = path.replace("{" + entry.getKey() + "}", entry.getValue());
@@ -132,9 +155,9 @@ final class ProviderHttpTransport {
         }
         queryParameters.forEach(builder::queryParam);
         if (!apiKeyQueryParameter().isBlank()
-                && configuration.apiKey() != null
-                && !configuration.apiKey().isBlank()) {
-            builder.queryParam(apiKeyQueryParameter(), configuration.apiKey());
+                && apiKey != null
+                && !apiKey.isBlank()) {
+            builder.queryParam(apiKeyQueryParameter(), apiKey);
         }
         request.identifiers().forEach((key, value) -> {
             if (configuration.queryIdentifiers().contains(key)) {

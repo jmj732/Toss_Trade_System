@@ -172,7 +172,8 @@ public final class StockAnalysisInputAssembler {
                 || Set.of("DAILY_QUOTA_EXHAUSTED", "REQUEST_IN_PROGRESS", "CACHE_UNAVAILABLE",
                 "CACHE_CORRUPT", "API_ERROR", "INVALID_RESPONSE", "SOURCE_CONFLICT", "SYMBOL_MISMATCH",
                 "CLIENT", "EMPTY_RESPONSE", "INTERRUPTED", "NETWORK", "ISSUER_MISMATCH",
-                "NO_RECENT_FILING", "SYMBOL_NOT_FOUND").contains(reason));
+                "NO_RECENT_FILING", "SYMBOL_NOT_FOUND", "INVALID_API_KEY", "API_KEY_UNAVAILABLE",
+                "RATE_LIMITED", "PREMIUM_ENDPOINT").contains(reason));
     }
 
     private static StockAnalysisInput.Observation missing(
