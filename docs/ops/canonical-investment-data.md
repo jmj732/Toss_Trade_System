@@ -20,3 +20,8 @@ The existing weekday after-close capture continues on its configured cron, inclu
 Consensus revisions compare only the same provider, estimate type, and period horizon. Currency verification controls currency-sensitive forward valuation, not historical revision arithmetic. A current estimate with no baseline reports `INSUFFICIENT_HISTORY`; a missing current estimate reports `DATA_MISSING`.
 
 The configured additional data targets are `AVT`, `CSTM`, `GOOGL`, `LUNR`, `RDW`, and `VST`. These targets make research data available in Context and Sheets. A target is not a portfolio position; position quantity and weight remain absent unless confirmed by the broker account.
+
+
+Valuation can show available TTM ratios without a thesis classification. It also exposes per-metric status, blocking reason, formula, and input provenance. Forward ratios use annual estimates only and require a verified estimate currency; issuer reporting currency is display metadata and does not substitute for consensus currency. A missing denominator or provenance remains explicit; nonpositive denominators are marked not applicable, while negative enterprise value and free-cash-flow yield remain valid results.
+
+Readiness reports Price, Trend, Fundamental, Consensus, Valuation, Balance Sheet, and Risk independently. Risk is `NOT_CONFIGURED` when there is no existing numeric invalidation trigger. Portfolio weights use a positive broker account total in the positions’ shared native currency when all other account currency buckets are zero; each position value must be present and nonnegative. No implicit foreign-exchange conversion is applied.

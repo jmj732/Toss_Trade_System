@@ -72,7 +72,16 @@ class InvestmentOsResearchSheetSyncTest {
                 "Field Provenance", "EBITDA TTM Type", "EBITDA TTM Formula", "EBITDA TTM Source",
                 "EBITDA Consensus", "FCF Consensus", "Consensus Missing Reason",
                 "Revenue Revision 30D Status", "Revenue Revision 90D Status",
-                "EPS Revision 30D Status", "EPS Revision 90D Status");
+                "EPS Revision 30D Status", "EPS Revision 90D Status", "Consensus Status",
+                "Consensus Estimate Type", "Consensus Estimate Label", "Consensus Period End",
+                "Consensus Currency", "Consensus EPS Analyst Count", "Consensus Revenue Analyst Count",
+                "Valuation TTM As Of", "Valuation TTM Source", "Valuation Forward As Of",
+                "Valuation Forward Horizon", "Valuation Forward Source", "Valuation Forward Estimate Type",
+                "Valuation Forward Period End", "Valuation Forward Currency", "Valuation Metric Statuses",
+                "Valuation Metric Reasons", "Valuation Metric Provenance", "Display Currency",
+                "Display Currency Source", "Display Currency Source As Of", "Display Currency Period",
+                "Display Currency Status", "Risk Status", "Thesis Failure Stress Status",
+                "Top Two Correlated Status", "Risk Soft Budget Status", "Risk Sizing Eligible");
         assertThat(security.getFirst()).startsWith("Ticker", "As Of", "Quantity", "Weight", "Currency");
         assertThat(security.getFirst().stream().filter("Currency"::equals).count()).isEqualTo(1L);
         assertThat(security.get(1)).contains("AAPL", new BigDecimal("101"), "REGULAR_CLOSE", "SOURCE_CONFLICT",
@@ -94,6 +103,41 @@ class InvestmentOsResearchSheetSyncTest {
                 .isEqualTo("DATA_MISSING");
         assertThat(security.get(1).get(security.getFirst().indexOf("EPS Revision 90D Status")))
                 .isEqualTo("OK");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Consensus Status"))).isEqualTo("PARTIAL");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Consensus Estimate Type"))).isEqualTo("ANNUAL");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Consensus Estimate Label"))).isEqualTo("FY2026");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Consensus Period End"))).isEqualTo("2026-12-31");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Consensus Currency"))).isEqualTo("USD");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Consensus EPS Analyst Count")))
+                .isEqualTo(new BigDecimal("21"));
+        assertThat(security.get(1).get(security.getFirst().indexOf("Consensus Revenue Analyst Count")))
+                .isEqualTo(new BigDecimal("18"));
+        assertThat(security.get(1).get(security.getFirst().indexOf("Valuation Forward Estimate Type")))
+                .isEqualTo("ANNUAL");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Valuation Forward Period End")))
+                .isEqualTo("2027-12-31");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Valuation Forward Currency"))).isEqualTo("");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Valuation Metric Statuses")))
+                .isEqualTo("{\"evSalesTTM\":\"OK\",\"evSalesForward\":\"DATA_MISSING\"}");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Valuation Metric Reasons")))
+                .isEqualTo("{\"evSalesForward\":\"CONSENSUS_MISSING\"}");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Valuation Metric Provenance")))
+                .isEqualTo("{\"evSalesTTM\":{\"formula\":\"EV_DIVIDED_BY_TTM_REVENUE\","
+                        + "\"source\":\"SEC\",\"asOf\":\"2026-09-15T00:00:00Z\",\"currency\":\"USD\"}}");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Display Currency"))).isEqualTo("USD");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Display Currency Source"))).isEqualTo("SEC");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Display Currency Source As Of")))
+                .isEqualTo("2026-06-30T00:00:00Z");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Display Currency Period"))).isEqualTo("FY2026-Q2");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Display Currency Status"))).isEqualTo("OK");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Status"))).isEqualTo("DATA_MISSING");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Thesis Failure Stress Status")))
+                .isEqualTo("DATA_MISSING");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Top Two Correlated Status")))
+                .isEqualTo("DATA_MISSING");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Soft Budget Status")))
+                .isEqualTo("DATA_MISSING");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Sizing Eligible"))).isEqualTo(false);
         assertThat(security.get(1).get(security.getFirst().indexOf("Revenue Revision 30D")))
                 .isEqualTo(new BigDecimal("12.5"));
         assertThat(security.get(1).get(security.getFirst().indexOf("Revenue Revision 90D")))
@@ -332,19 +376,38 @@ class InvestmentOsResearchSheetSyncTest {
                 mapper.readTree("""
                         {"asOf":"2026-09-15T00:00:00Z","horizon":"FY2026","source":"CONSENSUS",
                          "revenueConsensus":100,"epsConsensus":2,"ebitdaConsensus":10,"fcfConsensus":8,
-                         "missingReason":"DAILY_QUOTA_EXHAUSTED"}
+                         "missingReason":"DAILY_QUOTA_EXHAUSTED","status":"PARTIAL",
+                         "estimateType":"ANNUAL","estimateLabel":"FY2026","periodEnd":"2026-12-31",
+                         "epsAnalystCount":21,"revenueAnalystCount":18,"currency":"USD"}
                         """),
                 mapper.readTree("""
                         {"revenueRevision30D":{"value":12.5,"baselineAsOf":"2026-08-15T00:00:00Z","status":"OK"},
                          "revenueRevision90D":{"value":null,"baselineAsOf":null,"status":"INSUFFICIENT_HISTORY"},
                          "epsRevision30D":{"value":null,"baselineAsOf":null,"status":"DATA_MISSING"},
                          "epsRevision90D":{"value":2.5,"baselineAsOf":"2026-07-15T00:00:00Z","status":"OK"}}
-                        """), mapper.readTree("{}"), mapper.readTree("""
+                        """), mapper.readTree("""
+                        {"status":"PARTIAL","ttmAsOf":"2026-09-15T00:00:00Z","ttmSource":"SEC",
+                         "forwardAsOf":"2026-09-15T00:00:00Z","forwardHorizon":"FY2027",
+                         "forwardSource":"CONSENSUS","forwardEstimateType":"ANNUAL",
+                         "forwardPeriodEnd":"2027-12-31","forwardCurrency":null,
+                         "metricStatuses":{"evSalesTTM":"OK","evSalesForward":"DATA_MISSING"},
+                         "metricReasons":{"evSalesForward":"CONSENSUS_MISSING"},
+                         "metricProvenance":{"evSalesTTM":{"formula":"EV_DIVIDED_BY_TTM_REVENUE",
+                           "source":"SEC","asOf":"2026-09-15T00:00:00Z","currency":"USD"}},
+                         "displayCurrency":"USD","displayCurrencySource":"SEC",
+                         "displayCurrencySourceAsOf":"2026-06-30T00:00:00Z",
+                         "displayCurrencyPeriod":"FY2026-Q2","displayCurrencyStatus":"OK"}
+                        """), mapper.readTree("""
                         {"fundamentalStatus":"OK","balanceSheetStatus":"OK","overallDataStatus":"PARTIAL"}
                         """),
                 new InvestmentContextService.ThesisView("AAPL", "Keep growing subscriptions", null, null,
                         null, null, null, null, "UNCONFIRMED", null, null, "GROWTH", Instant.parse("2026-09-16T20:00:00Z")),
-                null);
+                new InvestmentContextService.RiskContributionView(null, null, null,
+                        com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
+                        null, com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
+                        null, null, null,
+                        com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
+                        false, "DATA_MISSING"));
         var portfolio = new InvestmentContextService.PortfolioView(
                 Instant.parse("2026-09-16T20:00:00Z"), List.of(), Map.of(), false, List.of(), "OK");
         var policy = new RiskPolicyService.RiskPolicySnapshot(0, BigDecimal.TEN, BigDecimal.TEN,

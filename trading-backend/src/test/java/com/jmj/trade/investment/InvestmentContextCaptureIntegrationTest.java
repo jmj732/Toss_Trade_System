@@ -601,12 +601,12 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 usdDecimal("fundamental.cash", "100", period),
                 usdDecimal("fundamental.debt", "300", period),
                 usdDecimal("fundamental.revenueTTM", "1000", period),
-                decimal("fundamental.basicShares", "10000", period),
+                unitDecimal("fundamental.basicShares", "10000", "shares", period),
                 text("fundamental.basicSharesBasis", "ENTITY_COMMON_STOCK_SHARES_OUTSTANDING", period),
-                decimal("fundamental.dilutedShares", "12000", period),
+                unitDecimal("fundamental.dilutedShares", "12000", "shares", period),
                 text("fundamental.dilutedSharesBasis", "WEIGHTED_AVERAGE_FY", period),
-                decimal("fundamental.eps", "4.2", period),
-                decimal("fundamental.fcfTTM", "200", period));
+                unitDecimal("fundamental.eps", "4.2", "USD/shares", period),
+                usdDecimal("fundamental.fcfTTM", "200", period));
         var alphaValues = List.of(
                 observedText("consensus.horizon", LocalDate.now(ZoneOffset.UTC).plusYears(1).toString(), observedAt),
                 observedDecimal("consensus.revenueConsensus", "2000", observedAt),
@@ -639,8 +639,13 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat(valuation.get("evEbitdaForward").isNull()).isTrue();
         assertThat(valuation.get("forwardPE").isNull()).isTrue();
         assertThat(valuation.get("fcfYieldForward").isNull()).isTrue();
-        assertThat(valuation.get("status").asText()).isEqualTo("PARTIAL");
-        assertThat(readiness.get("overallDataStatus").asText()).isEqualTo("PARTIAL");
+        assertThat(valuation.get("metricStatuses").path("evSalesTTM").asText()).isEqualTo("OK");
+        assertThat(valuation.get("status").asText()).isEqualTo("OK");
+        var readinessStatuses = String.join(",", List.of("priceStatus", "trendStatus", "fundamentalStatus",
+                        "consensusStatus", "revisionStatus", "valuationStatus", "balanceSheetStatus")
+                .stream().map(field -> field + "=" + readiness.path(field).asText()).toList());
+        assertThat(readiness.get("overallDataStatus").asText())
+                .withFailMessage("readiness category statuses: %s", readinessStatuses).isEqualTo("PARTIAL");
         assertThat(readiness.get("missingFields").toString()).contains("consensus.currency");
     }
 
@@ -1427,6 +1432,11 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
     private ProviderValue usdDecimal(String field, String value, LocalDate asOf) {
         return usdDecimal(field, value, asOf.atStartOfDay().toInstant(ZoneOffset.UTC));
+    }
+
+    private ProviderValue unitDecimal(String field, String value, String unit, LocalDate asOf) {
+        return new ProviderValue(field, mapper.valueToTree(new BigDecimal(value)), unit, null, null,
+                asOf.atStartOfDay().toInstant(ZoneOffset.UTC), List.of());
     }
 
     private ProviderValue decimal(String field, String value, LocalDate asOf) {

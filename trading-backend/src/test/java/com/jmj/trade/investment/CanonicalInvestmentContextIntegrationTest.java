@@ -367,13 +367,138 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
     }
 
     @Test
+    void valuationCalculatesAvailableTrailingMetricsWithoutThesisClassification() {
+        var provider = canonicalProviders(new AtomicReference<>(List.of()));
+        var contextService = service(provider, null, "");
+
+        assertThat(contextService.capture(USER_ID)).isEqualTo(1);
+
+        var valuation = contextService.context(USER_ID).securities().getFirst().valuation();
+        assertThat(valuation.path("classification").isNull()).isTrue();
+        assertThat(valuation.path("evSalesTTM").decimalValue()).isEqualByComparingTo("100.1500");
+        assertThat(valuation.path("evEbitdaTTM").decimalValue()).isEqualByComparingTo("500.7500");
+        assertThat(valuation.path("fcfYieldTTM").decimalValue()).isEqualByComparingTo("0.00100000");
+        assertThat(valuation.path("status").asText()).isNotEqualTo("NOT_APPLICABLE");
+    }
+
+    @Test
+    void valuationKeepsNegativeEnterpriseValueMultiplesAndNegativeFcfYield() {
+        var estimates = new AtomicReference<>(List.<Estimate>of());
+        var providers = new StockDataProviderRegistry(List.of(
+                tossProvider(), secProvider("200000", "200", "-100"), alphaProvider(estimates)));
+        var contextService = service(providers, null, "");
+
+        assertThat(contextService.capture(USER_ID)).isEqualTo(1);
+
+        var valuation = contextService.context(USER_ID).securities().getFirst().valuation();
+        assertThat(valuation.path("evSalesTTM").decimalValue()).isEqualByComparingTo("-99.8000");
+        assertThat(valuation.path("evEbitdaTTM").decimalValue()).isEqualByComparingTo("-499.0000");
+        assertThat(valuation.path("fcfYieldTTM").decimalValue()).isEqualByComparingTo("-0.00100000");
+    }
+
+    @Test
+    void missingEbitdaDoesNotHideAvailableTtmValuationAndHasFieldReason() {
+        var providers = new StockDataProviderRegistry(List.of(
+                tossProvider(), secProvider("50", "200", "100", null),
+                alphaProvider(new AtomicReference<>(List.of()))));
+        var contextService = service(providers, null, "");
+        assertThat(contextService.capture(USER_ID)).isEqualTo(1);
+
+        var security = contextService.context(USER_ID).securities().getFirst();
+        var valuation = security.valuation();
+        assertThat(valuation.path("evSalesTTM").decimalValue()).isEqualByComparingTo("100.1500");
+        assertThat(valuation.path("metricStatuses").path("evEbitdaTTM").asText()).isEqualTo("DATA_MISSING");
+        assertThat(valuation.path("metricReasons").path("evEbitdaTTM").asText()).isEqualTo("EBITDA_TTM_MISSING");
+        assertThat(StreamSupport.stream(security.readiness().path("missingFields").spliterator(), false)
+                .map(JsonNode::asText)).contains("fundamentals.ebitdaTTM.DATA_NOT_PRESENT");
+        assertThat(valuation.path("metricProvenance").path("evSalesTTM").path("inputs")
+                .path("revenueTTM").path("source").asText()).isEqualTo("SEC");
+        assertThat(valuation.path("metricProvenance").path("evSalesTTM").path("formula").asText())
+                .isEqualTo("enterpriseValue / revenueTTM");
+        assertThat(security.readiness().path("consensusStatus").asText()).isEqualTo("DATA_MISSING");
+        assertThat(security.risk().status()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_CONFIGURED);
+        assertThat(security.readiness().path("riskStatus").asText()).isEqualTo("NOT_CONFIGURED");
+        assertThat(security.readiness().path("overallDataStatus").asText()).isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void staleTtmInputChangesOnlyItsMetricAndRetainsReasonAcrossContextReads() throws Exception {
+        var contextService = service(canonicalProviders(new AtomicReference<>(List.of())), null, "");
+        assertThat(contextService.capture(USER_ID)).isEqualTo(1);
+
+        var stored = jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY as_of DESC LIMIT 1
+                """, String.class, USER_ID);
+        var payload = (tools.jackson.databind.node.ObjectNode) mapper.readTree(stored);
+        var valuation = (tools.jackson.databind.node.ObjectNode) payload.get("valuation");
+        var metricProvenance = (tools.jackson.databind.node.ObjectNode) valuation.get("metricProvenance");
+        var evSalesInputs = (tools.jackson.databind.node.ObjectNode) metricProvenance
+                .path("evSalesTTM").path("inputs");
+        var revenueInput = (tools.jackson.databind.node.ObjectNode) evSalesInputs.get("revenueTTM");
+        revenueInput.put("asOf", LocalDate.now(ZoneOffset.UTC).minusDays(300)
+                .atStartOfDay().toInstant(ZoneOffset.UTC).toString());
+        var readAsOf = OffsetDateTime.now(ZoneOffset.UTC);
+        payload.put("asOf", readAsOf.toInstant().toString());
+        jdbc.update("""
+                INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
+                VALUES (?, ?, 'AAPL', ?, CAST(? AS jsonb), ?)
+                """, UUID.randomUUID(), USER_ID, readAsOf, mapper.writeValueAsString(payload), readAsOf);
+
+        for (int read = 0; read < 2; read++) {
+            var security = contextService.context(USER_ID).securities().getFirst();
+            assertThat(security.valuation().path("metricStatuses").path("evSalesTTM").asText())
+                    .isEqualTo("STALE");
+            assertThat(security.valuation().path("metricReasons").path("evSalesTTM").asText())
+                    .isEqualTo("INPUTS_STALE");
+            assertThat(security.valuation().path("metricStatuses").path("evEbitdaTTM").asText())
+                    .isEqualTo("OK");
+        }
+    }
+
+    @Test
+    void nonpositiveEbitdaDenominatorIsNotApplicableWithExplicitReason() {
+        var providers = new StockDataProviderRegistry(List.of(
+                tossProvider(), secProvider("50", "200", "100", "0"),
+                alphaProvider(new AtomicReference<>(List.of()))));
+        var contextService = service(providers, null, "");
+        assertThat(contextService.capture(USER_ID)).isEqualTo(1);
+
+        var valuation = contextService.context(USER_ID).securities().getFirst().valuation();
+        assertThat(valuation.path("evEbitdaTTM").isNull()).isTrue();
+        assertThat(valuation.path("metricStatuses").path("evEbitdaTTM").asText()).isEqualTo("NOT_APPLICABLE");
+        assertThat(valuation.path("metricReasons").path("evEbitdaTTM").asText())
+                .isEqualTo("NON_POSITIVE_DENOMINATOR");
+    }
+
+    @Test
+    void issuerCurrencyIsDisplayOnlyAndDoesNotSubstituteForMissingEstimateCurrency() {
+        var estimates = new AtomicReference<>(List.of(
+                estimate("ANNUAL", LocalDate.now(ZoneOffset.UTC).plusDays(120), "15", "1500")));
+        var contextService = service(canonicalProviders(estimates), null, "");
+        assertThat(contextService.capture(USER_ID)).isEqualTo(1);
+
+        var valuation = contextService.context(USER_ID).securities().getFirst().valuation();
+        assertThat(valuation.path("displayCurrency").asText()).isEqualTo("USD");
+        assertThat(valuation.path("displayCurrencySource").asText()).isEqualTo("SEC");
+        assertThat(valuation.path("displayCurrencySourceAsOf").isTextual()).isTrue();
+        assertThat(valuation.path("forwardCurrency").isNull()).isTrue();
+        assertThat(valuation.path("evSalesForward").isNull()).isTrue();
+        assertThat(valuation.path("metricReasons").path("evSalesForward").asText())
+                .isEqualTo("CONSENSUS_CURRENCY_UNVERIFIED");
+        assertThat(contextService.context(USER_ID).securities().getFirst().consensus().path("currency").isNull())
+                .isTrue();
+    }
+
+    @Test
     void captureAndContextRetainFourHeldPositionsAndAddTwoUnheldSymbols() {
         var symbols = List.of("AAPL", "MSFT", "NVDA", "AMZN");
         var connectionId = seedHeldPositions(symbols);
         var portfolio = mock(PortfolioReadService.class);
         var positionViews = symbols.stream().map(symbol -> portfolioPosition(symbol, Instant.now())).toList();
         var account = new PortfolioReadService.AccountView("CASH", "TEST",
-                Map.of("USD", new BigDecimal("4000")), Map.of("USD", new BigDecimal("4000")),
+                Map.of("USD", new BigDecimal("400"), "KRW", BigDecimal.ZERO),
+                Map.of("USD", new BigDecimal("400"), "KRW", BigDecimal.ZERO),
                 Map.of("USD", new BigDecimal("4000")), Map.of("USD", BigDecimal.ZERO),
                 Map.of("USD", BigDecimal.ZERO), Map.of("USD", BigDecimal.ZERO),
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, Instant.now());
@@ -395,10 +520,34 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
         assertThat(context.securities().stream().filter(security -> security.position() == null)
                 .map(InvestmentContextService.SecurityView::ticker))
                 .containsExactlyInAnyOrder("GOOGL", "VST");
+        assertThat(context.securities().stream().filter(security -> security.position() != null)
+                .map(security -> security.position().weight()))
+                .containsOnly(new BigDecimal("0.25"));
         assertThat(jdbc.queryForObject("""
                 SELECT count(*) FROM investment_security_snapshots
                  WHERE user_id = ? AND ticker IN ('AAPL','AMZN','GOOGL','MSFT','NVDA','VST')
                 """, Integer.class, USER_ID)).isEqualTo(6);
+    }
+
+    @Test
+    void portfolioWeightRemainsMissingWhenCurrencyBucketsDoNotReconcileToHeldPositions() {
+        var symbols = List.of("AAPL", "MSFT");
+        var connectionId = seedHeldPositions(symbols);
+        var portfolio = mock(PortfolioReadService.class);
+        var positionViews = List.of(portfolioPosition("AAPL", "USD", Instant.now()),
+                portfolioPosition("MSFT", "KRW", Instant.now()));
+        var totals = Map.of("USD", new BigDecimal("100"), "KRW", new BigDecimal("80"));
+        var account = new PortfolioReadService.AccountView("CASH", "TEST",
+                totals, totals, totals, Map.of(), Map.of(), Map.of(),
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, Instant.now());
+        when(portfolio.read(USER_ID, connectionId)).thenReturn(new PortfolioReadService.PortfolioView(
+                UUID.randomUUID(), Instant.now(), false, null, false, List.of(), List.of(), account,
+                positionViews, Map.of()));
+        var contextService = service(canonicalProviders(new AtomicReference<>(List.of())), portfolio, "");
+
+        assertThat(contextService.context(USER_ID).securities()).filteredOn(security -> security.position() != null)
+                .extracting(security -> security.position().weight())
+                .containsOnlyNulls();
     }
 
     private StockDataProviderRegistry canonicalProviders(AtomicReference<List<Estimate>> estimates) {
@@ -418,6 +567,14 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
     }
 
     private StockDataProvider secProvider() {
+        return secProvider("50", "200", "100");
+    }
+
+    private StockDataProvider secProvider(String cashValue, String debtValue, String fcfValue) {
+        return secProvider(cashValue, debtValue, fcfValue, "200");
+    }
+
+    private StockDataProvider secProvider(String cashValue, String debtValue, String fcfValue, String ebitdaValue) {
         var period = LocalDate.now(ZoneOffset.UTC).minusDays(3);
         var sharesAsOf = LocalDate.now(ZoneOffset.UTC).minusDays(4);
         var balanceAsOf = Instant.now().minusSeconds(3600).truncatedTo(ChronoUnit.SECONDS);
@@ -427,8 +584,8 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                 text("fundamental.fiscalYear", Integer.toString(period.getYear()),
                         period.atStartOfDay().toInstant(ZoneOffset.UTC)),
                 text("fundamental.fiscalPeriodCode", "Q3", period.atStartOfDay().toInstant(ZoneOffset.UTC)),
-                decimal("fundamental.cash", "50", "USD", balanceAsOf, "CashAndCashEquivalentsAtCarryingValue"),
-                decimal("fundamental.debt", "200", "USD", balanceAsOf, "DebtCurrent+LongTermDebtNoncurrent"),
+                decimal("fundamental.cash", cashValue, "USD", balanceAsOf, "CashAndCashEquivalentsAtCarryingValue"),
+                decimal("fundamental.debt", debtValue, "USD", balanceAsOf, "DebtCurrent+LongTermDebtNoncurrent"),
                 decimal("fundamental.basicShares", "1000", "shares",
                         sharesAsOf.atStartOfDay().toInstant(ZoneOffset.UTC), "EntityCommonStockSharesOutstanding"),
                 text("fundamental.basicSharesBasis", "EntityCommonStockSharesOutstanding_INSTANT",
@@ -436,10 +593,12 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                 missing("fundamental.dilutedShares", "DATA_NOT_PRESENT", balanceAsOf),
                 decimal("fundamental.revenueTTM", "1000", "USD", balanceAsOf,
                         "RevenueFromContractWithCustomerExcludingAssessedTax"),
-                decimal("fundamental.ebitdaTTM", "200", "USD", balanceAsOf, "CALCULATED_EBITDA"),
+                ebitdaValue == null ? missing("fundamental.ebitdaTTM", "DATA_NOT_PRESENT", balanceAsOf)
+                        : decimal("fundamental.ebitdaTTM", ebitdaValue, "USD", balanceAsOf, "CALCULATED_EBITDA"),
                 decimal("fundamental.eps", "5", "USD/share", balanceAsOf, "EarningsPerShareDiluted"),
-                decimal("fundamental.fcfTTM", "100", "USD", balanceAsOf, "CALCULATED_FCF"),
-                text("fundamental.currency", "USD", balanceAsOf)));
+                decimal("fundamental.fcfTTM", fcfValue, "USD", balanceAsOf, "CALCULATED_FCF"),
+                factText("fundamental.currency", "USD", period.toString(),
+                        "RevenueFromContractWithCustomerExcludingAssessedTax", balanceAsOf)));
     }
 
     private StockDataProvider alphaProvider(AtomicReference<List<Estimate>> estimates) {
@@ -588,7 +747,11 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
     }
 
     private PortfolioReadService.PositionView portfolioPosition(String symbol, Instant asOf) {
-        return new PortfolioReadService.PositionView(symbol, symbol, "US", BigDecimal.ONE, "USD",
+        return portfolioPosition(symbol, "USD", asOf);
+    }
+
+    private PortfolioReadService.PositionView portfolioPosition(String symbol, String currency, Instant asOf) {
+        return new PortfolioReadService.PositionView(symbol, symbol, "US", BigDecimal.ONE, currency,
                 new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"), new BigDecimal("100"),
                 new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ONE, asOf);
@@ -656,6 +819,10 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
 
     private ProviderValue text(String field, String value, Instant asOf) {
         return new ProviderValue(field, mapper.valueToTree(value), null, null, null, asOf, List.of());
+    }
+
+    private ProviderValue factText(String field, String value, String period, String identifier, Instant asOf) {
+        return new ProviderValue(field, mapper.valueToTree(value), null, period, identifier, asOf, List.of());
     }
 
     private ProviderValue missing(String field, String reason, Instant asOf) {
