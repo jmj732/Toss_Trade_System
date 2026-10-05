@@ -10,10 +10,18 @@ import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,7 +31,7 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
-/** Reads one confirmed Toss snapshot and publishes only broker-authoritative rows. */
+/** Reads one confirmed Toss snapshot and mirrors the broker plus configured manual account. */
 public final class InvestmentOsSheetSyncService {
     private static final Logger LOG = LoggerFactory.getLogger(InvestmentOsSheetSyncService.class);
     private static final String OPERATION = "investment_os_sheet_sync";
@@ -37,6 +45,8 @@ public final class InvestmentOsSheetSyncService {
     private final BrokerSurfaceService brokerSurface;
     private final GoogleSheetsClient sheets;
     private final InvestmentOsResearchSheetSync researchSheets;
+    private final JdbcTemplate portfolioSnapshotJdbc;
+    private final ObjectMapper objectMapper;
     private final Supplier<Instant> now;
     private Instant closedOrdersFetchedAt;
     private Instant closedOrdersRetryNotBefore;
@@ -87,12 +97,43 @@ public final class InvestmentOsSheetSyncService {
             Supplier<Instant> now,
             InvestmentOsResearchSheetSync researchSheets
     ) {
+        this(properties, lease, connector, brokerSurface, sheets, now, researchSheets, null, null);
+    }
+
+    InvestmentOsSheetSyncService(
+            InvestmentOsSheetProperties properties,
+            InvestmentOsSheetLease lease,
+            ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
+            GoogleSheetsClient sheets,
+            Clock clock,
+            InvestmentOsResearchSheetSync researchSheets,
+            JdbcTemplate portfolioSnapshotJdbc,
+            ObjectMapper objectMapper
+    ) {
+        this(properties, lease, connector, brokerSurface, sheets, Objects.requireNonNull(clock, "clock")::instant,
+                researchSheets, portfolioSnapshotJdbc, objectMapper);
+    }
+
+    InvestmentOsSheetSyncService(
+            InvestmentOsSheetProperties properties,
+            InvestmentOsSheetLease lease,
+            ConnectorService connector,
+            BrokerSurfaceService brokerSurface,
+            GoogleSheetsClient sheets,
+            Supplier<Instant> now,
+            InvestmentOsResearchSheetSync researchSheets,
+            JdbcTemplate portfolioSnapshotJdbc,
+            ObjectMapper objectMapper
+    ) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.lease = Objects.requireNonNull(lease, "lease");
         this.connector = Objects.requireNonNull(connector, "connector");
         this.brokerSurface = brokerSurface;
         this.sheets = Objects.requireNonNull(sheets, "sheets");
         this.researchSheets = researchSheets;
+        this.portfolioSnapshotJdbc = portfolioSnapshotJdbc;
+        this.objectMapper = objectMapper;
         this.now = Objects.requireNonNull(now, "now");
     }
 
@@ -132,12 +173,14 @@ public final class InvestmentOsSheetSyncService {
             current = readTables();
         } catch (RuntimeException exception) {
             var error = safeError(exception);
+            persistFailedSnapshot(userId, syncedAt, "SHEET_READ_FAILED");
             LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("outcome", "failure")
                     .addKeyValue("failure_reason", error)
                     .log("Google Sheets read failed; no state writes attempted");
             return new InvestmentOsSheetSyncResult(InvestmentOsSheetSyncResult.Outcome.FAILED,
                     syncId, 0, 0, 0, error);
         }
+        var manualReadAt = now.get();
         ConnectorResponse.Portfolio portfolio = null;
         List<ConnectorResponse.Order> open = null;
         List<ConnectorResponse.Order> closed = null;
@@ -223,6 +266,7 @@ public final class InvestmentOsSheetSyncService {
             failure = portfolio == null ? "EMPTY_PORTFOLIO" : "NON_AUTHORITATIVE_PORTFOLIO";
         }
 
+        boolean acceptedSnapshotPersisted = false;
         try {
             var account = current.account();
             var orders = current.orders();
@@ -232,7 +276,7 @@ public final class InvestmentOsSheetSyncService {
             var registry = current.registry();
             var authoritative = portfolio != null && authoritative(portfolio);
             var nextAccount = authoritative
-                    ? InvestmentOsSheetModel.accountState(account, portfolio, syncedAt, properties.accountLabel()) : account;
+                    ? InvestmentOsSheetModel.accountState(account, portfolio, portfolio.completedAt(), properties.accountLabel()) : account;
             var registryReady = authoritative
                     && InvestmentOsSheetModel.hasAccountRegistryAccount(registry, properties.accountLabel());
             var nextRegistry = registryReady
@@ -243,16 +287,25 @@ public final class InvestmentOsSheetSyncService {
                         .addKeyValue("failure_reason", "ACCOUNT_REGISTRY_ROW_MISSING_OR_DUPLICATE")
                         .log("Account Registry Last Sync not updated; registry config preserved");
             }
-            var expectedSymbols = authoritative ? InvestmentOsSheetModel.heldSymbols(nextAccount) : List.<String>of();
+            var manualConfigured = InvestmentOsSheetModel.manualAccountEnabled(registry);
+            var manualRowsValid = manualConfigured
+                    && InvestmentOsSheetModel.manualRowsStructurallyValid(nextAccount);
+            if (!manualConfigured) failure = appendFailure(failure, "MANUAL_REGISTRY_UNCONFIRMED");
+            else if (!manualRowsValid) failure = appendFailure(failure, "MANUAL_ACCOUNT_INVALID");
+            var portfolioAccountState = manualRowsValid ? nextAccount
+                    : InvestmentOsSheetModel.withoutManualAccount(nextAccount);
+            var expectedSymbols = authoritative ? InvestmentOsSheetModel.heldSymbols(portfolioAccountState) : List.<String>of();
             var priceSnapshot = authoritative && brokerSurface != null
-                    ? fetchPrices(userId, connectionId, nextAccount) : PriceSnapshot.notConfigured();
+                    ? fetchPrices(userId, connectionId, portfolioAccountState) : PriceSnapshot.notConfigured();
             if (authoritative && brokerSurface != null) {
-                nextAccount = InvestmentOsSheetModel.refreshPrices(nextAccount,
+                portfolioAccountState = InvestmentOsSheetModel.refreshPrices(portfolioAccountState,
                         new ArrayList<>(priceSnapshot.prices().values()), syncedAt);
+                nextAccount = manualRowsValid ? portfolioAccountState
+                        : mergeManualRows(portfolioAccountState, nextAccount);
             }
             var completePrices = authoritative && (expectedSymbols.isEmpty()
                     || brokerSurface != null && priceSnapshot.complete()
-                    && InvestmentOsSheetModel.hasCompleteQuotes(nextAccount));
+                    && InvestmentOsSheetModel.hasCompleteQuotes(portfolioAccountState));
             var priceStatus = !authoritative ? "SKIPPED"
                     : expectedSymbols.isEmpty() ? "NOT_REQUIRED"
                     : brokerSurface == null ? "NOT_CONFIGURED" : completePrices ? "OK" : "PARTIAL";
@@ -278,12 +331,12 @@ public final class InvestmentOsSheetSyncService {
             var nextOrderHistory = updateOrderHistory
                     ? InvestmentOsSheetModel.orderHistory(
                             orderHistory, open, closed, orders, syncedAt, properties.accountLabel()) : orderHistory;
-            var updateAggregate = authoritative && completePrices;
+            var updateAggregate = authoritative && manualRowsValid && completePrices;
             var nextAggregate = updateAggregate
-                    ? InvestmentOsSheetModel.aggregate(aggregate, nextAccount, syncedAt) : aggregate;
-            var updateMetrics = authoritative && completePrices;
+                    ? InvestmentOsSheetModel.aggregate(aggregate, portfolioAccountState, syncedAt) : aggregate;
+            var updateMetrics = authoritative && manualRowsValid && completePrices;
             var nextMetrics = updateMetrics
-                    ? InvestmentOsSheetModel.portfolioMetrics(metrics, nextAccount, syncedAt) : metrics;
+                    ? portfolioMetricsKeepingVerifiedScopes(metrics, portfolioAccountState, syncedAt) : metrics;
             var allOrderReadsSucceeded = open != null && closed != null;
             var status = reconciliationStatus(authoritative, portfolio, open, closed, fills, priceStatus);
             var nextRecon = InvestmentOsSheetModel.reconciliation(
@@ -295,6 +348,22 @@ public final class InvestmentOsSheetSyncService {
                     failure == null ? "NONE" : failure,
                     failure == null && authoritative && allOrderReadsSucceeded && fills != null && completePrices,
                     syncedAt, failure);
+            if (authoritative && manualRowsValid) {
+                var manualMetadataVerified = InvestmentOsSheetModel.manualRowsHaveVerifiedMetadata(
+                        portfolioAccountState, syncedAt.atZone(ZoneId.of("Asia/Seoul")).toLocalDate());
+                var snapshotAggregate = InvestmentOsSheetModel.aggregate(
+                        new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.aggregateHeaders(), List.of()),
+                        portfolioAccountState, syncedAt);
+                var snapshotMetrics = portfolioMetricsKeepingVerifiedScopes(metrics, portfolioAccountState, syncedAt);
+                var snapshotStatus = completePrices && hasCombinedTotal(snapshotMetrics) && manualMetadataVerified
+                        ? "SUCCEEDED" : "PARTIAL";
+                persistAcceptedSnapshot(userId, syncedAt, manualReadAt, portfolio.completedAt(), snapshotStatus,
+                        portfolioAccountState, snapshotAggregate, snapshotMetrics, failure);
+                acceptedSnapshotPersisted = portfolioSnapshotJdbc != null && objectMapper != null;
+            } else {
+                persistFailedSnapshot(userId, syncedAt, !authoritative ? "PORTFOLIO_NOT_AUTHORITATIVE"
+                        : !manualConfigured ? "MANUAL_REGISTRY_UNCONFIRMED" : "MANUAL_ACCOUNT_INVALID");
+            }
             var updates = new ArrayList<GoogleSheetsClient.SheetValueRange>();
             if (authoritative) {
                 updates.add(toRange("Account State", account, nextAccount));
@@ -305,7 +374,12 @@ public final class InvestmentOsSheetSyncService {
                 if (registryReady) updates.add(toRange("Account Registry", registry, nextRegistry));
             }
             updates.add(toRange("Reconciliation Log", current.reconciliation(), nextRecon));
-            sheets.batchUpdateValues(properties.spreadsheetId(), updates);
+            try {
+                sheets.batchUpdateValues(properties.spreadsheetId(), updates);
+            } catch (RuntimeException exception) {
+                if (acceptedSnapshotPersisted) persistFailedSnapshot(userId, syncedAt, "SHEET_MIRROR_FAILED");
+                throw exception;
+            }
             if (researchSheets != null) researchSheets.sync(userId);
             var rowsChanged = rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
                     + rowDelta(orderHistory, nextOrderHistory)
@@ -414,6 +488,107 @@ public final class InvestmentOsSheetSyncService {
                 && position.symbol() != null && !position.symbol().isBlank()
                 && position.currency() != null && !position.currency().isBlank()
                 && position.quantity() != null && position.averagePrice() != null);
+    }
+
+    private void persistAcceptedSnapshot(
+            UUID userId,
+            Instant attemptedAt,
+            Instant manualReadAt,
+            Instant account1AsOf,
+            String status,
+            InvestmentOsSheetModel.SheetTable portfolioAccountState,
+            InvestmentOsSheetModel.SheetTable aggregate,
+            InvestmentOsSheetModel.SheetTable metrics,
+            String failure
+    ) {
+        if (portfolioSnapshotJdbc == null || objectMapper == null) return;
+        var payload = objectMapper.createObjectNode();
+        payload.set("accountState", tableJson(portfolioAccountState));
+        payload.set("aggregate", tableJson(aggregate));
+        payload.set("metrics", tableJson(metrics));
+        var manualRows = portfolioAccountState.rows().stream()
+                .filter(row -> InvestmentOsSheetModel.ACCOUNT_2.equalsIgnoreCase(
+                        cell(portfolioAccountState, row, "Account"))).toList();
+        var manualStatus = manualRows.isEmpty() ? "EMPTY_CONFIRMED"
+                : InvestmentOsSheetModel.manualRowsHaveVerifiedMetadata(portfolioAccountState,
+                attemptedAt.atZone(ZoneId.of("Asia/Seoul")).toLocalDate()) ? "OK" : "UNVERIFIED";
+        payload.put("manualStatus", manualStatus);
+        var manualAsOf = InvestmentOsSheetModel.manualAsOf(portfolioAccountState);
+        if (manualAsOf == null) payload.putNull("manualAsOf");
+        else payload.put("manualAsOf", manualAsOf.toString());
+        if (manualReadAt == null) payload.putNull("manualReadAt");
+        else payload.put("manualReadAt", manualReadAt.toString());
+        if (account1AsOf == null) payload.putNull("account1AsOf");
+        else payload.put("account1AsOf", account1AsOf.toString());
+        payload.put("source", "TOSS_API+MANUAL_SHEET");
+        payload.put("attemptStatus", status);
+        payload.put("failurePresent", failure != null);
+        insertPortfolioSnapshot(userId, attemptedAt, status,
+                "PARTIAL".equals(status) ? "OPTIONAL_SOURCE_FAILURE" : null, payload);
+    }
+
+    private void persistFailedSnapshot(UUID userId, Instant attemptedAt, String errorCode) {
+        if (portfolioSnapshotJdbc == null) return;
+        insertPortfolioSnapshot(userId, attemptedAt, "FAILED", errorCode, null);
+    }
+
+    private void insertPortfolioSnapshot(
+            UUID userId, Instant attemptedAt, String status, String errorCode, ObjectNode payload
+    ) {
+        try {
+            var payloadText = payload == null ? null : objectMapper.writeValueAsString(payload);
+            portfolioSnapshotJdbc.update("""
+                    INSERT INTO investment_os_portfolio_snapshots (
+                        id, user_id, attempt_status, attempted_at, error_code, payload, created_at
+                    ) VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb), ?)
+                    """, UUID.randomUUID(), userId, status, databaseTimestamp(attemptedAt), errorCode,
+                    payloadText, databaseTimestamp(now.get()));
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("portfolio snapshot serialization failed");
+        }
+    }
+
+    private ObjectNode tableJson(InvestmentOsSheetModel.SheetTable table) {
+        var result = objectMapper.createObjectNode();
+        result.set("headers", objectMapper.valueToTree(table.headers()));
+        result.set("rows", objectMapper.valueToTree(table.rows()));
+        return result;
+    }
+
+    private static boolean hasCombinedTotal(InvestmentOsSheetModel.SheetTable metrics) {
+        return metrics.rows().stream().anyMatch(row -> "COMBINED".equalsIgnoreCase(cell(metrics, row, "Scope"))
+                && !cell(metrics, row, "Total Value").isBlank());
+    }
+
+    private static InvestmentOsSheetModel.SheetTable portfolioMetricsKeepingVerifiedScopes(
+            InvestmentOsSheetModel.SheetTable prior,
+            InvestmentOsSheetModel.SheetTable accountState,
+            Instant syncedAt
+    ) {
+        var verified = InvestmentOsSheetModel.portfolioMetrics(
+                new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.metricsHeaders(), List.of()),
+                accountState, syncedAt);
+        var scopes = verified.rows().stream().map(row -> cell(verified, row, "Scope").toUpperCase(java.util.Locale.ROOT))
+                .collect(java.util.stream.Collectors.toSet());
+        var withHistory = InvestmentOsSheetModel.portfolioMetrics(prior, accountState, syncedAt);
+        return withHistory.withRows(withHistory.rows().stream()
+                .filter(row -> scopes.contains(cell(withHistory, row, "Scope").toUpperCase(java.util.Locale.ROOT)))
+                .toList());
+    }
+
+    private static OffsetDateTime databaseTimestamp(Instant value) {
+        return value == null ? null : value.truncatedTo(ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);
+    }
+
+    private static InvestmentOsSheetModel.SheetTable mergeManualRows(
+            InvestmentOsSheetModel.SheetTable refreshed,
+            InvestmentOsSheetModel.SheetTable original
+    ) {
+        var rows = new ArrayList<>(refreshed.rows());
+        original.rows().stream().filter(row -> InvestmentOsSheetModel.ACCOUNT_2.equalsIgnoreCase(
+                        cell(original, row, "Account")))
+                .forEach(rows::add);
+        return new InvestmentOsSheetModel.SheetTable(refreshed.headers(), rows);
     }
 
     private static Status reconciliationStatus(boolean authoritative, ConnectorResponse.Portfolio portfolio,

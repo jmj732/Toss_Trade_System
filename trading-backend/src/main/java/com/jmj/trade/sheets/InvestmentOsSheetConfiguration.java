@@ -63,10 +63,13 @@ public class InvestmentOsSheetConfiguration {
             ConnectorService connectorService,
             BrokerSurfaceService brokerSurfaceService,
             GoogleSheetsClient googleSheetsClient,
-            InvestmentOsResearchSheetSync investmentOsResearchSheetSync
+            InvestmentOsResearchSheetSync investmentOsResearchSheetSync,
+            JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper
     ) {
         return new InvestmentOsSheetSyncService(properties, lease, connectorService,
-                brokerSurfaceService, googleSheetsClient, Clock.systemUTC(), investmentOsResearchSheetSync);
+                brokerSurfaceService, googleSheetsClient, Clock.systemUTC(), investmentOsResearchSheetSync,
+                jdbcTemplate, objectMapper);
     }
 
     @Bean

@@ -157,6 +157,57 @@ class InvestmentOsSheetModelTest {
     }
 
     @Test
+    void manualAsOfUsesOldestCompleteDateAndKeepsDatesPerTicker() {
+        var state = new InvestmentOsSheetModel.SheetTable(
+                List.of("asOf", "Account", "Asset", "Quantity", "Avg Cost", "Currency", "State", "Source",
+                        "Confidence", "Synced At", "Notes", "Current Price", "Market Value", "Price Source", "Price Synced At"),
+                List.of(
+                        List.of("2026-09-28", "ACCOUNT_2", "ABC", "2", "10", "USD", "HELD", "USER_SCREENSHOT",
+                                "HIGH", "2026-10-04T01:00:00Z", "", "12", "24", "TOSS_QUOTE_API", "2026-10-04T01:00:00Z"),
+                        List.of("2026-10-02", "ACCOUNT_2", "CASH_USD", "", "", "USD", "CASH", "USER_SCREENSHOT",
+                                "HIGH", "2026-10-04T01:00:00Z", "", "", "", "", ""),
+                        List.of("2026-10-01", "ACCOUNT_2", "XYZ", "1", "20", "USD", "HELD", "USER_SCREENSHOT",
+                                "HIGH", "2026-10-04T01:00:00Z", "", "8", "8", "TOSS_QUOTE_API", "2026-10-04T01:00:00Z")));
+
+        assertThat(InvestmentOsSheetModel.manualAsOf(state)).isEqualTo(java.time.LocalDate.parse("2026-09-28"));
+        assertThat(InvestmentOsSheetModel.manualAsOf(state, "XYZ")).isEqualTo(java.time.LocalDate.parse("2026-10-01"));
+    }
+
+    @Test
+    void manualRowsRejectUnknownOrDuplicatedCashInsteadOfReplacingAcceptedData() {
+        var valid = new InvestmentOsSheetModel.SheetTable(
+                InvestmentOsSheetModel.accountHeaders(), List.of(
+                List.of("ACCOUNT_2", "ABC", "HOLDING", "USD", "2", "10", "", "", "", "USER_SCREENSHOT",
+                        "HIGH", "2026-10-04T01:00:00Z", "", "", "HELD"),
+                List.of("ACCOUNT_2", "CASH_USD", "CASH", "USD", "", "", "", "", "20", "USER_SCREENSHOT",
+                        "HIGH", "2026-10-04T01:00:00Z", "", "", "CASH")));
+        var duplicateCash = valid.withRows(List.of(valid.rows().get(0), valid.rows().get(1), valid.rows().get(1)));
+        var unknownQuantity = valid.withRows(List.of(valid.rows().get(0).stream()
+                .map(value -> value.equals("2") ? "" : value).toList(), valid.rows().get(1)));
+
+        assertThat(InvestmentOsSheetModel.manualRowsStructurallyValid(valid)).isTrue();
+        assertThat(InvestmentOsSheetModel.manualRowsStructurallyValid(duplicateCash)).isFalse();
+        assertThat(InvestmentOsSheetModel.manualRowsStructurallyValid(unknownQuantity)).isFalse();
+    }
+
+    @Test
+    void manualMetadataAcceptsPreservedSourceButRejectsMissingOrFutureProvenance() {
+        var today = java.time.LocalDate.parse("2026-10-04");
+        var valid = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.accountHeaders(), List.of(
+                List.of("ACCOUNT_2", "ABC", "HOLDING", "USD", "2", "10", "12", "24", "",
+                        "USER_SCREENSHOT", "HIGH", "2026-10-03T12:00:00Z", "TOSS_QUOTE_API",
+                        "2026-10-04T01:00:00Z", "HELD")));
+        var missingSource = valid.withRows(List.of(valid.rows().getFirst().stream()
+                .map(value -> "USER_SCREENSHOT".equals(value) ? "" : value).toList()));
+        var futureManualTimestamp = valid.withRows(List.of(valid.rows().getFirst().stream()
+                .map(value -> "2026-10-03T12:00:00Z".equals(value) ? "2026-10-05T12:00:00Z" : value).toList()));
+
+        assertThat(InvestmentOsSheetModel.manualRowsHaveVerifiedMetadata(valid, today)).isTrue();
+        assertThat(InvestmentOsSheetModel.manualRowsHaveVerifiedMetadata(missingSource, today)).isFalse();
+        assertThat(InvestmentOsSheetModel.manualRowsHaveVerifiedMetadata(futureManualTimestamp, today)).isFalse();
+    }
+
+    @Test
     void authoritativeAccount1SyncClearsLegacyManualNotes() {
         var existing = new InvestmentOsSheetModel.SheetTable(
                 InvestmentOsSheetModel.accountHeaders().stream().toList(),

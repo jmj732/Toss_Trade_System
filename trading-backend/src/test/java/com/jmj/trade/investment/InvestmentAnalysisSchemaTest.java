@@ -31,12 +31,12 @@ class InvestmentAnalysisSchemaTest extends PostgresIntegrationTest {
 
     @Test
     void createsInvestmentAnalysisTablesAfterExistingMigrations() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("53");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("54");
         try (Connection connection = POSTGRES.createConnection("");
              var statement = connection.createStatement()) {
             var tables = List.of("investment_price_snapshots", "fundamental_snapshots", "consensus_snapshots",
                     "investment_security_snapshots", "investment_thesis_states", "investment_decision_ledger",
-                    "investment_pipeline_state");
+                    "investment_pipeline_state", "investment_os_portfolio_snapshots");
             for (var table : tables) {
                 try (var result = statement.executeQuery("SELECT 1 FROM " + table + " WHERE false")) {
                     assertThat(result.next()).isFalse();
@@ -74,6 +74,31 @@ class InvestmentAnalysisSchemaTest extends PostgresIntegrationTest {
                         "UPDATE investment_decision_ledger SET action = 'HOLD' WHERE decision_id = ?")) {
                     update.setObject(1, decisionId);
                     update.executeUpdate();
+                }
+            }).isInstanceOf(SQLException.class);
+        }
+    }
+
+    @Test
+    void portfolioSnapshotRejectsAcceptedAttemptWithoutPayload() throws SQLException {
+        var userId = UUID.randomUUID();
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        try (Connection connection = POSTGRES.createConnection("")) {
+            try (var insertUser = connection.prepareStatement("INSERT INTO users (id) VALUES (?)")) {
+                insertUser.setObject(1, userId);
+                insertUser.executeUpdate();
+            }
+            assertThatThrownBy(() -> {
+                try (var insert = connection.prepareStatement("""
+                        INSERT INTO investment_os_portfolio_snapshots (
+                            id, user_id, attempt_status, attempted_at, error_code, payload, created_at
+                        ) VALUES (?, ?, 'SUCCEEDED', ?, NULL, NULL, ?)
+                        """)) {
+                    insert.setObject(1, UUID.randomUUID());
+                    insert.setObject(2, userId);
+                    insert.setObject(3, now);
+                    insert.setObject(4, now);
+                    insert.executeUpdate();
                 }
             }).isInstanceOf(SQLException.class);
         }

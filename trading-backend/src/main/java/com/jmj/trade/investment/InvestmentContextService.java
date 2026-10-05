@@ -11,6 +11,9 @@ import com.jmj.trade.marketdata.StockDataProviderId;
 import com.jmj.trade.marketdata.StockDataProviderRegistry;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
+import com.jmj.trade.sheets.InvestmentOsSheetModel;
+import com.jmj.trade.sheets.InvestmentOsSheetProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -53,6 +56,8 @@ public final class InvestmentContextService {
     private static final Pattern TICKER = Pattern.compile("[A-Z0-9._-]{1,32}");
     private static final Pattern TOSS_MARKET_SYMBOL = Pattern.compile("[A-Z0-9.-]+");
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
+    private static final ZoneId MANUAL_SHEET_ZONE = ZoneId.of("Asia/Seoul");
+    private static final Duration MANUAL_SHEET_STALE_AFTER = Duration.ofDays(7);
     private static final List<String> FUNDAMENTAL_FIELDS = List.of(
             "marketCap", "fullyDilutedMarketCap", "enterpriseValue", "cash", "debt",
             "basicShares", "dilutedShares",
@@ -84,6 +89,7 @@ public final class InvestmentContextService {
     private final Duration regularCloseStaleAfter;
     private final Duration fundamentalStaleAfter;
     private final Duration consensusStaleAfter;
+    private InvestmentOsSheetProperties investmentOsSheetProperties;
 
     @Value("${investment.data.additional-symbols:}")
     private String additionalSymbols = "";
@@ -118,6 +124,317 @@ public final class InvestmentContextService {
         this.consensusStaleAfter = positive(consensusStaleAfter, "consensusStaleAfter");
     }
 
+    @Autowired(required = false)
+    public void setInvestmentOsSheetProperties(InvestmentOsSheetProperties properties) {
+        this.investmentOsSheetProperties = properties;
+    }
+
+    private boolean configuredSheetOwner(UUID userId) {
+        return investmentOsSheetProperties != null && investmentOsSheetProperties.enabled()
+                && userId != null && userId.equals(investmentOsSheetProperties.userId());
+    }
+
+    private PortfolioView readSheetPortfolio(UUID userId) {
+        var snapshots = latestSheetSnapshots(userId);
+        var payload = snapshots.payload();
+        if (payload == null) {
+            var missing = snapshots.latestStatus() == null
+                    ? List.of("SHEET_PORTFOLIO_NOT_SYNCED") : List.of("SHEET_REFRESH_FAILED");
+            return new PortfolioView(null, List.of(), Map.of(), snapshots.latestStatus() != null,
+                    missing, "DATA_MISSING", "TOSS_API+MANUAL_SHEET", null, null, null,
+                    snapshots.latestStatus() == null ? "NOT_SYNCED" : "READ_FAILED",
+                    snapshots.latestStatus(), snapshots.latestStatus() != null, false);
+        }
+
+        var accountState = sheetTable(payload.get("accountState"));
+        var aggregate = sheetTable(payload.get("aggregate"));
+        var metrics = sheetTable(payload.get("metrics"));
+        var account1AsOf = instant(payload.get("account1AsOf"));
+        var manualAsOf = localDate(text(payload.get("manualAsOf")));
+        if (manualAsOf == null) manualAsOf = manualAsOfFromRows(accountState);
+        var manualReadAt = instant(payload.get("manualReadAt"));
+        var manualStatus = clean(text(payload.get("manualStatus")));
+        if (manualStatus == null) manualStatus = "UNVERIFIED";
+        if (manualAsOf == null) manualAsOf = InvestmentOsSheetModel.manualAsOf(accountState);
+        var now = clock.instant();
+        var manualRowsPresent = accountState.rows().stream().anyMatch(row ->
+                InvestmentOsSheetModel.ACCOUNT_2.equalsIgnoreCase(sheetCell(accountState, row, "Account")));
+        var today = now.atZone(MANUAL_SHEET_ZONE).toLocalDate();
+        var manualStale = manualRowsPresent && "OK".equals(manualStatus)
+                && (manualAsOf == null || manualAsOf.isAfter(today)
+                || manualAsOf.isBefore(today.minusDays(MANUAL_SHEET_STALE_AFTER.toDays())));
+        var latestAttemptFailed = "FAILED".equals(snapshots.latestStatus());
+        var visibleManualStatus = latestAttemptFailed ? "LATEST_REFRESH_FAILED" : manualStatus;
+        var missing = new ArrayList<String>();
+        if (latestAttemptFailed) missing.add("SHEET_REFRESH_FAILED");
+        if (!"OK".equals(manualStatus) && !"EMPTY_CONFIRMED".equals(manualStatus)) {
+            missing.add("MANUAL_ACCOUNT_" + safeStatus(manualStatus));
+        }
+        if (manualRowsPresent && "OK".equals(manualStatus) && manualAsOf == null) {
+            missing.add("MANUAL_AS_OF_MISSING");
+        }
+        if (manualStale) missing.add("MANUAL_AS_OF_STALE");
+
+        var combinedTotal = combinedUsdTotal(metrics);
+        if (combinedTotal == null || combinedTotal.signum() <= 0) missing.add("COMBINED_USD_TOTAL_UNAVAILABLE");
+        var account1Fresh = isFresh(account1AsOf, priceStaleAfter, now);
+        if (!account1Fresh) missing.add(account1AsOf == null ? "ACCOUNT1_AS_OF_MISSING" : "ACCOUNT1_AS_OF_STALE");
+        var sheetPositions = sheetPositions(aggregate, accountState, combinedTotal, account1AsOf, now, missing);
+        var acceptedStatus = snapshots.payloadStatus();
+        if ("PARTIAL".equals(acceptedStatus)) missing.add("SHEET_SNAPSHOT_PARTIAL");
+        var stale = latestAttemptFailed || manualStale || !account1Fresh || !sheetPositions.pricesFresh();
+        var weightsComplete = combinedTotal != null && combinedTotal.signum() > 0
+                && !sheetPositions.positions().isEmpty()
+                && missing.stream().noneMatch(reason -> reason.startsWith("MIXED_CURRENCY_POSITION:"))
+                && sheetPositions.positions().stream().allMatch(position -> position.quantity() != null
+                && position.marketValue() != null && position.weight() != null);
+        var riskNumbersAvailable = account1Fresh && sheetPositions.pricesFresh() && weightsComplete;
+        var partial = !missing.isEmpty() || !"SUCCEEDED".equals(acceptedStatus);
+        var status = stale ? "STALE" : partial ? "PARTIAL" : "OK";
+        var totals = combinedTotal == null ? Map.<String, BigDecimal>of() : Map.of("USD", combinedTotal);
+        return new PortfolioView(account1AsOf, sheetPositions.positions(), totals, stale, List.copyOf(missing), status,
+                clean(text(payload.get("source"))) == null ? "TOSS_API+MANUAL_SHEET" : text(payload.get("source")),
+                account1AsOf, manualAsOf, manualReadAt, visibleManualStatus, snapshots.latestStatus(), manualStale,
+                riskNumbersAvailable);
+    }
+
+    private SheetSnapshotRows latestSheetSnapshots(UUID userId) {
+        var rows = jdbc.query("""
+                SELECT attempt.attempt_status AS latest_status,
+                       attempt.attempted_at AS latest_attempt_at,
+                       accepted.attempt_status AS payload_status,
+                       accepted.attempted_at AS payload_at,
+                       accepted.payload::text AS payload
+                  FROM LATERAL (
+                      SELECT attempt_status, attempted_at
+                        FROM investment_os_portfolio_snapshots
+                       WHERE user_id = ?
+                       ORDER BY attempted_at DESC, created_at DESC, id DESC
+                       LIMIT 1
+                  ) attempt
+                  LEFT JOIN LATERAL (
+                      SELECT attempt_status, attempted_at, payload
+                        FROM investment_os_portfolio_snapshots
+                       WHERE user_id = ? AND payload IS NOT NULL
+                       ORDER BY attempted_at DESC, created_at DESC, id DESC
+                       LIMIT 1
+                  ) accepted ON true
+                """, (resultSet, rowNum) -> {
+            var payloadText = resultSet.getString("payload");
+            JsonNode payload = null;
+            if (payloadText != null) {
+                try {
+                    payload = objectMapper.readTree(payloadText);
+                } catch (JacksonException ignored) {
+                    // A corrupt stored payload is treated as unavailable; the failed attempt remains auditable.
+                }
+            }
+            return new SheetSnapshotRows(
+                    resultSet.getString("latest_status"),
+                    instant(resultSet.getObject("latest_attempt_at", OffsetDateTime.class)),
+                    resultSet.getString("payload_status"),
+                    instant(resultSet.getObject("payload_at", OffsetDateTime.class)), payload);
+        }, userId, userId);
+        return rows.isEmpty() ? SheetSnapshotRows.missing() : rows.getFirst();
+    }
+
+    private JsonNode latestAcceptedSheetPayload(UUID userId) {
+        var snapshots = latestSheetSnapshots(userId);
+        return snapshots.payload();
+    }
+
+    private SheetPositions sheetPositions(
+            InvestmentOsSheetModel.SheetTable aggregate,
+            InvestmentOsSheetModel.SheetTable accountState,
+            BigDecimal combinedTotal,
+            Instant account1AsOf,
+            Instant now,
+            List<String> missing
+    ) {
+        var positions = new LinkedHashMap<String, PositionView>();
+        var mixedCurrency = new LinkedHashSet<String>();
+        boolean pricesFresh = true;
+        for (var row : aggregate.rows()) {
+            var tickerValue = sheetCell(aggregate, row, "Ticker", "Asset");
+            var ticker = safeTicker(tickerValue);
+            if (ticker == null) continue;
+            var currency = clean(sheetCell(aggregate, row, "Currency"));
+            var sourceRows = matchingAccountRows(accountState, ticker, currency);
+            var sourceClassifiesCash = !sourceRows.isEmpty() && sourceRows.stream()
+                    .allMatch(source -> InvestmentOsSheetModel.isCash(accountState, source, tickerValue));
+            if (ticker.startsWith("CASH_") || sheetDecimal(sheetCell(aggregate, row, "Cash")) != null
+                    || sourceClassifiesCash) continue;
+            if (mixedCurrency.contains(ticker)) continue;
+            var quantity = sheetDecimal(sheetCell(aggregate, row, "Quantity", "Total Quantity"));
+            var marketValue = sheetDecimal(sheetCell(aggregate, row, "Market Value"));
+            var sourceCoverage = clean(sheetCell(aggregate, row, "Source Coverage"));
+            var accountsIncluded = clean(sheetCell(aggregate, row, "Accounts Included"));
+            var account1Rows = sourceRows.stream().filter(source -> InvestmentOsSheetModel.ACCOUNT_1.equalsIgnoreCase(
+                    sheetCell(accountState, source, "Account"))).toList();
+            var manualRows = sourceRows.stream().filter(source -> InvestmentOsSheetModel.ACCOUNT_2.equalsIgnoreCase(
+                    sheetCell(accountState, source, "Account"))).toList();
+            var quantityAsOf = account1Rows.isEmpty() ? null : account1AsOf;
+            var priceRows = sourceRows.stream().map(source -> sheetDecimal(
+                            sheetCell(accountState, source, "Current Price")))
+                    .filter(Objects::nonNull).distinct().toList();
+            var lastPrice = priceRows.size() == 1 ? priceRows.getFirst() : null;
+            var priceInstants = sourceRows.stream().map(source -> sheetInstant(
+                    sheetCell(accountState, source, "Price Synced At"))).toList();
+            var priceAsOf = priceInstants.stream().filter(Objects::nonNull)
+                    .min(Comparator.naturalOrder()).orElse(null);
+            var tickerManualAsOf = manualRows.isEmpty() ? null
+                    : InvestmentOsSheetModel.manualAsOf(accountState, ticker);
+            var tickerManualStale = !manualRows.isEmpty() && !isFreshDate(tickerManualAsOf, now);
+            var tickerPriceFresh = !sourceRows.isEmpty() && priceRows.size() == 1
+                    && priceInstants.stream().allMatch(value -> isFresh(value, priceStaleAfter, now));
+            pricesFresh &= tickerPriceFresh;
+            if (!tickerPriceFresh) missing.add("POSITION_PRICE_AS_OF_STALE:" + ticker);
+            if (tickerManualStale) missing.add(tickerManualAsOf == null
+                    ? "POSITION_MANUAL_AS_OF_MISSING:" + ticker : "POSITION_MANUAL_AS_OF_STALE:" + ticker);
+            var asOf = latestInstant(quantityAsOf, priceAsOf);
+            var weight = combinedTotal != null && combinedTotal.signum() > 0
+                    && "USD".equalsIgnoreCase(currency) && marketValue != null && marketValue.signum() >= 0
+                    ? marketValue.divide(combinedTotal, MathContext.DECIMAL128) : null;
+            var position = new PositionView(ticker, ticker, quantity, currency, marketValue, weight, lastPrice, asOf,
+                    accountsIncluded, sourceCoverage, quantityAsOf, priceAsOf,
+                    manualRows.isEmpty() ? null : tickerManualAsOf);
+            var prior = positions.get(ticker);
+            if (prior == null) positions.put(ticker, position);
+            else if (Objects.equals(prior.currency(), currency)) {
+                positions.put(ticker, new PositionView(ticker, prior.name(), add(prior.quantity(), quantity), currency,
+                        add(prior.marketValue(), marketValue), add(prior.weight(), weight),
+                        Objects.equals(prior.lastPrice(), lastPrice) ? prior.lastPrice() : null,
+                        latestInstant(prior.asOf(), asOf), mergeText(prior.accountsIncluded(), accountsIncluded),
+                        mergeText(prior.sourceCoverage(), sourceCoverage), latestInstant(prior.quantityAsOf(), quantityAsOf),
+                        latestInstant(prior.priceAsOf(), priceAsOf),
+                        earlierDate(prior.manualAsOf(), position.manualAsOf())));
+            } else {
+                positions.remove(ticker);
+                mixedCurrency.add(ticker);
+            }
+            if (quantity == null) missing.add("POSITION_QUANTITY_UNKNOWN:" + ticker);
+            if (marketValue == null) missing.add("POSITION_MARKET_VALUE_UNKNOWN:" + ticker);
+        }
+        mixedCurrency.forEach(ticker -> missing.add("MIXED_CURRENCY_POSITION:" + ticker));
+        return new SheetPositions(positions.values().stream().sorted(Comparator.comparing(PositionView::ticker)).toList(),
+                pricesFresh);
+    }
+
+    private List<List<String>> matchingAccountRows(
+            InvestmentOsSheetModel.SheetTable accountState, String ticker, String currency
+    ) {
+        return accountState.rows().stream().filter(row -> ticker.equalsIgnoreCase(
+                        sheetCell(accountState, row, "Ticker", "Asset")))
+                .filter(row -> currency == null || currency.equalsIgnoreCase(sheetCell(accountState, row, "Currency")))
+                .filter(row -> InvestmentOsSheetModel.ACCOUNT_1.equalsIgnoreCase(
+                        sheetCell(accountState, row, "Account"))
+                        || InvestmentOsSheetModel.ACCOUNT_2.equalsIgnoreCase(
+                        sheetCell(accountState, row, "Account")))
+                .toList();
+    }
+
+    private BigDecimal combinedUsdTotal(InvestmentOsSheetModel.SheetTable metrics) {
+        for (var row : metrics.rows()) {
+            if ("COMBINED".equalsIgnoreCase(sheetCell(metrics, row, "Scope"))) {
+                return sheetDecimal(sheetCell(metrics, row, "Total Value"));
+            }
+        }
+        return null;
+    }
+
+    private LocalDate manualAsOfFromRows(InvestmentOsSheetModel.SheetTable accountState) {
+        return InvestmentOsSheetModel.manualAsOf(accountState);
+    }
+
+    private boolean isFreshDate(LocalDate asOf, Instant now) {
+        if (asOf == null) return false;
+        var today = now.atZone(MANUAL_SHEET_ZONE).toLocalDate();
+        return !asOf.isAfter(today) && !asOf.isBefore(today.minusDays(MANUAL_SHEET_STALE_AFTER.toDays()));
+    }
+
+    private static boolean isFresh(Instant asOf, Duration maxAge, Instant now) {
+        return asOf != null && !asOf.isAfter(now) && !asOf.isBefore(now.minus(maxAge));
+    }
+
+    private static LocalDate earlierDate(LocalDate first, LocalDate second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        return first.isBefore(second) ? first : second;
+    }
+
+    private static InvestmentOsSheetModel.SheetTable sheetTable(JsonNode node) {
+        if (node == null || node.isNull() || !node.isObject()) {
+            return new InvestmentOsSheetModel.SheetTable(List.of(), List.of());
+        }
+        var headers = new ArrayList<String>();
+        var headerNodes = node.path("headers");
+        if (headerNodes.isArray()) for (var header : headerNodes) headers.add(header.asText(""));
+        var rows = new ArrayList<List<String>>();
+        var rowNodes = node.path("rows");
+        if (rowNodes.isArray()) for (var rowNode : rowNodes) {
+            var row = new ArrayList<String>();
+            if (rowNode.isArray()) for (var cell : rowNode) row.add(cell.isNull() ? "" : cell.asText(""));
+            rows.add(row);
+        }
+        return new InvestmentOsSheetModel.SheetTable(headers, rows);
+    }
+
+    private static String sheetCell(InvestmentOsSheetModel.SheetTable table, List<String> row, String... names) {
+        for (var name : names) {
+            var column = table.headers().stream().filter(header -> normalizeHeader(header).equals(normalizeHeader(name)))
+                    .findFirst().orElse(null);
+            if (column == null) continue;
+            var index = table.headers().indexOf(column);
+            if (index < row.size() && row.get(index) != null && !row.get(index).isBlank()) return row.get(index).trim();
+        }
+        return "";
+    }
+
+    private static String normalizeHeader(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    private static BigDecimal sheetDecimal(String value) {
+        if (value == null || value.isBlank()) return null;
+        try { return new BigDecimal(value.trim()); }
+        catch (NumberFormatException ignored) { return null; }
+    }
+
+    private static Instant sheetInstant(String value) {
+        if (value == null || value.isBlank()) return null;
+        try { return Instant.parse(value.trim()); }
+        catch (RuntimeException ignored) {
+            try { return OffsetDateTime.parse(value.trim()).toInstant(); }
+            catch (RuntimeException ignoredOffset) { return null; }
+        }
+    }
+
+    private static String safeTicker(String value) {
+        if (value == null || value.isBlank()) return null;
+        var normalized = value.trim().toUpperCase(Locale.ROOT);
+        return TICKER.matcher(normalized).matches() ? normalized : null;
+    }
+
+    private static String mergeText(String first, String second) {
+        if (first == null || first.isBlank()) return second;
+        if (second == null || second.isBlank() || first.equals(second)) return first;
+        return first + "," + second;
+    }
+
+    private static String safeStatus(String status) {
+        return status == null ? "UNVERIFIED" : status.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9_]+", "_");
+    }
+
+    private record SheetSnapshotRows(String latestStatus, Instant latestAttemptAt, String payloadStatus,
+                                     Instant payloadAt, JsonNode payload) {
+        private static SheetSnapshotRows missing() {
+            return new SheetSnapshotRows(null, null, null, null, null);
+        }
+    }
+
+    private record SheetPositions(List<PositionView> positions, boolean pricesFresh) {
+    }
+
     public ContextView context(UUID userId) {
         requireUser(userId);
         var portfolio = readPortfolio(userId);
@@ -136,7 +453,7 @@ public final class InvestmentContextService {
             analysis.put(symbol, latestSecuritySnapshot(userId, symbol));
         }
         var weights = portfolioWeights(portfolio);
-        var risks = riskContributions(userId, symbols, positions, weights, portfolio.status(), theses, analysis);
+        var risks = riskContributions(userId, symbols, positions, weights, portfolio, theses, analysis);
         var securities = symbols.stream().sorted().map(symbol -> {
             var snapshot = analysis.get(symbol);
             var risk = risks.get(symbol);
@@ -1295,6 +1612,7 @@ public final class InvestmentContextService {
     }
 
     private PortfolioView readPortfolio(UUID userId) {
+        if (configuredSheetOwner(userId)) return readSheetPortfolio(userId);
         var totals = new LinkedHashMap<String, BigDecimal>();
         var combined = new LinkedHashMap<String, PositionView>();
         var missing = new ArrayList<String>();
@@ -1360,6 +1678,11 @@ public final class InvestmentContextService {
     }
 
     private List<String> latestHeldSymbols(UUID userId) {
+        if (configuredSheetOwner(userId)) {
+            var payload = latestAcceptedSheetPayload(userId);
+            var state = sheetTable(payload == null ? null : payload.get("accountState"));
+            return InvestmentOsSheetModel.heldSymbols(state);
+        }
         return jdbc.query("""
                 SELECT DISTINCT upper(position.symbol)
                   FROM broker_connections connection
@@ -2581,11 +2904,13 @@ public final class InvestmentContextService {
             Set<String> symbols,
             Map<String, PositionView> positions,
             Map<String, BigDecimal> weights,
-            String portfolioStatus,
+            PortfolioView portfolio,
             Map<String, ThesisView> theses,
             Map<String, JsonNode> analysis
     ) {
-        var portfolioDataStatus = dataStatus(portfolioStatus);
+        var portfolioDataStatus = dataStatus(portfolio.status());
+        var portfolioNumbersAvailable = portfolio.riskNumbersAvailable();
+        var portfolioCurrent = portfolioDataStatus == InvestmentDataCalculator.DataStatus.OK;
         var exposures = new ArrayList<RiskExposure>();
         var risks = new LinkedHashMap<String, RiskContributionView>();
         for (var symbol : symbols) {
@@ -2595,14 +2920,13 @@ public final class InvestmentContextService {
             var price = decimal(priceNode.get("latestPrice"));
             if (price == null && position != null) price = position.lastPrice();
             var priceAsOf = instant(priceNode.get("latestPriceAsOf"));
-            var weight = portfolioDataStatus == InvestmentDataCalculator.DataStatus.OK
-                    ? weights.get(symbol) : null;
+            var weight = portfolioNumbersAvailable ? weights.get(symbol) : null;
             var triggerPrice = thesis == null ? null : thesis.priceRiskTriggerPrice();
             var priceStatus = dataStatus(text(priceNode.get("status")));
             var trustedPriceStatus = priceStatus == InvestmentDataCalculator.DataStatus.OK
                     && (priceAsOf == null || price == null || price.signum() <= 0)
                     ? InvestmentDataCalculator.DataStatus.DATA_MISSING : priceStatus;
-            var trustedInputs = portfolioDataStatus == InvestmentDataCalculator.DataStatus.OK
+            var trustedInputs = portfolioNumbersAvailable
                     && trustedPriceStatus == InvestmentDataCalculator.DataStatus.OK
                     && priceAsOf != null && price != null && price.signum() > 0;
             var downside = trustedInputs
@@ -2611,10 +2935,11 @@ public final class InvestmentContextService {
             var riskStatus = triggerPrice == null
                     ? InvestmentDataCalculator.DataStatus.NOT_CONFIGURED
                     : trustedInputs
-                    ? loss == null ? InvestmentDataCalculator.DataStatus.DATA_MISSING : InvestmentDataCalculator.DataStatus.OK
+                    ? loss == null ? InvestmentDataCalculator.DataStatus.DATA_MISSING
+                    : portfolioCurrent ? InvestmentDataCalculator.DataStatus.OK : portfolioDataStatus
                     : overall(List.of(portfolioDataStatus, trustedPriceStatus));
             var eligible = thesis != null && "CONFIRMED".equals(thesis.invalidationStatus())
-                    && trustedInputs && weight != null && downside != null && loss != null;
+                    && portfolioCurrent && trustedInputs && weight != null && downside != null && loss != null;
             if (position != null) exposures.add(new RiskExposure(symbol, loss, riskStatus));
             risks.put(symbol, new RiskContributionView(weight, downside, loss,
                     riskStatus,
@@ -2625,7 +2950,10 @@ public final class InvestmentContextService {
         var held = exposures.stream().filter(item -> positions.containsKey(item.ticker())).toList();
         var thesisFailureStatus = held.isEmpty() ? InvestmentDataCalculator.DataStatus.DATA_MISSING
                 : overall(held.stream().map(RiskExposure::status).toList());
-        var thesisFailureStress = thesisFailureStatus == InvestmentDataCalculator.DataStatus.OK
+        var completeExposureLosses = !held.isEmpty() && held.stream().allMatch(item -> item.loss() != null);
+        var thesisFailureStress = completeExposureLosses
+                && (thesisFailureStatus == InvestmentDataCalculator.DataStatus.OK
+                || thesisFailureStatus == InvestmentDataCalculator.DataStatus.STALE)
                 ? held.stream().map(RiskExposure::loss).reduce(BigDecimal.ZERO, BigDecimal::add) : null;
         var top2 = top2Correlated(userId, held);
         var budget = riskPolicies.current(userId).softRiskBudget();
@@ -2640,7 +2968,9 @@ public final class InvestmentContextService {
     private Top2Stress top2Correlated(UUID userId, List<RiskExposure> exposures) {
         var inputStatus = exposures.isEmpty() ? InvestmentDataCalculator.DataStatus.DATA_MISSING
                 : overall(exposures.stream().map(RiskExposure::status).toList());
-        if (inputStatus != InvestmentDataCalculator.DataStatus.OK) return Top2Stress.missing(inputStatus);
+        if (inputStatus != InvestmentDataCalculator.DataStatus.OK
+                && inputStatus != InvestmentDataCalculator.DataStatus.STALE) return Top2Stress.missing(inputStatus);
+        if (exposures.stream().anyMatch(item -> item.loss() == null)) return Top2Stress.missing(inputStatus);
         var known = exposures;
         Top2Stress best = Top2Stress.missing();
         for (int leftIndex = 0; leftIndex < known.size(); leftIndex++) {
@@ -2655,7 +2985,7 @@ public final class InvestmentContextService {
                 if (correlation == null || correlation.signum() <= 0) continue;
                 if (best.correlation() == null || correlation.compareTo(best.correlation()) > 0) {
                     best = new Top2Stress(left.ticker() + "," + right.ticker(), correlation,
-                            left.loss().add(right.loss()), InvestmentDataCalculator.DataStatus.OK);
+                            left.loss().add(right.loss()), inputStatus);
                 }
             }
         }
@@ -3000,14 +3330,29 @@ public final class InvestmentContextService {
 
     public record PortfolioView(
             Instant asOf, List<PositionView> positions, Map<String, BigDecimal> totalMarketValueByCurrency,
-            boolean stale, List<String> missingFields, String status
+            boolean stale, List<String> missingFields, String status,
+            String source, Instant account1AsOf, LocalDate manualAsOf, Instant manualReadAt,
+            String manualStatus, String snapshotStatus, boolean manualStale, boolean riskNumbersAvailable
     ) {
+        public PortfolioView(Instant asOf, List<PositionView> positions,
+                             Map<String, BigDecimal> totalMarketValueByCurrency, boolean stale,
+                             List<String> missingFields, String status) {
+            this(asOf, positions, totalMarketValueByCurrency, stale, missingFields, status,
+                    null, asOf, null, null, null, null, false,
+                    "OK".equals(status));
+        }
     }
 
     public record PositionView(
             String ticker, String name, BigDecimal quantity, String currency, BigDecimal marketValue,
-            BigDecimal weight, BigDecimal lastPrice, Instant asOf
+            BigDecimal weight, BigDecimal lastPrice, Instant asOf, String accountsIncluded,
+            String sourceCoverage, Instant quantityAsOf, Instant priceAsOf, LocalDate manualAsOf
     ) {
+        public PositionView(String ticker, String name, BigDecimal quantity, String currency,
+                            BigDecimal marketValue, BigDecimal weight, BigDecimal lastPrice, Instant asOf) {
+            this(ticker, name, quantity, currency, marketValue, weight, lastPrice, asOf,
+                    null, null, asOf, asOf, null);
+        }
     }
 
     public record SecurityView(

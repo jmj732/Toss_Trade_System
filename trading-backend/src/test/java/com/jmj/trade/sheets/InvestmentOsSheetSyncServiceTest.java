@@ -8,7 +8,9 @@ import com.jmj.trade.broker.connection.BrokerConnectionException;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -79,6 +81,115 @@ class InvestmentOsSheetSyncServiceTest {
                 && update.values().stream().anyMatch(row -> row.contains("ACCOUNT_1")))));
         verify(researchSheets).sync(USER_ID);
         verify(lease).release(any());
+    }
+
+    @Test
+    void validManualRowsArePersistedWhenQuotesAndOrdersArePartial() throws Exception {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        var jdbc = mock(JdbcTemplate.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account Registry'!A:Z"))).thenReturn(registryValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account State'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("account-state", List.of(
+                        objectRow(InvestmentOsSheetModel.accountHeaders()),
+                        objectRow(List.of("ACCOUNT_2", "MSFT", "HOLDING", "USD", "2", "90", "20", "40", "",
+                                "USER_SCREENSHOT", "HIGH", "2026-10-04T08:00:00Z", "TOSS_QUOTE_API",
+                                "2026-10-04T08:00:00Z", "HELD")),
+                        objectRow(List.of("ACCOUNT_2", "CASH_USD", "CASH", "USD", "", "", "", "", "50",
+                                "USER_SCREENSHOT", "HIGH", "2026-10-04T08:00:00Z", "", "", "CASH")))));
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenThrow(new RuntimeException("order unavailable"));
+
+        var properties = new InvestmentOsSheetProperties(true, "sheet-1", USER_ID, CONNECTION_ID,
+                Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(2));
+        var service = new InvestmentOsSheetSyncService(properties, lease, connector, null, sheets,
+                () -> NOW, null, jdbc, new ObjectMapper());
+
+        var result = service.sync();
+
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
+        verify(jdbc).update(startsWith("INSERT INTO investment_os_portfolio_snapshots"),
+                any(), any(), eq("PARTIAL"), any(), eq("OPTIONAL_SOURCE_FAILURE"), any(), any());
+    }
+
+    @Test
+    void optionalOrderFailureDoesNotDowngradeCompleteCombinedPortfolioSnapshot() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var brokerSurface = mock(BrokerSurfaceService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        var jdbc = mock(JdbcTemplate.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account Registry'!A:Z"))).thenReturn(registryValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account State'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("account-state", List.of(
+                        objectRow(InvestmentOsSheetModel.accountHeaders()),
+                        objectRow(List.of("ACCOUNT_2", "MSFT", "HOLDING", "USD", "2", "90", "20", "40", "",
+                                "USER_SCREENSHOT", "HIGH", NOW.toString(), "TOSS_QUOTE_API", NOW.toString(), "HELD")),
+                        objectRow(List.of("ACCOUNT_2", "CASH_USD", "CASH", "USD", "", "", "", "", "50",
+                                "USER_SCREENSHOT", "HIGH", NOW.toString(), "", "", "CASH")))));
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenThrow(new RuntimeException("orders unavailable"));
+        when(brokerSurface.prices(USER_ID, CONNECTION_ID, "ABC,MSFT")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("ABC", bd("15"), null, null, "USD", NOW, NOW),
+                new BrokerSurfaceResponse.PriceView("MSFT", bd("20"), null, null, "USD", NOW, NOW))));
+        var properties = new InvestmentOsSheetProperties(true, "sheet-1", USER_ID, CONNECTION_ID,
+                Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(2));
+        var service = new InvestmentOsSheetSyncService(properties, lease, connector, brokerSurface, sheets,
+                () -> NOW, null, jdbc, new ObjectMapper());
+
+        var result = service.sync();
+
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
+        verify(jdbc).update(startsWith("INSERT INTO investment_os_portfolio_snapshots"), any(), eq(USER_ID),
+                eq("SUCCEEDED"), any(), isNull(), any(), any());
+    }
+
+    @Test
+    void invalidManualRowsArePreservedAndOnlyFailedNullPayloadIsRecorded() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        var sheets = mock(GoogleSheetsClient.class);
+        var jdbc = mock(JdbcTemplate.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account Registry'!A:Z"))).thenReturn(registryValues());
+        when(sheets.readValues(eq("sheet-1"), eq("'Account State'!A:Z"))).thenReturn(
+                new GoogleSheetsClient.SheetValues("account-state", List.of(
+                        objectRow(InvestmentOsSheetModel.accountHeaders()),
+                        objectRow(List.of("ACCOUNT_2", "MSFT", "HOLDING", "USD", "-2", "90", "", "", "",
+                                "USER_SCREENSHOT", "HIGH", NOW.toString(), "", "", "HELD")),
+                        objectRow(List.of("ACCOUNT_2", "CASH_USD", "CASH", "USD", "", "", "", "", "50",
+                                "USER_SCREENSHOT", "HIGH", NOW.toString(), "", "", "CASH")))));
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
+        var properties = new InvestmentOsSheetProperties(true, "sheet-1", USER_ID, CONNECTION_ID,
+                Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(2));
+        var service = new InvestmentOsSheetSyncService(properties, lease, connector, null, sheets,
+                () -> NOW, null, jdbc, new ObjectMapper());
+
+        var result = service.sync();
+
+        assertThat(result.error()).contains("MANUAL_ACCOUNT_INVALID");
+        verify(jdbc).update(startsWith("INSERT INTO investment_os_portfolio_snapshots"), any(), eq(USER_ID),
+                eq("FAILED"), any(), eq("MANUAL_ACCOUNT_INVALID"), isNull(), any());
+        ArgumentCaptor<List<GoogleSheetsClient.SheetValueRange>> updates = ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        var account = updates.getValue().stream().filter(update -> update.range().startsWith("'Account State'!"))
+                .findFirst().orElseThrow();
+        assertThat(account.values()).anySatisfy(row -> assertThat(row).contains("ACCOUNT_2", "MSFT", "-2"));
+        assertThat(updates.getValue()).noneMatch(update -> update.range().startsWith("'Portfolio Aggregate'!")
+                || update.range().startsWith("'Portfolio Metrics'!"));
     }
 
     @Test
@@ -504,6 +615,10 @@ class InvestmentOsSheetSyncServiceTest {
 
     private static GoogleSheetsClient.SheetValues emptyValues() {
         return new GoogleSheetsClient.SheetValues("range", List.of());
+    }
+
+    private static List<Object> objectRow(List<String> values) {
+        return new java.util.ArrayList<>(values);
     }
 
     private static GoogleSheetsClient.SheetValues registryValues() {
