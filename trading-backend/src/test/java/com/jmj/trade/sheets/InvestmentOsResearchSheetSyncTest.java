@@ -60,6 +60,8 @@ class InvestmentOsResearchSheetSyncTest {
         verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
         @SuppressWarnings("unchecked")
         var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        verify(sheets).ensureSheetColumnCounts(eq("sheet-1"), argThat(columns ->
+                columns.get("Security Snapshot") == tabs.getFirst().values().getFirst().size()));
         assertThat(tabs).extracting(GoogleSheetsClient.SheetValueRange::range).containsExactly(
                 "'Security Snapshot'!A1", "'Thesis State'!A1", "'Consensus History'!A1", "'Watchlist'!A1",
                 "'Decision Ledger'!A1", "'Alpha State'!A1", "'Risk Policy'!A1");
@@ -214,6 +216,7 @@ class InvestmentOsResearchSheetSyncTest {
         order.verify(sheets).duplicateSheets("sheet-1", Map.of("Security Snapshot Legacy before DB", 1));
         order.verify(sheets).sheetIdsByTitle("sheet-1");
         order.verify(sheets).ensureSheets(eq("sheet-1"), any());
+        order.verify(sheets).ensureSheetColumnCounts(eq("sheet-1"), any());
         order.verify(sheets).batchUpdateValues(eq("sheet-1"), any());
     }
 
@@ -241,6 +244,8 @@ class InvestmentOsResearchSheetSyncTest {
         verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
         @SuppressWarnings("unchecked")
         var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        verify(sheets).ensureSheetColumnCounts(eq("sheet-1"), argThat(columns ->
+                columns.get("Security Snapshot") == tabs.getFirst().values().getFirst().size()));
         assertThat(tabs.get(2).values().getFirst())
                 .startsWith("Ticker", "As Of", "Horizon", "Revenue Consensus", "EPS Consensus",
                         "EBITDA Consensus", "FCF Consensus", "Source")

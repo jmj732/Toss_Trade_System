@@ -236,6 +236,93 @@ public final class GoogleSheetsClient {
         });
     }
 
+    /** Grows existing tabs to their required value-write width without reducing any grid dimensions. */
+    public void ensureSheetColumnCounts(String spreadsheetId, Map<String, Integer> requiredColumnsByTitle) {
+        requireText(spreadsheetId, "spreadsheetId");
+        if (requiredColumnsByTitle == null || requiredColumnsByTitle.isEmpty()) return;
+        var requested = new LinkedHashMap<String, Integer>();
+        requiredColumnsByTitle.forEach((title, count) -> {
+            var validTitle = requireSheetTitle(title);
+            if (count == null || count < 1) {
+                throw new IllegalArgumentException("required column count must be positive");
+            }
+            requested.put(validTitle, count);
+        });
+        var growthRequests = executeWithRefresh(token -> {
+            try {
+                var body = restClient.get()
+                        .uri(builder -> builder.path("/v4/spreadsheets/{id}")
+                                .queryParam("fields", "sheets.properties(sheetId,title,gridProperties.columnCount)")
+                                .build(spreadsheetId))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .retrieve()
+                        .body(String.class);
+                if (body == null || body.isBlank()) {
+                    throw GoogleSheetsException.contract("Google Sheets grid metadata response was empty");
+                }
+                var root = objectMapper.readTree(body);
+                var sheets = root.path("sheets");
+                if (!sheets.isArray()) throw GoogleSheetsException.contract("Google Sheets grid metadata was invalid");
+                var sheetIds = new LinkedHashMap<String, Integer>();
+                var existingColumns = new LinkedHashMap<String, Integer>();
+                for (var sheet : sheets) {
+                    var properties = sheet.path("properties");
+                    var titleNode = properties.path("title");
+                    if (!titleNode.isTextual() || !requested.containsKey(titleNode.asText())) continue;
+                    var title = titleNode.asText();
+                    var sheetId = properties.path("sheetId");
+                    var columnCount = properties.path("gridProperties").path("columnCount");
+                    if (!sheetId.isIntegralNumber() || !sheetId.canConvertToInt() || sheetId.intValue() < 0
+                            || !columnCount.isIntegralNumber() || !columnCount.canConvertToInt()
+                            || columnCount.intValue() < 1) {
+                        throw GoogleSheetsException.contract("Google Sheets grid metadata was incomplete");
+                    }
+                    sheetIds.put(title, sheetId.intValue());
+                    existingColumns.put(title, columnCount.intValue());
+                }
+                if (!existingColumns.keySet().containsAll(requested.keySet())) {
+                    throw GoogleSheetsException.contract("Google Sheets grid metadata omitted a requested tab");
+                }
+                var requests = new ArrayList<Map<String, Object>>();
+                requested.forEach((title, requiredCount) -> {
+                    var currentCount = existingColumns.get(title);
+                    if (currentCount < requiredCount) {
+                        requests.add(Map.of("appendDimension", Map.of(
+                                "sheetId", sheetIds.get(title),
+                                "dimension", "COLUMNS",
+                                "length", requiredCount - currentCount)));
+                    }
+                });
+                return requests;
+            } catch (GoogleSheetsException exception) {
+                throw exception;
+            } catch (RestClientResponseException exception) {
+                throw GoogleSheetsException.http("Google Sheets grid metadata read failed", exception.getStatusCode().value());
+            } catch (RestClientException exception) {
+                throw GoogleSheetsException.network("Google Sheets grid metadata read failed");
+            } catch (JacksonException exception) {
+                throw GoogleSheetsException.contract("Google Sheets grid metadata response was invalid");
+            }
+        });
+        if (growthRequests.isEmpty()) return;
+        executeWithRefresh(token -> {
+            try {
+                restClient.post()
+                        .uri("/v4/spreadsheets/{id}:batchUpdate", spreadsheetId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(encode(Map.of("requests", growthRequests)))
+                        .retrieve()
+                        .toBodilessEntity();
+                return null;
+            } catch (RestClientResponseException exception) {
+                throw GoogleSheetsException.http("Google Sheets grid resize failed", exception.getStatusCode().value());
+            } catch (RestClientException exception) {
+                throw GoogleSheetsException.network("Google Sheets grid resize failed");
+            }
+        });
+    }
+
     private <T> T executeWithRefresh(java.util.function.Function<String, T> request) {
         var token = tokens.accessToken();
         try {
