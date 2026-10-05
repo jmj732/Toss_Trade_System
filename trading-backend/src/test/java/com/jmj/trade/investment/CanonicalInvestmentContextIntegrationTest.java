@@ -12,6 +12,8 @@ import com.jmj.trade.marketdata.StockDataProviderRegistry;
 import com.jmj.trade.marketdata.StockAnalysisInput;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
+import com.jmj.trade.sheets.InvestmentOsSheetModel;
+import com.jmj.trade.sheets.InvestmentOsSheetProperties;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -42,6 +45,7 @@ import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest {
@@ -90,6 +94,252 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                           "pullback":{"min":3,"max":3},"invalidate":{"min":0,"max":0}}'::jsonb,
                         '{}'::jsonb, ?, ?, ?)
                 """, UUID.randomUUID(), USER_ID, now, now, now);
+    }
+
+    @Test
+    void configuredSheetOwnerUsesThePersistedCombinedTossAndManualPortfolio() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var today = LocalDate.now(ZoneOffset.UTC).toString();
+        var accountState = accountStateWithManualRows(today, now);
+        var aggregate = InvestmentOsSheetModel.aggregate(accountState, now);
+        var metrics = InvestmentOsSheetModel.portfolioMetrics(
+                new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.metricsHeaders(), List.of()),
+                accountState, now);
+        var payload = mapper.createObjectNode();
+        payload.set("aggregate", mapper.valueToTree(Map.of(
+                "headers", aggregate.headers(), "rows", aggregate.rows())));
+        payload.set("metrics", mapper.valueToTree(Map.of(
+                "headers", metrics.headers(), "rows", metrics.rows())));
+        payload.set("accountState", mapper.valueToTree(Map.of(
+                "headers", accountState.headers(), "rows", accountState.rows())));
+        payload.put("manualStatus", "OK");
+        payload.put("manualAsOf", today);
+        payload.put("manualReadAt", now.toString());
+        payload.put("account1AsOf", now.toString());
+        payload.put("source", "TOSS_API+MANUAL_SHEET");
+        jdbc.update("""
+                INSERT INTO investment_os_portfolio_snapshots (
+                    id, user_id, attempt_status, attempted_at, error_code, payload, created_at
+                ) VALUES (?, ?, 'SUCCEEDED', ?, NULL, ?::jsonb, ?)
+                """, UUID.randomUUID(), USER_ID, OffsetDateTime.ofInstant(now, ZoneOffset.UTC),
+                mapper.writeValueAsString(payload), OffsetDateTime.ofInstant(now, ZoneOffset.UTC));
+
+        var portfolios = mock(PortfolioReadService.class);
+        var contextService = service(new StockDataProviderRegistry(List.of()), portfolios, "");
+        ReflectionTestUtils.setField(contextService, "investmentOsSheetProperties",
+                new InvestmentOsSheetProperties(true, "sheet-id", USER_ID,
+                        UUID.randomUUID(), InvestmentOsSheetModel.ACCOUNT_1,
+                        Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(10)));
+
+        var context = contextService.context(USER_ID);
+
+        assertThat(context.portfolio().positions()).extracting(InvestmentContextService.PositionView::ticker)
+                .containsExactly("AAPL", "MSFT");
+        var overlap = context.portfolio().positions().getFirst();
+        assertThat(overlap.quantity()).isEqualByComparingTo("5");
+        assertThat(overlap.marketValue()).isEqualByComparingTo("500.00");
+        assertThat(context.portfolio().positions().get(1).quantity()).isEqualByComparingTo("1");
+        assertThat(overlap.weight()).isEqualByComparingTo(
+                "0.7462686567164179104477611940298507");
+        verifyNoInteractions(portfolios);
+    }
+
+    @Test
+    void staleManualDateKeepsCombinedRiskValuesAndComputesPortfolioStress() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var oldManualDate = LocalDate.now(ZoneId.of("Asia/Seoul")).minusDays(8);
+        persistCombinedSnapshot(oldManualDate, now);
+        insertConfirmedThesis("AAPL");
+        insertConfirmedThesis("MSFT");
+        insertRiskPriceSnapshot("AAPL", now);
+        insertRiskPriceSnapshot("MSFT", now);
+        insertCorrelatedCloseHistory(List.of("AAPL", "MSFT"), now);
+
+        var service = configuredSheetContextService();
+        var context = service.context(USER_ID);
+
+        assertThat(context.portfolio().status()).isEqualTo("STALE");
+        assertThat(context.portfolio().manualStale()).isTrue();
+        assertThat(context.portfolio().riskNumbersAvailable()).isTrue();
+        assertThat(context.portfolio().positions()).allSatisfy(position -> {
+            assertThat(position.quantity()).isNotNull();
+            assertThat(position.weight()).isNotNull();
+        });
+        assertThat(context.portfolio().positions().stream().filter(position -> position.ticker().equals("AAPL"))
+                .findFirst().orElseThrow().accountsIncluded()).contains("ACCOUNT_1", "ACCOUNT_2");
+        assertThat(context.portfolio().positions().stream().filter(position -> position.ticker().equals("MSFT"))
+                .findFirst().orElseThrow().accountsIncluded()).isEqualTo("ACCOUNT_2");
+        var aapl = context.securities().stream().filter(security -> security.ticker().equals("AAPL"))
+                .findFirst().orElseThrow().risk();
+        assertThat(aapl.status()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+        assertThat(aapl.portfolioWeight()).isNotNull();
+        assertThat(aapl.invalidationDownside()).isEqualByComparingTo("0.20000000");
+        assertThat(aapl.plannedLossContribution()).isNotNull();
+        assertThat(aapl.thesisFailureStressStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+        assertThat(aapl.thesisFailureStress()).isNotNull();
+        assertThat(aapl.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+        assertThat(aapl.top2CorrelatedStress()).isNotNull();
+        assertThat(aapl.sizingEligible()).isFalse();
+    }
+
+    @Test
+    void cashRowsWithCurrencyTickersAreNotExposedAsSecurityPositions() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var today = LocalDate.now(ZoneOffset.UTC).toString();
+        var original = accountStateWithManualRows(today, now);
+        var rows = new ArrayList<>(original.rows());
+        for (var index = 0; index < rows.size(); index++) {
+            var row = new ArrayList<>(rows.get(index));
+            if ("ACCOUNT_2".equals(row.getFirst()) && "CASH_USD".equals(row.get(1))) {
+                row.set(1, "USD");
+                row.set(8, "");
+                rows.set(index, row);
+            }
+        }
+        var accountState = new InvestmentOsSheetModel.SheetTable(original.headers(), rows);
+        var aggregate = InvestmentOsSheetModel.aggregate(accountState, now);
+        var metrics = InvestmentOsSheetModel.portfolioMetrics(
+                new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.metricsHeaders(), List.of()),
+                accountState, now);
+        var payload = mapper.createObjectNode();
+        payload.set("aggregate", mapper.valueToTree(Map.of(
+                "headers", aggregate.headers(), "rows", aggregate.rows())));
+        payload.set("metrics", mapper.valueToTree(Map.of(
+                "headers", metrics.headers(), "rows", metrics.rows())));
+        payload.set("accountState", mapper.valueToTree(Map.of(
+                "headers", accountState.headers(), "rows", accountState.rows())));
+        payload.put("manualStatus", "OK");
+        payload.put("manualAsOf", today);
+        payload.put("manualReadAt", now.toString());
+        payload.put("account1AsOf", now.toString());
+        payload.put("source", "TOSS_API+MANUAL_SHEET");
+        jdbc.update("""
+                INSERT INTO investment_os_portfolio_snapshots (
+                    id, user_id, attempt_status, attempted_at, error_code, payload, created_at
+                ) VALUES (?, ?, 'SUCCEEDED', ?, NULL, ?::jsonb, ?)
+                """, UUID.randomUUID(), USER_ID, OffsetDateTime.ofInstant(now, ZoneOffset.UTC),
+                mapper.writeValueAsString(payload), OffsetDateTime.ofInstant(now, ZoneOffset.UTC));
+
+        var positions = configuredSheetContextService().context(USER_ID).portfolio().positions();
+
+        assertThat(positions).extracting(InvestmentContextService.PositionView::ticker)
+                .containsExactly("AAPL", "MSFT");
+    }
+
+    @Test
+    void staleAndUnconfiguredHeldRiskInputsKeepTopTwoStressUnknownWithoutThrowing() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        persistCombinedSnapshot(LocalDate.now(ZoneId.of("Asia/Seoul")).minusDays(8), now);
+        insertConfirmedThesis("AAPL");
+        insertRiskPriceSnapshot("AAPL", now);
+        insertRiskPriceSnapshot("MSFT", now);
+        insertCorrelatedCloseHistory(List.of("AAPL", "MSFT"), now);
+
+        var context = configuredSheetContextService().context(USER_ID);
+        var aapl = context.securities().stream().filter(security -> security.ticker().equals("AAPL"))
+                .findFirst().orElseThrow().risk();
+        var msft = context.securities().stream().filter(security -> security.ticker().equals("MSFT"))
+                .findFirst().orElseThrow().risk();
+
+        assertThat(aapl.status()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+        assertThat(aapl.plannedLossContribution()).isNotNull();
+        assertThat(msft.status()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_CONFIGURED);
+        assertThat(aapl.thesisFailureStress()).isNull();
+        assertThat(aapl.thesisFailureStressStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+        assertThat(aapl.top2CorrelatedStress()).isNull();
+        assertThat(aapl.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+    }
+
+    private InvestmentOsSheetModel.SheetTable accountStateWithManualRows(String today, Instant now) {
+        var headers = new ArrayList<>(InvestmentOsSheetModel.accountHeaders());
+        headers.add("asOf");
+        var account1 = List.of("ACCOUNT_1", "AAPL", "HOLDING", "USD", "3", "80", "100", "300",
+                "", "TOSS_API", "HIGH", now.toString(), "TOSS_QUOTE_API", now.toString(), "HELD", today);
+        var account2 = List.of("ACCOUNT_2", "AAPL", "HOLDING", "USD", "2", "90", "100", "200",
+                "", "MANUAL", "HIGH", "2026-10-04T08:00:00Z", "TOSS_QUOTE_API", now.toString(), "HELD", today);
+        var manualOnly = List.of("ACCOUNT_2", "MSFT", "HOLDING", "USD", "1", "15", "20", "20",
+                "", "MANUAL", "HIGH", "2026-10-04T08:00:00Z", "TOSS_QUOTE_API", now.toString(), "HELD", today);
+        var account1Cash = List.of("ACCOUNT_1", "CASH_USD", "CASH", "USD", "", "", "", "", "100",
+                "TOSS_API", "HIGH", now.toString(), "", "", "CASH", today);
+        var account2Cash = List.of("ACCOUNT_2", "CASH_USD", "CASH", "USD", "", "", "", "", "50",
+                "MANUAL", "HIGH", "2026-10-04T08:00:00Z", "", "", "CASH", today);
+        return new InvestmentOsSheetModel.SheetTable(headers,
+                List.of(account1, account2, manualOnly, account1Cash, account2Cash));
+    }
+
+    private void persistCombinedSnapshot(LocalDate manualAsOf, Instant now) throws Exception {
+        var accountState = accountStateWithManualRows(manualAsOf.toString(), now);
+        var aggregate = InvestmentOsSheetModel.aggregate(accountState, now);
+        var metrics = InvestmentOsSheetModel.portfolioMetrics(
+                new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.metricsHeaders(), List.of()),
+                accountState, now);
+        var payload = mapper.createObjectNode();
+        payload.set("aggregate", mapper.valueToTree(Map.of("headers", aggregate.headers(), "rows", aggregate.rows())));
+        payload.set("metrics", mapper.valueToTree(Map.of("headers", metrics.headers(), "rows", metrics.rows())));
+        payload.set("accountState", mapper.valueToTree(Map.of("headers", accountState.headers(), "rows", accountState.rows())));
+        payload.put("manualStatus", "OK");
+        payload.put("manualAsOf", manualAsOf.toString());
+        payload.put("manualReadAt", now.toString());
+        payload.put("account1AsOf", now.toString());
+        payload.put("source", "TOSS_API+MANUAL_SHEET");
+        jdbc.update("""
+                INSERT INTO investment_os_portfolio_snapshots (
+                    id, user_id, attempt_status, attempted_at, error_code, payload, created_at
+                ) VALUES (?, ?, 'SUCCEEDED', ?, NULL, ?::jsonb, ?)
+                """, UUID.randomUUID(), USER_ID, OffsetDateTime.ofInstant(now, ZoneOffset.UTC),
+                mapper.writeValueAsString(payload), OffsetDateTime.ofInstant(now, ZoneOffset.UTC));
+    }
+
+    private InvestmentContextService configuredSheetContextService() {
+        var service = service(new StockDataProviderRegistry(List.of()), null, "");
+        ReflectionTestUtils.setField(service, "investmentOsSheetProperties",
+                new InvestmentOsSheetProperties(true, "sheet-id", USER_ID,
+                        UUID.randomUUID(), InvestmentOsSheetModel.ACCOUNT_1,
+                        Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(10)));
+        return service;
+    }
+
+    private void insertConfirmedThesis(String ticker) {
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO investment_thesis_states (
+                    user_id, ticker, core_thesis, price_risk_trigger, price_risk_trigger_price,
+                    invalidation_status, classification, updated_at
+                ) VALUES (?, ?, 'Confirmed test thesis', 'Breaks below support', 80,
+                          'CONFIRMED', 'COMPOUNDER', ?)
+                """, USER_ID, ticker, now);
+    }
+
+    private void insertRiskPriceSnapshot(String ticker, Instant now) throws Exception {
+        var payload = mapper.createObjectNode();
+        payload.put("asOf", now.toString());
+        payload.set("price", mapper.readTree("""
+                {"latestPrice":100,"latestPriceAsOf":"%s","regularClose":100,
+                 "regularCloseAsOf":"%s","session":"REGULAR_CLOSE","status":"OK"}
+                """.formatted(now, now)));
+        jdbc.update("""
+                INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
+                VALUES (?, ?, ?, ?, ?::jsonb, ?)
+                """, UUID.randomUUID(), USER_ID, ticker, OffsetDateTime.ofInstant(now, ZoneOffset.UTC),
+                mapper.writeValueAsString(payload), OffsetDateTime.ofInstant(now, ZoneOffset.UTC));
+    }
+
+    private void insertCorrelatedCloseHistory(List<String> tickers, Instant now) {
+        var inputIds = tickers.stream().collect(java.util.stream.Collectors.toMap(
+                Function.identity(), this::ensureInputSnapshot));
+        for (int day = 0; day <= 30; day++) {
+            var asOf = now.minus(Duration.ofDays(30L - day));
+            var date = OffsetDateTime.ofInstant(asOf, ZoneOffset.UTC);
+            for (var ticker : tickers) {
+                var close = BigDecimal.valueOf(100L + day);
+                jdbc.update("""
+                        INSERT INTO investment_price_snapshots (
+                            id, user_id, input_snapshot_id, ticker, as_of, session,
+                            regular_close, regular_close_as_of, source, observed_at
+                        ) VALUES (?, ?, ?, ?, ?, 'REGULAR_CLOSE', ?, ?, 'SYNTHETIC_TEST', ?)
+                        """, UUID.randomUUID(), USER_ID, inputIds.get(ticker), ticker, date, close, date, date);
+            }
+        }
     }
 
     @Test

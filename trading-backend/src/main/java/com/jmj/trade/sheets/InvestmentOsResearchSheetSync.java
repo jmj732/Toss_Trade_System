@@ -49,7 +49,7 @@ final class InvestmentOsResearchSheetSync {
         var context = investment.context(userId);
         var policy = context.riskPolicy();
         var tables = new LinkedHashMap<String, Table>();
-        tables.put("Security Snapshot", security(context.securities()));
+        tables.put("Security Snapshot", security(context.portfolio(), context.securities()));
         tables.put("Thesis State", thesis(context.securities()));
         tables.put("Consensus History", consensusHistory(userId));
         tables.put("Watchlist", watchlist(context.watchlist()));
@@ -103,7 +103,10 @@ final class InvestmentOsResearchSheetSync {
         sheets.batchUpdateValues(spreadsheetId, updates);
     }
 
-    private Table security(List<InvestmentContextService.SecurityView> securities) {
+    private Table security(
+            InvestmentContextService.PortfolioView portfolio,
+            List<InvestmentContextService.SecurityView> securities
+    ) {
         var headers = List.of("Ticker", "As Of", "Quantity", "Weight", "Currency", "Regular Close",
                 "Regular Close As Of", "Latest Price", "Latest Price As Of", "Session", "Source",
                 "Secondary Source", "Price Status", "Trend Status", "SMA20", "SMA50", "RSI14",
@@ -133,7 +136,11 @@ final class InvestmentOsResearchSheetSync {
                 "Display Currency", "Display Currency Source", "Display Currency Source As Of",
                 "Display Currency Period", "Display Currency Status", "Risk Status",
                 "Thesis Failure Stress Status", "Top Two Correlated Status", "Risk Soft Budget Status",
-                "Risk Sizing Eligible"));
+                "Risk Sizing Eligible", "Combined Portfolio Source", "Combined Portfolio Status",
+                "Account 1 As Of", "Manual Account As Of", "Manual Read At", "Manual Account Status",
+                "Manual Account Stale", "Risk Inputs Available", "Position Source Coverage",
+                "Position Accounts Included", "Position Quantity As Of", "Position Price As Of",
+                "Position Manual As Of"));
         var rows = securities.stream().map(security -> {
             var price = security.price();
             var technical = security.technical();
@@ -190,7 +197,20 @@ final class InvestmentOsResearchSheetSync {
                     security.risk() == null ? "" : security.risk().thesisFailureStressStatus().name(),
                     security.risk() == null ? "" : security.risk().top2CorrelatedStatus().name(),
                     security.risk() == null ? "" : security.risk().softBudgetStatus(),
-                    security.risk() == null ? "" : security.risk().sizingEligible());
+                    security.risk() == null ? "" : security.risk().sizingEligible(),
+                    portfolio == null ? "" : portfolio.source(),
+                    portfolio == null ? "" : portfolio.status(),
+                    portfolio == null ? "" : instant(portfolio.account1AsOf()),
+                    portfolio == null ? "" : date(portfolio.manualAsOf()),
+                    portfolio == null ? "" : instant(portfolio.manualReadAt()),
+                    portfolio == null ? "" : portfolio.manualStatus(),
+                    portfolio != null && portfolio.manualStale(),
+                    portfolio != null && portfolio.riskNumbersAvailable(),
+                    position == null ? "" : position.sourceCoverage(),
+                    position == null ? "" : position.accountsIncluded(),
+                    position == null ? "" : instant(position.quantityAsOf()),
+                    position == null ? "" : instant(position.priceAsOf()),
+                    position == null ? "" : date(position.manualAsOf()));
         }).toList();
         return new Table(List.copyOf(extendedHeaders), rows);
     }

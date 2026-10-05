@@ -6,6 +6,8 @@ import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -346,6 +348,76 @@ public final class InvestmentOsSheetModel {
                 .filter(row -> account.equalsIgnoreCase(value(registry, row, "Account"))).count() == 1;
     }
 
+    public static boolean manualAccountEnabled(SheetTable registry) {
+        var rows = registry.rows().stream()
+                .filter(row -> ACCOUNT_2.equalsIgnoreCase(value(registry, row, "Account"))).toList();
+        if (rows.size() != 1) return false;
+        var row = rows.getFirst();
+        return "MANUAL".equalsIgnoreCase(value(registry, row, "Sync Mode"))
+                && "TRUE".equalsIgnoreCase(value(registry, row, "Enabled"));
+    }
+
+    /** Validates the configured manual account before it can replace the last accepted snapshot. */
+    public static boolean manualRowsStructurallyValid(SheetTable accountState) {
+        var table = accountTable(accountState);
+        var cashCurrencies = new LinkedHashSet<String>();
+        var holdingKeys = new LinkedHashSet<String>();
+        for (var row : table.rows()) {
+            if (!ACCOUNT_2.equalsIgnoreCase(value(table, row, "Account"))) continue;
+            var ticker = field(table, row, "Ticker", "Asset").trim().toUpperCase(Locale.ROOT);
+            var currency = value(table, row, "Currency").trim().toUpperCase(Locale.ROOT);
+            if (ticker.isBlank() || !currency.matches("[A-Z]{3}")) return false;
+            var cashRow = isCash(table, row, ticker);
+            if (cashRow && !cashCurrencies.add(currency)) return false;
+            if (!cashRow && !holdingKeys.add(ticker + "|" + currency)) return false;
+            var quantity = decimalValue(cashRow ? field(table, row, "Cash", "Quantity")
+                    : field(table, row, "Quantity"));
+            if (quantity == null || quantity.signum() < 0) return false;
+        }
+        return true;
+    }
+
+    /** Returns the oldest complete source date. Missing or malformed dates remain unknown. */
+    public static LocalDate manualAsOf(SheetTable accountState) {
+        var table = accountTable(accountState);
+        var rows = table.rows().stream()
+                .filter(row -> ACCOUNT_2.equalsIgnoreCase(value(table, row, "Account"))).toList();
+        if (rows.isEmpty()) return null;
+        var dates = rows.stream().map(row -> manualRowAsOf(table, row)).toList();
+        if (dates.stream().anyMatch(Objects::isNull)) return null;
+        return dates.stream().min(Comparator.naturalOrder()).orElse(null);
+    }
+
+    /** Returns a ticker's oldest complete source date, without borrowing another holding's date. */
+    public static LocalDate manualAsOf(SheetTable accountState, String ticker) {
+        var table = accountTable(accountState);
+        var rows = table.rows().stream()
+                .filter(row -> ACCOUNT_2.equalsIgnoreCase(value(table, row, "Account")))
+                .filter(row -> ticker.equalsIgnoreCase(field(table, row, "Ticker", "Asset"))).toList();
+        if (rows.isEmpty()) return null;
+        var dates = rows.stream().map(row -> manualRowAsOf(table, row)).toList();
+        if (dates.stream().anyMatch(Objects::isNull)) return null;
+        return dates.stream().min(Comparator.naturalOrder()).orElse(null);
+    }
+
+    /** Manual values may be used numerically, but source/date readiness requires verified row metadata. */
+    public static boolean manualRowsHaveVerifiedMetadata(SheetTable accountState, LocalDate notAfter) {
+        var table = accountTable(accountState);
+        var rows = table.rows().stream()
+                .filter(row -> ACCOUNT_2.equalsIgnoreCase(value(table, row, "Account"))).toList();
+        if (rows.isEmpty()) return true;
+        if (notAfter == null) return false;
+        return rows.stream().allMatch(row -> !value(table, row, "Source").isBlank()
+                && manualRowAsOf(table, row) != null
+                && !manualRowAsOf(table, row).isAfter(notAfter));
+    }
+
+    public static SheetTable withoutManualAccount(SheetTable accountState) {
+        var table = accountTable(accountState);
+        return table.withRows(table.rows().stream()
+                .filter(row -> !ACCOUNT_2.equalsIgnoreCase(value(table, row, "Account"))).toList());
+    }
+
     public static SheetTable refreshPrices(
             SheetTable current,
             List<BrokerSurfaceResponse.PriceView> prices,
@@ -508,7 +580,7 @@ public final class InvestmentOsSheetModel {
                 ? LEGACY_AGGREGATE_HEADERS : AGGREGATE_HEADERS);
     }
 
-    private static boolean isCash(SheetTable table, List<String> row, String ticker) {
+    public static boolean isCash(SheetTable table, List<String> row, String ticker) {
         return "CASH".equalsIgnoreCase(field(table, row, "Asset Type", "State"))
                 || ticker.toUpperCase(Locale.ROOT).startsWith("CASH_");
     }
@@ -691,6 +763,30 @@ public final class InvestmentOsSheetModel {
         } catch (RuntimeException ignored) {
             return value;
         }
+    }
+
+    private static LocalDate manualRowAsOf(SheetTable table, List<String> row) {
+        var explicit = firstNonblank(table, row, "asOf", "Manual As Of");
+        var date = parseDate(explicit);
+        if (date != null) return date;
+        if (!explicit.isBlank()) return null;
+        if (!table.hasColumn("Synced At")) return null;
+        var sourceTimestamp = firstNonblank(table, row, "Synced At");
+        try {
+            return Instant.parse(sourceTimestamp).atZone(java.time.ZoneId.of("Asia/Seoul")).toLocalDate();
+        } catch (RuntimeException ignored) {
+            try {
+                return java.time.OffsetDateTime.parse(sourceTimestamp)
+                        .atZoneSameInstant(java.time.ZoneId.of("Asia/Seoul")).toLocalDate();
+            } catch (RuntimeException ignoredOffset) {
+                return null;
+            }
+        }
+    }
+
+    private static LocalDate parseDate(String value) {
+        try { return LocalDate.parse(value); }
+        catch (RuntimeException ignored) { return null; }
     }
 
     private static BigDecimal decimalValue(String value) {

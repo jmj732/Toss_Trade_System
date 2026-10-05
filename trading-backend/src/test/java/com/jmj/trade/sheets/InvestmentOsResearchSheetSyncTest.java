@@ -12,6 +12,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -81,7 +82,11 @@ class InvestmentOsResearchSheetSyncTest {
                 "Valuation Metric Reasons", "Valuation Metric Provenance", "Display Currency",
                 "Display Currency Source", "Display Currency Source As Of", "Display Currency Period",
                 "Display Currency Status", "Risk Status", "Thesis Failure Stress Status",
-                "Top Two Correlated Status", "Risk Soft Budget Status", "Risk Sizing Eligible");
+                "Top Two Correlated Status", "Risk Soft Budget Status", "Risk Sizing Eligible",
+                "Combined Portfolio Source", "Combined Portfolio Status", "Account 1 As Of",
+                "Manual Account As Of", "Manual Read At", "Manual Account Status", "Manual Account Stale",
+                "Risk Inputs Available", "Position Source Coverage", "Position Accounts Included",
+                "Position Quantity As Of", "Position Price As Of", "Position Manual As Of");
         assertThat(security.getFirst()).startsWith("Ticker", "As Of", "Quantity", "Weight", "Currency");
         assertThat(security.getFirst().stream().filter("Currency"::equals).count()).isEqualTo(1L);
         assertThat(security.get(1)).contains("AAPL", new BigDecimal("101"), "REGULAR_CLOSE", "SOURCE_CONFLICT",
@@ -138,6 +143,28 @@ class InvestmentOsResearchSheetSyncTest {
         assertThat(security.get(1).get(security.getFirst().indexOf("Risk Soft Budget Status")))
                 .isEqualTo("DATA_MISSING");
         assertThat(security.get(1).get(security.getFirst().indexOf("Risk Sizing Eligible"))).isEqualTo(false);
+        assertThat(security.get(1).get(security.getFirst().indexOf("Combined Portfolio Source")))
+                .isEqualTo("TOSS_API+MANUAL_SHEET");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Combined Portfolio Status"))).isEqualTo("OK");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Account 1 As Of")))
+                .isEqualTo("2026-09-16T20:00:00Z");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Manual Account As Of")))
+                .isEqualTo("2026-09-16");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Manual Read At")))
+                .isEqualTo("2026-09-16T20:02:00Z");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Manual Account Status"))).isEqualTo("OK");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Manual Account Stale"))).isEqualTo(false);
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Inputs Available"))).isEqualTo(true);
+        assertThat(security.get(1).get(security.getFirst().indexOf("Position Source Coverage")))
+                .isEqualTo("TOSS_API+MANUAL_SHEET");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Position Accounts Included")))
+                .isEqualTo("ACCOUNT_1+ACCOUNT_2");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Position Quantity As Of")))
+                .isEqualTo("2026-09-16T20:00:00Z");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Position Price As Of")))
+                .isEqualTo("2026-09-16T20:01:00Z");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Position Manual As Of")))
+                .isEqualTo("2026-09-16");
         assertThat(security.get(1).get(security.getFirst().indexOf("Revenue Revision 30D")))
                 .isEqualTo(new BigDecimal("12.5"));
         assertThat(security.get(1).get(security.getFirst().indexOf("Revenue Revision 90D")))
@@ -346,8 +373,13 @@ class InvestmentOsResearchSheetSyncTest {
 
     private static InvestmentContextService.ContextView context() throws Exception {
         var mapper = new ObjectMapper();
+        var contextAsOf = Instant.parse("2026-09-16T20:00:00Z");
+        var position = new InvestmentContextService.PositionView(
+                "AAPL", "Apple", new BigDecimal("4"), "USD", new BigDecimal("400"), new BigDecimal("0.4"),
+                new BigDecimal("100"), contextAsOf, "ACCOUNT_1+ACCOUNT_2", "TOSS_API+MANUAL_SHEET",
+                contextAsOf, Instant.parse("2026-09-16T20:01:00Z"), LocalDate.parse("2026-09-16"));
         var security = new InvestmentContextService.SecurityView(
-                "AAPL", null, Instant.parse("2026-09-16T20:00:00Z"),
+                "AAPL", position, contextAsOf,
                 mapper.readTree("""
                         {"regularClose":100,"regularCloseAsOf":"2026-09-16T20:00:00Z",
                          "latestPrice":101,"latestPriceAsOf":"2026-09-16T20:01:00Z",
@@ -409,7 +441,9 @@ class InvestmentOsResearchSheetSyncTest {
                         com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
                         false, "DATA_MISSING"));
         var portfolio = new InvestmentContextService.PortfolioView(
-                Instant.parse("2026-09-16T20:00:00Z"), List.of(), Map.of(), false, List.of(), "OK");
+                contextAsOf, List.of(position), Map.of("USD", new BigDecimal("1000")), false, List.of(), "OK",
+                "TOSS_API+MANUAL_SHEET", contextAsOf, LocalDate.parse("2026-09-16"),
+                Instant.parse("2026-09-16T20:02:00Z"), "OK", "SUCCEEDED", false, true);
         var policy = new RiskPolicyService.RiskPolicySnapshot(0, BigDecimal.TEN, BigDecimal.TEN,
                 BigDecimal.ONE, BigDecimal.ONE, null, false);
         return new InvestmentContextService.ContextView(portfolio, List.of(security), List.of(), policy, List.of(), null);
