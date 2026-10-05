@@ -10,7 +10,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -70,7 +69,6 @@ class FreshPortfolioReadServiceTest {
         var reads = mock(PortfolioReadService.class);
         var sync = mock(AccountSyncService.class);
         var entered = new CountDownLatch(1);
-        var providerReads = new CountDownLatch(2);
         var release = new CountDownLatch(1);
         var view = view(OBSERVED_AT, false, null);
         when(reads.read(USER_ID, CONNECTION_ID)).thenReturn(view);
@@ -79,26 +77,66 @@ class FreshPortfolioReadServiceTest {
             assertThat(release.await(5, TimeUnit.SECONDS)).isTrue();
             return null;
         }).when(sync).sync(USER_ID, CONNECTION_ID);
-        var syncs = mock(ObjectProvider.class);
-        doAnswer(invocation -> {
-            providerReads.countDown();
-            return sync;
-        }).when(syncs).getIfAvailable();
+        var syncs = provider(sync);
 
         var service = new FreshPortfolioReadService(reads, syncs);
-        try (var executor = Executors.newFixedThreadPool(2)) {
-            var first = CompletableFuture.supplyAsync(() -> service.read(USER_ID, CONNECTION_ID), executor);
+        var first = new CompletableFuture<PortfolioReadService.PortfolioView>();
+        var second = new CompletableFuture<PortfolioReadService.PortfolioView>();
+        var firstReader = new Thread(() -> completeRead(first, service), "first-portfolio-reader");
+        var secondReader = new Thread(() -> completeRead(second, service), "second-portfolio-reader");
+        firstReader.start();
+        try {
             assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
-            var second = CompletableFuture.supplyAsync(() -> service.read(USER_ID, CONNECTION_ID), executor);
-            assertThat(providerReads.await(5, TimeUnit.SECONDS)).isTrue();
+            secondReader.start();
+            assertThat(awaitSharedRefreshJoin(secondReader, 5, TimeUnit.SECONDS))
+                    .as("second reader should be waiting in the in-flight CompletableFuture join")
+                    .isTrue();
             verify(sync, times(1)).sync(USER_ID, CONNECTION_ID);
+        } finally {
             release.countDown();
-
-            assertThat(first.get(5, TimeUnit.SECONDS)).isSameAs(view);
-            assertThat(second.get(5, TimeUnit.SECONDS)).isSameAs(view);
+            firstReader.join(TimeUnit.SECONDS.toMillis(5));
+            secondReader.join(TimeUnit.SECONDS.toMillis(5));
         }
 
+        assertThat(first.get(5, TimeUnit.SECONDS)).isSameAs(view);
+        assertThat(second.get(5, TimeUnit.SECONDS)).isSameAs(view);
         verify(sync, times(1)).sync(USER_ID, CONNECTION_ID);
+
+        assertThat(service.read(USER_ID, CONNECTION_ID)).isSameAs(view);
+        verify(sync, times(2)).sync(USER_ID, CONNECTION_ID);
+    }
+
+    private static void completeRead(
+            CompletableFuture<PortfolioReadService.PortfolioView> result,
+            FreshPortfolioReadService service
+    ) {
+        try {
+            result.complete(service.read(USER_ID, CONNECTION_ID));
+        } catch (Throwable failure) {
+            result.completeExceptionally(failure);
+        }
+    }
+
+    private static boolean awaitSharedRefreshJoin(Thread reader, long timeout, TimeUnit unit) {
+        var deadline = System.nanoTime() + unit.toNanos(timeout);
+        do {
+            if (isWaitingInRefreshJoin(reader)) return true;
+            Thread.yield();
+        } while (System.nanoTime() < deadline);
+        return isWaitingInRefreshJoin(reader);
+    }
+
+    private static boolean isWaitingInRefreshJoin(Thread reader) {
+        if (reader.getState() != Thread.State.WAITING) return false;
+        var inRefresh = false;
+        var inFutureJoin = false;
+        for (var frame : reader.getStackTrace()) {
+            inRefresh |= frame.getClassName().equals(FreshPortfolioReadService.class.getName())
+                    && frame.getMethodName().equals("refresh");
+            inFutureJoin |= frame.getClassName().equals(CompletableFuture.class.getName())
+                    && (frame.getMethodName().equals("waitingGet") || frame.getMethodName().equals("join"));
+        }
+        return inRefresh && inFutureJoin;
     }
 
     private static PortfolioReadService.PortfolioView view(
