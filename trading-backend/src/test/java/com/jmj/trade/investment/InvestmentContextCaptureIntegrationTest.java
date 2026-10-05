@@ -12,6 +12,10 @@ import com.jmj.trade.marketdata.ProviderValue;
 import com.jmj.trade.marketdata.StockDataProvider;
 import com.jmj.trade.marketdata.StockDataProviderId;
 import com.jmj.trade.marketdata.StockDataProviderRegistry;
+import com.jmj.trade.investment.tactical.TacticalOverlayCalculator;
+import com.jmj.trade.investment.tactical.TacticalOverlayAggregationCalculator;
+import com.jmj.trade.investment.tactical.TacticalOverlayProperties;
+import com.jmj.trade.investment.tactical.TacticalOverlayService;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
 import org.flywaydb.core.Flyway;
@@ -900,6 +904,83 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         verify(surface).candles(USER_ID, connectionId, "AAPL", "1d", 100, null, false);
         service(new StockDataProviderRegistry(List.of(provider(true))), surface).captureQuoteUpdates(USER_ID);
         verify(surface, org.mockito.Mockito.times(1)).candles(USER_ID, connectionId, "AAPL", "1d", 100, null, false);
+    }
+
+    @Test
+    void datedTossCandleHistoryWithUnavailableOuterAsOfFeedsTacticalOverlay() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var portfolios = mock(PortfolioReadService.class);
+        when(portfolios.read(USER_ID, connectionId)).thenReturn(new PortfolioReadService.PortfolioView(
+                UUID.randomUUID(), Instant.now(), false, null, false, List.of(), List.of(),
+                null, List.of(), Map.of()));
+        var date = LocalDate.of(2026, 10, 2);
+        var barTimestamp = date.atStartOfDay(java.time.ZoneId.of("America/New_York")).toInstant();
+        var candle = new BrokerSurfaceResponse.CandleView(barTimestamp,
+                new BigDecimal("100"), new BigDecimal("101"), new BigDecimal("99"),
+                new BigDecimal("100"), BigDecimal.ZERO, "USD");
+        var quoteTimestamp = Instant.parse("2026-10-02T23:50:00Z");
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("100"), null, null,
+                        "USD", quoteTimestamp, quoteTimestamp))));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", date))
+                .thenReturn(calendarResponse("2026-10-02", "2026-10-02T09:30:00-04:00",
+                        "2026-10-02T16:00:00-04:00", "2026-10-02T16:00:00-04:00",
+                        "2026-10-03T00:00:00-04:00"));
+        for (var ticker : List.of("AAPL", "SPY")) {
+            when(surface.candles(USER_ID, connectionId, ticker, "1d", 100, null, false))
+                    .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                            ticker, "1d", false, List.of(candle), null)));
+        }
+
+        var riskPolicies = mock(RiskPolicyService.class);
+        when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
+                0, new BigDecimal("10000000"), new BigDecimal("10000"),
+                new BigDecimal("100"), new BigDecimal("0.25"), false));
+        var surfaces = mock(ObjectProvider.class);
+        when(surfaces.getIfAvailable()).thenReturn(surface);
+        var context = new InvestmentContextService(jdbc, mapper, transactions,
+                new StockDataProviderRegistry(List.of()), surfaces, portfolios,
+                mock(MonitoringWatchlistService.class), riskPolicies, Duration.ofMinutes(15),
+                Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10));
+        var overlayProperties = TacticalOverlayProperties.defaults();
+        context.setTacticalOverlayService(new TacticalOverlayService(jdbc, mapper,
+                new TacticalOverlayCalculator(overlayProperties), overlayProperties,
+                new TacticalOverlayAggregationCalculator(), "AAPL"));
+
+        assertThat(context.capture(USER_ID)).isEqualTo(1);
+
+        var input = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM analysis_input_snapshots
+                 WHERE user_id = ? AND symbol = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        var candleHistory = java.util.stream.StreamSupport.stream(
+                        input.path("observations").spliterator(), false)
+                .filter(observation -> "price.regularCloseHistory".equals(observation.path("field").asText()))
+                .filter(observation -> "TOSS".equals(observation.path("provider").asText()))
+                .findFirst().orElseThrow();
+        assertThat(candleHistory.path("value").isArray()).isTrue();
+        assertThat(candleHistory.path("value").path(0).path("timestamp").asText())
+                .isEqualTo(barTimestamp.toString());
+        assertThat(candleHistory.path("missingData").toString()).isEqualTo("[\"AS_OF_UNAVAILABLE\"]");
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_tactical_overlay_bar_snapshots
+                 WHERE user_id = ? AND ticker IN ('AAPL', 'SPY') AND bar_date = ?
+                """, Integer.class, USER_ID, date)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_tactical_overlay_bar_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS'
+                   AND source_as_of = ? AND close_price = 100
+                """, Integer.class, USER_ID, OffsetDateTime.ofInstant(barTimestamp, ZoneOffset.UTC))).isEqualTo(1);
+
+        var capturedContext = context.context(USER_ID);
+        var security = capturedContext.securities().stream()
+                .filter(value -> "AAPL".equals(value.ticker())).findFirst().orElseThrow();
+        assertThat(security.tacticalOverlay().asOf()).isEqualTo(date);
+        assertThat(security.tacticalOverlay().indicators().isArray()).isTrue();
+        assertThat(security.tacticalOverlay().indicators().size()).isEqualTo(1);
+        assertThat(capturedContext.tacticalOverlay().market().path("benchmarkCoverage").asInt()).isEqualTo(1);
     }
 
     @Test

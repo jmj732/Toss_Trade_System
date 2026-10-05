@@ -1,6 +1,7 @@
 package com.jmj.trade.investment;
 
 import com.jmj.trade.investment.InvestmentDataCalculator.DataStatus;
+import com.jmj.trade.investment.tactical.TacticalOverlayService;
 import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
@@ -24,6 +25,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
@@ -90,6 +92,7 @@ public final class InvestmentContextService {
     private final Duration fundamentalStaleAfter;
     private final Duration consensusStaleAfter;
     private InvestmentOsSheetProperties investmentOsSheetProperties;
+    private TacticalOverlayService tacticalOverlayService;
 
     @Value("${investment.data.additional-symbols:}")
     private String additionalSymbols = "";
@@ -127,6 +130,11 @@ public final class InvestmentContextService {
     @Autowired(required = false)
     public void setInvestmentOsSheetProperties(InvestmentOsSheetProperties properties) {
         this.investmentOsSheetProperties = properties;
+    }
+
+    @Autowired(required = false)
+    public void setTacticalOverlayService(TacticalOverlayService service) {
+        this.tacticalOverlayService = service;
     }
 
     private boolean configuredSheetOwner(UUID userId) {
@@ -444,6 +452,10 @@ public final class InvestmentContextService {
         watchEntries.stream().filter(entry -> !"INVALIDATED".equals(entry.status()))
                 .map(MonitoringWatchlistService.WatchlistEntry::symbol).forEach(symbols::add);
         additionalSymbols().forEach(symbols::add);
+        if (tacticalOverlayService != null) tacticalOverlayService.trackedSymbols().forEach(symbols::add);
+        var tacticalReadModel = tacticalOverlayService == null
+                ? new TacticalOverlayService.ReadModel(TacticalOverlayPortfolioView.notConfigured(), Map.of(), Map.of())
+                : tacticalOverlayService.context(userId, List.copyOf(symbols));
 
         var positions = new LinkedHashMap<String, PositionView>();
         portfolio.positions().forEach(position -> positions.put(position.ticker(), position));
@@ -483,7 +495,8 @@ public final class InvestmentContextService {
                     node(snapshot, "valuation"),
                     node(snapshot, "readiness"),
                     theses.get(symbol),
-                    risk);
+                    risk,
+                    tacticalReadModel.securities().getOrDefault(symbol, SecurityTacticalOverlayView.notConfigured()));
         }).toList();
         return new ContextView(
                 portfolio,
@@ -491,7 +504,61 @@ public final class InvestmentContextService {
                 watchEntries.stream().map(InvestmentContextService::watchlistView).toList(),
                 riskPolicies.current(userId),
                 decisionLedger(userId, 50),
-                pipelineState(userId, "SECURITY_DATA"));
+                pipelineState(userId, "SECURITY_DATA"),
+                tacticalReadModel.portfolio(),
+                tacticalReadModel.decisions());
+    }
+
+    public TacticalOverlayService.TacticalInputsView tacticalOverlayInputs(UUID userId) {
+        requireUser(userId);
+        return tacticalService().inputs(userId);
+    }
+
+    public UUID putTacticalAnchor(UUID userId, String ticker, TacticalOverlayService.AnchorInput input) {
+        requireUser(userId);
+        return tacticalService().putAnchor(userId, ticker, input);
+    }
+
+    public UUID deleteTacticalAnchor(UUID userId, String ticker, String anchorId, Instant sourceAsOf) {
+        requireUser(userId);
+        return tacticalService().deleteAnchor(userId, ticker, anchorId, sourceAsOf);
+    }
+
+    public UUID putTacticalTheme(UUID userId, TacticalOverlayService.ThemeInput input) {
+        requireUser(userId);
+        return tacticalService().putTheme(userId, input);
+    }
+
+    public UUID deleteTacticalTheme(UUID userId, String themeId, Instant sourceAsOf) {
+        requireUser(userId);
+        return tacticalService().deleteTheme(userId, themeId, sourceAsOf);
+    }
+
+    public UUID putTacticalThemeMapping(UUID userId, TacticalOverlayService.ThemeMappingInput input) {
+        requireUser(userId);
+        return tacticalService().putThemeMapping(userId, input);
+    }
+
+    public UUID deleteTacticalThemeMapping(UUID userId, String themeId, String ticker,
+                                           LocalDate effectiveDate, Instant sourceAsOf) {
+        requireUser(userId);
+        return tacticalService().deleteThemeMapping(userId, themeId, ticker, effectiveDate, sourceAsOf);
+    }
+
+    public UUID putTacticalPerformanceEntry(UUID userId, String ticker,
+                                            TacticalOverlayService.PerformanceInput input) {
+        requireUser(userId);
+        return tacticalService().putPerformanceEntry(userId, ticker, input);
+    }
+
+    public UUID deleteTacticalPerformanceEntry(UUID userId, String ticker, String key, Instant sourceAsOf) {
+        requireUser(userId);
+        return tacticalService().deletePerformanceEntry(userId, ticker, key, sourceAsOf);
+    }
+
+    private TacticalOverlayService tacticalService() {
+        if (tacticalOverlayService == null) throw new IllegalStateException("tactical overlay service unavailable");
+        return tacticalOverlayService;
     }
 
     public int capture(UUID userId) {
@@ -537,6 +604,9 @@ public final class InvestmentContextService {
                     canonicalMissing = true;
                 }
                 captured++;
+            }
+            if (selectedFields == null && tacticalOverlayService != null) {
+                missingOptionalData |= captureTacticalOverlay(userId, tossQuotes, calendars);
             }
             if (quoteCanonicalMissing) {
                 markPipeline(userId, pipeline, "FAILED", null,
@@ -602,6 +672,10 @@ public final class InvestmentContextService {
                         timestamp(clock.instant().minus(fundamentalStaleAfter)), timestamp(clock.instant()));
                 if (!Boolean.TRUE.equals(hasPrice) || !Boolean.TRUE.equals(hasFundamental)) return true;
             }
+            if (tacticalOverlayService != null
+                    && tacticalOverlayService.needsInitialCapture(userId, List.copyOf(captureSymbols(userId)))) {
+                return true;
+            }
         }
         return false;
     }
@@ -642,7 +716,48 @@ public final class InvestmentContextService {
                  ORDER BY symbol
                 """, (resultSet, rowNum) -> resultSet.getString(1), userId).forEach(symbols::add);
         additionalSymbols().forEach(symbols::add);
+        if (tacticalOverlayService != null) tacticalOverlayService.trackedSymbols().forEach(symbols::add);
         return symbols;
+    }
+
+    private boolean captureTacticalOverlay(UUID userId, TossQuoteSource quotes,
+                                           Map<LocalDate, JsonNode> calendars) {
+        var attemptedAt = clock.instant();
+        boolean benchmarkMissing = quotes == null;
+        if (!benchmarkMissing) {
+            var emptyInput = new StockAnalysisInput(UUID.randomUUID(), "SPY", "TACTICAL_V1", attemptedAt, List.of());
+            var candleInput = withTossCandles(userId, emptyInput, quotes, calendars);
+            var history = candleInput.observations().stream()
+                    .filter(value -> "price.regularCloseHistory".equals(value.field()))
+                    .filter(value -> value.provider() == StockDataProviderId.TOSS)
+                    .filter(InvestmentContextService::usableTacticalBarObservation)
+                    .findFirst().orElse(null);
+            if (history == null) {
+                benchmarkMissing = true;
+            } else {
+                tacticalOverlayService.recordBenchmarkBars(userId, history.value(), candleInput.collectedAt());
+            }
+        }
+        try {
+            tacticalOverlayService.refresh(userId);
+        } catch (RuntimeException ignored) {
+            tacticalOverlayService.recordUnavailableBenchmark(userId, attemptedAt, "TACTICAL_REFRESH_FAILED");
+            return true;
+        }
+        if (benchmarkMissing) {
+            tacticalOverlayService.recordUnavailableBenchmark(userId, attemptedAt,
+                    quotes == null ? "TOSS_CONNECTION_UNAVAILABLE" : "TOSS_CANDLES_UNAVAILABLE");
+        }
+        return benchmarkMissing;
+    }
+
+    private static boolean usableTacticalBarObservation(StockAnalysisInput.Observation observation) {
+        return observation != null && observation.provider() == StockDataProviderId.TOSS
+                && "price.regularCloseHistory".equals(observation.field())
+                && observation.value() != null && observation.value().isArray()
+                && observation.missingData().contains("AS_OF_UNAVAILABLE")
+                && observation.missingData().stream().allMatch(reason -> "AS_OF_UNAVAILABLE".equals(reason)
+                        || "TOSS_CANDLE_DUPLICATE_CONFLICT".equals(reason));
     }
 
     private Set<String> additionalSymbols() {
@@ -772,6 +887,7 @@ public final class InvestmentContextService {
 
             var marketDate = collectedAt.atZone(NEW_YORK).toLocalDate();
             var candlesByDate = new java.util.TreeMap<LocalDate, BrokerSurfaceResponse.CandleView>();
+            var conflictingCandles = new java.util.TreeMap<LocalDate, List<BrokerSurfaceResponse.CandleView>>();
             var conflictingDates = new java.util.HashSet<LocalDate>();
             var rejected = new LinkedHashSet<String>();
             for (var candle : series.candles()) {
@@ -821,12 +937,20 @@ public final class InvestmentContextService {
                         continue;
                     }
                 }
+                if (conflictingDates.contains(date)) {
+                    var candidates = conflictingCandles.get(date);
+                    if (candidates.stream().noneMatch(existing -> sameCandle(existing, candle))) candidates.add(candle);
+                    continue;
+                }
                 var previous = candlesByDate.putIfAbsent(date, candle);
-                if (previous != null && !sameCandle(previous, candle)) conflictingDates.add(date);
+                if (previous != null && !sameCandle(previous, candle)) {
+                    conflictingDates.add(date);
+                    candlesByDate.remove(date);
+                    conflictingCandles.put(date, new ArrayList<>(List.of(previous, candle)));
+                }
             }
-            conflictingDates.forEach(candlesByDate::remove);
             if (!conflictingDates.isEmpty()) rejected.add("TOSS_CANDLE_DUPLICATE_CONFLICT");
-            if (candlesByDate.isEmpty()) {
+            if (candlesByDate.isEmpty() && conflictingCandles.isEmpty()) {
                 if (rejected.isEmpty()) rejected.add("TOSS_CANDLES_EMPTY");
                 rejected.forEach(reason -> observations.add(
                         tossMissing("price.regularCloseHistory", reason, collectedAt)));
@@ -835,6 +959,23 @@ public final class InvestmentContextService {
 
             var rows = objectMapper.createArrayNode();
             candlesByDate.forEach((date, candle) -> {
+                addTossCandleRow(rows, date, candle, false);
+            });
+            conflictingCandles.forEach((date, candidates) -> candidates.forEach(candle ->
+                    addTossCandleRow(rows, date, candle, true)));
+            observations.add(new StockAnalysisInput.Observation(
+                    "price.regularCloseHistory", rows, null, null, null, StockDataProviderId.TOSS,
+                    null, collectedAt, List.of("AS_OF_UNAVAILABLE")));
+            rejected.forEach(reason -> observations.add(
+                    tossMissing("price.regularCloseHistory", reason, collectedAt)));
+        } catch (RuntimeException ignored) {
+            observations.add(tossMissing("price.regularCloseHistory", "TOSS_CANDLES_UNAVAILABLE", collectedAt));
+        }
+        return withObservations(input, observations);
+    }
+
+    private static void addTossCandleRow(ArrayNode rows, LocalDate date,
+                                         BrokerSurfaceResponse.CandleView candle, boolean sourceConflict) {
                 var row = rows.addObject();
                 row.put("date", date.toString());
                 row.put("timestamp", candle.timestamp().toString());
@@ -845,16 +986,7 @@ public final class InvestmentContextService {
                 row.put("close", candle.closePrice());
                 row.put("volume", candle.volume());
                 row.put("currency", candle.currency());
-            });
-            observations.add(new StockAnalysisInput.Observation(
-                    "price.regularCloseHistory", rows, null, null, null, StockDataProviderId.TOSS,
-                    null, collectedAt, List.of("AS_OF_UNAVAILABLE")));
-            rejected.forEach(reason -> observations.add(
-                    tossMissing("price.regularCloseHistory", reason, collectedAt)));
-        } catch (RuntimeException ignored) {
-            observations.add(tossMissing("price.regularCloseHistory", "TOSS_CANDLES_UNAVAILABLE", collectedAt));
-        }
-        return withObservations(input, observations);
+                row.put("sourceConflict", sourceConflict);
     }
 
     private JsonNode tossCalendarCached(
@@ -1173,6 +1305,13 @@ public final class InvestmentContextService {
                 hasher.hashCanonical(canonical), timestamp(input.collectedAt()), now);
 
         var groups = groups(input);
+        if (persistFinancialSnapshots && tacticalOverlayService != null) {
+            var tossBars = observation(groups.get(StockDataProviderId.TOSS), "price.regularCloseHistory");
+            if (usableTacticalBarObservation(tossBars)) {
+                tacticalOverlayService.recordTossBars(
+                        userId, input.symbol(), tossBars.value(), input.collectedAt(), input.snapshotId());
+            }
+        }
         var priceQuotes = sourceQuotes(userId, input.symbol(), groups, input.collectedAt());
         var price = InvestmentDataCalculator.assessPrices(
                 priceQuotes, input.collectedAt(), priceStaleAfter, regularCloseStaleAfter);
@@ -1712,7 +1851,11 @@ public final class InvestmentContextService {
             var onlyOuterAsOfMissing = observation.missingData().stream()
                     .allMatch("AS_OF_UNAVAILABLE"::equals);
             var datedHistory = "price.regularCloseHistory".equals(observation.field())
-                    && observation.value().isArray() && onlyOuterAsOfMissing;
+                    && observation.provider() == StockDataProviderId.TOSS
+                    && observation.value().isArray()
+                    && observation.missingData().contains("AS_OF_UNAVAILABLE")
+                    && observation.missingData().stream().allMatch(reason -> "AS_OF_UNAVAILABLE".equals(reason)
+                            || "TOSS_CANDLE_DUPLICATE_CONFLICT".equals(reason));
             var explicitSessionMetadata = "price.session".equals(observation.field())
                     && normalizeSession(text(observation.value())) != null && onlyOuterAsOfMissing;
             if (!observation.missingData().isEmpty() && !datedHistory && !explicitSessionMetadata) continue;
@@ -1821,6 +1964,9 @@ public final class InvestmentContextService {
         var latestAllowedDate = collectedAt.atZone(ZoneOffset.UTC).toLocalDate();
         for (var row : value) {
             if (row == null || !row.isObject()) continue;
+            var sourceConflict = row.get("sourceConflict");
+            if (tossHistory && sourceConflict != null && sourceConflict.isBoolean()
+                    && sourceConflict.booleanValue()) continue;
             var dateText = text(row.get("date"));
             var close = decimal(row.get("close"));
             if (dateText == null || close == null || close.signum() <= 0) continue;
@@ -3324,8 +3470,21 @@ public final class InvestmentContextService {
             List<WatchlistView> watchlist,
             RiskPolicyService.RiskPolicySnapshot riskPolicy,
             List<DecisionView> decisionLedger,
-            PipelineView pipeline
+            PipelineView pipeline,
+            TacticalOverlayPortfolioView tacticalOverlay,
+            Map<UUID, DecisionTacticalOverlayView> decisionOverlays
     ) {
+        public ContextView(PortfolioView portfolio, List<SecurityView> securities,
+                           List<WatchlistView> watchlist, RiskPolicyService.RiskPolicySnapshot riskPolicy,
+                           List<DecisionView> decisionLedger, PipelineView pipeline) {
+            this(portfolio, securities, watchlist, riskPolicy, decisionLedger, pipeline,
+                    TacticalOverlayPortfolioView.notConfigured(), Map.of());
+        }
+
+        public ContextView {
+            tacticalOverlay = tacticalOverlay == null ? TacticalOverlayPortfolioView.notConfigured() : tacticalOverlay;
+            decisionOverlays = decisionOverlays == null ? Map.of() : Map.copyOf(decisionOverlays);
+        }
     }
 
     public record PortfolioView(
@@ -3367,7 +3526,45 @@ public final class InvestmentContextService {
             JsonNode valuation,
             JsonNode readiness,
             ThesisView thesis,
-            RiskContributionView risk
+            RiskContributionView risk,
+            SecurityTacticalOverlayView tacticalOverlay
+    ) {
+        public SecurityView(String ticker, PositionView position, Instant asOf, JsonNode price, JsonNode technical,
+                            JsonNode fundamentals, JsonNode consensus, JsonNode revision, JsonNode valuation,
+                            JsonNode readiness, ThesisView thesis, RiskContributionView risk) {
+            this(ticker, position, asOf, price, technical, fundamentals, consensus, revision, valuation,
+                    readiness, thesis, risk, SecurityTacticalOverlayView.notConfigured());
+        }
+
+        public SecurityView {
+            tacticalOverlay = tacticalOverlay == null ? SecurityTacticalOverlayView.notConfigured() : tacticalOverlay;
+        }
+    }
+
+    public record TacticalOverlayPortfolioView(
+            String status, LocalDate asOf, String source, Instant sourceAsOf, JsonNode market, JsonNode themes
+    ) {
+        public static TacticalOverlayPortfolioView notConfigured() {
+            return new TacticalOverlayPortfolioView("NOT_CONFIGURED", null, null, null, null, null);
+        }
+    }
+
+    public record SecurityTacticalOverlayView(
+            String status, String reason, String themeId, String trendStage, String entrySetup,
+            BigDecimal initialRiskPrice, String overlayEffect, String source, Instant sourceAsOf,
+            LocalDate asOf, String overlayVersion, JsonNode indicators, JsonNode events,
+            JsonNode cohorts, JsonNode anchoredVwaps, JsonNode performance
+    ) {
+        public static SecurityTacticalOverlayView notConfigured() {
+            return new SecurityTacticalOverlayView("NOT_CONFIGURED", "TACTICAL_INPUTS_NOT_CONFIGURED",
+                    null, null, null, null, null, null, null, null, "TACTICAL_V1",
+                    null, null, null, null, null);
+        }
+    }
+
+    public record DecisionTacticalOverlayView(
+            UUID decisionId, String status, String entrySetup, BigDecimal initialRiskPrice,
+            String overlayEffect, String source, Instant sourceAsOf, String overlayVersion, JsonNode performance
     ) {
     }
 

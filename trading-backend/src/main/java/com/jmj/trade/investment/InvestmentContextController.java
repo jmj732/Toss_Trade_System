@@ -3,6 +3,7 @@ package com.jmj.trade.investment;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -16,6 +17,8 @@ import org.springframework.web.bind.annotation.RestController;
 import java.security.Principal;
 import java.util.List;
 import java.util.UUID;
+import java.time.Instant;
+import java.time.LocalDate;
 
 @RestController
 @RequestMapping("/investment")
@@ -55,6 +58,73 @@ final class InvestmentContextController {
             @RequestBody InvestmentContextService.DecisionInput input
     ) {
         return service.recordDecision(userId(principal), input);
+    }
+
+    @GetMapping("/tactical-overlay/inputs")
+    com.jmj.trade.investment.tactical.TacticalOverlayService.TacticalInputsView tacticalInputs(
+            Principal principal
+    ) {
+        return service.tacticalOverlayInputs(userId(principal));
+    }
+
+    @PutMapping("/securities/{ticker}/avwap-anchors")
+    UUID avwapAnchor(
+            Principal principal,
+            @PathVariable String ticker,
+            @RequestBody com.jmj.trade.investment.tactical.TacticalOverlayService.AnchorInput input
+    ) {
+        return service.putTacticalAnchor(userId(principal), ticker, input);
+    }
+
+    @DeleteMapping("/securities/{ticker}/avwap-anchors/{anchorId}")
+    UUID deleteAvwapAnchor(Principal principal, @PathVariable String ticker, @PathVariable String anchorId,
+                           @RequestParam Instant sourceAsOf) {
+        return service.deleteTacticalAnchor(userId(principal), ticker, anchorId, sourceAsOf);
+    }
+
+    @PutMapping("/tactical-overlay/themes")
+    UUID tacticalTheme(Principal principal,
+                       @RequestBody com.jmj.trade.investment.tactical.TacticalOverlayService.ThemeInput input) {
+        return service.putTacticalTheme(userId(principal), input);
+    }
+
+    @DeleteMapping("/tactical-overlay/themes/{themeId}")
+    UUID deleteTacticalTheme(Principal principal, @PathVariable String themeId,
+                             @RequestParam Instant sourceAsOf) {
+        return service.deleteTacticalTheme(userId(principal), themeId, sourceAsOf);
+    }
+
+    @PutMapping("/tactical-overlay/themes/{themeId}/members/{ticker}")
+    UUID tacticalThemeMember(
+            Principal principal,
+            @PathVariable String themeId,
+            @PathVariable String ticker,
+            @RequestBody com.jmj.trade.investment.tactical.TacticalOverlayService.ThemeMappingInput input
+    ) {
+        var pathBoundInput = new com.jmj.trade.investment.tactical.TacticalOverlayService.ThemeMappingInput(
+                themeId, ticker, input.effectiveDate(), input.source(), input.sourceAsOf());
+        return service.putTacticalThemeMapping(userId(principal), pathBoundInput);
+    }
+
+    @DeleteMapping("/tactical-overlay/themes/{themeId}/members/{ticker}")
+    UUID deleteTacticalThemeMember(Principal principal, @PathVariable String themeId, @PathVariable String ticker,
+                                   @RequestParam LocalDate effectiveDate, @RequestParam Instant sourceAsOf) {
+        return service.deleteTacticalThemeMapping(userId(principal), themeId, ticker, effectiveDate, sourceAsOf);
+    }
+
+    @PutMapping("/securities/{ticker}/performance-entries")
+    UUID tacticalPerformanceEntry(
+            Principal principal,
+            @PathVariable String ticker,
+            @RequestBody com.jmj.trade.investment.tactical.TacticalOverlayService.PerformanceInput input
+    ) {
+        return service.putTacticalPerformanceEntry(userId(principal), ticker, input);
+    }
+
+    @DeleteMapping("/securities/{ticker}/performance-entries/{key}")
+    UUID deleteTacticalPerformanceEntry(Principal principal, @PathVariable String ticker, @PathVariable String key,
+                                        @RequestParam Instant sourceAsOf) {
+        return service.deleteTacticalPerformanceEntry(userId(principal), ticker, key, sourceAsOf);
     }
 
     @ExceptionHandler(InvestmentException.class)

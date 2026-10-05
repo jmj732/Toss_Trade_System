@@ -26,6 +26,8 @@ import static org.mockito.Mockito.*;
 class InvestmentOsResearchSheetSyncTest {
 
     private static final UUID USER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID DECISION_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID SECOND_DECISION_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
 
     @Test
     void mirrorsInvestmentContextAndCanonicalHistoriesToManagedTabs() throws Exception {
@@ -90,6 +92,10 @@ class InvestmentOsResearchSheetSyncTest {
                 "Risk Inputs Available", "Position Source Coverage", "Position Accounts Included",
                 "Position Quantity As Of", "Position Price As Of", "Position Manual As Of");
         assertThat(security.getFirst()).startsWith("Ticker", "As Of", "Quantity", "Weight", "Currency");
+        assertThat(security.getFirst()).endsWith("ThemeId", "TrendStage")
+                .doesNotContain("Indicators", "AVWAP", "Cohorts", "Performance");
+        assertThat(security.get(1).get(security.getFirst().indexOf("ThemeId"))).isEqualTo("QUALITY_COMPOUNDERS");
+        assertThat(security.get(1).get(security.getFirst().indexOf("TrendStage"))).isEqualTo("BASE");
         assertThat(security.getFirst().stream().filter("Currency"::equals).count()).isEqualTo(1L);
         assertThat(security.get(1)).contains("AAPL", new BigDecimal("101"), "REGULAR_CLOSE", "SOURCE_CONFLICT",
                 "PARTIAL", "FY2025", "2026-02-01T00:00:00Z", "2026-02-02T00:00:00Z", "FMP",
@@ -284,7 +290,8 @@ class InvestmentOsResearchSheetSyncTest {
         verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
         @SuppressWarnings("unchecked")
         var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
-        assertThat(tabs.getFirst().values().getFirst()).startsWith("Ticker", "As Of", "Quantity", "Weight")
+        assertThat(tabs.getFirst().values().getFirst()).hasSize(121)
+                .startsWith("Ticker", "As Of", "Quantity", "Weight")
                 .contains("Basic Shares", "Market Cap Formula", "Field Provenance");
     }
 
@@ -368,9 +375,7 @@ class InvestmentOsResearchSheetSyncTest {
                 "Price Risk Trigger Price", "Invalidation Status", "Expand Trigger",
                 "Exit Or Discard Trigger", "Classification", "Updated At",
                 "Sizing Eligible", "Next Catalyst", "Next Review");
-        var decisionHeaders = List.of("Decision ID", "As Of", "Asset", "Action", "Reference Price",
-                "Price Session", "Horizon", "Alpha Thesis", "Invalidation", "Next Review Trigger",
-                "Confidence", "Risk Policy Check", "Created At", "Scope", "Account");
+        var decisionHeaders = List.of("Decision ID", "Asset");
         when(sheets.readValues(eq("sheet-1"), anyString())).thenAnswer(invocation -> {
             var range = (String) invocation.getArgument(1);
             var values = switch (range) {
@@ -380,9 +385,7 @@ class InvestmentOsResearchSheetSyncTest {
                 case "'Thesis State Legacy before DB'!A:ZZ" -> List.<List<Object>>of(
                         List.of("Ticker", "Archived thesis"), List.of("AAPL", "older manual thesis"));
                 case "'Decision Ledger'!A:ZZ" -> List.<List<Object>>of(new java.util.ArrayList<>(decisionHeaders),
-                        List.of("decision-1", "2026-10-04", "AAPL", "HOLD", "100", "REGULAR_CLOSE", "LONG",
-                                "manual alpha", "manual invalidation", "review", "HIGH", "PASS", "2026-10-04",
-                                "CORE", "ACCOUNT_1"));
+                        List.of("decision-1", "AAPL"));
                 case "'Decision Ledger Legacy before DB'!A:ZZ" -> List.<List<Object>>of(
                         List.of("decision id", "asset"), List.of("decision-1", "AAPL"));
                 default -> List.<List<Object>>of();
@@ -405,7 +408,7 @@ class InvestmentOsResearchSheetSyncTest {
                 .contains("'Security Snapshot'!A1", "'Consensus History'!A1", "'Watchlist'!A1");
         var security = tabs.stream().filter(update -> update.range().equals("'Security Snapshot'!A1"))
                 .findFirst().orElseThrow().values();
-        assertThat(security.getFirst()).hasSize(119);
+        assertThat(security.getFirst()).hasSize(121);
         assertThat(security).hasSize(2);
         assertThat(security.get(1).get(0)).isEqualTo("AAPL");
         assertThat(((Number) security.get(1).get(2)).intValue()).isEqualTo(4);
@@ -413,6 +416,107 @@ class InvestmentOsResearchSheetSyncTest {
         verify(sheets).ensureSheetColumnCounts(eq("sheet-1"), argThat(columns ->
                 columns.containsKey("Security Snapshot") && !columns.containsKey("Thesis State")
                         && !columns.containsKey("Decision Ledger")));
+    }
+
+    @Test
+    void appendsOnlyOverlayCellsToCompatibleExtendedDecisionLedger() throws Exception {
+        var sheets = mock(GoogleSheetsClient.class);
+        var ids = new java.util.LinkedHashMap<>(sheetIds());
+        ids.put("Decision Ledger Legacy before DB", 101);
+        when(sheets.sheetIdsByTitle("sheet-1")).thenReturn(ids);
+        var decisionHeaders = List.of("Decision ID", "As Of", "Asset", "Action", "Reference Price",
+                "Price Session", "Horizon", "Alpha Thesis", "Invalidation", "Next Review Trigger",
+                "Confidence", "Risk Policy Check", "Created At", "Scope", "Account");
+        var currentDecision = List.<Object>of(DECISION_ID.toString(), "2026-10-04", "AAPL", "HOLD", "100",
+                "REGULAR_CLOSE", "LONG", "manual alpha", "manual invalidation", "review", "HIGH", "PASS",
+                "2026-10-04", "MANUAL_SCOPE", "=ACCOUNT_LABEL()" );
+        when(sheets.readValues(eq("sheet-1"), anyString())).thenAnswer(invocation -> {
+            var range = (String) invocation.getArgument(1);
+            var values = "'Decision Ledger'!A:ZZ".equals(range)
+                    ? List.<List<Object>>of(new java.util.ArrayList<>(decisionHeaders), currentDecision)
+                    : List.<List<Object>>of();
+            return new GoogleSheetsClient.SheetValues(range, values);
+        });
+        var investment = mock(InvestmentContextService.class);
+        var riskPolicies = mock(RiskPolicyService.class);
+        var jdbc = mock(JdbcTemplate.class);
+        var sync = sync(sheets, investment, riskPolicies, jdbc);
+        doAnswer(invocation -> {
+            var sql = (String) invocation.getArgument(0);
+            if (!sql.contains("FROM investment_decision_ledger")) return List.of();
+            @SuppressWarnings("unchecked")
+            var mapper = (RowMapper<Object>) invocation.getArgument(1);
+            return List.of(mapDecisionRow(mapper, DECISION_ID), mapDecisionRow(mapper, SECOND_DECISION_ID));
+        }).when(jdbc).query(anyString(), any(RowMapper.class), eq(USER_ID));
+
+        var skipped = sync.sync(USER_ID);
+
+        assertThat(skipped).doesNotContain("Decision Ledger");
+        verify(sheets, never()).duplicateSheets(anyString(), anyMap());
+        verify(sheets, never()).readValues("sheet-1", "'Decision Ledger Legacy before DB'!A:ZZ");
+        var updates = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        @SuppressWarnings("unchecked")
+        var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        var ledgerUpdates = tabs.stream().filter(update -> update.range().startsWith("'Decision Ledger'!"))
+                .toList();
+        assertThat(ledgerUpdates).extracting(GoogleSheetsClient.SheetValueRange::range)
+                .containsExactly("'Decision Ledger'!P1:R1", "'Decision Ledger'!P2:R2",
+                        "'Decision Ledger'!A3:M3", "'Decision Ledger'!P3:R3");
+        assertThat(ledgerUpdates.get(0).values()).containsExactly(List.of("EntrySetup", "InitialRiskPrice", "OverlayEffect"));
+        assertThat(ledgerUpdates.get(1).values()).containsExactly(List.of("POSITION_ENTRY", new BigDecimal("95"),
+                "BETTER_ENTRY"));
+        assertThat(ledgerUpdates.get(2).values().getFirst()).contains(SECOND_DECISION_ID, "AAPL", "BUY");
+        assertThat(ledgerUpdates.get(3).values()).containsExactly(List.of("EARNINGS_GAP", new BigDecimal("80.5"),
+                "AVOIDED_CHASE"));
+        verify(sheets).ensureSheetColumnCounts(eq("sheet-1"), argThat(columns -> columns.get("Decision Ledger") == 18));
+        assertThat(ledgerUpdates).noneMatch(update -> update.range().equals("'Decision Ledger'!A1")
+                || update.range().startsWith("'Decision Ledger'!N")
+                || update.range().startsWith("'Decision Ledger'!O"));
+    }
+
+    @Test
+    void updatesOnlyOverlayCellsWhenDecisionLedgerHasExactCanonicalHeaders() throws Exception {
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.sheetIdsByTitle("sheet-1")).thenReturn(sheetIds());
+        var decisionHeaders = List.of("Decision ID", "As Of", "Asset", "Action", "Reference Price",
+                "Price Session", "Horizon", "Alpha Thesis", "Invalidation", "Next Review Trigger",
+                "Confidence", "Risk Policy Check", "Created At", "EntrySetup", "InitialRiskPrice",
+                "OverlayEffect");
+        var currentDecision = List.<Object>of(DECISION_ID.toString(), "2026-10-04", "AAPL", "HOLD", "100",
+                "REGULAR_CLOSE", "LONG", "manual alpha", "manual invalidation", "review", "HIGH", "PASS",
+                "2026-10-04", "manual setup", "manual risk", "manual effect");
+        when(sheets.readValues(eq("sheet-1"), anyString())).thenAnswer(invocation -> {
+            var range = (String) invocation.getArgument(1);
+            var values = "'Decision Ledger'!A:ZZ".equals(range)
+                    ? List.<List<Object>>of(new java.util.ArrayList<>(decisionHeaders), currentDecision)
+                    : List.<List<Object>>of();
+            return new GoogleSheetsClient.SheetValues(range, values);
+        });
+        var investment = mock(InvestmentContextService.class);
+        var riskPolicies = mock(RiskPolicyService.class);
+        var jdbc = mock(JdbcTemplate.class);
+        var sync = sync(sheets, investment, riskPolicies, jdbc);
+        doAnswer(invocation -> {
+            var sql = (String) invocation.getArgument(0);
+            if (!sql.contains("FROM investment_decision_ledger")) return List.of();
+            @SuppressWarnings("unchecked")
+            var mapper = (RowMapper<Object>) invocation.getArgument(1);
+            return List.of(mapDecisionRow(mapper, DECISION_ID));
+        }).when(jdbc).query(anyString(), any(RowMapper.class), eq(USER_ID));
+
+        sync.sync(USER_ID);
+
+        var updates = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        @SuppressWarnings("unchecked")
+        var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        var ledgerUpdates = tabs.stream().filter(update -> update.range().startsWith("'Decision Ledger'!"))
+                .toList();
+        assertThat(ledgerUpdates).extracting(GoogleSheetsClient.SheetValueRange::range)
+                .containsExactly("'Decision Ledger'!N2:P2");
+        assertThat(ledgerUpdates.getFirst().values()).containsExactly(List.of("POSITION_ENTRY", new BigDecimal("95"),
+                "BETTER_ENTRY"));
     }
 
     private static Map<String, Integer> sheetIds() {
@@ -503,14 +607,26 @@ class InvestmentOsResearchSheetSyncTest {
                         null, com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
                         null, null, null,
                         com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
-                        false, "DATA_MISSING"));
+                        false, "DATA_MISSING"),
+                new InvestmentContextService.SecurityTacticalOverlayView(
+                        "READY", null, "QUALITY_COMPOUNDERS", "BASE", "POSITION_ENTRY", new BigDecimal("95"),
+                        "BETTER_ENTRY", "TACTICAL_OVERLAY_V1", contextAsOf, LocalDate.parse("2026-09-16"),
+                        "TACTICAL_V1", null, null, null, null, null));
         var portfolio = new InvestmentContextService.PortfolioView(
                 contextAsOf, List.of(position), Map.of("USD", new BigDecimal("1000")), false, List.of(), "OK",
                 "TOSS_API+MANUAL_SHEET", contextAsOf, LocalDate.parse("2026-09-16"),
                 Instant.parse("2026-09-16T20:02:00Z"), "OK", "SUCCEEDED", false, true);
         var policy = new RiskPolicyService.RiskPolicySnapshot(0, BigDecimal.TEN, BigDecimal.TEN,
                 BigDecimal.ONE, BigDecimal.ONE, null, false);
-        return new InvestmentContextService.ContextView(portfolio, List.of(security), List.of(), policy, List.of(), null);
+        var decisionOverlays = Map.of(
+                DECISION_ID, new InvestmentContextService.DecisionTacticalOverlayView(
+                        DECISION_ID, "READY", "POSITION_ENTRY", new BigDecimal("95"), "BETTER_ENTRY",
+                        "TACTICAL_OVERLAY_V1", Instant.parse("2026-09-16T20:00:00Z"), "TACTICAL_V1", null),
+                SECOND_DECISION_ID, new InvestmentContextService.DecisionTacticalOverlayView(
+                        SECOND_DECISION_ID, "READY", "EARNINGS_GAP", new BigDecimal("80.5"), "AVOIDED_CHASE",
+                        "TACTICAL_OVERLAY_V1", Instant.parse("2026-09-16T20:00:00Z"), "TACTICAL_V1", null));
+        return new InvestmentContextService.ContextView(portfolio, List.of(security), List.of(), policy,
+                List.of(), null, null, decisionOverlays);
     }
 
     private static Object mapConsensusRow(RowMapper<Object> mapper) throws SQLException {
@@ -531,6 +647,26 @@ class InvestmentOsResearchSheetSyncTest {
         when(resultSet.getBigDecimal("fcf_consensus")).thenReturn(new BigDecimal("8"));
         when(resultSet.getString("currency")).thenReturn("USD");
         when(resultSet.getString("source")).thenReturn("ALPHA_VANTAGE");
+        return mapper.mapRow(resultSet, 0);
+    }
+
+    private static Object mapDecisionRow(RowMapper<Object> mapper, UUID decisionId) throws SQLException {
+        var resultSet = mock(ResultSet.class);
+        when(resultSet.getObject("decision_id", UUID.class)).thenReturn(decisionId);
+        when(resultSet.getObject("as_of", java.time.OffsetDateTime.class))
+                .thenReturn(java.time.OffsetDateTime.parse("2026-10-04T00:00:00Z"));
+        when(resultSet.getString("asset")).thenReturn("AAPL");
+        when(resultSet.getString("action")).thenReturn(DECISION_ID.equals(decisionId) ? "HOLD" : "BUY");
+        when(resultSet.getBigDecimal("reference_price")).thenReturn(new BigDecimal("100"));
+        when(resultSet.getString("price_session")).thenReturn("REGULAR_CLOSE");
+        when(resultSet.getString("horizon")).thenReturn("LONG");
+        when(resultSet.getString("alpha_thesis")).thenReturn("manual alpha");
+        when(resultSet.getString("invalidation")).thenReturn("manual invalidation");
+        when(resultSet.getString("next_review_trigger")).thenReturn("review");
+        when(resultSet.getBigDecimal("confidence")).thenReturn(new BigDecimal("0.8"));
+        when(resultSet.getString("risk_policy_check")).thenReturn("PASS");
+        when(resultSet.getObject("created_at", java.time.OffsetDateTime.class))
+                .thenReturn(java.time.OffsetDateTime.parse("2026-10-04T00:00:00Z"));
         return mapper.mapRow(resultSet, 0);
     }
 }

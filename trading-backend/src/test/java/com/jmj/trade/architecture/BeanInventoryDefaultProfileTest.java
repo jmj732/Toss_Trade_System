@@ -136,6 +136,9 @@ class BeanInventoryDefaultProfileTest extends PostgresIntegrationTest {
             "stockForecastService : com.jmj.trade.prediction.StockForecastService",
             "submissionAttemptRepository : com.jmj.trade.order.SubmissionAttemptRepository",
             "submissionIdempotencyKeyRepository : com.jmj.trade.order.SubmissionIdempotencyKeyRepository",
+            "tacticalOverlayAggregationCalculator : com.jmj.trade.investment.tactical.TacticalOverlayAggregationCalculator",
+            "tacticalOverlayCalculator : com.jmj.trade.investment.tactical.TacticalOverlayCalculator",
+            "tacticalOverlayService : com.jmj.trade.investment.tactical.TacticalOverlayService",
             "telegramDeliverySettings : com.jmj.trade.notification.TelegramDeliverySettings",
             "userAnchorRepository : com.jmj.trade.broker.connection.UserAnchorRepository",
             "workflowMetrics : com.jmj.trade.observability.WorkflowMetrics");
