@@ -581,6 +581,7 @@ public final class InvestmentContextService {
             String providerFailure = null;
             boolean canonicalMissing = false;
             boolean quoteCanonicalMissing = false;
+            var quotedSymbols = new LinkedHashSet<String>();
             var tossQuotes = tossQuotes(userId, List.copyOf(symbols));
             var calendars = new HashMap<LocalDate, JsonNode>();
             for (var symbol : symbols) {
@@ -600,6 +601,7 @@ public final class InvestmentContextService {
                         || input.observations().stream().anyMatch(observation -> !observation.missingData().isEmpty());
                 if (providerFailure == null) providerFailure = providerFailure(input);
                 if (selectedFields != null && !hasTossLatestPrice(input)) quoteCanonicalMissing = true;
+                else if (selectedFields != null) quotedSymbols.add(symbol);
                 if (selectedFields == null && !canonicalDataReady(userId, symbol, input.collectedAt())) {
                     canonicalMissing = true;
                 }
@@ -607,6 +609,13 @@ public final class InvestmentContextService {
             }
             if (selectedFields == null && tacticalOverlayService != null) {
                 missingOptionalData |= captureTacticalOverlay(userId, tossQuotes, calendars);
+            }
+            if (selectedFields != null && tacticalOverlayService != null && !quotedSymbols.isEmpty()) {
+                try {
+                    tacticalOverlayService.refreshPerformanceMarks(userId, List.copyOf(quotedSymbols));
+                } catch (RuntimeException ignored) {
+                    missingOptionalData = true;
+                }
             }
             if (quoteCanonicalMissing) {
                 markPipeline(userId, pipeline, "FAILED", null,
