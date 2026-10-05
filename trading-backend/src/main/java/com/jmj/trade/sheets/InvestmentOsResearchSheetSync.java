@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -22,6 +23,11 @@ final class InvestmentOsResearchSheetSync {
     private static final List<String> TABS = List.of(
             "Security Snapshot", "Thesis State", "Consensus History", "Watchlist",
             "Decision Ledger", "Alpha State", "Risk Policy");
+    private static final List<String> DECISION_BASE_HEADERS = List.of("Decision ID", "As Of", "Asset", "Action",
+            "Reference Price", "Price Session", "Horizon", "Alpha Thesis", "Invalidation",
+            "Next Review Trigger", "Confidence", "Risk Policy Check", "Created At");
+    private static final List<String> DECISION_OVERLAY_HEADERS =
+            List.of("EntrySetup", "InitialRiskPrice", "OverlayEffect");
     private final InvestmentOsSheetProperties properties;
     private final GoogleSheetsClient sheets;
     private final InvestmentContextService investment;
@@ -53,7 +59,7 @@ final class InvestmentOsResearchSheetSync {
         tables.put("Thesis State", thesis(context.securities()));
         tables.put("Consensus History", consensusHistory(userId));
         tables.put("Watchlist", watchlist(context.watchlist()));
-        tables.put("Decision Ledger", decisionLedger(userId));
+        tables.put("Decision Ledger", decisionLedger(userId, context.decisionOverlays()));
         tables.put("Alpha State", alphaState(userId));
         tables.put("Risk Policy", riskPolicy(userId, policy));
 
@@ -71,7 +77,9 @@ final class InvestmentOsResearchSheetSync {
             var current = sheets.readValues(spreadsheetId, range).values();
             currentValues.put(tab, current);
             if (current.isEmpty() || current.getFirst().equals(table.headers())
-                    || (supportsHeaderAppend(tab) && isHeaderPrefix(current.getFirst(), table.headers()))) continue;
+                    || (supportsHeaderAppend(tab) && isHeaderPrefix(current.getFirst(), table.headers()))
+                    || ("Decision Ledger".equals(tab)
+                    && supportsDecisionLedgerExtension(current.getFirst()))) continue;
 
             if (preserveOnHeaderConflict(tab)) {
                 skippedConflictingTabs.add(tab);
@@ -102,6 +110,11 @@ final class InvestmentOsResearchSheetSync {
         tables.forEach((tab, table) -> {
             if (skippedConflictingTabs.contains(tab)) return;
             var current = currentValues.getOrDefault(tab, List.of());
+            if ("Decision Ledger".equals(tab) && !current.isEmpty()
+                    && supportsDecisionLedgerExtension(current.getFirst())) {
+                appendDecisionOverlayColumns(current, table, updates, requiredColumns);
+                return;
+            }
             var rowCount = Math.max(table.rows().size(), current.size());
             var width = Math.max(table.headers().size(), current.stream().mapToInt(List::size).max().orElse(0));
             requiredColumns.put(tab, width);
@@ -156,6 +169,7 @@ final class InvestmentOsResearchSheetSync {
                 "Manual Account Stale", "Risk Inputs Available", "Position Source Coverage",
                 "Position Accounts Included", "Position Quantity As Of", "Position Price As Of",
                 "Position Manual As Of"));
+        extendedHeaders.addAll(List.of("ThemeId", "TrendStage"));
         var rows = securities.stream().map(security -> {
             var price = security.price();
             var technical = security.technical();
@@ -225,7 +239,9 @@ final class InvestmentOsResearchSheetSync {
                     position == null ? "" : position.accountsIncluded(),
                     position == null ? "" : instant(position.quantityAsOf()),
                     position == null ? "" : instant(position.priceAsOf()),
-                    position == null ? "" : date(position.manualAsOf()));
+                    position == null ? "" : date(position.manualAsOf()),
+                    security.tacticalOverlay() == null ? null : security.tacticalOverlay().themeId(),
+                    security.tacticalOverlay() == null ? null : security.tacticalOverlay().trendStage());
         }).toList();
         return new Table(List.copyOf(extendedHeaders), rows);
     }
@@ -274,25 +290,32 @@ final class InvestmentOsResearchSheetSync {
         return new Table(headers, rows);
     }
 
-    private Table decisionLedger(UUID userId) {
-        var headers = List.of("Decision ID", "As Of", "Asset", "Action", "Reference Price", "Price Session",
-                "Horizon", "Alpha Thesis", "Invalidation", "Next Review Trigger", "Confidence",
-                "Risk Policy Check", "Created At");
+    private Table decisionLedger(UUID userId,
+                                 Map<UUID, InvestmentContextService.DecisionTacticalOverlayView> decisionOverlays) {
+        var headers = new ArrayList<>(DECISION_BASE_HEADERS);
+        headers.addAll(DECISION_OVERLAY_HEADERS);
         var rows = jdbc.query("""
                 SELECT decision_id, as_of, asset, action, reference_price, price_session, horizon,
                        alpha_thesis, invalidation, next_review_trigger, confidence,
                        risk_policy_check::text, created_at
                   FROM investment_decision_ledger WHERE user_id = ?
                  ORDER BY as_of, decision_id
-                """, (resultSet, rowNum) -> row(resultSet.getObject("decision_id", UUID.class),
-                instant(resultSet.getObject("as_of", OffsetDateTime.class)), resultSet.getString("asset"),
-                resultSet.getString("action"), resultSet.getBigDecimal("reference_price"),
-                resultSet.getString("price_session"), resultSet.getString("horizon"),
-                resultSet.getString("alpha_thesis"), resultSet.getString("invalidation"),
-                resultSet.getString("next_review_trigger"), resultSet.getBigDecimal("confidence"),
-                resultSet.getString("risk_policy_check"), instant(resultSet.getObject("created_at", OffsetDateTime.class))),
+                """, (resultSet, rowNum) -> {
+            var decisionId = resultSet.getObject("decision_id", UUID.class);
+            var overlay = decisionOverlays == null ? null : decisionOverlays.get(decisionId);
+            return row(decisionId,
+                    instant(resultSet.getObject("as_of", OffsetDateTime.class)), resultSet.getString("asset"),
+                    resultSet.getString("action"), resultSet.getBigDecimal("reference_price"),
+                    resultSet.getString("price_session"), resultSet.getString("horizon"),
+                    resultSet.getString("alpha_thesis"), resultSet.getString("invalidation"),
+                    resultSet.getString("next_review_trigger"), resultSet.getBigDecimal("confidence"),
+                    resultSet.getString("risk_policy_check"), instant(resultSet.getObject("created_at", OffsetDateTime.class)),
+                    overlay == null ? null : overlay.entrySetup(),
+                    overlay == null ? null : overlay.initialRiskPrice(),
+                    overlay == null ? null : overlay.overlayEffect());
+        },
                 userId);
-        return new Table(headers, rows);
+        return new Table(List.copyOf(headers), rows);
     }
 
     private Table alphaState(UUID userId) {
@@ -360,6 +383,118 @@ final class InvestmentOsResearchSheetSync {
             if (!Objects.equals(existing.get(i), expected.get(i))) return false;
         }
         return true;
+    }
+
+    private static boolean supportsDecisionLedgerExtension(List<?> existing) {
+        if (existing == null || existing.size() < DECISION_BASE_HEADERS.size()) return false;
+        for (var index = 0; index < DECISION_BASE_HEADERS.size(); index++) {
+            if (!Objects.equals(existing.get(index), DECISION_BASE_HEADERS.get(index))) return false;
+        }
+        for (var header : DECISION_OVERLAY_HEADERS) {
+            if (existing.stream().filter(header::equals).count() > 1) return false;
+        }
+        return true;
+    }
+
+    private static void appendDecisionOverlayColumns(
+            List<List<Object>> current,
+            Table next,
+            List<GoogleSheetsClient.SheetValueRange> updates,
+            Map<String, Integer> requiredColumns
+    ) {
+        var headers = new ArrayList<String>();
+        current.getFirst().forEach(value -> headers.add(value == null ? "" : String.valueOf(value)));
+        var usedWidth = Math.max(headers.size(), current.stream().mapToInt(List::size).max().orElse(0));
+        while (headers.size() < usedWidth) headers.add("");
+
+        var overlayColumns = new LinkedHashMap<String, Integer>();
+        var appendedHeaders = new ArrayList<String>();
+        for (var header : DECISION_OVERLAY_HEADERS) {
+            var index = headers.indexOf(header);
+            if (index < 0) {
+                index = headers.size();
+                headers.add(header);
+                appendedHeaders.add(header);
+            }
+            overlayColumns.put(header, index);
+        }
+        requiredColumns.put("Decision Ledger", headers.size());
+        if (!appendedHeaders.isEmpty()) {
+            var first = headers.size() - appendedHeaders.size();
+            var last = headers.size() - 1;
+            var headerValues = new ArrayList<Object>(appendedHeaders);
+            updates.add(new GoogleSheetsClient.SheetValueRange(
+                    quote("Decision Ledger") + "!" + columnName(first) + "1:" + columnName(last) + "1",
+                    List.of(headerValues)));
+        }
+
+        var rowsByDecisionId = new LinkedHashMap<String, List<Object>>();
+        next.rows().forEach(row -> {
+            if (row.isEmpty() || row.getFirst() == null) return;
+            rowsByDecisionId.put(String.valueOf(row.getFirst()).trim(), row);
+        });
+        var existingDecisionIds = new java.util.HashSet<String>();
+        for (var rowIndex = 1; rowIndex < current.size(); rowIndex++) {
+            var existingRow = current.get(rowIndex);
+            if (existingRow.isEmpty() || existingRow.getFirst() == null) continue;
+            var decisionId = String.valueOf(existingRow.getFirst()).trim();
+            existingDecisionIds.add(decisionId);
+            var nextRow = rowsByDecisionId.get(decisionId);
+            if (nextRow == null) continue;
+            appendDecisionOverlayRowUpdates(updates, overlayColumns, nextRow, rowIndex + 1);
+        }
+        var nextSheetRow = current.size() + 1;
+        for (var entry : rowsByDecisionId.entrySet()) {
+            if (existingDecisionIds.contains(entry.getKey())) continue;
+            var nextRow = entry.getValue();
+            var baseValues = new ArrayList<Object>();
+            nextRow.subList(0, DECISION_BASE_HEADERS.size())
+                    .forEach(value -> baseValues.add(value == null ? "" : value));
+            updates.add(new GoogleSheetsClient.SheetValueRange(
+                    quote("Decision Ledger") + "!A" + nextSheetRow + ":"
+                            + columnName(DECISION_BASE_HEADERS.size() - 1) + nextSheetRow,
+                    List.of(baseValues)));
+            appendDecisionOverlayRowUpdates(updates, overlayColumns, nextRow, nextSheetRow);
+            nextSheetRow++;
+        }
+    }
+
+    private static void appendDecisionOverlayRowUpdates(
+            List<GoogleSheetsClient.SheetValueRange> updates,
+            Map<String, Integer> overlayColumns,
+            List<Object> nextRow,
+            int sheetRow
+    ) {
+        var overlayValues = new ArrayList<Object>();
+        for (var index = 0; index < DECISION_OVERLAY_HEADERS.size(); index++) {
+            var value = nextRow.get(DECISION_BASE_HEADERS.size() + index);
+            overlayValues.add(value == null ? "" : value);
+        }
+        var start = 0;
+        while (start < DECISION_OVERLAY_HEADERS.size()) {
+            var end = start;
+            while (end + 1 < DECISION_OVERLAY_HEADERS.size()
+                    && overlayColumns.get(DECISION_OVERLAY_HEADERS.get(end + 1))
+                    == overlayColumns.get(DECISION_OVERLAY_HEADERS.get(end)) + 1) end++;
+            var startColumn = overlayColumns.get(DECISION_OVERLAY_HEADERS.get(start));
+            var endColumn = overlayColumns.get(DECISION_OVERLAY_HEADERS.get(end));
+            updates.add(new GoogleSheetsClient.SheetValueRange(
+                    quote("Decision Ledger") + "!" + columnName(startColumn) + sheetRow + ":"
+                            + columnName(endColumn) + sheetRow,
+                    List.of(new ArrayList<>(overlayValues.subList(start, end + 1)))));
+            start = end + 1;
+        }
+    }
+
+    private static String columnName(int zeroBasedIndex) {
+        var value = zeroBasedIndex + 1;
+        var result = new StringBuilder();
+        while (value > 0) {
+            var remainder = (value - 1) % 26;
+            result.append((char) ('A' + remainder));
+            value = (value - 1) / 26;
+        }
+        return result.reverse().toString();
     }
 
     private static boolean supportsHeaderAppend(String tab) {

@@ -10,6 +10,8 @@ Combined portfolio snapshots are persisted in PostgreSQL and drive the authentic
 
 An incompatible legacy header in `Thesis State` or `Decision Ledger` preserves that tab and its existing archive without copying or rewriting either one. The research mirror still updates compatible tabs, including `Security Snapshot`. If the primary account sync succeeds, these optional tab conflicts return `PARTIAL` with `RESEARCH_MIRROR_SCHEMA_CONFLICT_<tab names>` and mark the existing Reconciliation Log row unresolved; the accepted PostgreSQL portfolio snapshot keeps its original status. Other primary sync failures remain `FAILED`.
 
+The research mirror adds only `ThemeId` and `TrendStage` to `Security Snapshot`, and `EntrySetup`, `InitialRiskPrice`, and `OverlayEffect` to `Decision Ledger`. Ledger overlay values are keyed by decision ID. When the existing ledger keeps the canonical leading columns and has manual extension columns, sync appends the overlay headers and updates only overlay cells; it leaves existing manual columns, formulas, and archive tabs untouched. New canonical ledger entries append into unused rows while leaving manual extension columns blank. Unrecognized or reordered leading headers remain a partial schema conflict. These values are projections of the authenticated `/investment/context` tactical overlay fields; see [the calculation and API guide](tactical-overlay-v1-calculations.md) for input routes and Context response fields.
+
 Enable only after the target spreadsheet is shared with the service-account email as Editor and the Sheets API is enabled:
 
 ```text

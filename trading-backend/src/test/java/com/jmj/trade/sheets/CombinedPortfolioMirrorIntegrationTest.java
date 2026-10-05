@@ -154,7 +154,7 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         var result = sync.sync();
 
         assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.PARTIAL);
-        assertThat(result.error()).contains("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State;Decision Ledger");
+        assertThat(result.error()).contains("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State");
         verify(sheets, org.mockito.Mockito.never()).duplicateSheets(anyString(), any());
         var snapshotId = jdbc.queryForObject("""
                 SELECT id FROM investment_os_portfolio_snapshots
@@ -235,8 +235,14 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         assertThat(researchUpdates).anyMatch(update -> "'Security Snapshot'!A1".equals(update.range()))
                 .anyMatch(update -> "'Consensus History'!A1".equals(update.range()))
                 .anyMatch(update -> "'Watchlist'!A1".equals(update.range()))
-                .noneMatch(update -> update.range().startsWith("'Thesis State'!A1")
-                        || update.range().startsWith("'Decision Ledger'!A1"));
+                .noneMatch(update -> update.range().startsWith("'Thesis State'!A1"));
+        var decisionLedgerUpdates = allUpdates.stream().flatMap(List::stream)
+                .filter(update -> update.range().startsWith("'Decision Ledger'!"))
+                .toList();
+        assertThat(decisionLedgerUpdates).hasSize(1);
+        assertThat(decisionLedgerUpdates.getFirst().range()).isEqualTo("'Decision Ledger'!P1:R1");
+        assertThat(decisionLedgerUpdates.getFirst().values()).isEqualTo(List.of(List.of(
+                "EntrySetup", "InitialRiskPrice", "OverlayEffect")));
         var reconciliationWrites = allUpdates.stream().flatMap(List::stream)
                 .filter(update -> update.range().startsWith("'Reconciliation Log'!A1")).toList();
         assertThat(reconciliationWrites).hasSize(1);
@@ -245,11 +251,12 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         var reconciliationHeaders = reconciliation.values().getFirst().stream().map(String::valueOf).toList();
         var reconciliationRow = reconciliation.values().get(1);
         assertThat(reconciliationRow.get(reconciliationHeaders.indexOf("Error")))
-                .isEqualTo("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State;Decision Ledger");
+                .isEqualTo("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State");
         var securityUpdate = allUpdates.stream().flatMap(List::stream)
                 .filter(update -> "'Security Snapshot'!A1".equals(update.range())).findFirst().orElseThrow();
         var securityHeaders = securityUpdate.values().getFirst().stream().map(String::valueOf).toList();
-        assertThat(securityHeaders).hasSize(119);
+        assertThat(securityHeaders).hasSize(121);
+        assertThat(securityHeaders.subList(119, 121)).containsExactly("ThemeId", "TrendStage");
         var securityAapl = rowForValues(securityUpdate.values().subList(1, securityUpdate.values().size()),
                 securityHeaders, "Ticker", "AAPL");
         assertThat(value(securityAapl, securityHeaders, "Quantity")).isEqualTo(contextAapl.quantity());
@@ -270,7 +277,7 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         assertThat(repeated.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.PARTIAL);
         assertThat(reconciliationValues.get().values()).hasSize(2);
         assertThat(reconciliationValues.get().values().get(1).get(reconciliationHeaders.indexOf("Error")))
-                .isEqualTo("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State;Decision Ledger");
+                .isEqualTo("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State");
 
         assertThatThrownBy(() -> jdbc.update(
                 "UPDATE investment_os_portfolio_snapshots SET error_code = 'TAMPER' WHERE id = ?", snapshotId))
