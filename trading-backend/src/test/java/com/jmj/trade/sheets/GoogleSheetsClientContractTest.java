@@ -21,6 +21,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.containing;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
@@ -118,6 +119,72 @@ class GoogleSheetsClientContractTest {
                         .withBody("{\"sheets\":[{\"properties\":{\"sheetId\":7,\"title\":\"Risk Policy\"}}]}")));
 
         assertThat(client().sheetIdsByTitle("sheet-1")).containsExactly(Map.entry("Risk Policy", 7));
+    }
+
+    @Test
+    void growsExistingGridBeforeWritingWiderValuesAndKeepsExistingRowsInPayload() {
+        server.stubFor(post("/token")
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("{\"access_token\":\"sheet-token\",\"expires_in\":3600}")));
+        server.stubFor(get(urlPathEqualTo("/v4/spreadsheets/sheet-1"))
+                .withQueryParam("fields", equalTo("sheets.properties(sheetId,title,gridProperties.columnCount)"))
+                .withHeader("Authorization", equalTo("Bearer sheet-token"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"sheets":[{"properties":{"sheetId":7,"title":"Security Snapshot",
+                                  "gridProperties":{"columnCount":106,"rowCount":1000}}}]}
+                                """)));
+        server.stubFor(post(urlPathEqualTo("/v4/spreadsheets/sheet-1:batchUpdate"))
+                .inScenario("grid growth")
+                .whenScenarioStateIs("Started")
+                .withRequestBody(containing("appendDimension"))
+                .withRequestBody(containing("COLUMNS"))
+                .withRequestBody(containing("\"length\":13"))
+                .willReturn(aResponse().withStatus(200).withBody("{}"))
+                .willSetStateTo("grid grown"));
+        server.stubFor(post(urlPathEqualTo("/v4/spreadsheets/sheet-1/values:batchUpdate"))
+                .inScenario("grid growth")
+                .whenScenarioStateIs("Started")
+                .willReturn(aResponse().withStatus(400)));
+        server.stubFor(post(urlPathEqualTo("/v4/spreadsheets/sheet-1/values:batchUpdate"))
+                .inScenario("grid growth")
+                .whenScenarioStateIs("grid grown")
+                .withRequestBody(containing("Manual note"))
+                .willReturn(aResponse().withStatus(200).withBody("{}")));
+
+        var client = client();
+        client.ensureSheetColumnCounts("sheet-1", Map.of("Security Snapshot", 119));
+        var preservedHeader = new java.util.ArrayList<Object>(java.util.Collections.nCopies(119, ""));
+        preservedHeader.set(0, "Ticker");
+        preservedHeader.set(1, "Manual note");
+        client.batchUpdateValues("sheet-1", List.of(new GoogleSheetsClient.SheetValueRange(
+                "'Security Snapshot'!A1", List.of(preservedHeader))));
+
+        server.verify(1, postRequestedFor(urlPathEqualTo("/v4/spreadsheets/sheet-1:batchUpdate"))
+                .withRequestBody(containing("appendDimension"))
+                .withRequestBody(containing("\"length\":13")));
+        server.verify(1, postRequestedFor(urlPathEqualTo("/v4/spreadsheets/sheet-1/values:batchUpdate"))
+                .withRequestBody(containing("Manual note")));
+        server.verify(1, getRequestedFor(urlPathEqualTo("/v4/spreadsheets/sheet-1")));
+    }
+
+    @Test
+    void neverShrinksAnExistingGrid() {
+        server.stubFor(post("/token")
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("{\"access_token\":\"sheet-token\",\"expires_in\":3600}")));
+        server.stubFor(get(urlPathEqualTo("/v4/spreadsheets/sheet-1"))
+                .withQueryParam("fields", equalTo("sheets.properties(sheetId,title,gridProperties.columnCount)"))
+                .withHeader("Authorization", equalTo("Bearer sheet-token"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json")
+                        .withBody("""
+                                {"sheets":[{"properties":{"sheetId":7,"title":"Security Snapshot",
+                                  "gridProperties":{"columnCount":132,"rowCount":1000}}}]}
+                                """)));
+
+        client().ensureSheetColumnCounts("sheet-1", Map.of("Security Snapshot", 119));
+
+        server.verify(0, postRequestedFor(urlPathEqualTo("/v4/spreadsheets/sheet-1:batchUpdate")));
     }
 
     @Test

@@ -90,16 +90,19 @@ final class InvestmentOsResearchSheetSync {
         sheets.ensureSheets(spreadsheetId, TABS);
 
         var updates = new ArrayList<GoogleSheetsClient.SheetValueRange>();
+        var requiredColumns = new LinkedHashMap<String, Integer>();
         tables.forEach((tab, table) -> {
             var current = currentValues.getOrDefault(tab, List.of());
             var rowCount = Math.max(table.rows().size(), current.size());
             var width = Math.max(table.headers().size(), current.stream().mapToInt(List::size).max().orElse(0));
+            requiredColumns.put(tab, width);
             var values = new ArrayList<List<Object>>(rowCount);
             values.add(pad(table.headers(), width));
             table.rows().forEach(row -> values.add(pad(row, width)));
             while (values.size() < rowCount) values.add(java.util.Collections.nCopies(width, ""));
             updates.add(new GoogleSheetsClient.SheetValueRange(quote(tab) + "!A1", values));
         });
+        sheets.ensureSheetColumnCounts(spreadsheetId, requiredColumns);
         sheets.batchUpdateValues(spreadsheetId, updates);
     }
 
