@@ -426,7 +426,8 @@ public class TacticalOverlayService {
         var mark = latestMark(userId, symbol);
         var spy = history(userId, "SPY");
         var input = new Input(symbol, asOf, clock.instant(), true, history.bars(), benchmarkBars(spy), "TOSS", history.sourceConflict(),
-                history.bars().size() >= 60, PriceAdjustmentStatus.UNADJUSTED, List.of(), anchors, mark, null);
+                history.bars().size() >= 60, PriceAdjustmentStatus.UNADJUSTED, List.of(), anchors,
+                mark == null ? null : mark.mark(), null);
         var result = calculator.calculate(input);
         var payload = (ObjectNode) mapper.valueToTree(result);
         var themeId = themeFor(userId, symbol, asOf);
@@ -439,27 +440,93 @@ public class TacticalOverlayService {
     }
 
     private void persistPerformanceSnapshots(UUID userId, Set<String> symbols) {
+        persistPerformanceSnapshots(userId, symbols, LocalDate.now(clock.withZone(SOURCE_ZONE)));
+    }
+
+    /** Refresh only configured performance inputs after accepted quote snapshots; never fetches prices or bars. */
+    @Transactional
+    public void refreshPerformanceMarks(UUID userId, List<String> symbols) {
+        requireUser(userId);
+        if (symbols == null || symbols.isEmpty()) return;
+        var selected = new LinkedHashSet<String>();
+        symbols.stream().filter(Objects::nonNull).map(TacticalOverlayService::ticker).forEach(selected::add);
+        if (!selected.isEmpty()) {
+            persistPerformanceSnapshots(userId, selected, LocalDate.now(clock.withZone(SOURCE_ZONE)));
+        }
+    }
+
+    private void persistPerformanceSnapshots(UUID userId, Set<String> symbols, LocalDate evaluationDate) {
+        var evaluatedAt = clock.instant();
         for (var symbol : symbols) {
+            var entries = activePerformanceEntries(userId, symbol, evaluationDate);
+            if (entries.isEmpty()) continue;
             var history = history(userId, symbol);
-            if (history.bars().isEmpty()) continue;
+            var completedBars = history.bars().stream().filter(bar -> !bar.date().isAfter(evaluationDate)).toList();
+            if (completedBars.isEmpty()) continue;
+            var barAsOf = completedBars.getLast().date();
+            var barSourceAsOf = sourceAsOfThrough(history, evaluationDate);
             var mark = latestMark(userId, symbol);
-            for (var entry : activePerformanceEntries(userId, symbol, history.bars().getLast().date())) {
-                var input = new Input(symbol, history.bars().getLast().date(), clock.instant(), true,
-                        history.bars(), benchmarkBars(history(userId, "SPY")),
-                        "TOSS", history.sourceConflict(), history.bars().size() >= 60, PriceAdjustmentStatus.UNADJUSTED,
-                        List.of(), List.of(), mark, entry.entry());
+            for (var entry : entries) {
+                var input = new Input(symbol, evaluationDate, evaluatedAt, true,
+                        completedBars, List.of(),
+                        "TOSS", sourceConflictThrough(history, evaluationDate), completedBars.size() >= 60,
+                        PriceAdjustmentStatus.UNADJUSTED,
+                        List.of(), List.of(), mark == null ? null : mark.mark(), entry.entry());
                 var result = calculator.calculate(input);
-                var node = mapper.valueToTree(Map.of("performance", result.performance(),
-                        "entrySetup", entry.payload().path("entrySetup").isMissingNode()
-                                ? "" : entry.payload().path("entrySetup").asString(),
-                        "initialRiskPrice", entry.payload().path("initialRiskPrice"),
-                        "overlayEffect", entry.payload().path("overlayEffect").isMissingNode()
-                                ? "" : entry.payload().path("overlayEffect").asString(),
-                        "source", entry.source(), "sourceAsOf", entry.sourceAsOf(), "overlayVersion", VERSION));
+                var sourceAsOf = laterInstant(barSourceAsOf, entry.sourceAsOf());
+                sourceAsOf = laterInstant(sourceAsOf, mark == null ? null : mark.mark().asOf());
+                var node = mapper.createObjectNode();
+                var performanceNode = (ObjectNode) mapper.valueToTree(result.performance());
+                performanceNode.put("source", entry.source());
+                performanceNode.put("sourceAsOf", sourceAsOf.toString());
+                performanceNode.put("entrySourceAsOf", entry.sourceAsOf().toString());
+                performanceNode.put("evaluationAsOf", evaluationDate.toString());
+                performanceNode.put("barAsOf", barAsOf.toString());
+                if (barSourceAsOf == null) performanceNode.putNull("barSourceAsOf");
+                else performanceNode.put("barSourceAsOf", barSourceAsOf.toString());
+                performanceNode.put("overlayVersion", VERSION);
+                if (mark == null) {
+                    performanceNode.putNull("markAsOf");
+                    performanceNode.putNull("markSource");
+                    performanceNode.putNull("markSnapshotId");
+                } else {
+                    performanceNode.put("markAsOf", mark.mark().asOf().toString());
+                    performanceNode.put("markSource", mark.source());
+                    performanceNode.put("markSnapshotId", mark.id().toString());
+                }
+                node.set("performance", performanceNode);
+                node.put("entrySetup", entry.payload().path("entrySetup").isMissingNode()
+                        ? "" : entry.payload().path("entrySetup").asString());
+                if (entry.payload().path("initialRiskPrice").isMissingNode()) node.putNull("initialRiskPrice");
+                else node.set("initialRiskPrice", entry.payload().path("initialRiskPrice"));
+                node.put("overlayEffect", entry.payload().path("overlayEffect").isMissingNode()
+                        ? "" : entry.payload().path("overlayEffect").asString());
+                node.put("source", entry.source());
+                node.put("entrySourceAsOf", entry.sourceAsOf().toString());
+                node.put("sourceAsOf", sourceAsOf.toString());
+                node.put("evaluationAsOf", evaluationDate.toString());
+                node.put("barAsOf", barAsOf.toString());
+                if (barSourceAsOf == null) node.putNull("barSourceAsOf");
+                else node.put("barSourceAsOf", barSourceAsOf.toString());
+                node.put("overlayVersion", VERSION);
+                if (mark == null) {
+                    node.putNull("markAsOf");
+                    node.putNull("markSource");
+                    node.putNull("markSnapshotId");
+                } else {
+                    node.put("markAsOf", mark.mark().asOf().toString());
+                    node.put("markSource", mark.source());
+                    node.put("markSnapshotId", mark.id().toString());
+                }
                 var type = entry.decisionId() == null ? "POSITION" : "DECISION";
                 var key = entry.decisionId() == null ? entry.key() : entry.decisionId().toString();
-                writeSnapshot(userId, type, key, symbol, result.asOf(), "TOSS", result.performance().status().name(),
-                        List.of(), performanceRefs(history, entry.id()), node, history.latestSourceAsOf());
+                var refs = new LinkedHashSet<>(performanceRefs(history, entry.id(), evaluationDate));
+                if (mark != null) refs.add(mark.id());
+                var sources = new ArrayList<>(List.of("TOSS", entry.source()));
+                if (mark != null) sources.add(mark.source());
+                writeSnapshot(userId, type, key, symbol, evaluationDate,
+                        joinedSources(sources, null),
+                        result.performance().status().name(), List.of(), List.copyOf(refs), node, sourceAsOf);
             }
         }
     }
@@ -724,11 +791,12 @@ public class TacticalOverlayService {
         if (snapshot == null) return com.jmj.trade.investment.InvestmentContextService.SecurityTacticalOverlayView.notConfigured();
         var payload = parse(snapshot.payload());
         var stageNode = payload == null ? null : payload.path("stage");
-        var activePerformance = activePerformanceEntries(userId, symbol, snapshot.asOf()).stream()
+        var activePerformance = activePerformanceEntries(userId, symbol, contextEffectiveDate(snapshot.asOf())).stream()
                 .filter(row -> row.decisionId() == null).toList();
         var performanceRows = activePerformance.stream()
                 .map(row -> latestSnapshot(userId, "POSITION", row.key()))
-                .filter(Objects::nonNull).map((SnapshotRow row) -> parse(row.payload())).toList();
+                .filter(Objects::nonNull)
+                .map((SnapshotRow row) -> currentMarkFreshness(parse(row.payload()))).toList();
         var performance = performanceRows.isEmpty() ? null : mapper.valueToTree(performanceRows);
         var latestEntry = activePerformance.size() == 1 ? activePerformance.getFirst() : null;
         var themeId = themeFor(userId, symbol, contextEffectiveDate(snapshot.asOf()));
@@ -763,11 +831,14 @@ public class TacticalOverlayService {
             try {
                 var decisionId = UUID.fromString(snapshot.entityKey());
                 if (!activeIds.contains(decisionId)) continue;
-                var node = parse(snapshot.payload());
+                var node = currentMarkFreshness(parse(snapshot.payload()));
+                var performance = node == null ? null : node.path("performance");
+                var status = performance != null && "STALE".equals(text(performance.path("status")))
+                        ? "STALE" : snapshot.status();
                 output.put(decisionId, new com.jmj.trade.investment.InvestmentContextService.DecisionTacticalOverlayView(
-                        decisionId, snapshot.status(), optionalString(node, "entrySetup"),
+                        decisionId, status, optionalString(node, "entrySetup"),
                         decimal(node.path("initialRiskPrice")), optionalString(node, "overlayEffect"),
-                        snapshot.source(), snapshot.sourceAsOf(), VERSION, node.path("performance")));
+                        snapshot.source(), snapshot.sourceAsOf(), VERSION, performance));
             } catch (IllegalArgumentException ignored) {
                 // An invalid historical key is not surfaced as an owned decision overlay.
             }
@@ -857,10 +928,19 @@ public class TacticalOverlayService {
         return List.copyOf(refs);
     }
 
-    private static List<UUID> performanceRefs(History history, UUID inputId) {
-        var refs = new LinkedHashSet<>(history.refs());
+    private static List<UUID> performanceRefs(History history, UUID inputId, LocalDate asOf) {
+        var refs = new LinkedHashSet<>(refsThrough(history, asOf));
         refs.add(inputId);
         return List.copyOf(refs);
+    }
+
+    private static boolean sourceConflictThrough(History history, LocalDate asOf) {
+        if (history == null || asOf == null) return false;
+        var rows = history.rows().stream().filter(row -> !row.date().isAfter(asOf)).toList();
+        return rows.stream().anyMatch(BarRow::sourceConflict)
+                || rows.stream().collect(java.util.stream.Collectors.groupingBy(
+                BarRow::date, java.util.stream.Collectors.mapping(BarRow::bar, java.util.stream.Collectors.toSet())))
+                .values().stream().anyMatch(bars -> bars.size() > 1);
     }
 
     private List<PerformanceRow> activePerformanceEntries(UUID userId, String symbol, LocalDate asOf) {
@@ -1007,14 +1087,41 @@ public class TacticalOverlayService {
                 .toList();
     }
 
-    private Mark latestMark(UUID userId, String symbol) {
+    private MarkSnapshot latestMark(UUID userId, String symbol) {
         var rows = jdbc.query("""
-                SELECT latest_price, latest_price_as_of FROM investment_price_snapshots
+                SELECT id, source, latest_price, latest_price_as_of FROM investment_price_snapshots
                  WHERE user_id = ? AND ticker = ? AND source = 'TOSS' AND latest_price IS NOT NULL
-                 ORDER BY latest_price_as_of DESC, as_of DESC LIMIT 1
-                """, (rs, row) -> new Mark(rs.getBigDecimal(1), instant(rs.getObject(2, OffsetDateTime.class))),
+                   AND latest_price_as_of IS NOT NULL
+                 ORDER BY latest_price_as_of DESC, as_of DESC, id DESC LIMIT 1
+                """, (rs, row) -> new MarkSnapshot(rs.getObject("id", UUID.class), rs.getString("source"),
+                        new Mark(rs.getBigDecimal("latest_price"),
+                                instant(rs.getObject("latest_price_as_of", OffsetDateTime.class)))),
                 userId, symbol);
         return rows.stream().findFirst().orElse(null);
+    }
+
+    private JsonNode currentMarkFreshness(JsonNode stored) {
+        if (stored == null || !stored.isObject() || !stored.path("performance").isObject()) return stored;
+        var output = (ObjectNode) stored.deepCopy();
+        var performance = (ObjectNode) output.path("performance").deepCopy();
+        var current = performance.path("currentR");
+        if (current.isObject() && current.path("value").isNumber()) {
+            var markAsOf = parseInstant(text(output.path("markAsOf")));
+            var now = clock.instant();
+            var fresh = "TOSS".equals(text(output.path("markSource"))) && markAsOf != null
+                    && !markAsOf.isAfter(now)
+                    && java.time.Duration.between(markAsOf, now).compareTo(properties.markFreshness()) <= 0;
+            if (!fresh) {
+                var currentCopy = (ObjectNode) current.deepCopy();
+                currentCopy.putNull("value");
+                currentCopy.put("status", "STALE");
+                performance.set("currentR", currentCopy);
+                performance.put("status", "STALE");
+                performance.put("reason", markAsOf == null ? "MARK_AS_OF_UNAVAILABLE" : "MARK_STALE");
+            }
+        }
+        output.set("performance", performance);
+        return output;
     }
 
     private ObjectNode object(Map<String, ?> values) {
@@ -1158,6 +1265,15 @@ public class TacticalOverlayService {
         return timestamp(value);
     }
 
+    private static Instant parseInstant(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Instant.parse(value);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
     private static Instant instant(OffsetDateTime value) {
         return value == null ? null : value.toInstant();
     }
@@ -1168,6 +1284,7 @@ public class TacticalOverlayService {
                           BigDecimal low, BigDecimal close, BigDecimal volume) {
         Bar bar() { return new Bar(date, open, high, low, close, volume); }
     }
+    private record MarkSnapshot(UUID id, String source, Mark mark) { }
     private record History(List<Bar> bars, List<UUID> refs, Instant latestSourceAsOf,
                            boolean sourceConflict, List<BarRow> rows) { }
     private record InputRow(UUID id, String type, String entityKey, String ticker, UUID decisionId,
