@@ -32,6 +32,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -78,7 +79,7 @@ class TacticalOverlayQuoteRefreshIntegrationTest extends PostgresIntegrationTest
 
     @Test
     void quoteOnlyCaptureRefreshesPositionMarkAndContextStalesItWithoutWrites() throws Exception {
-        var now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        var now = nowMicros();
         var evaluationClock = new MutableClock(now);
         var properties = TacticalOverlayProperties.defaults();
         var overlay = new TacticalOverlayService(jdbc, mapper, new TacticalOverlayCalculator(properties),
@@ -149,11 +150,11 @@ class TacticalOverlayQuoteRefreshIntegrationTest extends PostgresIntegrationTest
 
         var barsBeforeQuoteB = count("investment_tactical_overlay_bar_snapshots");
         var nonPositionBeforeQuoteB = tacticalNonPositionSnapshotCount();
-        var quoteBTime = Instant.now().minusSeconds(30);
+        var quoteBTime = nowMicros().minusSeconds(30);
         quote.set(price("AVT", "120", quoteBTime));
-        evaluationClock.set(Instant.now());
+        evaluationClock.set(nowMicros());
         assertThat(context.captureQuoteUpdates(userId)).isEqualTo(1);
-        evaluationClock.set(Instant.now());
+        evaluationClock.set(nowMicros());
 
         var quoteBId = selectedQuoteId();
         var expectedSourceAsOf = entrySourceAsOf.isAfter(quoteBTime) ? entrySourceAsOf : quoteBTime;
@@ -274,6 +275,10 @@ class TacticalOverlayQuoteRefreshIntegrationTest extends PostgresIntegrationTest
 
     private static BigDecimal bd(String value) {
         return new BigDecimal(value);
+    }
+
+    private static Instant nowMicros() {
+        return Instant.now().truncatedTo(ChronoUnit.MICROS);
     }
 
     private static final class MutableClock extends Clock {
