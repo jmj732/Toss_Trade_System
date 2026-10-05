@@ -479,6 +479,21 @@ class InvestmentOsSheetModelTest {
                 .isEqualTo(SYNCED_AT.plusSeconds(300).toString());
     }
 
+    @Test
+    void repeatedResearchSchemaConflictReplacesLatestReconciliationInsteadOfAppending() {
+        var empty = new InvestmentOsSheetModel.SheetTable(InvestmentOsSheetModel.reconciliationHeaders(), List.of());
+        var reason = "RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State;Decision Ledger";
+        var first = InvestmentOsSheetModel.reconciliation(empty, "sync-1", "ACCOUNT_1", "OK", "OK", "OK", "OK",
+                "OK", 0, reason, false, SYNCED_AT, reason);
+        var second = InvestmentOsSheetModel.reconciliation(first, "sync-2", "ACCOUNT_1", "OK", "OK", "OK", "OK",
+                "OK", 0, reason, false, SYNCED_AT.plusSeconds(300), reason);
+
+        assertThat(second.rows()).hasSize(1);
+        assertThat(second.rows().getFirst().get(second.column("Sync ID"))).isEqualTo("sync-2");
+        assertThat(second.rows().getFirst().get(second.column("Mismatch/Gap"))).isEqualTo(reason);
+        assertThat(second.rows().getFirst().get(second.column("Resolved"))).isEqualTo("false");
+    }
+
     private static InvestmentOsSheetModel.SheetTable table(List<String>... rows) {
         return new InvestmentOsSheetModel.SheetTable(
                 List.of("Account", "Ticker", "Asset Type", "Currency", "Quantity", "Avg Cost",

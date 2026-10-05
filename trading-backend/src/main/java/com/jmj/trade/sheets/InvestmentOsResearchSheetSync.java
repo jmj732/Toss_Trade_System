@@ -45,7 +45,7 @@ final class InvestmentOsResearchSheetSync {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
     }
 
-    void sync(UUID userId) {
+    List<String> sync(UUID userId) {
         var context = investment.context(userId);
         var policy = context.riskPolicy();
         var tables = new LinkedHashMap<String, Table>();
@@ -61,14 +61,22 @@ final class InvestmentOsResearchSheetSync {
         var sheetIds = sheets.sheetIdsByTitle(spreadsheetId);
         var currentValues = new LinkedHashMap<String, List<List<Object>>>();
         var archives = new LinkedHashMap<String, Integer>();
-        tables.forEach((tab, table) -> {
+        var skippedConflictingTabs = new ArrayList<String>();
+        for (var entry : tables.entrySet()) {
+            var tab = entry.getKey();
+            var table = entry.getValue();
             var sourceSheetId = sheetIds.get(tab);
-            if (sourceSheetId == null) return;
+            if (sourceSheetId == null) continue;
             var range = quote(tab) + "!A:ZZ";
             var current = sheets.readValues(spreadsheetId, range).values();
             currentValues.put(tab, current);
             if (current.isEmpty() || current.getFirst().equals(table.headers())
-                    || (supportsHeaderAppend(tab) && isHeaderPrefix(current.getFirst(), table.headers()))) return;
+                    || (supportsHeaderAppend(tab) && isHeaderPrefix(current.getFirst(), table.headers()))) continue;
+
+            if (preserveOnHeaderConflict(tab)) {
+                skippedConflictingTabs.add(tab);
+                continue;
+            }
 
             var archiveTitle = tab + " Legacy before DB";
             if (sheetIds.containsKey(archiveTitle)) {
@@ -79,7 +87,7 @@ final class InvestmentOsResearchSheetSync {
             } else {
                 archives.put(archiveTitle, sourceSheetId);
             }
-        });
+        }
         if (!archives.isEmpty()) {
             sheets.duplicateSheets(spreadsheetId, archives);
             var verifiedSheetIds = sheets.sheetIdsByTitle(spreadsheetId);
@@ -92,6 +100,7 @@ final class InvestmentOsResearchSheetSync {
         var updates = new ArrayList<GoogleSheetsClient.SheetValueRange>();
         var requiredColumns = new LinkedHashMap<String, Integer>();
         tables.forEach((tab, table) -> {
+            if (skippedConflictingTabs.contains(tab)) return;
             var current = currentValues.getOrDefault(tab, List.of());
             var rowCount = Math.max(table.rows().size(), current.size());
             var width = Math.max(table.headers().size(), current.stream().mapToInt(List::size).max().orElse(0));
@@ -102,8 +111,11 @@ final class InvestmentOsResearchSheetSync {
             while (values.size() < rowCount) values.add(java.util.Collections.nCopies(width, ""));
             updates.add(new GoogleSheetsClient.SheetValueRange(quote(tab) + "!A1", values));
         });
-        sheets.ensureSheetColumnCounts(spreadsheetId, requiredColumns);
-        sheets.batchUpdateValues(spreadsheetId, updates);
+        if (!updates.isEmpty()) {
+            sheets.ensureSheetColumnCounts(spreadsheetId, requiredColumns);
+            sheets.batchUpdateValues(spreadsheetId, updates);
+        }
+        return List.copyOf(skippedConflictingTabs);
     }
 
     private Table security(
@@ -352,6 +364,10 @@ final class InvestmentOsResearchSheetSync {
 
     private static boolean supportsHeaderAppend(String tab) {
         return "Security Snapshot".equals(tab) || "Consensus History".equals(tab);
+    }
+
+    private static boolean preserveOnHeaderConflict(String tab) {
+        return "Thesis State".equals(tab) || "Decision Ledger".equals(tab);
     }
 
     private static String instant(Instant value) {

@@ -10,5 +10,5 @@ public record InvestmentOsSheetSyncResult(
         int fillsChanged,
         String error
 ) {
-    public enum Outcome { SUCCEEDED, FAILED, SKIPPED }
+    public enum Outcome { SUCCEEDED, PARTIAL, FAILED, SKIPPED }
 }

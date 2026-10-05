@@ -84,6 +84,33 @@ class InvestmentOsSheetSyncServiceTest {
     }
 
     @Test
+    void requiredResearchSecurityMirrorFailureRemainsFailed() {
+        var lease = mock(InvestmentOsSheetLease.class);
+        when(lease.acquire(any())).thenReturn(true);
+        var connector = mock(ConnectorService.class);
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio());
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
+        var brokerSurface = mock(BrokerSurfaceService.class);
+        when(brokerSurface.prices(USER_ID, CONNECTION_ID, "ABC")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("ABC", bd("15"), null, null, "USD", NOW, NOW))));
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq("sheet-1"), any())).thenReturn(emptyValues());
+        var researchSheets = mock(InvestmentOsResearchSheetSync.class);
+        when(researchSheets.sync(USER_ID)).thenThrow(GoogleSheetsException.network("private-token"));
+
+        var result = service(lease, connector, brokerSurface, sheets, researchSheets).sync();
+
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.FAILED);
+        assertThat(result.error()).contains("RESEARCH_MIRROR_FAILED").doesNotContain("private-token");
+        verify(sheets).batchUpdateValues(eq("sheet-1"), argThat(updates -> updates.stream()
+                .anyMatch(update -> update.range().startsWith("'Reconciliation Log'!A1")
+                        && update.values().stream().flatMap(List::stream)
+                        .anyMatch(value -> String.valueOf(value).contains("RESEARCH_MIRROR_FAILED")))));
+    }
+
+    @Test
     void validManualRowsArePersistedWhenQuotesAndOrdersArePartial() throws Exception {
         var lease = mock(InvestmentOsSheetLease.class);
         when(lease.acquire(any())).thenReturn(true);
