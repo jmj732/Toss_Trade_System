@@ -8,6 +8,8 @@ Manual `asOf` is the preferred ACCOUNT_2 date. When that column is absent or bla
 
 Combined portfolio snapshots are persisted in PostgreSQL and drive the authenticated investment context without reading Google Sheets on GET. Failed or malformed manual reads append a failed attempt and retain the last accepted combined snapshot; they never fall back to an ACCOUNT_1-only portfolio. Structurally valid manual edits can be accepted when quote inputs are partial. Optional order failures affect order reconciliation but do not downgrade an otherwise complete portfolio snapshot. Numeric risk remains visible with stale manual provenance when its quantities, market values, quotes, and USD weights are known, while sizing eligibility requires fresh validated inputs. The Security Snapshot appends combined source/status, account and manual dates, and per-position source coverage without reordering existing columns.
 
+An incompatible legacy header in `Thesis State` or `Decision Ledger` preserves that tab and its existing archive without copying or rewriting either one. The research mirror still updates compatible tabs, including `Security Snapshot`. If the primary account sync succeeds, these optional tab conflicts return `PARTIAL` with `RESEARCH_MIRROR_SCHEMA_CONFLICT_<tab names>` and mark the existing Reconciliation Log row unresolved; the accepted PostgreSQL portfolio snapshot keeps its original status. Other primary sync failures remain `FAILED`.
+
 Enable only after the target spreadsheet is shared with the service-account email as Editor and the Sheets API is enabled:
 
 ```text

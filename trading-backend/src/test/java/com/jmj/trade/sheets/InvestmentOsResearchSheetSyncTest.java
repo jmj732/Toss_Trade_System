@@ -356,6 +356,65 @@ class InvestmentOsResearchSheetSyncTest {
         verify(sheets, never()).batchUpdateValues(anyString(), any());
     }
 
+    @Test
+    void preservesConflictingThesisAndDecisionTabsWhileSyncingSecuritySnapshot() throws Exception {
+        var sheets = mock(GoogleSheetsClient.class);
+        var ids = new java.util.LinkedHashMap<>(sheetIds());
+        ids.put("Thesis State Legacy before DB", 100);
+        ids.put("Decision Ledger Legacy before DB", 101);
+        when(sheets.sheetIdsByTitle("sheet-1")).thenReturn(ids);
+        var thesisHeaders = List.of("Ticker", "Core Thesis", "Upside Driver", "Expectations Gap",
+                "Fundamental Invalidation", "Revision Invalidation", "Price Risk Trigger",
+                "Price Risk Trigger Price", "Invalidation Status", "Expand Trigger",
+                "Exit Or Discard Trigger", "Classification", "Updated At",
+                "Sizing Eligible", "Next Catalyst", "Next Review");
+        var decisionHeaders = List.of("Decision ID", "As Of", "Asset", "Action", "Reference Price",
+                "Price Session", "Horizon", "Alpha Thesis", "Invalidation", "Next Review Trigger",
+                "Confidence", "Risk Policy Check", "Created At", "Scope", "Account");
+        when(sheets.readValues(eq("sheet-1"), anyString())).thenAnswer(invocation -> {
+            var range = (String) invocation.getArgument(1);
+            var values = switch (range) {
+                case "'Thesis State'!A:ZZ" -> List.<List<Object>>of(new java.util.ArrayList<>(thesisHeaders),
+                        List.of("AAPL", "manual thesis", "", "", "", "", "", "", "", "", "", "", "",
+                                true, "product review", "2026-Q4"));
+                case "'Thesis State Legacy before DB'!A:ZZ" -> List.<List<Object>>of(
+                        List.of("Ticker", "Archived thesis"), List.of("AAPL", "older manual thesis"));
+                case "'Decision Ledger'!A:ZZ" -> List.<List<Object>>of(new java.util.ArrayList<>(decisionHeaders),
+                        List.of("decision-1", "2026-10-04", "AAPL", "HOLD", "100", "REGULAR_CLOSE", "LONG",
+                                "manual alpha", "manual invalidation", "review", "HIGH", "PASS", "2026-10-04",
+                                "CORE", "ACCOUNT_1"));
+                case "'Decision Ledger Legacy before DB'!A:ZZ" -> List.<List<Object>>of(
+                        List.of("decision id", "asset"), List.of("decision-1", "AAPL"));
+                default -> List.<List<Object>>of();
+            };
+            return new GoogleSheetsClient.SheetValues(range, values);
+        });
+        var sync = sync(sheets, mock(InvestmentContextService.class), mock(RiskPolicyService.class), mock(JdbcTemplate.class));
+
+        var skippedTabs = sync.sync(USER_ID);
+
+        assertThat(skippedTabs).containsExactly("Thesis State", "Decision Ledger");
+        verify(sheets, never()).duplicateSheets(anyString(), anyMap());
+        var updates = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        @SuppressWarnings("unchecked")
+        var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        assertThat(tabs.stream().map(GoogleSheetsClient.SheetValueRange::range))
+                .doesNotContain("'Thesis State'!A1", "'Decision Ledger'!A1",
+                        "'Thesis State Legacy before DB'!A1", "'Decision Ledger Legacy before DB'!A1")
+                .contains("'Security Snapshot'!A1", "'Consensus History'!A1", "'Watchlist'!A1");
+        var security = tabs.stream().filter(update -> update.range().equals("'Security Snapshot'!A1"))
+                .findFirst().orElseThrow().values();
+        assertThat(security.getFirst()).hasSize(119);
+        assertThat(security).hasSize(2);
+        assertThat(security.get(1).get(0)).isEqualTo("AAPL");
+        assertThat(((Number) security.get(1).get(2)).intValue()).isEqualTo(4);
+        assertThat(((Number) security.get(1).get(3)).doubleValue()).isEqualTo(0.4);
+        verify(sheets).ensureSheetColumnCounts(eq("sheet-1"), argThat(columns ->
+                columns.containsKey("Security Snapshot") && !columns.containsKey("Thesis State")
+                        && !columns.containsKey("Decision Ledger")));
+    }
+
     private static Map<String, Integer> sheetIds() {
         return Map.of("Security Snapshot", 1, "Thesis State", 2, "Consensus History", 3,
                 "Watchlist", 4, "Decision Ledger", 5, "Alpha State", 6, "Risk Policy", 7);

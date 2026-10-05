@@ -79,7 +79,17 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         var manualAsOf = LocalDate.now(ZoneId.of("Asia/Seoul")).minusDays(1);
         var changingClock = new AtomicReference<>(syncAt);
         var failAccountStateRead = new AtomicBoolean(false);
+        var reconciliationValues = new AtomicReference<>(
+                new GoogleSheetsClient.SheetValues("reconciliation", List.of()));
         var sheets = mock(GoogleSheetsClient.class);
+        var thesisHeadersWithManualFields = List.of("Ticker", "Core Thesis", "Upside Driver", "Expectations Gap",
+                "Fundamental Invalidation", "Revision Invalidation", "Price Risk Trigger",
+                "Price Risk Trigger Price", "Invalidation Status", "Expand Trigger",
+                "Exit Or Discard Trigger", "Classification", "Updated At",
+                "Sizing Eligible", "Next Catalyst", "Next Review");
+        var decisionHeadersWithManualFields = List.of("Decision ID", "As Of", "Asset", "Action", "Reference Price",
+                "Price Session", "Horizon", "Alpha Thesis", "Invalidation", "Next Review Trigger",
+                "Confidence", "Risk Policy Check", "Created At", "Scope", "Account");
         when(sheets.readValues(eq(SPREADSHEET_ID), anyString())).thenAnswer(invocation -> {
             var range = (String) invocation.getArgument(1);
             if ("'Account State'!A:Z".equals(range)) {
@@ -87,11 +97,34 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
                 return manualAccountState(manualAsOf, syncAt.minus(Duration.ofHours(2)));
             }
             if ("'Account Registry'!A:Z".equals(range)) return accountRegistry();
+            if ("'Reconciliation Log'!A:Z".equals(range)) return reconciliationValues.get();
+            if ("'Thesis State'!A:ZZ".equals(range)) return new GoogleSheetsClient.SheetValues(range, List.of(
+                    new ArrayList<>(thesisHeadersWithManualFields),
+                    new ArrayList<>(List.of("AAPL", "manual thesis", "", "", "", "", "", "", "", "", "",
+                            "", "", true, "product review", "2026-Q4"))));
+            if ("'Thesis State Legacy before DB'!A:ZZ".equals(range)) return new GoogleSheetsClient.SheetValues(range,
+                    List.of(List.of("Ticker", "Older thesis archive"), List.of("AAPL", "preserve existing archive")));
+            if ("'Decision Ledger'!A:ZZ".equals(range)) return new GoogleSheetsClient.SheetValues(range, List.of(
+                    new ArrayList<>(decisionHeadersWithManualFields),
+                    new ArrayList<>(List.of("decision-1", "2026-10-04", "AAPL", "HOLD", "100", "REGULAR_CLOSE",
+                            "LONG", "manual alpha", "manual invalidation", "review", "HIGH", "PASS", "2026-10-04",
+                            "CORE", "ACCOUNT_1"))));
+            if ("'Decision Ledger Legacy before DB'!A:ZZ".equals(range)) return new GoogleSheetsClient.SheetValues(range,
+                    List.of(List.of("decision", "older archive"), List.of("decision-1", "preserve existing archive")));
             return new GoogleSheetsClient.SheetValues(range, List.of());
         });
         when(sheets.sheetIdsByTitle(SPREADSHEET_ID)).thenReturn(Map.of(
                 "Security Snapshot", 1, "Thesis State", 2, "Consensus History", 3, "Watchlist", 4,
-                "Decision Ledger", 5, "Alpha State", 6, "Risk Policy", 7));
+                "Decision Ledger", 5, "Alpha State", 6, "Risk Policy", 7,
+                "Thesis State Legacy before DB", 100, "Decision Ledger Legacy before DB", 101));
+        org.mockito.Mockito.doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            var updates = (List<GoogleSheetsClient.SheetValueRange>) invocation.getArgument(1);
+            updates.stream().filter(update -> update.range().startsWith("'Reconciliation Log'!"))
+                    .findFirst().ifPresent(update -> reconciliationValues.set(new GoogleSheetsClient.SheetValues(
+                            update.range(), update.values())));
+            return null;
+        }).when(sheets).batchUpdateValues(eq(SPREADSHEET_ID), any());
 
         var connector = mock(ConnectorService.class);
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(account1Portfolio(syncAt.minusSeconds(30)));
@@ -120,11 +153,15 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
 
         var result = sync.sync();
 
-        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.PARTIAL);
+        assertThat(result.error()).contains("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State;Decision Ledger");
+        verify(sheets, org.mockito.Mockito.never()).duplicateSheets(anyString(), any());
         var snapshotId = jdbc.queryForObject("""
                 SELECT id FROM investment_os_portfolio_snapshots
                  WHERE user_id = ? AND payload IS NOT NULL ORDER BY attempted_at DESC LIMIT 1
                 """, UUID.class, USER_ID);
+        assertThat(jdbc.queryForObject("SELECT attempt_status FROM investment_os_portfolio_snapshots WHERE id = ?",
+                String.class, snapshotId)).isEqualTo("SUCCEEDED");
         var payload = mapper.readTree(jdbc.queryForObject(
                 "SELECT payload::text FROM investment_os_portfolio_snapshots WHERE id = ?", String.class, snapshotId));
         var accountState = payload.path("accountState");
@@ -185,9 +222,34 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         verify(sheets, org.mockito.Mockito.times(2)).batchUpdateValues(eq(SPREADSHEET_ID), updates.capture());
         @SuppressWarnings("unchecked")
         var allUpdates = (List<List<GoogleSheetsClient.SheetValueRange>>) (List<?>) updates.getAllValues();
+        assertThat(allUpdates).hasSize(2);
+        assertThat(allUpdates.getFirst()).anyMatch(update -> "'Security Snapshot'!A1".equals(update.range()));
+        assertThat(allUpdates.getLast()).anyMatch(update -> update.range().startsWith("'Account State'!A1"));
+        var researchUpdates = allUpdates.stream().flatMap(List::stream)
+                .filter(update -> update.range().startsWith("'Security Snapshot'!A1")
+                        || update.range().startsWith("'Thesis State'!A1")
+                        || update.range().startsWith("'Decision Ledger'!A1")
+                        || update.range().startsWith("'Consensus History'!A1")
+                        || update.range().startsWith("'Watchlist'!A1"))
+                .toList();
+        assertThat(researchUpdates).anyMatch(update -> "'Security Snapshot'!A1".equals(update.range()))
+                .anyMatch(update -> "'Consensus History'!A1".equals(update.range()))
+                .anyMatch(update -> "'Watchlist'!A1".equals(update.range()))
+                .noneMatch(update -> update.range().startsWith("'Thesis State'!A1")
+                        || update.range().startsWith("'Decision Ledger'!A1"));
+        var reconciliationWrites = allUpdates.stream().flatMap(List::stream)
+                .filter(update -> update.range().startsWith("'Reconciliation Log'!A1")).toList();
+        assertThat(reconciliationWrites).hasSize(1);
+        var reconciliation = reconciliationWrites.getLast();
+        assertThat(reconciliation.values()).hasSize(2);
+        var reconciliationHeaders = reconciliation.values().getFirst().stream().map(String::valueOf).toList();
+        var reconciliationRow = reconciliation.values().get(1);
+        assertThat(reconciliationRow.get(reconciliationHeaders.indexOf("Error")))
+                .isEqualTo("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State;Decision Ledger");
         var securityUpdate = allUpdates.stream().flatMap(List::stream)
                 .filter(update -> "'Security Snapshot'!A1".equals(update.range())).findFirst().orElseThrow();
         var securityHeaders = securityUpdate.values().getFirst().stream().map(String::valueOf).toList();
+        assertThat(securityHeaders).hasSize(119);
         var securityAapl = rowForValues(securityUpdate.values().subList(1, securityUpdate.values().size()),
                 securityHeaders, "Ticker", "AAPL");
         assertThat(value(securityAapl, securityHeaders, "Quantity")).isEqualTo(contextAapl.quantity());
@@ -203,6 +265,12 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         assertThat(value(securityAapl, securityHeaders, "Position Price As Of")).isEqualTo(quoteAt.toString());
         assertThat((String) value(securityAapl, securityHeaders, "Position Accounts Included"))
                 .contains("ACCOUNT_1", "ACCOUNT_2");
+
+        var repeated = sync.sync();
+        assertThat(repeated.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.PARTIAL);
+        assertThat(reconciliationValues.get().values()).hasSize(2);
+        assertThat(reconciliationValues.get().values().get(1).get(reconciliationHeaders.indexOf("Error")))
+                .isEqualTo("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State;Decision Ledger");
 
         assertThatThrownBy(() -> jdbc.update(
                 "UPDATE investment_os_portfolio_snapshots SET error_code = 'TAMPER' WHERE id = ?", snapshotId))

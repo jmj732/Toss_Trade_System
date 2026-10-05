@@ -339,15 +339,6 @@ public final class InvestmentOsSheetSyncService {
                     ? portfolioMetricsKeepingVerifiedScopes(metrics, portfolioAccountState, syncedAt) : metrics;
             var allOrderReadsSucceeded = open != null && closed != null;
             var status = reconciliationStatus(authoritative, portfolio, open, closed, fills, priceStatus);
-            var nextRecon = InvestmentOsSheetModel.reconciliation(
-                    current.reconciliation(), syncId.toString(), properties.accountLabel(), "" + status.holdings,
-                    status.cash, status.orders, status.fills, status.prices,
-                    rowDelta(account, nextAccount) + rowDelta(orders, nextOrders) + rowDelta(orderHistory, nextOrderHistory)
-                            + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics)
-                            + rowDelta(registry, nextRegistry),
-                    failure == null ? "NONE" : failure,
-                    failure == null && authoritative && allOrderReadsSucceeded && fills != null && completePrices,
-                    syncedAt, failure);
             if (authoritative && manualRowsValid) {
                 var manualMetadataVerified = InvestmentOsSheetModel.manualRowsHaveVerifiedMetadata(
                         portfolioAccountState, syncedAt.atZone(ZoneId.of("Asia/Seoul")).toLocalDate());
@@ -364,6 +355,38 @@ public final class InvestmentOsSheetSyncService {
                 persistFailedSnapshot(userId, syncedAt, !authoritative ? "PORTFOLIO_NOT_AUTHORITATIVE"
                         : !manualConfigured ? "MANUAL_REGISTRY_UNCONFIRMED" : "MANUAL_ACCOUNT_INVALID");
             }
+            var primarySyncSucceeded = failure == null && authoritative && allOrderReadsSucceeded
+                    && fills != null && completePrices;
+            var skippedResearchTabs = List.<String>of();
+            var researchMirrorFailed = false;
+            try {
+                if (researchSheets != null) {
+                    var skipped = researchSheets.sync(userId);
+                    if (skipped != null) skippedResearchTabs = skipped;
+                }
+            } catch (RuntimeException exception) {
+                researchMirrorFailed = true;
+                failure = appendFailure(failure, "RESEARCH_MIRROR_FAILED_" + safeError(exception));
+                LOG.atWarn().addKeyValue("operation", OPERATION)
+                        .addKeyValue("failure_reason", safeError(exception))
+                        .log("Research sheet mirror failed");
+            }
+            var conflictingResearchTabs = List.of("Thesis State", "Decision Ledger").stream()
+                    .filter(skippedResearchTabs::contains).toList();
+            if (!conflictingResearchTabs.isEmpty()) {
+                failure = appendFailure(failure,
+                        "RESEARCH_MIRROR_SCHEMA_CONFLICT_" + String.join(";", conflictingResearchTabs));
+            }
+            var rowsChanged = rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
+                    + rowDelta(orderHistory, nextOrderHistory)
+                    + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics)
+                    + rowDelta(registry, nextRegistry);
+            var nextRecon = InvestmentOsSheetModel.reconciliation(
+                    current.reconciliation(), syncId.toString(), properties.accountLabel(), "" + status.holdings,
+                    status.cash, status.orders, status.fills, status.prices, rowsChanged,
+                    failure == null ? "NONE" : failure,
+                    failure == null && authoritative && allOrderReadsSucceeded && fills != null && completePrices,
+                    syncedAt, failure);
             var updates = new ArrayList<GoogleSheetsClient.SheetValueRange>();
             if (authoritative) {
                 updates.add(toRange("Account State", account, nextAccount));
@@ -380,16 +403,12 @@ public final class InvestmentOsSheetSyncService {
                 if (acceptedSnapshotPersisted) persistFailedSnapshot(userId, syncedAt, "SHEET_MIRROR_FAILED");
                 throw exception;
             }
-            if (researchSheets != null) researchSheets.sync(userId);
-            var rowsChanged = rowDelta(account, nextAccount) + rowDelta(orders, nextOrders)
-                    + rowDelta(orderHistory, nextOrderHistory)
-                    + rowDelta(aggregate, nextAggregate) + rowDelta(metrics, nextMetrics)
-                    + rowDelta(registry, nextRegistry);
             var ordersChanged = open == null ? 0 : open.size();
             ordersChanged += closed == null || closedFromCache ? 0 : closed.size();
             var result = new InvestmentOsSheetSyncResult(
-                    failure == null && authoritative && allOrderReadsSucceeded && fills != null && completePrices
-                            ? InvestmentOsSheetSyncResult.Outcome.SUCCEEDED
+                    primarySyncSucceeded && !researchMirrorFailed
+                            ? conflictingResearchTabs.isEmpty() ? InvestmentOsSheetSyncResult.Outcome.SUCCEEDED
+                                    : InvestmentOsSheetSyncResult.Outcome.PARTIAL
                             : InvestmentOsSheetSyncResult.Outcome.FAILED,
                     syncId, rowsChanged, ordersChanged, fills == null ? 0 : fills.size(), failure);
             LOG.atInfo().addKeyValue("operation", OPERATION)
