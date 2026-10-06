@@ -3564,6 +3564,10 @@ public final class InvestmentContextService {
             LocalDate asOf, String overlayVersion, JsonNode indicators, JsonNode events,
             JsonNode cohorts, JsonNode anchoredVwaps, JsonNode performance
     ) {
+        public JsonNode getDailyAvwaps() {
+            return anchoredVwaps;
+        }
+
         public static SecurityTacticalOverlayView notConfigured() {
             return new SecurityTacticalOverlayView("NOT_CONFIGURED", "TACTICAL_INPUTS_NOT_CONFIGURED",
                     null, null, null, null, null, null, null, null, "TACTICAL_V1",
