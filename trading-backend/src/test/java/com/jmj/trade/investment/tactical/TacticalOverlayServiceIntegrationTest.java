@@ -145,6 +145,70 @@ class TacticalOverlayServiceIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void contextAddsDailyVwapAliasesToLegacyPayloadWithoutWritingSnapshots() throws Exception {
+        var dailyProxy = mapper.readTree("""
+                {"value":101.25,"status":"OK"}
+                """);
+        var legacyAvwap = mapper.readTree("""
+                {"value":99.75,"status":"PARTIAL"}
+                """);
+        var legacyPayload = mapper.readTree("""
+                {
+                  "stage":"BASE",
+                  "indicators":[
+                    {"date":"2026-10-01","dailyRolling20Vwap":{"value":101.25,"status":"OK"}},
+                    {"date":"2026-10-02","dailyRolling20Vwap":{"value":101.25,"status":"OK"},
+                     "dailyVwap20Proxy":{"value":1,"status":"STALE"}}
+                  ],
+                  "anchoredVwaps":[{
+                    "id":"legacy-anchor","date":"2026-09-01","anchorType":"MAJOR_LOW",
+                    "value":{"value":99.75,"status":"PARTIAL"},
+                    "anchoredVwap":{"value":1,"status":"STALE"},
+                    "dailyAvwap":{"value":2,"status":"DATA_MISSING"}
+                  }],
+                  "events":[],"cohorts":[]
+                }
+                """);
+        var sourceAsOf = sourceAsOf(dates.getLast());
+        var storedAt = OffsetDateTime.ofInstant(CLOCK_START, ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO investment_tactical_overlay_snapshots (
+                    id, user_id, snapshot_type, entity_key, ticker, as_of, source_as_of, calculated_at,
+                    source, overlay_version, status, reasons, input_refs, properties_hash, payload, created_at
+                ) VALUES (?, ?, 'SECURITY', 'AVT', 'AVT', ?, ?, ?, 'TOSS', 'TACTICAL_V1', 'OK',
+                          '[]'::jsonb, '[]'::jsonb, ?, CAST(? AS jsonb), ?)
+                """, UUID.randomUUID(), userId, dates.getLast(), OffsetDateTime.ofInstant(sourceAsOf, ZoneOffset.UTC),
+                storedAt, "c".repeat(64), mapper.writeValueAsString(legacyPayload), storedAt);
+
+        var beforeRead = snapshotCount(userId);
+        var context = service.context(userId, SYMBOLS);
+        var overlay = context.securities().get("AVT");
+
+        assertThat(overlay.status()).isEqualTo("OK");
+        assertThat(overlay.sourceAsOf()).isEqualTo(sourceAsOf);
+        assertThat(overlay.indicators().path(0).path("dailyRolling20Vwap")).isEqualTo(dailyProxy);
+        assertThat(overlay.indicators().path(0).path("dailyVwap20Proxy")).isEqualTo(dailyProxy);
+        assertThat(overlay.indicators().path(1).path("dailyVwap20Proxy")).isEqualTo(dailyProxy);
+        assertThat(overlay.anchoredVwaps().path(0).path("value")).isEqualTo(legacyAvwap);
+        assertThat(overlay.anchoredVwaps().path(0).path("anchoredVwap")).isEqualTo(legacyAvwap);
+        assertThat(overlay.anchoredVwaps().path(0).path("dailyAvwap")).isEqualTo(legacyAvwap);
+        assertThat(overlay.getDailyAvwaps()).isEqualTo(overlay.anchoredVwaps());
+        assertThat(mapper.valueToTree(overlay).path("dailyAvwaps")).isEqualTo(overlay.anchoredVwaps());
+        assertThat(snapshotCount(userId)).isEqualTo(beforeRead);
+
+        var persistedPayload = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_tactical_overlay_snapshots
+                 WHERE user_id = ? AND snapshot_type = 'SECURITY' AND entity_key = 'AVT'
+                 ORDER BY snapshot_order DESC LIMIT 1
+                """, String.class, userId));
+        assertThat(persistedPayload).isEqualTo(legacyPayload);
+
+        var unconfigured = service.context(otherUserId, SYMBOLS).securities().get("AVT");
+        assertThat(unconfigured.status()).isEqualTo("NOT_CONFIGURED");
+        assertThat(unconfigured.getDailyAvwaps()).isNull();
+    }
+
+    @Test
     void effectiveDatedThemeInputsAnchorsAndDecisionPerformanceRecomputeAndTombstone() throws Exception {
         var refsByTicker = recordTrackedHistory();
         insertDecision("AVT", UUID.fromString("6e252d81-816e-4fd8-bdc9-739856015103"));

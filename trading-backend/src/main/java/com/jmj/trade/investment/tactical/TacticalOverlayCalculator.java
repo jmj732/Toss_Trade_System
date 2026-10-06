@@ -699,6 +699,10 @@ public final class TacticalOverlayCalculator {
                                MetricValue dailyRolling20Vwap, MetricValue relativeVolume,
                                MetricValue return20, MetricValue return60, MetricValue relativeStrength20,
                                MetricValue relativeStrength60) {
+        /** Daily OHLCV typical-price/volume proxy; this is not intraday trade-execution VWAP. */
+        public MetricValue getDailyVwap20Proxy() {
+            return dailyRolling20Vwap;
+        }
     }
 
     public record Event(EventType type, LocalDate date, LocalDate breakoutDate, BigDecimal breakoutLevel,
@@ -712,6 +716,11 @@ public final class TacticalOverlayCalculator {
 
     public record AnchoredVwap(String id, LocalDate date, AnchorType anchorType, LocalDate asOf,
                                MetricValue value, MetricValue distancePct) {
+        /** Daily OHLCV AVWAP from the externally specified anchor, inclusive; not an intraday execution VWAP. */
+        public MetricValue getDailyAvwap() {
+            return value;
+        }
+
         public MetricValue getAnchoredVwap() {
             return value;
         }
@@ -748,6 +757,10 @@ public final class TacticalOverlayCalculator {
 
         public boolean sourcePricesAdjusted() {
             return priceAdjustmentStatus == PriceAdjustmentStatus.ADJUSTED;
+        }
+
+        public List<AnchoredVwap> getDailyAvwaps() {
+            return anchoredVwaps;
         }
     }
 

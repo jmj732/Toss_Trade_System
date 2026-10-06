@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
@@ -789,7 +790,7 @@ public class TacticalOverlayService {
             UUID userId, String symbol) {
         var snapshot = latestSnapshot(userId, "SECURITY", symbol);
         if (snapshot == null) return com.jmj.trade.investment.InvestmentContextService.SecurityTacticalOverlayView.notConfigured();
-        var payload = parse(snapshot.payload());
+        var payload = dailyVwapAliases(parse(snapshot.payload()));
         var stageNode = payload == null ? null : payload.path("stage");
         var activePerformance = activePerformanceEntries(userId, symbol, contextEffectiveDate(snapshot.asOf())).stream()
                 .filter(row -> row.decisionId() == null).toList();
@@ -1121,6 +1122,43 @@ public class TacticalOverlayService {
             }
         }
         output.set("performance", performance);
+        return output;
+    }
+
+    private JsonNode dailyVwapAliases(JsonNode stored) {
+        if (stored == null || !stored.isObject()) return stored == null ? null : stored.deepCopy();
+        var output = (ObjectNode) stored.deepCopy();
+        if (output.has("indicators")) {
+            output.set("indicators", metricAliases(output.path("indicators"),
+                    "dailyRolling20Vwap", "dailyVwap20Proxy"));
+        }
+        if (output.has("anchoredVwaps")) {
+            var anchors = metricAliases(output.path("anchoredVwaps"), "value", "anchoredVwap");
+            output.set("anchoredVwaps", metricAliases(anchors, "anchoredVwap", "dailyAvwap", "value"));
+        }
+        return output;
+    }
+
+    private JsonNode metricAliases(JsonNode rows, String sourceField, String aliasField) {
+        return metricAliases(rows, sourceField, aliasField, null);
+    }
+
+    private JsonNode metricAliases(JsonNode rows, String sourceField, String aliasField, String fallbackField) {
+        if (rows == null || !rows.isArray()) return rows == null ? null : rows.deepCopy();
+        ArrayNode output = mapper.createArrayNode();
+        for (var row : rows) {
+            if (!(row instanceof ObjectNode object)) {
+                output.add(row.deepCopy());
+                continue;
+            }
+            var copy = (ObjectNode) object.deepCopy();
+            JsonNode source = copy.get(sourceField);
+            if (source == null || source.isNull()) {
+                source = fallbackField == null ? copy.get(aliasField) : copy.get(fallbackField);
+            }
+            if (source != null && !source.isNull()) copy.set(aliasField, source.deepCopy());
+            output.add(copy);
+        }
         return output;
     }
 
