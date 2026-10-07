@@ -46,8 +46,8 @@ user. No connector key needs to be copied into ChatGPT.
 
 The requested OAuth scope determines the MCP tools:
 
-- `connector:read`: `get_portfolio`, `get_orders`, `get_recent_fills`, and `get_order`.
-- `connector:trade`: the four read tools plus `prepare_order`, `submit_order`, and `cancel_order`.
+- `connector:read`: `get_portfolio`, `get_orders`, `get_recent_fills`, `get_order`, and `get_investment_context`.
+- `connector:trade`: the five read tools plus `prepare_order`, `submit_order`, and `cancel_order`.
 
 If `REAL_ORDER_ENABLED=false`, trade-scoped connections still show the three
 trade tools so the capability is discoverable, but calls return an explicit
@@ -59,13 +59,45 @@ Read tools are headless: they do not ask for account selection, confirmation, or
 OAuth access token is short-lived; the server issues and rotates opaque 30-day refresh tokens,
 so the ChatGPT connection can refresh without exposing a Toss credential. A failed reauthorization
 is returned as an authentication failure, never as a tool-side prompt. Scheduled tasks must use
-only the read scope; trade tools are intentionally excluded.
+only the read scope; trade tools are intentionally excluded. OpenAI's task documentation describes
+Apps as selectable through a plugin and Team Tasks as using the Plugins selector and workspace
+connections, but does not explicitly guarantee that a custom MCP connection to this Toss connector
+is callable by a personal Scheduled Task. Treat scheduled custom-MCP support as unverified until an
+existing supported plugin is selected and an actual task run succeeds. See the
+[Scheduled Tasks guide](https://help.openai.com/en/articles/10291617-scheduled-tasks-in-chatgpt) and
+[Team Tasks guide](https://help.openai.com/en/articles/20001540-creating-and-managing-team-tasks-in-chatgpt).
+
+To use the MCP output schema, request protocol version `2025-06-18` in the `initialize` request.
+The server still returns JSON text content for clients using older negotiated protocol versions;
+those clients should not rely on output-schema enforcement.
 
 After tool scanning, test with prompts such as:
 
 - `내 Toss 포트폴리오를 조회해줘.`
 - `열린 주문을 보여줘.`
 - `2026-09-01T00:00:00Z 이후 체결 내역을 보여줘.`
+- `내 Investment OS context를 보여줘.`
+- `AAPL의 Investment OS context를 보여줘.`
+
+`get_investment_context` returns the same in-process `InvestmentContextService` view as
+`GET /investment/context`. Its MCP arguments may be omitted or contain only an optional ticker:
+
+```json
+{"name":"get_investment_context","arguments":{}}
+{"name":"get_investment_context","arguments":{"ticker":"AAPL"}}
+```
+
+The ticker form filters only the `securities` array. Top-level `portfolio`, `watchlist`, `riskPolicy`,
+`decisionLedger`, `pipeline`, `tacticalOverlay`, and `decisionOverlays` remain the full authenticated-user
+view. Nulls and native partial or stale statuses remain unchanged. This tool makes no provider requests,
+syncs, or writes.
+
+The tool returns successful content (`isError=false`) when context data is partial or fields are missing;
+consumers must preserve the returned statuses and nulls. `INVALID_ARGUMENT` means malformed arguments or
+an unknown ticker. `INVESTMENT_CONTEXT_UNAVAILABLE` is a sanitized, retryable tool error for an absent
+context service or failed in-process context read. `INTERNAL_ERROR` is a sanitized unexpected tool failure.
+Authentication failures remain HTTP 401/403. If the whole Spring service is unreachable, the MCP client
+gets a transport connection error or HTTP 5xx instead of a tool-level error.
 
 ## Read surface
 
@@ -77,6 +109,7 @@ After tool scanning, test with prompts such as:
   positions, risk percentages, and open orders.
 - `GET /api/v1/connector/orders?group=OPEN|CLOSED` — broker order list.
 - `GET /api/v1/connector/fills?since=<ISO-8601>` — filled quantities from both groups.
+- MCP `get_investment_context` — Investment OS context with optional security-only ticker filter.
 
 `cashBuyingPower` is the account's cash/order-available balance in this
 integration. No separate cash-balance field or second cash ledger is exposed.

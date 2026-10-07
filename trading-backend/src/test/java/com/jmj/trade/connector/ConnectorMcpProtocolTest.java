@@ -6,6 +6,8 @@ import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.order.LiveOrderActivationException;
 import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
+import com.jmj.trade.investment.InvestmentContextService;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -47,7 +49,7 @@ class ConnectorMcpProtocolTest {
         var response = protocol.handle(request("2", "tools/list", "{}"), USER, CONNECTION);
 
         var tools = response.path("result").path("tools");
-        assertThat(tools.size()).isEqualTo(4);
+        assertThat(tools.size()).isEqualTo(5);
         assertThat(tools.get(0).path("name").asText()).isEqualTo("get_portfolio");
         assertThat(tools.get(1).path("name").asText()).isEqualTo("get_orders");
         assertThat(tools.get(2).path("name").asText()).isEqualTo("get_recent_fills");
@@ -63,6 +65,25 @@ class ConnectorMcpProtocolTest {
                 .path("type").asText()).isEqualTo("array");
         assertThat(tools.get(2).path("outputSchema").path("required").toString()).contains("fills");
         assertThat(tools.get(3).path("name").asText()).isEqualTo("get_order");
+        var contextTool = tools.get(4);
+        assertThat(contextTool.path("name").asText()).isEqualTo("get_investment_context");
+        assertThat(contextTool.path("annotations").path("readOnlyHint").asBoolean()).isTrue();
+        assertThat(contextTool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
+        assertThat(contextTool.path("securitySchemes").get(0).path("scopes").get(0).asText())
+                .isEqualTo(ConnectorApiKeyService.READ_SCOPE);
+        var inputSchema = contextTool.path("inputSchema");
+        assertThat(inputSchema.path("additionalProperties").asBoolean()).isFalse();
+        assertThat(inputSchema.path("properties").path("ticker").path("type").asText()).isEqualTo("string");
+        assertThat(inputSchema.path("properties").path("ticker").path("pattern").asText())
+                .isEqualTo("^[A-Za-z0-9._-]{1,32}$");
+        assertThat(inputSchema.path("required").isMissingNode()).isTrue();
+        var outputSchema = contextTool.path("outputSchema");
+        assertThat(outputSchema.path("type").asText()).isEqualTo("object");
+        assertThat(outputSchema.path("anyOf").size()).isEqualTo(2);
+        assertThat(outputSchema.path("anyOf").get(0).path("properties").has("portfolio")).isTrue();
+        assertThat(outputSchema.path("anyOf").get(0).path("properties").has("decisionOverlays")).isTrue();
+        assertThat(outputSchema.path("anyOf").get(1).path("properties").path("errorCode")
+                .path("enum").toString()).contains("INVESTMENT_CONTEXT_UNAVAILABLE");
         for (var tool : tools) {
             assertThat(tool.path("annotations").path("readOnlyHint").asBoolean()).isTrue();
             assertThat(tool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
@@ -76,13 +97,14 @@ class ConnectorMcpProtocolTest {
         var response = protocol.handle(request("trade", "tools/list", "{}"), USER, CONNECTION, true);
 
         var tools = response.path("result").path("tools");
-        assertThat(tools.size()).isEqualTo(7);
-        assertThat(tools.get(4).path("name").asText()).isEqualTo("prepare_order");
-        assertThat(tools.get(5).path("name").asText()).isEqualTo("submit_order");
-        assertThat(tools.get(6).path("name").asText()).isEqualTo("cancel_order");
-        assertThat(tools.get(4).path("annotations").path("readOnlyHint").asBoolean()).isFalse();
-        assertThat(tools.get(5).path("annotations").path("destructiveHint").asBoolean()).isTrue();
-        assertThat(tools.get(5).path("inputSchema").path("required").toString()).contains("proposalId");
+        assertThat(tools.size()).isEqualTo(8);
+        assertThat(tools.get(4).path("name").asText()).isEqualTo("get_investment_context");
+        assertThat(tools.get(5).path("name").asText()).isEqualTo("prepare_order");
+        assertThat(tools.get(6).path("name").asText()).isEqualTo("submit_order");
+        assertThat(tools.get(7).path("name").asText()).isEqualTo("cancel_order");
+        assertThat(tools.get(5).path("annotations").path("readOnlyHint").asBoolean()).isFalse();
+        assertThat(tools.get(6).path("annotations").path("destructiveHint").asBoolean()).isTrue();
+        assertThat(tools.get(6).path("inputSchema").path("required").toString()).contains("proposalId");
     }
 
     @Test
@@ -94,10 +116,11 @@ class ConnectorMcpProtocolTest {
                 USER, CONNECTION, true);
 
         var tools = response.path("result").path("tools");
-        assertThat(tools.size()).isEqualTo(7);
-        assertThat(tools.get(4).path("name").asText()).isEqualTo("prepare_order");
-        assertThat(tools.get(5).path("name").asText()).isEqualTo("submit_order");
-        assertThat(tools.get(6).path("name").asText()).isEqualTo("cancel_order");
+        assertThat(tools.size()).isEqualTo(8);
+        assertThat(tools.get(4).path("name").asText()).isEqualTo("get_investment_context");
+        assertThat(tools.get(5).path("name").asText()).isEqualTo("prepare_order");
+        assertThat(tools.get(6).path("name").asText()).isEqualTo("submit_order");
+        assertThat(tools.get(7).path("name").asText()).isEqualTo("cancel_order");
     }
 
     @ParameterizedTest
@@ -189,6 +212,161 @@ class ConnectorMcpProtocolTest {
         verify(service).order(USER, CONNECTION, "broker-1", null);
         verify(tradeService, org.mockito.Mockito.never()).getOrder(
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void returnsPersistedInvestmentContextWithoutChangingItsStatusesOrNulls() throws Exception {
+        var mapper = new ObjectMapper();
+        var contextService = mock(InvestmentContextService.class);
+        var expected = exampleContext(mapper);
+        when(contextService.context(USER)).thenReturn(expected);
+        var contextProtocol = new ConnectorMcpProtocol(service, tradeService, contextService, mapper);
+
+        var response = contextProtocol.handle(toolCall("context-full", "get_investment_context", "{}"),
+                USER, CONNECTION);
+        var structured = response.path("result").path("structuredContent");
+        var serializedText = response.path("result").path("content").get(0).path("text").asText();
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(structured).isEqualTo(mapper.valueToTree(expected));
+        assertThat(mapper.readTree(serializedText)).isEqualTo(structured);
+        assertThat(structured.path("securities").get(0).path("price").path("status").asText())
+                .isEqualTo("INSUFFICIENT_HISTORY");
+        assertThat(structured.path("securities").get(0).path("tacticalOverlay").path("performance")
+                .path("currentR").path("status").asText()).isEqualTo("STALE");
+        assertThat(structured.path("tacticalOverlay").path("status").asText()).isEqualTo("NOT_CONFIGURED");
+        assertThat(structured.path("securities").get(0).path("tacticalOverlay").path("anchoredVwaps").isNull())
+                .isTrue();
+        verify(contextService).context(USER);
+        org.mockito.Mockito.verifyNoInteractions(service, tradeService);
+    }
+
+    @Test
+    void tickerFilterChangesOnlyTheSecuritiesArray() throws Exception {
+        var mapper = new ObjectMapper();
+        var contextService = mock(InvestmentContextService.class);
+        var expected = exampleContext(mapper);
+        when(contextService.context(USER)).thenReturn(expected);
+        var contextProtocol = new ConnectorMcpProtocol(service, tradeService, contextService, mapper);
+
+        var response = contextProtocol.handle(toolCall("context-filter", "get_investment_context",
+                "{\"ticker\":\"aapl\"}"), USER, CONNECTION);
+        var actual = (ObjectNode) response.path("result").path("structuredContent");
+        var expectedFiltered = (ObjectNode) mapper.valueToTree(expected);
+        expectedFiltered.set("securities", mapper.createArrayNode().add(mapper.valueToTree(expected.securities().get(0))));
+
+        assertThat(actual).isEqualTo(expectedFiltered);
+        assertThat(actual.path("securities").size()).isEqualTo(1);
+        assertThat(actual.path("securities").get(0).path("ticker").asText()).isEqualTo("AAPL");
+        verify(contextService).context(USER);
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidInvestmentContextArguments")
+    void rejectsMalformedInvestmentContextArgumentsWithoutEchoingInput(String arguments) throws Exception {
+        var contextService = mock(InvestmentContextService.class);
+        var contextProtocol = new ConnectorMcpProtocol(service, tradeService, contextService, new ObjectMapper());
+
+        var response = contextProtocol.handle(toolCall("context-invalid", "get_investment_context", arguments),
+                USER, CONNECTION);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isTrue();
+        assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        assertThat(response.path("result").path("content").get(0).path("text").asText())
+                .doesNotContain("secret", "AAPL", "bad-field");
+        org.mockito.Mockito.verifyNoInteractions(contextService);
+    }
+
+    private static Stream<Arguments> invalidInvestmentContextArguments() {
+        return Stream.of(
+                Arguments.of("[]"),
+                Arguments.of("null"),
+                Arguments.of("{\"ticker\":7}"),
+                Arguments.of("{\"ticker\":\"   \"}"),
+                Arguments.of("{\"ticker\":\" AAPL \"}"),
+                Arguments.of("{\"ticker\":\"AAPL!\"}"),
+                Arguments.of("{\"bad-field\":\"secret\"}"));
+    }
+
+    @Test
+    void rejectsUnknownTickerWithoutReturningSecurityData() throws Exception {
+        var mapper = new ObjectMapper();
+        var contextService = mock(InvestmentContextService.class);
+        when(contextService.context(USER)).thenReturn(exampleContext(mapper));
+        var contextProtocol = new ConnectorMcpProtocol(service, tradeService, contextService, mapper);
+
+        var response = contextProtocol.handle(toolCall("context-unknown", "get_investment_context",
+                "{\"ticker\":\"secret-ticker\"}"), USER, CONNECTION);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isTrue();
+        assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        assertThat(response.path("result").path("content").get(0).path("text").asText())
+                .doesNotContain("secret-ticker");
+        assertThat(response.path("result").path("structuredContent").path("securities").isMissingNode())
+                .isTrue();
+    }
+
+    @Test
+    void reportsUnavailableContextAsRetryableAndSanitizesDatabaseFailure() throws Exception {
+        var absentService = new ConnectorMcpProtocol(service, tradeService, (InvestmentContextService) null,
+                new ObjectMapper());
+        var unavailable = absentService.handle(
+                toolCall("context-unavailable", "get_investment_context", "{}"), USER, CONNECTION);
+        assertContextUnavailable(unavailable);
+
+        var contextService = mock(InvestmentContextService.class);
+        when(contextService.context(USER)).thenThrow(new DataAccessResourceFailureException("secret database URL"));
+        var contextProtocol = new ConnectorMcpProtocol(service, tradeService, contextService, new ObjectMapper());
+        var failedRead = contextProtocol.handle(
+                toolCall("context-db-failure", "get_investment_context", "{}"), USER, CONNECTION);
+        assertContextUnavailable(failedRead);
+        assertThat(failedRead.path("result").path("content").get(0).path("text").asText())
+                .doesNotContain("secret database URL");
+    }
+
+    @Test
+    void reportsSanitizedInternalContextFailure() throws Exception {
+        var contextService = mock(InvestmentContextService.class);
+        when(contextService.context(USER)).thenThrow(new IllegalStateException("secret internal details"));
+        var contextProtocol = new ConnectorMcpProtocol(service, tradeService, contextService, new ObjectMapper());
+
+        var response = contextProtocol.handle(toolCall("context-internal", "get_investment_context", "{}"),
+                USER, CONNECTION);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isTrue();
+        assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INTERNAL_ERROR");
+        assertThat(response.path("result").path("content").get(0).path("text").asText())
+                .doesNotContain("secret internal details");
+    }
+
+    private static void assertContextUnavailable(ObjectNode response) {
+        assertThat(response.path("result").path("isError").asBoolean()).isTrue();
+        assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVESTMENT_CONTEXT_UNAVAILABLE");
+        assertThat(response.path("result").path("structuredContent").path("retryable").asBoolean()).isTrue();
+        assertThat(response.path("result").path("structuredContent").path("reauthorizationRequired").asBoolean())
+                .isFalse();
+    }
+
+    private static InvestmentContextService.ContextView exampleContext(ObjectMapper mapper) throws Exception {
+        var price = mapper.readTree("{\"latestPrice\":null,\"status\":\"INSUFFICIENT_HISTORY\"}");
+        var performance = mapper.readTree("{\"currentR\":{\"value\":null,\"status\":\"STALE\"}}");
+        var securityOverlay = new InvestmentContextService.SecurityTacticalOverlayView(
+                "PARTIAL", "MISSING_INPUT", null, null, null, null, null,
+                "CALCULATED", Instant.parse("2026-10-07T00:00:00Z"), null, "TACTICAL_V1",
+                null, null, null, null, performance);
+        var security = new InvestmentContextService.SecurityView(
+                "AAPL", null, null, price, null, null, null, null, null, null, null, null, securityOverlay);
+        var portfolio = new InvestmentContextService.PortfolioView(
+                null, List.of(), Map.of(), false, List.of("price.latestPrice"), "PARTIAL");
+        return new InvestmentContextService.ContextView(
+                portfolio, List.of(security, new InvestmentContextService.SecurityView(
+                "MSFT", null, null, null, null, null, null, null, null, null, null, null)),
+                List.of(), null, List.of(), null,
+                InvestmentContextService.TacticalOverlayPortfolioView.notConfigured(), Map.of());
     }
 
     @Test

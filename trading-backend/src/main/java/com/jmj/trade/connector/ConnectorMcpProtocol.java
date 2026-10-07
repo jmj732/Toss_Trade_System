@@ -5,6 +5,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.order.LiveOrderActivationException;
 import com.jmj.trade.broker.BrokerException;
+import com.jmj.trade.investment.InvestmentContextService;
+import org.springframework.dao.DataAccessException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.slf4j.Logger;
@@ -14,33 +16,44 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Instant;
+import java.util.Locale;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Service
 @ConditionalOnProperty(prefix = "broker.credentials", name = "enabled", havingValue = "true")
 public final class ConnectorMcpProtocol {
 
     static final String PROTOCOL_VERSION = "2024-11-05";
+    private static final Pattern CONTEXT_TICKER = Pattern.compile("[A-Za-z0-9._-]{1,32}");
 
     private final ConnectorService service;
     private final McpOrderExecutionService tradeService;
+    private final InvestmentContextService investmentContextService;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
     public ConnectorMcpProtocol(ConnectorService service, ObjectMapper objectMapper) {
-        this(service, (McpOrderExecutionService) null, objectMapper);
+        this(service, (McpOrderExecutionService) null, (InvestmentContextService) null, objectMapper);
     }
 
     @Autowired
     ConnectorMcpProtocol(ConnectorService service, ObjectProvider<McpOrderExecutionService> tradeService,
+                         ObjectProvider<InvestmentContextService> investmentContextService,
                          ObjectMapper objectMapper) {
-        this(service, tradeService.getIfAvailable(), objectMapper);
+        this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(), objectMapper);
     }
 
     public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
                                 ObjectMapper objectMapper) {
+        this(service, tradeService, null, objectMapper);
+    }
+
+    public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                                InvestmentContextService investmentContextService, ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
+        this.investmentContextService = investmentContextService;
         this.objectMapper = objectMapper;
     }
 
@@ -128,6 +141,11 @@ public final class ConnectorMcpProtocol {
                 "Get order",
                 "Read the latest status of a Toss Invest order by brokerOrderId or clientOrderId.",
                 orderLookupSchema(), objectSchema()));
+        tools.add(tool(
+                "get_investment_context",
+                "Get investment context",
+                "Read the authenticated user's persisted investment context, including portfolio, security data, risk, thesis, decisions, and tactical overlays. This tool does not call providers or write data. Optionally filter only the securities array by ticker.",
+                investmentContextSchema(), investmentContextOutputSchema()));
         if (canTrade) {
             tools.add(tool(
                     "prepare_order",
@@ -166,6 +184,7 @@ public final class ConnectorMcpProtocol {
                 case "get_order" -> toolResult(request, service.order(userId, connectionId,
                         optionalText(arguments, "brokerOrderId", null),
                         optionalText(arguments, "clientOrderId", null)));
+                case "get_investment_context" -> investmentContext(request, userId, arguments);
                 case "prepare_order" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : !liveExecutionAvailable
@@ -185,9 +204,12 @@ public final class ConnectorMcpProtocol {
                                 requiredText(arguments, "brokerOrderId")));
                 default -> error(request, -32601, "Tool not found: " + name);
             };
+            var outcome = "get_investment_context".equals(name)
+                    && response != null && response.path("result").path("isError").asBoolean()
+                    ? "failure" : "success";
             LOG.atInfo().addKeyValue("operation", "mcp_tool")
                     .addKeyValue("tool", name)
-                    .addKeyValue("outcome", "success")
+                    .addKeyValue("outcome", outcome)
                     .addKeyValue("duration_ms", (System.nanoTime() - started) / 1_000_000)
                     .log("MCP tool completed");
             return response;
@@ -238,6 +260,75 @@ public final class ConnectorMcpProtocol {
         payload.set("structuredContent", structured);
         payload.putArray("content").addObject().put("type", "text").put("text", message);
         return result(request, payload);
+    }
+
+    private ObjectNode investmentContext(ObjectNode request, UUID userId, JsonNode arguments) {
+        final String ticker;
+        try {
+            ticker = investmentContextTicker(arguments);
+        } catch (IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
+        }
+
+        if (investmentContextService == null) {
+            return investmentContextUnavailable(request);
+        }
+
+        try {
+            var context = investmentContextService.context(userId);
+            if (ticker == null) return toolResult(request, context);
+
+            var matchingSecurity = context.securities() == null ? null : context.securities().stream()
+                    .filter(security -> security.ticker() != null
+                            && ticker.equals(security.ticker().trim().toUpperCase(Locale.ROOT)))
+                    .findFirst().orElse(null);
+            if (matchingSecurity == null) {
+                return toolError(request, "INVALID_ARGUMENT", "ticker is unknown in investment context",
+                        false, false);
+            }
+
+            var filtered = (ObjectNode) objectMapper.valueToTree(context);
+            var securities = objectMapper.createArrayNode().add(objectMapper.valueToTree(matchingSecurity));
+            filtered.set("securities", securities);
+            return toolResult(request, filtered);
+        } catch (DataAccessException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_context")
+                    .addKeyValue("outcome", "unavailable")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Investment context read unavailable");
+            return investmentContextUnavailable(request);
+        } catch (RuntimeException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_context")
+                    .addKeyValue("outcome", "failure")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Investment context read failed");
+            return toolError(request, "INTERNAL_ERROR", "Investment context could not be read", false, false);
+        }
+    }
+
+    private ObjectNode investmentContextUnavailable(ObjectNode request) {
+        return toolError(request, "INVESTMENT_CONTEXT_UNAVAILABLE",
+                "Investment context is temporarily unavailable", true, false);
+    }
+
+    private static String investmentContextTicker(JsonNode arguments) {
+        if (arguments == null || arguments.isMissingNode()) return null;
+        if (!arguments.isObject()) throw new IllegalArgumentException("arguments must be an object");
+        for (var field : arguments.properties()) {
+            if (!"ticker".equals(field.getKey())) {
+                throw new IllegalArgumentException("unsupported investment context argument");
+            }
+        }
+        var tickerNode = arguments.get("ticker");
+        if (tickerNode == null) return null;
+        if (!tickerNode.isTextual()) throw new IllegalArgumentException("ticker must be a non-empty string");
+        var ticker = tickerNode.asText();
+        if (!CONTEXT_TICKER.matcher(ticker).matches()) {
+            throw new IllegalArgumentException("ticker must contain only letters, digits, '.', '_' or '-'");
+        }
+        return ticker.toUpperCase(Locale.ROOT);
     }
 
     private ObjectNode tool(String name, String title, String description,
@@ -340,6 +431,74 @@ public final class ConnectorMcpProtocol {
         var anyOf = schema.putArray("anyOf");
         anyOf.add(requiredStringSchema("brokerOrderId"));
         anyOf.add(requiredStringSchema("clientOrderId"));
+        return schema;
+    }
+
+    private ObjectNode investmentContextSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 32)
+                .put("pattern", "^[A-Za-z0-9._-]{1,32}$"));
+        var schema = objectMapper.createObjectNode().put("type", "object");
+        schema.set("properties", properties);
+        schema.put("additionalProperties", false);
+        return schema;
+    }
+
+    private ObjectNode investmentContextOutputSchema() {
+        var schema = objectMapper.createObjectNode().put("type", "object");
+        var anyOf = schema.putArray("anyOf");
+
+        var contextProperties = objectMapper.createObjectNode();
+        contextProperties.set("portfolio", nullableObjectSchema());
+        contextProperties.set("securities", nullableArraySchema());
+        contextProperties.set("watchlist", nullableArraySchema());
+        contextProperties.set("riskPolicy", nullableObjectSchema());
+        contextProperties.set("decisionLedger", nullableArraySchema());
+        contextProperties.set("pipeline", nullableObjectSchema());
+        contextProperties.set("tacticalOverlay", nullableObjectSchema());
+        contextProperties.set("decisionOverlays", objectMapper.createObjectNode()
+                .put("type", "object").set("additionalProperties", objectMapper.createObjectNode()
+                        .put("type", "object").put("additionalProperties", true)));
+        var context = objectMapper.createObjectNode().put("type", "object");
+        context.set("properties", contextProperties);
+        context.putArray("required").add("portfolio").add("securities").add("watchlist")
+                .add("riskPolicy").add("decisionLedger").add("pipeline")
+                .add("tacticalOverlay").add("decisionOverlays");
+        context.put("additionalProperties", true);
+        anyOf.add(context);
+
+        var errorProperties = objectMapper.createObjectNode();
+        errorProperties.set("ok", objectMapper.createObjectNode().put("const", false));
+        var errorCode = objectMapper.createObjectNode().put("type", "string");
+        errorCode.putArray("enum").add("INVALID_ARGUMENT")
+                .add("INVESTMENT_CONTEXT_UNAVAILABLE").add("INTERNAL_ERROR");
+        errorProperties.set("errorCode", errorCode);
+        errorProperties.set("retryable", objectMapper.createObjectNode().put("type", "boolean"));
+        errorProperties.set("reauthorizationRequired", objectMapper.createObjectNode().put("type", "boolean"));
+        var error = objectMapper.createObjectNode().put("type", "object");
+        error.set("properties", errorProperties);
+        error.putArray("required").add("ok").add("errorCode").add("retryable").add("reauthorizationRequired");
+        error.put("additionalProperties", false);
+        anyOf.add(error);
+        return schema;
+    }
+
+    private ObjectNode nullableObjectSchema() {
+        var schema = objectMapper.createObjectNode();
+        var anyOf = schema.putArray("anyOf");
+        anyOf.add(objectMapper.createObjectNode().put("type", "object").put("additionalProperties", true));
+        anyOf.add(objectMapper.createObjectNode().put("type", "null"));
+        return schema;
+    }
+
+    private ObjectNode nullableArraySchema() {
+        var schema = objectMapper.createObjectNode();
+        var anyOf = schema.putArray("anyOf");
+        anyOf.add(objectMapper.createObjectNode().put("type", "array")
+                .set("items", objectMapper.createObjectNode().put("type", "object")
+                        .put("additionalProperties", true)));
+        anyOf.add(objectMapper.createObjectNode().put("type", "null"));
         return schema;
     }
 
