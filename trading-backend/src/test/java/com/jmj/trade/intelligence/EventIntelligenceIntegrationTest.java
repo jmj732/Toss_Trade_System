@@ -45,8 +45,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(
         classes = TradingBackendApplication.class,
         properties = {
-                "analysis.service.connect-timeout=PT0.3S",
-                "analysis.service.read-timeout=PT0.3S"
+                // This suite checks successful event flows, not subsecond timeout behavior.
+                "analysis.service.connect-timeout=PT2S",
+                "analysis.service.read-timeout=PT2S"
         })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class EventIntelligenceIntegrationTest extends PostgresIntegrationTest {
