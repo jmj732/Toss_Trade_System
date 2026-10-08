@@ -30,4 +30,23 @@ if reuse_remote_image trade-backend:fixture >/dev/null; then
   exit 1
 fi
 [[ "$ssh_called" == false ]]
+# Containerd runners expose a manifest ID; classic servers use config IDs.
+fixture_digest="sha256:$(printf 'b%.0s' {1..64})"
+config_digest="sha256:$(printf 'c%.0s' {1..64})"
+ssh_calls=0
+ssh() {
+  ssh_calls=$((ssh_calls + 1))
+  [[ "$*" == *StrictHostKeyChecking=yes* ]] || return 1
+  [[ "$*" == *UserKnownHostsFile=fixture-hosts* ]] || return 1
+  [[ "$*" == *"docker image inspect $config_digest"* ]] || return 1
+  [[ "$*" == *"docker image tag $config_digest trade-backend:fixture"* ]] || return 1
+}
+reuse_remote_image trade-backend:fixture "$config_digest" >/dev/null
+[[ "$ssh_calls" == 2 ]]
+ssh_calls=0
+if reuse_remote_image trade-backend:fixture invalid >/dev/null; then
+  echo 'invalid config digest must not reuse an image' >&2
+  exit 1
+fi
+[[ "$ssh_calls" == 1 ]]
 echo 'CD exact image reuse: PASS'
