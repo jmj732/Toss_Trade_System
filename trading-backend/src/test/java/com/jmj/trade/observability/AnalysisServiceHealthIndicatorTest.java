@@ -22,7 +22,7 @@ class AnalysisServiceHealthIndicatorTest {
             server.stubFor(get(urlEqualTo("/internal/v1/ready"))
                     .willReturn(aResponse().withStatus(200).withBody("secret-body")));
             var indicator = new AnalysisServiceHealthIndicator(
-                    server.baseUrl(), Duration.ofMillis(300), Duration.ofMillis(300));
+                    server.baseUrl(), Duration.ofSeconds(2), Duration.ofSeconds(2));
 
             assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
 
