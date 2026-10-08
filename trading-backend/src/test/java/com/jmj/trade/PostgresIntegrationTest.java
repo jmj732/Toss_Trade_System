@@ -27,7 +27,9 @@ public abstract class PostgresIntegrationTest {
 
     private static PostgreSQLContainer startPostgres() {
         var postgres = new PostgreSQLContainer("postgres:17-alpine")
-                .withCommand("postgres", "-c", "max_connections=300");
+                // withCommand replaces Testcontainers' default command, including fsync=off.
+                // Restore that default for this disposable fixture; production Compose is unaffected.
+                .withCommand("postgres", "-c", "fsync=off", "-c", "max_connections=300");
         postgres.start();
         return postgres;
     }
