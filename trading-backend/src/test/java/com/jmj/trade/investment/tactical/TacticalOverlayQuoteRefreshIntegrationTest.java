@@ -18,7 +18,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -54,18 +55,23 @@ class TacticalOverlayQuoteRefreshIntegrationTest extends PostgresIntegrationTest
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
     private final UUID userId = UUID.randomUUID();
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private ObjectMapper mapper;
     private DataSourceTransactionManager transactions;
 
     @BeforeEach
     void migrateAndSeedUser() {
         freshMigratedSchema();
-        var dataSource = new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        dataSource = pooledTestDataSource();
         jdbc = new JdbcTemplate(dataSource);
         transactions = new DataSourceTransactionManager(dataSource);
         mapper = new ObjectMapper();
         jdbc.update("INSERT INTO users (id) VALUES (?)", userId);
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

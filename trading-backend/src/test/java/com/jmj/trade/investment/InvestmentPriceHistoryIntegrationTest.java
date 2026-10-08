@@ -14,7 +14,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
@@ -40,13 +41,13 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
     private static final UUID USER_ID = UUID.fromString("1a318354-27f1-4b2d-96c6-7905caed8346");
     private static final UUID EMPTY_USER_ID = UUID.fromString("2b428465-38f2-4c3e-a7d7-8016bfcf9457");
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private ObjectMapper mapper;
 
     @BeforeEach
     void migrateAndSeed() {
         freshMigratedSchema();
-        var dataSource = new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        dataSource = pooledTestDataSource();
         jdbc = new JdbcTemplate(dataSource);
         mapper = new ObjectMapper();
 
@@ -57,6 +58,11 @@ class InvestmentPriceHistoryIntegrationTest extends PostgresIntegrationTest {
                 VALUES (?, ?, 'AAPL', '{"prepare":1,"confirm":2,"pullback":3,"invalidate":0}'::jsonb,
                         '{}'::jsonb, ?, ?, ?)
                 """, UUID.randomUUID(), USER_ID, now, now, now);
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

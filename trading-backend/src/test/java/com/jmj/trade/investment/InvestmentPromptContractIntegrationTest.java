@@ -9,7 +9,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.List;
@@ -21,18 +22,24 @@ import static org.mockito.Mockito.mock;
 class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
     private static final UUID USER = UUID.fromString("11990000-0000-7000-8000-000000000001");
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private InvestmentContextService service;
 
     @BeforeEach
     void setUp() {
         freshMigratedSchema();
-        var ds = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
-        jdbc = new JdbcTemplate(ds);
+        dataSource = pooledTestDataSource();
+        jdbc = new JdbcTemplate(dataSource);
         jdbc.update("INSERT INTO users(id) VALUES(?)", USER);
-        service = new InvestmentContextService(jdbc, new ObjectMapper(), new DataSourceTransactionManager(ds),
+        service = new InvestmentContextService(jdbc, new ObjectMapper(), new DataSourceTransactionManager(dataSource),
                 new StockDataProviderRegistry(List.of()), null, mock(PortfolioReadService.class),
                 mock(MonitoringWatchlistService.class), mock(RiskPolicyService.class),
                 Duration.ofMinutes(15), Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10));
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

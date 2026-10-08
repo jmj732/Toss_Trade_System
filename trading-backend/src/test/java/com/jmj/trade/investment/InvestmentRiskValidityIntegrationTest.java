@@ -10,7 +10,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
@@ -32,13 +33,13 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     private static final UUID CONNECTION_ID = UUID.fromString("a0b4732d-65c2-4b49-9c97-530d630e83a2");
     private static final Instant NOW = Instant.parse("2026-10-01T16:00:00Z");
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private ObjectMapper mapper;
 
     @BeforeEach
     void migrateAndSeed() {
         freshMigratedSchema();
-        var dataSource = new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        dataSource = pooledTestDataSource();
         jdbc = new JdbcTemplate(dataSource);
         mapper = new ObjectMapper();
         var now = OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC);
@@ -55,6 +56,11 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
                     invalidation_status, classification, updated_at
                 ) VALUES (?, 'AAPL', 'Growth thesis', 'Breaks below support', 80, 'CONFIRMED', 'COMPOUNDER', ?)
                 """, USER_ID, now);
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

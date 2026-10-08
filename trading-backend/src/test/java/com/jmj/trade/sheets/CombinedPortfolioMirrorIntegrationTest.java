@@ -17,7 +17,8 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -53,18 +54,23 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
             new BrokerAccountRef(CONNECTION_ID, "01", "GENERAL", "****0001");
 
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private DataSourceTransactionManager transactions;
     private ObjectMapper mapper;
 
     @BeforeEach
     void migrateAndSeed() {
         freshMigratedSchema();
-        var dataSource = new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        dataSource = pooledTestDataSource();
         jdbc = new JdbcTemplate(dataSource);
         transactions = new DataSourceTransactionManager(dataSource);
         mapper = new ObjectMapper();
         jdbc.update("INSERT INTO users (id) VALUES (?)", USER_ID);
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

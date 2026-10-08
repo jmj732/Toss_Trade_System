@@ -6,7 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.UncategorizedSQLException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -22,13 +23,19 @@ class TacticalOverlayPersistenceIntegrationTest extends PostgresIntegrationTest 
 
     private static final UUID USER_ID = UUID.fromString("9ce5d74e-9340-4c2a-b61d-5f95b8375a27");
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
 
     @BeforeEach
     void migrateAndSeed() {
         freshMigratedSchema();
-        jdbc = new JdbcTemplate(new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
+        dataSource = pooledTestDataSource();
+        jdbc = new JdbcTemplate(dataSource);
         jdbc.update("INSERT INTO users (id) VALUES (?)", USER_ID);
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test
