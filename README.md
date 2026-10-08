@@ -56,7 +56,7 @@ ChatGPT → Toss Connector MCP → Spring Boot → PostgreSQL (스냅샷·입력
 | `Order History` | 동기화한 종료 주문 이력이다. 주문 정보는 브로커 동기화가 관리한다. |
 | `Reconciliation Log` | 동기화 시각, 계좌, 보유·현금·주문·체결·가격 상태와 불일치/오류 기록이다. 동기화가 추가·갱신한다. |
 | `Security Snapshot` | 아래 항목의 넓은 종목별 생성 미러다. PostgreSQL/context에서 만들어지며 사용자가 입력하는 원본 탭은 아니다. |
-| `Thesis State` | 종목별 논지, 상승 요인, 기대 차이, 무효화 조건, 위험 가격, 상태와 분류. 저장된 사용자 thesis의 미러다. |
+| `Thesis State` | 종목별 논지, 상승 요인, 기대 차이, 무효화 조건, 위험 가격, 상태와 분류. 저장된 사용자 thesis의 미러다. 관리 열 A:N에 `Sizing Eligible`을 포함하고, 호환되는 후속 수동 열은 행 위치와 함께 보존한다. |
 | `Consensus History` | 시점·기간별 매출/EPS/EBITDA/FCF 추정치, 출처, 추정 유형, 통화와 애널리스트 수를 보여주는 이력 미러다. |
 | `Watchlist` | 관심 종목 상태, 가격 레벨, 근거와 관측 시각의 미러다. |
 | `Decision Ledger` | 저장된 사용자 결정과 당시 위험 점검의 미러다. 전술 열은 `EntrySetup`, `InitialRiskPrice`, `OverlayEffect` 세 개이며 `Decision ID`로 해당 결정에 연결한다. 수동 확장 열은 보존하고, 해당 형식의 탭에서는 전술 셀만 갱신한다. |
@@ -78,7 +78,7 @@ ChatGPT → Toss Connector MCP → Spring Boot → PostgreSQL (스냅샷·입력
 - thesis와 위험 기여, 위험/무효화 스트레스 상태, 소프트 예산 상태, `Risk Sizing Eligible`
 - 전술 오버레이의 `ThemeId`, 문자열 `TrendStage`
 
-열 값에는 적용 가능한 출처·기준 시각·상태·사유가 함께 있으며, 빈 값이나 JSON `null`은 알 수 없거나 제공되지 않은 값이다. `invalidationStatus`는 `NOT_REVIEWED`, `SUSPECTED`, `CONFIRMED`, `CLEARED` 중 하나인 기존 백엔드 문자열이다. 별도 `InvalidationStatus` enum이나 AI 제안 라벨이 아니다. `sizingEligible`/`Risk Sizing Eligible`은 enum이 아닌 boolean이며, `true`가 되려면 thesis 무효화가 `CONFIRMED`이고 포트폴리오가 최신이며 입력을 신뢰할 수 있고, 비중·하락폭·손실 기여값이 있어야 한다. 부분 데이터에서도 context 호출은 성공할 수 있으므로 숫자만 보고 신뢰도를 추정하지 말고 원래 상태와 사유를 함께 본다.
+열 값에는 적용 가능한 출처·기준 시각·상태·사유가 함께 있으며, 빈 값이나 JSON `null`은 알 수 없거나 제공되지 않은 값이다. `invalidationStatus`는 `NOT_REVIEWED`, `SUSPECTED`, `CONFIRMED`, `CLEARED`, `AI_PROPOSED`, `UNVERIFIED`, `INVALIDATION_UNDEFINED` 중 하나인 저장 상태 문자열이다. V56은 기존 상태를 유지하며 외부 제안 상태를 추가한다. `sizingEligible`/`Risk Sizing Eligible`은 enum이 아닌 boolean이며, `true`가 되려면 thesis 무효화가 `CONFIRMED`이고 포트폴리오가 최신이며 입력을 신뢰할 수 있고, 비중·하락폭·손실 기여값이 있어야 한다. 추가 필드 `securities[].sizingEligibility`와 `Thesis State`의 `Sizing Eligible`은 `YES / NO / CONDITIONAL` 문자열이다. `CONFIRMED`와 기존 위험 적격 조건이 모두 충족되면 `YES`, `CONFIRMED`지만 위험 입력이 불충분하면 `CONDITIONAL`, 미확정 또는 thesis가 없으면 `NO`다. 기존 boolean은 유지한다. 부분 데이터에서도 context 호출은 성공할 수 있으므로 숫자만 보고 신뢰도를 추정하지 말고 원래 상태와 사유를 함께 본다.
 
 전술 오버레이의 세부 EMA9/EMA21/EMA50, RVOL20, 20/60 거래일 수익률과 SPY 대비 상대강도, 이벤트/cohort, 앵커 VWAP, `currentR`/`realizedR`/MAE/MFE, 테마·시장 집계는 DB/API context 출력이다. `Security Snapshot`은 그중 `ThemeId`와 `TrendStage`만 미러링하고, `Decision Ledger`는 `EntrySetup`, `InitialRiskPrice`, `OverlayEffect`를 미러링한다. `DailyVWAP20Proxy`는 최근 20개 완료 일봉에서 `[(고가+저가+종가)/3 × 거래량]` 합을 거래량 합으로 나누고, `DailyAVWAP`는 명시된 앵커일부터 계산한다. 둘 다 일봉 지표이며 장중 VWAP나 체결 가격이 아니다. 계산 및 세션 인증 입력 API 경로는 [전술 오버레이 계산 안내](docs/ops/tactical-overlay-v1-calculations.md)를 본다.
 
@@ -130,7 +130,8 @@ Ticker는 1~32자의 영문자·숫자·`.`, `_`, `-`만 허용하고 대문자�
 - Investment data scheduler는 기본 비활성이다. 활성화하면 기본 시간대 `America/New_York` 기준 평일 16:15 후장 일봉 캡처, 주말 16:15 전체 캡처, 평일 08:00 장전 포트폴리오 갱신/캡처가 설정돼 있다. 장중에는 평일 09:30~16:00 사이 `PT5M` 간격으로 quote-only 캡처하고 초기 지연은 `PT1M`이다. 이 시간 판정에는 거래소 휴장일 달력이 적용되지 않는다. 기본값은 `INVESTMENT_DATA_TIME_ZONE`, `INVESTMENT_DATA_AFTER_CLOSE_CRON`, `INVESTMENT_DATA_WEEKEND_CAPTURE_CRON`, `INVESTMENT_DATA_PRE_MARKET_CRON`, `INVESTMENT_DATA_INTRADAY_INTERVAL`, `INVESTMENT_DATA_INITIAL_DELAY`로 덮어쓸 수 있다.
 - Google Sheets 동기화도 기본 비활성이다. 활성화된 경우 기본 반복 간격 `PT5M`, 초기 지연 `PT1M`이며 `INVESTMENT_OS_SHEET_INTERVAL`, `INVESTMENT_OS_SHEET_INITIAL_DELAY`로 변경할 수 있다. 속성은 [application.yml](trading-backend/src/main/resources/application.yml), [데이터 scheduler](trading-backend/src/main/java/com/jmj/trade/investment/InvestmentDataScheduler.java), [시트 scheduler와 속성](trading-backend/src/main/java/com/jmj/trade/sheets/InvestmentOsSheetScheduler.java)에 정의돼 있다.
 - `get_investment_context` / `GET /investment/context`는 저장된 레코드와 스냅샷만 읽고 context를 구성한다. 이 주기를 실행하거나 refresh하지 않는다. 후장 캡처는 일봉 분석 입력을 수집하고, 5분 주기는 quote-only 입력을 수집한다. 시트 자동 동기화는 계좌 입력을 읽고 생성된 값/미러를 반영한다. 미러는 Sheets 셀에서 MCP로 직접 기록하는 통로가 아니다.
-- Spring에는 로그인 사용자용 `PUT /investment/securities/{ticker}/thesis`, `POST /investment/decisions`와 전술 입력 REST 쓰기 API가 있지만, 이들은 MCP 도구로 노출되지 않는다. 현재 `get_investment_context`는 읽기 전용이며 AI 제안/확인(proposal/confirm) 기능도 구현돼 있지 않다. 코드상 `connector:trade` 범위에는 별도 주문 도구 `prepare_order`, `submit_order`, `cancel_order`가 조건부로 등록되지만, 이는 Investment OS thesis/decision 쓰기 기능이 아니며 이 안내 범위 밖이다. 예약 프롬프트는 읽기 전용 요청으로 제한해야 한다. ChatGPT/Google 화면의 “Allow all” 선택만으로 백엔드 쓰기 권한이나 새 MCP 도구가 생기지 않는다. [컨트롤러 코드](trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextController.java)와 [계약 감사](docs/ops/investment-context-mcp-contract.md)를 참조한다.
+- 기존 `connector:trade` 쓰기 범위에는 `put_investment_thesis`가 추가된다. 외부 작성 proposal만 DB에 저장하고 Context와 기존 Sheet 동기화가 이를 읽는다. 인자는 `ticker`, `thesis`, 선택적 `expectedUpdatedAt`이다. 생성에는 expected 시각을 생략하고, 기존 proposal 수정에는 Context에서 읽은 정확한 `thesis.updatedAt`을 제공한다. 도구는 `AI_PROPOSED`, `UNVERIFIED`, `INVALIDATION_UNDEFINED`만 허용한다. `CONFIRMED` 요청은 `CONFIRMATION_REQUIRED`, 확정 상태 덮어쓰기 또는 버전 충돌은 `THESIS_STATE_CONFLICT`다. 확정은 기존 로그인 사용자 thesis REST API로 수행한다. 읽기 범위만 가진 키는 쓸 수 없고 새 앱 권한은 추가하지 않는다. 주문을 제출하지 않는다.
+- `get_investment_context`는 읽기 전용이다. Decision과 전술 입력은 기존 로그인 사용자 REST API에 남으며 MCP 쓰기 도구로 추가하지 않는다. 제안 저장은 append-only 감사 이력이나 사용자 확인 이벤트 저장을 추가하지 않는다. 실제 예약 세션에서 도구가 보이는지는 별도 검증이 필요하다. 장중 체결 VWAP feed와 Calibration Log도 이 변경에 포함되지 않는다. [컨트롤러 코드](trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextController.java)와 [계약 감사](docs/ops/investment-context-mcp-contract.md)를 참조한다.
 
 ### 문서 갱신 규칙
 
