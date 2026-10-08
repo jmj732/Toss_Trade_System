@@ -1,7 +1,6 @@
 package com.jmj.trade.investment;
 
 import com.jmj.trade.PostgresIntegrationTest;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -26,15 +25,7 @@ class TacticalOverlayPersistenceIntegrationTest extends PostgresIntegrationTest 
 
     @BeforeEach
     void migrateAndSeed() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load()
-                .clean();
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
+        freshMigratedSchema();
         jdbc = new JdbcTemplate(new DriverManagerDataSource(
                 POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
         jdbc.update("INSERT INTO users (id) VALUES (?)", USER_ID);

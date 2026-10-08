@@ -27,8 +27,7 @@ class OrderIntentTransitionLedgerSchemaTest extends PostgresIntegrationTest {
                 .cleanDisabled(false)
                 .load();
 
-        flyway.clean();
-        flyway.migrate();
+        freshMigratedSchema();
     }
 
     @Test

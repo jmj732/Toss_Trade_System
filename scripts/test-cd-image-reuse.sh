@@ -19,11 +19,18 @@ docker() {
       ;;
     'image inspect')
       [[ "${DOCKER_API_VERSION:-}" == 1.44 ]] || return 1
+      local config layers arch
       if [[ "${REMOTE_FIXTURE:-false}" == true ]]; then
-        printf '%s|%s|linux|%s|\n' "$fixture_remote_config" "$fixture_remote_layers" "$fixture_remote_arch"
+        config="$fixture_remote_config"; layers="$fixture_remote_layers"; arch="$fixture_remote_arch"
       else
-        printf '%s\n' '{"Cmd":["java"],"Env":["A=B"]}|{"Type":"layers","Layers":["sha256:layer"]}|linux|amd64|'
+        config='{"Cmd":["java"],"Env":["A=B"]}'
+        layers='{"Type":"layers","Layers":["sha256:layer"]}'
+        arch=amd64
       fi
+      if [[ "$4" == *'range '* ]]; then
+        config="$(FIXTURE_CONFIG="$config" python3 -c 'import json,os; d=json.loads(os.environ["FIXTURE_CONFIG"]); print("".join(json.dumps(k)+"="+json.dumps(v,separators=(",",":"))+";" for k,v in sorted(d.items()) if v))')"
+      fi
+      printf '%s|%s|linux|%s|\n' "$config" "$layers" "$arch"
       ;;
     'image tag') printf '%s\n' "$3 $4" >"$fixture_dir/tagged" ;;
     *) return 1 ;;
@@ -37,11 +44,19 @@ ssh() {
 }
 reuse_remote_image trade-backend:current >/dev/null
 [[ "$(cat "$fixture_dir/tagged")" == 'trade-backend:previous trade-backend:current' ]]
+fixture_remote_config='{"Cmd":["java"],"Env":["A=B"],"Labels":null,"User":"","AttachStdin":false,"OnBuild":[]}'
+reuse_remote_image trade-backend:current >/dev/null
+fixture_remote_config='{"Cmd":["java"],"Env":["A=B"]}'
 rm "$fixture_dir/tagged"
 fixture_remote_config='{"Cmd":["sensitive-fixture-marker"],"Env":["A=B"]}'
 if reuse_remote_image trade-backend:current >"$fixture_dir/diagnostic"; then exit 1; fi
-grep -q 'image content comparison:' "$fixture_dir/diagnostic"
+grep -q 'image reuse candidates checked:' "$fixture_dir/diagnostic"
 if grep -q 'sensitive-fixture-marker' "$fixture_dir/diagnostic"; then exit 1; fi
+fixture_remote_config='{"Cmd":["java"],"Env":["A=B"]}'
+for different_config in '{"Cmd":["java"],"Env":["A=C"]}' '{"Cmd":["java"],"Env":["A=B"],"User":"different-user"}' '{"Cmd":["java"],"Env":["A=B"],"AttachStdin":true}'; do
+  fixture_remote_config="$different_config"
+  if reuse_remote_image trade-backend:current >/dev/null; then exit 1; fi
+done
 fixture_remote_config='{"Cmd":["java"],"Env":["A=B"]}'
 fixture_remote_layers='{"Type":"layers","Layers":["sha256:other"]}'
 if reuse_remote_image trade-backend:current >/dev/null; then exit 1; fi

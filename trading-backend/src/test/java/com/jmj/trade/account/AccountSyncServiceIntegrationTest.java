@@ -18,7 +18,6 @@ import com.jmj.trade.broker.MoneyByCurrency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
 import com.jmj.trade.notification.NotificationOutboxWriter;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -62,8 +61,7 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
                 POSTGRES.getJdbcUrl(),
                 POSTGRES.getUsername(),
                 POSTGRES.getPassword());
-        Flyway.configure().dataSource(dataSource).cleanDisabled(false).load().clean();
-        Flyway.configure().dataSource(dataSource).load().migrate();
+        freshMigratedSchema();
         jdbc = new JdbcTemplate(dataSource);
         broker = new RecordingBrokerAdapter();
         transactions = new AccountSyncTransactions(

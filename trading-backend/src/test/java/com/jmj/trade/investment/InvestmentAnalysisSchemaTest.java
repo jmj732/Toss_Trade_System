@@ -25,8 +25,7 @@ class InvestmentAnalysisSchemaTest extends PostgresIntegrationTest {
                 .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
                 .cleanDisabled(false)
                 .load();
-        flyway.clean();
-        flyway.migrate();
+        freshMigratedSchema();
     }
 
     @Test

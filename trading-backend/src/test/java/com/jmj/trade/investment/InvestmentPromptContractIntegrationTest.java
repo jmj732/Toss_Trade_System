@@ -5,7 +5,6 @@ import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.marketdata.StockDataProviderRegistry;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -26,10 +25,7 @@ class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        var flyway = Flyway.configure().dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .cleanDisabled(false).load();
-        flyway.clean();
-        flyway.migrate();
+        freshMigratedSchema();
         var ds = new DriverManagerDataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
         jdbc = new JdbcTemplate(ds);
         jdbc.update("INSERT INTO users(id) VALUES(?)", USER);

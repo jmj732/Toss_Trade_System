@@ -1,7 +1,6 @@
 package com.jmj.trade.marketdata;
 
 import com.jmj.trade.PostgresIntegrationTest;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -39,15 +38,7 @@ class AlphaVantageDailyRequestCacheIntegrationTest extends PostgresIntegrationTe
 
     @BeforeEach
     void migrate() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load()
-                .clean();
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
+        freshMigratedSchema();
         var dataSource = new DriverManagerDataSource(
                 POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
         jdbc = new JdbcTemplate(dataSource);
