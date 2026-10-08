@@ -4,49 +4,49 @@ source scripts/cd-image-reuse.sh
 ssh_args=(-o StrictHostKeyChecking=yes -o UserKnownHostsFile=fixture-hosts)
 BACKEND_DEPLOY_USER=fixture
 BACKEND_DEPLOY_HOST=fixture.invalid
-fixture_digest="sha256:$(printf 'a%.0s' {1..64})"
-ssh_called=false
-remote_present=true
-docker() { printf '%s\n' "$fixture_digest"; }
+fixture_dir="$(mktemp -d)"
+trap 'rm -rf -- "$fixture_dir"' EXIT
+export fixture_dir
+export fixture_remote_config='{"Cmd":["java"],"Env":["A=B"]}'
+export fixture_remote_layers='{"Type":"layers","Layers":["sha256:layer"]}'
+export fixture_remote_arch=amd64
+export fixture_remote_missing=false
+
+docker() {
+  case "$1 $2" in
+    'image ls')
+      "$fixture_remote_missing" || printf '%s\n' 'trade-backend:previous'
+      ;;
+    'image inspect')
+      if [[ "${REMOTE_FIXTURE:-false}" == true ]]; then
+        printf '%s|%s|linux|%s|\n' "$fixture_remote_config" "$fixture_remote_layers" "$fixture_remote_arch"
+      else
+        printf '%s\n' '{"Cmd":["java"],"Env":["A=B"]}|{"Type":"layers","Layers":["sha256:layer"]}|linux|amd64|'
+      fi
+      ;;
+    'image tag') printf '%s\n' "$3 $4" >"$fixture_dir/tagged" ;;
+    *) return 1 ;;
+  esac
+}
+export -f docker
 ssh() {
-  ssh_called=true
   [[ "$*" == *StrictHostKeyChecking=yes* ]] || return 1
   [[ "$*" == *UserKnownHostsFile=fixture-hosts* ]] || return 1
-  [[ "$*" == *"docker image inspect $fixture_digest"* ]] || return 1
-  [[ "$*" == *"docker image tag $fixture_digest trade-backend:fixture"* ]] || return 1
-  "$remote_present"
+  REMOTE_FIXTURE=true bash -c "${*: -1}"
 }
-reuse_remote_image trade-backend:fixture >/dev/null
-[[ "$ssh_called" == true ]]
-remote_present=false
-if reuse_remote_image trade-backend:fixture >/dev/null; then
-  echo 'missing remote digest must require transfer' >&2
-  exit 1
-fi
-fixture_digest=invalid
-ssh_called=false
-if reuse_remote_image trade-backend:fixture >/dev/null; then
-  echo 'invalid local digest must never reuse an image' >&2
-  exit 1
-fi
-[[ "$ssh_called" == false ]]
-# Containerd runners expose a manifest ID; classic servers use config IDs.
-fixture_digest="sha256:$(printf 'b%.0s' {1..64})"
-config_digest="sha256:$(printf 'c%.0s' {1..64})"
-ssh_calls=0
-ssh() {
-  ssh_calls=$((ssh_calls + 1))
-  [[ "$*" == *StrictHostKeyChecking=yes* ]] || return 1
-  [[ "$*" == *UserKnownHostsFile=fixture-hosts* ]] || return 1
-  [[ "$*" == *"docker image inspect $config_digest"* ]] || return 1
-  [[ "$*" == *"docker image tag $config_digest trade-backend:fixture"* ]] || return 1
-}
-reuse_remote_image trade-backend:fixture "$config_digest" >/dev/null
-[[ "$ssh_calls" == 2 ]]
-ssh_calls=0
-if reuse_remote_image trade-backend:fixture invalid >/dev/null; then
-  echo 'invalid config digest must not reuse an image' >&2
-  exit 1
-fi
-[[ "$ssh_calls" == 1 ]]
-echo 'CD exact image reuse: PASS'
+reuse_remote_image trade-backend:current >/dev/null
+[[ "$(cat "$fixture_dir/tagged")" == 'trade-backend:previous trade-backend:current' ]]
+rm "$fixture_dir/tagged"
+fixture_remote_config='{"Cmd":["different"],"Env":["A=B"]}'
+if reuse_remote_image trade-backend:current >/dev/null; then exit 1; fi
+fixture_remote_config='{"Cmd":["java"],"Env":["A=B"]}'
+fixture_remote_layers='{"Type":"layers","Layers":["sha256:other"]}'
+if reuse_remote_image trade-backend:current >/dev/null; then exit 1; fi
+fixture_remote_layers='{"Type":"layers","Layers":["sha256:layer"]}'
+fixture_remote_arch=arm64
+if reuse_remote_image trade-backend:current >/dev/null; then exit 1; fi
+fixture_remote_arch=amd64
+fixture_remote_missing=true
+if reuse_remote_image trade-backend:current >/dev/null; then exit 1; fi
+[[ ! -f "$fixture_dir/tagged" ]]
+echo 'CD verified image content reuse: PASS'
