@@ -1,13 +1,13 @@
 package com.jmj.trade.investment;
 
 import com.jmj.trade.PostgresIntegrationTest;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.UncategorizedSQLException;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -23,21 +23,19 @@ class TacticalOverlayPersistenceIntegrationTest extends PostgresIntegrationTest 
 
     private static final UUID USER_ID = UUID.fromString("9ce5d74e-9340-4c2a-b61d-5f95b8375a27");
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
 
     @BeforeEach
     void migrateAndSeed() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load()
-                .clean();
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
-        jdbc = new JdbcTemplate(new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
+        freshMigratedSchema();
+        dataSource = pooledTestDataSource();
+        jdbc = new JdbcTemplate(dataSource);
         jdbc.update("INSERT INTO users (id) VALUES (?)", USER_ID);
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

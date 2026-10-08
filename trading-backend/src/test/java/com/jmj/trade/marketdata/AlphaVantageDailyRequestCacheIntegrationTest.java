@@ -1,12 +1,12 @@
 package com.jmj.trade.marketdata;
 
 import com.jmj.trade.PostgresIntegrationTest;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -33,28 +33,27 @@ class AlphaVantageDailyRequestCacheIntegrationTest extends PostgresIntegrationTe
     private static final Instant TODAY = Instant.parse("2026-10-03T12:00:00Z");
     private static final UUID USER_ID = UUID.fromString("f2e41535-e860-4a18-b270-417a164325d8");
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private DataSourceTransactionManager transactions;
     private ObjectMapper mapper;
     private Clock clock;
 
     @BeforeEach
     void migrate() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load()
-                .clean();
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
-        var dataSource = new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        freshMigratedSchema();
+        dataSource = pooledTestDataSource();
+        dataSource.setMaximumPoolSize(8); // Preserve the eight concurrent quota claimants.
+        dataSource.setMinimumIdle(0);
         jdbc = new JdbcTemplate(dataSource);
         transactions = new DataSourceTransactionManager(dataSource);
         mapper = new ObjectMapper();
         clock = Clock.fixed(TODAY, ZoneOffset.UTC);
         jdbc.update("INSERT INTO users (id) VALUES (?)", USER_ID);
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

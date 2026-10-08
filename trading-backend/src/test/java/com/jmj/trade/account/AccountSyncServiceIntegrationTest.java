@@ -18,13 +18,13 @@ import com.jmj.trade.broker.MoneyByCurrency;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
 import com.jmj.trade.notification.NotificationOutboxWriter;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.ObjectMapper;
@@ -52,18 +52,15 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
             OffsetDateTime.ofInstant(OBSERVED_AT, ZoneOffset.UTC);
 
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private RecordingBrokerAdapter broker;
     private AccountSyncTransactions transactions;
     private AccountSyncService service;
 
     @BeforeEach
     void setUp() {
-        var dataSource = new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(),
-                POSTGRES.getUsername(),
-                POSTGRES.getPassword());
-        Flyway.configure().dataSource(dataSource).cleanDisabled(false).load().clean();
-        Flyway.configure().dataSource(dataSource).load().migrate();
+        dataSource = pooledTestDataSource();
+        freshMigratedSchema();
         jdbc = new JdbcTemplate(dataSource);
         broker = new RecordingBrokerAdapter();
         transactions = new AccountSyncTransactions(
@@ -72,6 +69,11 @@ class AccountSyncServiceIntegrationTest extends PostgresIntegrationTest {
                 Duration.ofMinutes(15),
                 new NotificationOutboxWriter(jdbc, new ObjectMapper()));
         service = new AccountSyncService(transactions, broker);
+    }
+
+    @AfterEach
+    void closeTestDataSource() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test
