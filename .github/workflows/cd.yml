@@ -102,6 +102,8 @@ jobs:
             -o UserKnownHostsFile="$known_hosts_file"
           )
 
+          source scripts/cd-image-reuse.sh
+
           cleanup_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
           prune_unused_images() {
             # shellcheck disable=SC2029
@@ -146,6 +148,7 @@ jobs:
 
           stream_image() {
             local image="$1"
+            if reuse_remote_image "$image"; then return 0; fi
             local image_name="${image//:/_}"
             local archive_dir
             local remote_archive

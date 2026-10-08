@@ -39,11 +39,11 @@ public abstract class PostgresIntegrationTest {
         if (!migratedFixtureReady) {
             flyway.migrate();
             fixtureCommand("pg_dump", "--username=" + POSTGRES.getUsername(),
-                    "--dbname=" + POSTGRES.getDatabaseName(), "--format=custom",
+                    "--dbname=" + POSTGRES.getDatabaseName(), "--schema=public", "--format=custom",
                     "--file=" + MIGRATED_FIXTURE);
             migratedFixtureReady = true;
         } else {
-            fixtureCommand("pg_restore", "--exit-on-error", "--no-owner",
+            fixtureCommand("pg_restore", "--exit-on-error", "--clean", "--if-exists", "--no-owner",
                     "--username=" + POSTGRES.getUsername(),
                     "--dbname=" + POSTGRES.getDatabaseName(), MIGRATED_FIXTURE);
         }
@@ -61,8 +61,19 @@ public abstract class PostgresIntegrationTest {
 
     private static void fixtureCommand(String... command) {
         try {
-            if (POSTGRES.execInContainer(command).getExitCode() != 0)
-                throw new IllegalStateException("Disposable database fixture command failed");
+            var result = POSTGRES.execInContainer(command);
+            if (result.getExitCode() != 0) {
+                // Fixture diagnostics identify the category, never SQL/data or credentials.
+                var stderr = result.getStderr();
+                var category = stderr.contains("already exists") ? "object already exists"
+                        : stderr.contains("does not exist") ? "object missing"
+                        : stderr.contains("permission denied") ? "permission denied"
+                        : stderr.contains("unsupported version") ? "unsupported archive version"
+                        : stderr.contains("could not open") ? "archive unavailable"
+                        : "unclassified command error";
+                throw new IllegalStateException("Disposable database fixture " + command[0]
+                        + " failed (exit=" + result.getExitCode() + ", " + category + ")");
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Disposable database fixture interrupted", interrupted);

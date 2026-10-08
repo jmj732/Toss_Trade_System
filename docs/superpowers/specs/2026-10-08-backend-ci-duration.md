@@ -32,3 +32,9 @@ First GitHub measurement with two forks was 6m30s versus 9m19s (~30% shorter), i
 Full local verification after virtual time/fixture changes: 177 suites, 1153 tests, zero failures/errors/skips, 2m14s versus original 5m29s (~59% shorter). A fresh full run including order fixture pooling passed: 177 suites / 1153 tests / zero failures, errors or skips, 2m16s. No further timing gain is attributed to this small pooling change. Actual final GitHub wall time and main reuse will be reported after successful CI; no claim of an absolute minimum.
 
 Local Compose smoke was blocked fetching python:3.12-slim metadata from Docker Hub (DeadlineExceeded), before application containers started. Full runtime smoke remains a required GitHub check. Workflow actionlint, CI proof/filter contracts and existing local-stack/CD contracts passed.
+
+## Restore and transfer regressions
+
+The first final GitHub run passed dashboard/audit/analysis/Compose smoke but failed 72 setup cases at snapshot restoration. Explicitly dumping the public schema reproduced an object-already-exists restore error locally. Restore now uses the documented clean/if-exists options, still exit-on-error; explicit schema scope makes this case deterministic. The six affected fixture suites pass all 102 cases after the repair (1m20s local). Diagnostics report only command/exit/category, never SQL, stored values or credentials.
+
+Before transferring a built image, CD inspects its local immutable sha256 image ID and uses the same pinned SSH connection to check that exact ID on the server. Only an exact existing image is retagged; absent/invalid IDs require the existing transfer. Shell regression checks cover match, miss, invalid digest and pinned SSH flags. This removes unchanged image uploads without guessing from commit paths or prior deployment tags. Actual first-deploy cache/digest reuse remains to be measured.
