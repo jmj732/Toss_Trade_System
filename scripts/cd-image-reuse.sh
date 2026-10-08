@@ -6,8 +6,9 @@ reuse_remote_image() {
   [[ "$family" =~ ^trade-(backend|analysis|dashboard)$ ]] || return 1
   # IDs differ across Docker stores. Verify all execution config and ordered
   # uncompressed layer digests, including platform, without exposing env values.
+  # A common API schema retains empty/default fields across Engine versions.
   format='{{json .Config}}|{{json .RootFS}}|{{.Os}}|{{.Architecture}}|{{.Variant}}'
-  content="$(docker image inspect --format "$format" "$image")" || return 1
+  content="$(DOCKER_API_VERSION=1.44 docker image inspect --format "$format" "$image")" || return 1
   [[ -n "$content" ]] || return 1
   fingerprint="$(printf '%s\n' "$content" | sha256sum)" || return 1
   fingerprint="${fingerprint%% *}"
@@ -22,7 +23,7 @@ image="$1"; expected="$2"; family="$3"
 format='{{json .Config}}|{{json .RootFS}}|{{.Os}}|{{.Architecture}}|{{.Variant}}'
 while IFS= read -r existing; do
   [[ "$existing" == "$family:"* && "$existing" != *'<none>'* ]] || continue
-  content="$(docker image inspect --format "$format" "$existing")" || continue
+  content="$(DOCKER_API_VERSION=1.44 docker image inspect --format "$format" "$existing")" || continue
   [[ -n "$content" ]] || continue
   actual="$(printf '%s\n' "$content" | sha256sum)" || continue
   if [[ "${actual%% *}" == "$expected" ]]; then

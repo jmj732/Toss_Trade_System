@@ -18,6 +18,7 @@ docker() {
       "$fixture_remote_missing" || printf '%s\n' 'trade-backend:previous'
       ;;
     'image inspect')
+      [[ "${DOCKER_API_VERSION:-}" == 1.44 ]] || return 1
       if [[ "${REMOTE_FIXTURE:-false}" == true ]]; then
         printf '%s|%s|linux|%s|\n' "$fixture_remote_config" "$fixture_remote_layers" "$fixture_remote_arch"
       else
