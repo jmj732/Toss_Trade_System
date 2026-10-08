@@ -47,7 +47,9 @@ user. No connector key needs to be copied into ChatGPT.
 The requested OAuth scope determines the MCP tools:
 
 - `connector:read`: `get_portfolio`, `get_orders`, `get_recent_fills`, `get_order`, and `get_investment_context`.
-- `connector:trade`: the five read tools plus `prepare_order`, `submit_order`, and `cancel_order`.
+- `connector:trade`: the five read tools plus `put_investment_thesis`, `prepare_order`, `submit_order`, and `cancel_order`. Thesis proposals reuse this existing write scope; no new scope is introduced.
+
+`put_investment_thesis` stores externally authored proposals only, using `ticker`, `thesis` and optional `expectedUpdatedAt`. Updates require the exact Context timestamp. It cannot set or overwrite `CONFIRMED`, and it does not place orders. See the [proposal contract](investment-context-mcp-contract.md#implemented-proposal-and-confirmation-boundary). Read-scoped scheduled tasks cannot call it. Do not assume deploying a tool changes an existing scheduled task connection or its scope.
 
 If `REAL_ORDER_ENABLED=false`, trade-scoped connections still show the three
 trade tools so the capability is discoverable, but calls return an explicit
