@@ -38,8 +38,10 @@ ssh() {
 reuse_remote_image trade-backend:current >/dev/null
 [[ "$(cat "$fixture_dir/tagged")" == 'trade-backend:previous trade-backend:current' ]]
 rm "$fixture_dir/tagged"
-fixture_remote_config='{"Cmd":["different"],"Env":["A=B"]}'
-if reuse_remote_image trade-backend:current >/dev/null; then exit 1; fi
+fixture_remote_config='{"Cmd":["sensitive-fixture-marker"],"Env":["A=B"]}'
+if reuse_remote_image trade-backend:current >"$fixture_dir/diagnostic"; then exit 1; fi
+grep -q 'image content comparison:' "$fixture_dir/diagnostic"
+if grep -q 'sensitive-fixture-marker' "$fixture_dir/diagnostic"; then exit 1; fi
 fixture_remote_config='{"Cmd":["java"],"Env":["A=B"]}'
 fixture_remote_layers='{"Type":"layers","Layers":["sha256:other"]}'
 if reuse_remote_image trade-backend:current >/dev/null; then exit 1; fi
