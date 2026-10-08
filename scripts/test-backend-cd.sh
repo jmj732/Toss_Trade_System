@@ -128,7 +128,13 @@ grep -q -- '--project "\$VERCEL_PROJECT_ID"' "$workflow" ||
   fail "Vercel deploy must target the configured project explicitly"
 
 grep -q 'source scripts/cd-image-reuse.sh' "$workflow" || fail "CD must load exact image reuse helper"
-grep -q 'if reuse_remote_image "$image"; then return 0; fi' "$workflow" ||
+grep -q 'if reuse_remote_image "$image" "${2:-}"; then return 0; fi' "$workflow" ||
   fail "identical images must reuse the actual remote digest before transfer"
 
 echo "trade CD contract: PASS"
+
+for service in backend analysis dashboard; do
+  grep -Fq "id: build-$service" "$workflow" || fail "build metadata must have a step ID"
+done
+[[ $(grep -c "outputs.metadata).*containerimage.config.digest" "$workflow") == 3 ]] ||
+  fail "all image reuse checks must receive the exact build config digest"

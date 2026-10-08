@@ -31,6 +31,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - name: Build backend image
+        id: build-backend
         uses: docker/build-push-action@v7
         with:
           context: trading-backend
@@ -41,6 +42,7 @@ jobs:
           cache-to: type=gha,scope=cd-backend,mode=max,ignore-error=true
 
       - name: Build analysis image
+        id: build-analysis
         uses: docker/build-push-action@v7
         with:
           context: analysis-service
@@ -51,6 +53,7 @@ jobs:
           cache-to: type=gha,scope=cd-analysis,mode=max,ignore-error=true
 
       - name: Build dashboard image
+        id: build-dashboard
         uses: docker/build-push-action@v7
         with:
           context: web-dashboard
@@ -66,6 +69,9 @@ jobs:
           IMAGE_TAG: trade-backend:${{ env.DEPLOY_SHA }}
           ANALYSIS_IMAGE: trade-analysis:${{ env.DEPLOY_SHA }}
           DASHBOARD_IMAGE: trade-dashboard:${{ env.DEPLOY_SHA }}
+          BACKEND_CONFIG_DIGEST: ${{ fromJSON(steps.build-backend.outputs.metadata)['containerimage.config.digest'] }}
+          ANALYSIS_CONFIG_DIGEST: ${{ fromJSON(steps.build-analysis.outputs.metadata)['containerimage.config.digest'] }}
+          DASHBOARD_CONFIG_DIGEST: ${{ fromJSON(steps.build-dashboard.outputs.metadata)['containerimage.config.digest'] }}
           BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
           BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
           BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
@@ -148,7 +154,7 @@ jobs:
 
           stream_image() {
             local image="$1"
-            if reuse_remote_image "$image"; then return 0; fi
+            if reuse_remote_image "$image" "${2:-}"; then return 0; fi
             local image_name="${image//:/_}"
             local archive_dir
             local remote_archive
@@ -175,9 +181,9 @@ jobs:
             rm -rf -- "$archive_dir"
           }
 
-          stream_image "$IMAGE_TAG"
-          stream_image "$ANALYSIS_IMAGE"
-          stream_image "$DASHBOARD_IMAGE"
+          stream_image "$IMAGE_TAG" "$BACKEND_CONFIG_DIGEST"
+          stream_image "$ANALYSIS_IMAGE" "$ANALYSIS_CONFIG_DIGEST"
+          stream_image "$DASHBOARD_IMAGE" "$DASHBOARD_CONFIG_DIGEST"
 
           remote_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
           remote_image="$(printf '%q' "$IMAGE_TAG")"
