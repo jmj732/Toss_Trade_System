@@ -147,6 +147,12 @@ public final class ConnectorMcpProtocol {
                 "Read the authenticated user's persisted investment context, including portfolio, security data, risk, thesis, decisions, and tactical overlays. This tool does not call providers or write data. Optionally filter only the securities array by ticker.",
                 investmentContextSchema(), investmentContextOutputSchema()));
         if (canTrade) {
+            if (investmentContextService != null) {
+                tools.add(tool("put_investment_thesis", "Save investment thesis",
+                        "Store an externally authored proposal in PostgreSQL for Context and Sheet mirroring. Cannot set CONFIRMED or overwrite a confirmed thesis. Supply expectedUpdatedAt when updating an existing proposal; omit it only for creation. Never invent evidence or risk prices. Does not submit orders. Requires existing connector write scope.",
+                        investmentThesisSchema(), objectSchema(), false, false, false,
+                        ConnectorApiKeyService.TRADE_SCOPE));
+            }
             tools.add(tool(
                     "prepare_order",
                     "Prepare order",
@@ -185,6 +191,8 @@ public final class ConnectorMcpProtocol {
                         optionalText(arguments, "brokerOrderId", null),
                         optionalText(arguments, "clientOrderId", null)));
                 case "get_investment_context" -> investmentContext(request, userId, arguments);
+                case "put_investment_thesis" -> !tradeScopeGranted
+                        ? forbiddenTrade(request) : putInvestmentThesis(request, userId, arguments);
                 case "prepare_order" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : !liveExecutionAvailable
@@ -204,8 +212,7 @@ public final class ConnectorMcpProtocol {
                                 requiredText(arguments, "brokerOrderId")));
                 default -> error(request, -32601, "Tool not found: " + name);
             };
-            var outcome = "get_investment_context".equals(name)
-                    && response != null && response.path("result").path("isError").asBoolean()
+            var outcome = response != null && response.path("result").path("isError").asBoolean()
                     ? "failure" : "success";
             LOG.atInfo().addKeyValue("operation", "mcp_tool")
                     .addKeyValue("tool", name)
@@ -305,6 +312,42 @@ public final class ConnectorMcpProtocol {
                     .addKeyValue("error_type", exception.getClass().getSimpleName())
                     .log("Investment context read failed");
             return toolError(request, "INTERNAL_ERROR", "Investment context could not be read", false, false);
+        }
+    }
+
+    private ObjectNode putInvestmentThesis(ObjectNode request, UUID userId, JsonNode arguments) {
+        if (investmentContextService == null) return investmentContextUnavailable(request);
+        if (!arguments.isObject() || arguments.size() < 2 || arguments.size() > 3
+                || !arguments.path("ticker").isTextual() || !arguments.path("thesis").isObject())
+            return toolError(request, "INVALID_ARGUMENT", "ticker and thesis are required", false, false);
+        try {
+            for (var name : arguments.propertyNames()) {
+                if (!java.util.Set.of("ticker", "thesis", "expectedUpdatedAt").contains(name))
+                    return toolError(request, "INVALID_ARGUMENT", "Unsupported argument", false, false);
+            }
+            var ticker = investmentContextTicker(objectMapper.createObjectNode()
+                    .put("ticker", arguments.path("ticker").asText()));
+            var fields = investmentThesisSchema().path("properties").path("thesis").path("properties");
+            var thesis = arguments.path("thesis");
+            for (var name : thesis.propertyNames()) {
+                var value = thesis.path(name);
+                if (!fields.has(name) || !value.isNull()
+                        && ("priceRiskTriggerPrice".equals(name) ? !value.isNumber() : !value.isTextual()))
+                    return toolError(request, "INVALID_ARGUMENT", "Invalid thesis field or type", false, false);
+            }
+            var input = objectMapper.treeToValue(arguments.path("thesis"), InvestmentContextService.ThesisInput.class);
+            if ("CONFIRMED".equalsIgnoreCase(input.invalidationStatus()))
+                return toolError(request, "CONFIRMATION_REQUIRED", "Use the authenticated user thesis API to confirm a specific thesis", false, false);
+            return toolResult(request, investmentContextService.putThesisProposal(userId, ticker, input,
+                    optionalInstant(arguments, "expectedUpdatedAt")));
+        } catch (com.jmj.trade.investment.InvestmentException exception) {
+            if (exception.code() == com.jmj.trade.investment.InvestmentException.Code.CONFLICT)
+                return toolError(request, "THESIS_STATE_CONFLICT", "Thesis version changed or the current thesis is confirmed", false, false);
+            return toolError(request, "INVALID_ARGUMENT", "Invalid investment thesis input", false, false);
+        } catch (tools.jackson.core.JacksonException exception) {
+            return toolError(request, "INVALID_ARGUMENT", "Invalid investment thesis payload", false, false);
+        } catch (IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", "Invalid investment thesis arguments", false, false);
         }
     }
 
@@ -442,6 +485,29 @@ public final class ConnectorMcpProtocol {
         var schema = objectMapper.createObjectNode().put("type", "object");
         schema.set("properties", properties);
         schema.put("additionalProperties", false);
+        return schema;
+    }
+
+    private ObjectNode investmentThesisSchema() {
+        var schema = investmentContextSchema();
+        var properties = (ObjectNode) schema.path("properties");
+        var thesis = objectMapper.createObjectNode().put("type", "object").put("additionalProperties", false);
+        var fields = thesis.putObject("properties");
+        for (var name : new String[]{"coreThesis", "upsideDriver", "expectationsGap", "fundamentalInvalidation",
+                "revisionInvalidation", "priceRiskTrigger", "expandTrigger", "exitOrDiscardTrigger", "classification"}) {
+            var field = fields.putObject(name);
+            field.putArray("type").add("string").add("null");
+            field.put("maxLength", "classification".equals(name) ? 80 : 5000);
+        }
+        fields.set("coreThesis", objectMapper.createObjectNode().put("type", "string").put("minLength", 1).put("maxLength", 5000));
+        var price = fields.putObject("priceRiskTriggerPrice").put("minimum", 0);
+        price.putArray("type").add("number").add("null");
+        var status = fields.putObject("invalidationStatus").put("type", "string");
+        for (var value : new String[]{"AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED"}) status.withArray("enum").add(value);
+        thesis.putArray("required").add("coreThesis").add("invalidationStatus");
+        properties.set("thesis", thesis);
+        properties.set("expectedUpdatedAt", objectMapper.createObjectNode().put("type", "string").put("format", "date-time"));
+        schema.putArray("required").add("ticker").add("thesis");
         return schema;
     }
 

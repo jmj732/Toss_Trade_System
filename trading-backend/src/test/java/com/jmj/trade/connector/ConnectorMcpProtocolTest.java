@@ -25,8 +25,40 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
+    @Test
+    void cannotConfirmThesisThroughModelTool() throws Exception {
+        var investment = mock(InvestmentContextService.class);
+        var writer = new ConnectorMcpProtocol(service, null, investment, new ObjectMapper());
+        var response = writer.handle(toolCall("confirm", "put_investment_thesis",
+                "{\"ticker\":\"AVT\",\"thesis\":{\"coreThesis\":\"External\",\"invalidationStatus\":\"CONFIRMED\"}}"), USER, CONNECTION, true);
+        assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("CONFIRMATION_REQUIRED");
+        verifyNoInteractions(investment);
+    }
+    @Test
+    void writesCallerThesisThroughExistingServiceOnlyWithWriteScope() throws Exception {
+        var mapper = new ObjectMapper();
+        var investment = mock(InvestmentContextService.class);
+        var writer = new ConnectorMcpProtocol(service, null, investment, mapper);
+        var args = "{\"ticker\":\"avt\",\"thesis\":{\"coreThesis\":\"External evidence\",\"invalidationStatus\":\"AI_PROPOSED\"}}";
+        var denied = writer.handle(toolCall("denied", "put_investment_thesis", args), USER, CONNECTION);
+        assertThat(denied.path("result").path("structuredContent").path("errorCode").asText()).isEqualTo("TRADE_SCOPE_REQUIRED");
+        org.mockito.Mockito.verifyNoInteractions(investment);
+        var saved = new InvestmentContextService.ThesisView("AVT", "External evidence", null, null,
+                null, null, null, null, "AI_PROPOSED", null, null, null, Instant.now());
+        when(investment.putThesisProposal(eq(USER), eq("AVT"), any(), org.mockito.ArgumentMatchers.isNull())).thenReturn(saved);
+        var response = writer.handle(toolCall("write", "put_investment_thesis", args), USER, CONNECTION, true);
+        assertThat(response.path("result").path("structuredContent").path("invalidationStatus").asText()).isEqualTo("AI_PROPOSED");
+        verify(investment).putThesisProposal(eq(USER), eq("AVT"), argThat(input ->
+                input.coreThesis().equals("External evidence") && input.invalidationStatus().equals("AI_PROPOSED")), org.mockito.ArgumentMatchers.isNull());
+        verifyNoInteractions(service, tradeService);
+    }
+
 
     private static final UUID USER = UUID.fromString("018f0000-0000-7000-8000-000000000001");
     private static final UUID CONNECTION = UUID.fromString("018f0000-0000-7000-8000-000000000002");
