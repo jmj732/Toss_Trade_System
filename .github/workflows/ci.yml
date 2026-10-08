@@ -30,7 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          # Merge commit plus both parents covers PR/base and main/before diffs.
+          fetch-depth: 2
       - name: Verify CI proof contract
         run: |
           python3 scripts/test-ci-verification.py
