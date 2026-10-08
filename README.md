@@ -132,6 +132,11 @@ Ticker는 1~32자의 영문자·숫자·`.`, `_`, `-`만 허용하고 대문자�
 - `get_investment_context` / `GET /investment/context`는 저장된 레코드와 스냅샷만 읽고 context를 구성한다. 이 주기를 실행하거나 refresh하지 않는다. 후장 캡처는 일봉 분석 입력을 수집하고, 5분 주기는 quote-only 입력을 수집한다. 시트 자동 동기화는 계좌 입력을 읽고 생성된 값/미러를 반영한다. 미러는 Sheets 셀에서 MCP로 직접 기록하는 통로가 아니다.
 - Spring에는 로그인 사용자용 `PUT /investment/securities/{ticker}/thesis`, `POST /investment/decisions`와 전술 입력 REST 쓰기 API가 있지만, 이들은 MCP 도구로 노출되지 않는다. 현재 `get_investment_context`는 읽기 전용이며 AI 제안/확인(proposal/confirm) 기능도 구현돼 있지 않다. 코드상 `connector:trade` 범위에는 별도 주문 도구 `prepare_order`, `submit_order`, `cancel_order`가 조건부로 등록되지만, 이는 Investment OS thesis/decision 쓰기 기능이 아니며 이 안내 범위 밖이다. 예약 프롬프트는 읽기 전용 요청으로 제한해야 한다. ChatGPT/Google 화면의 “Allow all” 선택만으로 백엔드 쓰기 권한이나 새 MCP 도구가 생기지 않는다. [컨트롤러 코드](trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextController.java)와 [계약 감사](docs/ops/investment-context-mcp-contract.md)를 참조한다.
 
+### 문서 갱신 규칙
+
+- Sheets 탭·열·소유권, MCP 도구·입출력·상태, 데이터 출처·계산 의미 또는 갱신 주기가 바뀌면 관련 계약/운영 문서와 함께 같은 PR에서 이 README도 갱신한다.
+- 내용을 실제 코드와 대조해 검증한다. 무관한 일반 변경은 이 안내에 덧붙이지 않는다.
+
 ## 저장소 구조
 
 ```
