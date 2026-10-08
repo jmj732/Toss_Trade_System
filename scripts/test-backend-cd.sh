@@ -30,10 +30,20 @@ grep -q '^  stack:' "$ci_workflow" || fail "CI must include stack gates"
 grep -q '^  ci-gate:' "$ci_workflow" || fail "CI must expose a single release gate"
 grep -q 'cancel-in-progress: false' "$workflow" ||
   fail "an active backend deploy must not be cancelled by a newer push"
-grep -q 'docker build --pull --tag "\$ANALYSIS_IMAGE" analysis-service' "$workflow" ||
-  fail "analysis image must be built in the verified checkout"
-grep -q 'docker build --pull --tag "\$DASHBOARD_IMAGE"' "$workflow" ||
-  fail "dashboard image must be built in the verified checkout"
+test "$(grep -c 'uses: docker/build-push-action@v7' "$workflow")" -eq 3 ||
+  fail "all three runtime images must build in the verified checkout"
+for component in backend analysis dashboard; do
+  grep -q "cache-from: type=gha,scope=cd-$component" "$workflow" ||
+    fail "runtime images must reuse separate build caches"
+  grep -q "tags: trade-$component:" "$workflow" || fail "missing runtime image tag"
+done
+test "$(grep -c 'load: true' "$workflow")" -eq 3 || fail "built images must load for SSH transfer"
+test "$(grep -c 'pull: true' "$workflow")" -eq 3 || fail "base images must still be refreshed"
+grep -q 'context: trading-backend' "$workflow" || fail "missing backend build context"
+grep -q 'context: analysis-service' "$workflow" || fail "missing analysis build context"
+grep -q 'context: web-dashboard' "$workflow" || fail "missing dashboard build context"
+grep -q 'build-args: BACKEND_URL=http://backend:8080' "$workflow" ||
+  fail "dashboard image must use the internal backend route"
 grep -q 'stream_image()' "$workflow" ||
   fail "runtime images must transfer without a registry secret"
 grep -q 'stream_image "\$IMAGE_TAG"' "$workflow" || fail "backend image must transfer"

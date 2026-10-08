@@ -2,11 +2,11 @@ package com.jmj.trade.investment.tactical;
 
 import com.jmj.trade.PostgresIntegrationTest;
 import com.jmj.trade.investment.InvestmentException;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -37,23 +37,16 @@ class TacticalOverlayServiceIntegrationTest extends PostgresIntegrationTest {
     private final UUID userId = UUID.randomUUID();
     private final UUID otherUserId = UUID.randomUUID();
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private ObjectMapper mapper;
     private TacticalOverlayService service;
     private List<LocalDate> dates;
 
     @BeforeEach
     void migrateAndSeedUsers() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load()
-                .clean();
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
-        jdbc = new JdbcTemplate(new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword()));
+        freshMigratedSchema();
+        dataSource = pooledTestDataSource();
+        jdbc = new JdbcTemplate(dataSource);
         mapper = new ObjectMapper();
         jdbc.update("INSERT INTO users (id) VALUES (?), (?)", userId, otherUserId);
         dates = tradingDates(FIRST_DATE, 70);
@@ -61,6 +54,11 @@ class TacticalOverlayServiceIntegrationTest extends PostgresIntegrationTest {
         var properties = TacticalOverlayProperties.defaults();
         service = new TacticalOverlayService(jdbc, mapper, new TacticalOverlayCalculator(properties),
                 properties, String.join(",", SYMBOLS), clock);
+    }
+
+    @AfterEach
+    void closeTestPool() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

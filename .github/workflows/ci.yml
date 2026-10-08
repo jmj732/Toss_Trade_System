@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -20,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      reuse: ${{ steps.verified.outputs.reuse }}
       backend: ${{ steps.filter.outputs.backend }}
       analysis: ${{ steps.filter.outputs.analysis }}
       dashboard: ${{ steps.filter.outputs.dashboard }}
@@ -28,98 +31,45 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Verify CI proof contract
+        run: |
+          python3 scripts/test-ci-verification.py
+          python3 scripts/test-ci-change-filter.py
+      - id: verified
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci-verification.py check
       - id: filter
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-
-          all_true() {
-            {
-              echo "backend=true"
-              echo "analysis=true"
-              echo "dashboard=true"
-              echo "stack=true"
-            } >>"$GITHUB_OUTPUT"
-          }
-
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "workflow_dispatch: running all jobs"
-            all_true
-            exit 0
-          fi
-
-          base="$BASE_SHA"
-          if [ -z "$base" ] \
-            || [ "$base" = "0000000000000000000000000000000000000000" ] \
-            || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            echo "base commit unavailable ('$base'): running all jobs (fail-open)"
-            all_true
-            exit 0
-          fi
-
-          changed="$(git diff --name-only "$base" "$GITHUB_SHA")"
-          echo "changed files:"
-          echo "$changed"
-
-          backend=false
-          analysis=false
-          dashboard=false
-          stack=false
-
-          if echo "$changed" | grep -Eq '^\.github/workflows/'; then
-            echo "workflow files changed: running all jobs"
-            all_true
-            exit 0
-          fi
-
-          if echo "$changed" | grep -Eq '^(trading-backend/|contracts/)'; then
-            backend=true
-          fi
-          if echo "$changed" | grep -Eq '^(analysis-service/|contracts/)'; then
-            analysis=true
-          fi
-          if echo "$changed" | grep -Eq '^web-dashboard/'; then
-            dashboard=true
-          fi
-
-          if [ "$backend" = "true" ] || [ "$analysis" = "true" ] || [ "$dashboard" = "true" ]; then
-            stack=true
-          fi
-          if echo "$changed" | grep -Eq '^(compose[^/]*\.ya?ml|scripts/|mocks/)'; then
-            stack=true
-          fi
-
-          {
-            echo "backend=$backend"
-            echo "analysis=$analysis"
-            echo "dashboard=$dashboard"
-            echo "stack=$stack"
-          } >>"$GITHUB_OUTPUT"
+        # Includes web-dashboard/ runtime changes; backend test-only changes need no image smoke.
+        run: python3 scripts/ci-change-filter.py
 
   backend:
     name: Backend
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.reuse != 'true'
     uses: ./.github/workflows/ci-backend.yml
 
   analysis:
     name: Analysis
     needs: changes
-    if: needs.changes.outputs.analysis == 'true'
+    if: needs.changes.outputs.analysis == 'true' && needs.changes.outputs.reuse != 'true'
     uses: ./.github/workflows/ci-analysis.yml
 
   dashboard:
     name: Dashboard
     needs: changes
-    if: needs.changes.outputs.dashboard == 'true'
+    if: needs.changes.outputs.dashboard == 'true' || needs.changes.outputs.reuse == 'true'
     uses: ./.github/workflows/ci-dashboard.yml
+    with:
+      run-build: ${{ needs.changes.outputs.reuse != 'true' }}
 
   stack:
     name: Stack
     needs: changes
-    if: needs.changes.outputs.stack == 'true'
+    if: needs.changes.outputs.stack == 'true' && needs.changes.outputs.reuse != 'true'
     uses: ./.github/workflows/ci-stack.yml
 
   ci-gate:
@@ -134,6 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v5
       - name: Evaluate gate results
         shell: bash
         env:
@@ -152,3 +103,16 @@ jobs:
             esac
           done
           exit "$status"
+      - name: Record successful verification
+        env:
+          VERIFIED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          JOB_RESULTS: >-
+            {"changes":"${{ needs.changes.result }}","backend":"${{ needs.backend.result }}",
+            "analysis":"${{ needs.analysis.result }}","dashboard":"${{ needs.dashboard.result }}",
+            "stack":"${{ needs.stack.result }}"}
+        run: python3 scripts/ci-verification.py write
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ci-verification
+          path: verification.json
+          retention-days: 2

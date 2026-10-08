@@ -1,5 +1,7 @@
 package com.jmj.trade;
 
+import org.flywaydb.core.Flyway;
+import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -24,6 +26,50 @@ public abstract class PostgresIntegrationTest {
 
     @ServiceConnection
     protected static final PostgreSQLContainer POSTGRES = startPostgres();
+
+    private static boolean migratedFixtureReady;
+    private static final String MIGRATED_FIXTURE = "/tmp/trade-test-migrated-fixture.dump";
+
+    /** Reuse a snapshot produced by real migrations; restore schema AND seed data per case. */
+    protected static synchronized Flyway freshMigratedSchema() {
+        var flyway = Flyway.configure()
+                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .cleanDisabled(false).load();
+        flyway.clean();
+        if (!migratedFixtureReady) {
+            flyway.migrate();
+            fixtureCommand("pg_dump", "--username=" + POSTGRES.getUsername(),
+                    "--dbname=" + POSTGRES.getDatabaseName(), "--format=custom",
+                    "--file=" + MIGRATED_FIXTURE);
+            migratedFixtureReady = true;
+        } else {
+            fixtureCommand("pg_restore", "--exit-on-error", "--no-owner",
+                    "--username=" + POSTGRES.getUsername(),
+                    "--dbname=" + POSTGRES.getDatabaseName(), MIGRATED_FIXTURE);
+        }
+        return flyway;
+    }
+
+    protected static HikariDataSource pooledTestDataSource() {
+        var source = new HikariDataSource();
+        source.setJdbcUrl(POSTGRES.getJdbcUrl());
+        source.setUsername(POSTGRES.getUsername());
+        source.setPassword(POSTGRES.getPassword());
+        source.setMaximumPoolSize(2);
+        return source;
+    }
+
+    private static void fixtureCommand(String... command) {
+        try {
+            if (POSTGRES.execInContainer(command).getExitCode() != 0)
+                throw new IllegalStateException("Disposable database fixture command failed");
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Disposable database fixture interrupted", interrupted);
+        } catch (java.io.IOException unavailable) {
+            throw new IllegalStateException("Disposable database fixture unavailable", unavailable);
+        }
+    }
 
     private static PostgreSQLContainer startPostgres() {
         var postgres = new PostgreSQLContainer("postgres:17-alpine")

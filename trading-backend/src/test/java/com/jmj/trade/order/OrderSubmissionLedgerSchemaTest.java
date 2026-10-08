@@ -3,6 +3,8 @@ package com.jmj.trade.order;
 import com.jmj.trade.PostgresIntegrationTest;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -23,19 +25,17 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
     private static final OffsetDateTime EXPIRES_AT = CREATED_AT.plusMinutes(10);
 
     private Flyway flyway;
+    private HikariDataSource dataSource;
 
     @BeforeEach
     void migrateFreshSchema() {
-        flyway = Flyway.configure()
-                .dataSource(
-                        POSTGRES.getJdbcUrl(),
-                        POSTGRES.getUsername(),
-                        POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load();
+        flyway = freshMigratedSchema();
+        dataSource = pooledTestDataSource();
+    }
 
-        flyway.clean();
-        flyway.migrate();
+    @AfterEach
+    void closeTestPool() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test
@@ -1348,7 +1348,7 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
             boolean allPagesRead,
             UUID matchedBrokerOrderId
     ) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("")) {
+        try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
                 execute(connection, """
@@ -1423,7 +1423,7 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
             UUID matchedBrokerOrderId,
             OffsetDateTime checkedAt
     ) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("")) {
+        try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
                 execute(connection, """
@@ -1479,7 +1479,7 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
     }
 
     private void executeInTransaction(String sql, Object... parameters) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("")) {
+        try (Connection connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try {
                 execute(connection, sql, parameters);
@@ -1494,7 +1494,7 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
     }
 
     private int queryAttemptCheckNumber(UUID attemptId) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("");
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement("""
                      SELECT last_reconciliation_check_number
                        FROM submission_attempts
@@ -1509,7 +1509,7 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
     }
 
     private String queryBrokerOrderStatus(UUID brokerOrderId) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("");
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
                      "SELECT status FROM broker_orders WHERE id = ?")) {
             statement.setObject(1, brokerOrderId);
@@ -1521,7 +1521,7 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
     }
 
     private String queryBrokerOrderClientOrderId(UUID brokerOrderId) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("");
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
                      "SELECT client_order_id FROM broker_orders WHERE id = ?")) {
             statement.setObject(1, brokerOrderId);
@@ -1542,7 +1542,7 @@ class OrderSubmissionLedgerSchemaTest extends PostgresIntegrationTest {
     }
 
     private int execute(String sql, Object... parameters) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("");
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement(sql)) {
             for (int index = 0; index < parameters.length; index++) {
                 statement.setObject(index + 1, parameters[index]);

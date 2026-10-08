@@ -14,13 +14,13 @@ import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
 import com.jmj.trade.sheets.InvestmentOsSheetModel;
 import com.jmj.trade.sheets.InvestmentOsSheetProperties;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -64,22 +64,14 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
             "consensus.currency", "consensus.observations", "fundamental.dilutedShares");
 
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private DataSourceTransactionManager transactions;
     private ObjectMapper mapper;
 
     @BeforeEach
     void migrateAndSeed() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load()
-                .clean();
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
-        var dataSource = new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        freshMigratedSchema();
+        dataSource = pooledTestDataSource();
         jdbc = new JdbcTemplate(dataSource);
         transactions = new DataSourceTransactionManager(dataSource);
         mapper = new ObjectMapper();
@@ -94,6 +86,11 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                           "pullback":{"min":3,"max":3},"invalidate":{"min":0,"max":0}}'::jsonb,
                         '{}'::jsonb, ?, ?, ?)
                 """, UUID.randomUUID(), USER_ID, now, now, now);
+    }
+
+    @AfterEach
+    void closeTestPool() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test
