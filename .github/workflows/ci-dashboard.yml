@@ -1,7 +1,12 @@
 name: CI Dashboard
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      run-build:
+        type: boolean
+        default: true
+        description: Run tests and build unless the exact tree has already passed PR CI
 
 permissions:
   contents: read
@@ -9,6 +14,7 @@ permissions:
 jobs:
   nextjs-dashboard:
     name: Next.js dashboard
+    if: inputs.run-build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -56,7 +62,6 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web-dashboard/package-lock.json
-      - name: npm ci
-        run: npm ci
+      # Audit uses the lockfile; installing native/runtime packages is unnecessary.
       - name: npm audit
         run: npm audit --omit=dev

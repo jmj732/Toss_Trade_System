@@ -3,8 +3,8 @@ WORKDIR /workspace
 COPY .mvn .mvn
 COPY mvnw pom.xml ./
 RUN ./mvnw -q -DskipTests dependency:go-offline
-COPY src src
-RUN ./mvnw -q -DskipTests package spring-boot:repackage
+COPY src/main src/main
+RUN ./mvnw -q -DskipTests package
 
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app

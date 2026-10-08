@@ -28,19 +28,38 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Build backend image
-        env:
-          IMAGE_TAG: trade-backend:${{ env.DEPLOY_SHA }}
-        run: docker build --pull --tag "$IMAGE_TAG" trading-backend
+      - uses: docker/setup-buildx-action@v4
 
-      - name: Build analysis and dashboard images
-        env:
-          ANALYSIS_IMAGE: trade-analysis:${{ env.DEPLOY_SHA }}
-          DASHBOARD_IMAGE: trade-dashboard:${{ env.DEPLOY_SHA }}
-        run: |
-          docker build --pull --tag "$ANALYSIS_IMAGE" analysis-service
-          docker build --pull --tag "$DASHBOARD_IMAGE" \
-            --build-arg BACKEND_URL=http://backend:8080 web-dashboard
+      - name: Build backend image
+        uses: docker/build-push-action@v7
+        with:
+          context: trading-backend
+          pull: true
+          load: true
+          tags: trade-backend:${{ env.DEPLOY_SHA }}
+          cache-from: type=gha,scope=cd-backend
+          cache-to: type=gha,scope=cd-backend,mode=max,ignore-error=true
+
+      - name: Build analysis image
+        uses: docker/build-push-action@v7
+        with:
+          context: analysis-service
+          pull: true
+          load: true
+          tags: trade-analysis:${{ env.DEPLOY_SHA }}
+          cache-from: type=gha,scope=cd-analysis
+          cache-to: type=gha,scope=cd-analysis,mode=max,ignore-error=true
+
+      - name: Build dashboard image
+        uses: docker/build-push-action@v7
+        with:
+          context: web-dashboard
+          pull: true
+          load: true
+          tags: trade-dashboard:${{ env.DEPLOY_SHA }}
+          cache-from: type=gha,scope=cd-dashboard
+          cache-to: type=gha,scope=cd-dashboard,mode=max,ignore-error=true
+          build-args: BACKEND_URL=http://backend:8080
 
       - name: Stream image and deploy over pinned SSH
         env:
@@ -83,8 +102,11 @@ jobs:
             -o UserKnownHostsFile="$known_hosts_file"
           )
 
+          source scripts/cd-image-reuse.sh
+
           cleanup_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
           prune_unused_images() {
+            # shellcheck disable=SC2029
             ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
               "BACKEND_DEPLOY_PATH=$cleanup_path bash -s" <<'CLEANUP'
           set -euo pipefail
@@ -126,6 +148,7 @@ jobs:
 
           stream_image() {
             local image="$1"
+            if reuse_remote_image "$image"; then return 0; fi
             local image_name="${image//:/_}"
             local archive_dir
             local remote_archive
@@ -137,13 +160,16 @@ jobs:
             split -b 32m -d --additional-suffix=.part \
               "$archive_dir/image.tar.gz" "$archive_dir/part-"
 
+            # shellcheck disable=SC2029
             ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
               "rm -f $remote_archive"
             for part in "$archive_dir"/part-*.part; do
               printf 'uploading %s\n' "$(basename "$part")"
+              # shellcheck disable=SC2029
               ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
                 "cat >> $remote_archive" <"$part"
             done
+            # shellcheck disable=SC2029
             ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
               "gzip -d < $remote_archive | docker load; rm -f $remote_archive"
             rm -rf -- "$archive_dir"

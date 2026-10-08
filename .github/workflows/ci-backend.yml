@@ -22,7 +22,35 @@ jobs:
           java-version: "21"
           cache: maven
       - name: mvnw clean verify
-        run: ./mvnw --no-transfer-progress clean verify
+        # Each fork owns its existing Postgres singleton. Keep JUnit methods/classes
+        # sequential within a fork because schema tests clean the shared database.
+        # Use available hosted-runner CPUs and cap each heap on the hosted runner; never skip tests.
+        run: |
+          echo "Runner CPUs: $(nproc); Surefire one fork per CPU; each heap capped at 1024MiB"
+          ./mvnw --no-transfer-progress \
+            -DforkCount=1C -DreuseForks=true -DargLine=-Xmx1024m \
+            -Djunit.jupiter.execution.parallel.enabled=false clean verify
+      - name: Summarize test timings
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          suites = [ET.parse(path).getroot() for path in Path("target/surefire-reports").glob("TEST-*.xml")]
+          totals = {name: sum(int(suite.get(name, "0")) for suite in suites)
+                    for name in ("tests", "failures", "errors", "skipped")}
+          lines = ["## Backend test timings", "", f"Suites: {len(suites)}; {totals}", "",
+                   "Suite times include setup and overlap across forks; they are not wall time.", "",
+                   "| Suite | Seconds |", "| --- | ---: |"]
+          for suite in sorted(suites, key=lambda item: float(item.get("time", "0")), reverse=True)[:10]:
+              lines.append(f"| {suite.get('name', '').replace('|', '')} | {float(suite.get('time', '0')):.3f} |")
+          summary = "\n".join(lines) + "\n"
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
+              output.write(summary)
+          PYTHON
       - name: Upload surefire reports
         if: always()
         uses: actions/upload-artifact@v6

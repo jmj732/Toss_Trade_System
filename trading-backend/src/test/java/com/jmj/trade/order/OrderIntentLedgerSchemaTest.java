@@ -3,6 +3,8 @@ package com.jmj.trade.order;
 import com.jmj.trade.PostgresIntegrationTest;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -20,19 +22,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
 
     private Flyway flyway;
+    private HikariDataSource dataSource;
 
     @BeforeEach
     void migrateFreshSchema() {
-        flyway = Flyway.configure()
-                .dataSource(
-                        POSTGRES.getJdbcUrl(),
-                        POSTGRES.getUsername(),
-                        POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load();
+        flyway = freshMigratedSchema();
+        dataSource = pooledTestDataSource();
+    }
 
-        flyway.clean();
-        flyway.migrate();
+    @AfterEach
+    void closeTestPool() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test
@@ -52,7 +52,7 @@ class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
         var intentId = insertIntent(accountId, "PROPOSED", new BigDecimal("10"));
 
         assertThat(queryStatus(intentId)).isEqualTo("PROPOSED");
-        try (Connection connection = POSTGRES.createConnection("");
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
                      "SELECT created_at, expires_at FROM order_intents WHERE id = ?")) {
             statement.setObject(1, intentId);
@@ -65,7 +65,7 @@ class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
     }
 
     private boolean columnIsNullable(String column) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("");
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement("""
                      SELECT is_nullable
                        FROM information_schema.columns
@@ -337,7 +337,7 @@ class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
     }
 
     private String queryStatus(UUID intentId) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("");
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
                      "SELECT status FROM order_intents WHERE id = ?")) {
             statement.setObject(1, intentId);
@@ -349,7 +349,7 @@ class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
     }
 
     private int execute(String sql, Object... parameters) throws SQLException {
-        try (Connection connection = POSTGRES.createConnection("");
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement(sql)) {
             for (int index = 0; index < parameters.length; index++) {
                 statement.setObject(index + 1, parameters[index]);

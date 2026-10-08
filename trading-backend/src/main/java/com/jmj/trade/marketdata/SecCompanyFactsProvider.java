@@ -83,7 +83,16 @@ final class SecCompanyFactsProvider implements StockDataProvider {
             URI dataBase,
             Duration cacheTtl
     ) {
-        this.transport = new ProviderHttpTransport(ID, configuration);
+        this(configuration, objectMapper, clock, tickerFile, dataBase, cacheTtl,
+                new ProviderRateLimiter(ID, configuration.transportPolicy()));
+    }
+
+    SecCompanyFactsProvider(
+            StockAnalysisProviderProperties.ProviderConfiguration configuration,
+            ObjectMapper objectMapper, Clock clock, URI tickerFile, URI dataBase,
+            Duration cacheTtl, ProviderRateLimiter limiter
+    ) {
+        this.transport = new ProviderHttpTransport(ID, configuration, limiter);
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.tickerFile = tickerFile;

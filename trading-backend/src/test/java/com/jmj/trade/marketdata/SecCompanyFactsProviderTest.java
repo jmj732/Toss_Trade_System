@@ -466,7 +466,6 @@ class SecCompanyFactsProviderTest {
         assertThat(value(first, "fundamental.ebitdaTTM").missingData()).contains("INLINE_XBRL_HTTP_429");
         assertThat(value(second, "fundamental.cash").value().decimalValue()).isEqualByComparingTo("120");
         SERVER.verify(1, getRequestedFor(urlPathEqualTo(path)));
-        Thread.sleep(1_100);
     }
 
     @Test
@@ -965,8 +964,11 @@ class SecCompanyFactsProviderTest {
                 Duration.ofSeconds(1), Duration.ofSeconds(1), 0, Duration.ZERO,
                 100, Duration.ofSeconds(1), "", Map.of());
         var base = URI.create(SERVER.baseUrl());
+        var nanos = new java.util.concurrent.atomic.AtomicLong();
+        var limiter = new ProviderRateLimiter(StockDataProviderId.SEC,
+                configuration.transportPolicy(), nanos::get, nanos::addAndGet);
         return new SecCompanyFactsProvider(configuration, MAPPER, clock,
-                base.resolve("/files/company_tickers.json"), base, cacheTtl);
+                base.resolve("/files/company_tickers.json"), base, cacheTtl, limiter);
     }
 
     private static Clock fixedClock() {

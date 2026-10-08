@@ -29,6 +29,16 @@ class PostgresContainerCapacityTest extends PostgresIntegrationTest {
     private static final int CONNECTIONS_TO_OPEN = 120;
 
     @Test
+    void disposableTestDatabaseKeepsTestcontainersDefaultFsyncDisabled() throws Exception {
+        try (var connection = rawConnection();
+                var statement = connection.createStatement();
+                var resultSet = statement.executeQuery("SHOW fsync")) {
+            assertThat(resultSet.next()).isTrue();
+            assertThat(resultSet.getString(1)).isEqualTo("off");
+        }
+    }
+
+    @Test
     void maxConnectionsIsRaisedAboveThePostgresDefault() throws Exception {
         try (var connection = rawConnection();
                 var statement = connection.createStatement();

@@ -18,13 +18,13 @@ import com.jmj.trade.investment.tactical.TacticalOverlayProperties;
 import com.jmj.trade.investment.tactical.TacticalOverlayService;
 import com.jmj.trade.monitoring.MonitoringWatchlistService;
 import com.jmj.trade.risk.RiskPolicyService;
-import org.flywaydb.core.Flyway;
 import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import com.zaxxer.hikari.HikariDataSource;
+import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.OffsetDateTime;
@@ -50,22 +50,14 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
     private static final UUID USER_ID = UUID.fromString("ca4a8d4b-bafe-4a0a-9239-11cad9a0b390");
     private JdbcTemplate jdbc;
+    private HikariDataSource dataSource;
     private DataSourceTransactionManager transactions;
     private ObjectMapper mapper;
 
     @BeforeEach
     void migrateAndSeed() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .cleanDisabled(false)
-                .load()
-                .clean();
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .load()
-                .migrate();
-        var dataSource = new DriverManagerDataSource(
-                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        freshMigratedSchema();
+        dataSource = pooledTestDataSource();
         jdbc = new JdbcTemplate(dataSource);
         transactions = new DataSourceTransactionManager(dataSource);
         mapper = new ObjectMapper();
@@ -77,6 +69,11 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 VALUES (?, ?, 'AAPL', '{"prepare":1,"confirm":2,"pullback":3,"invalidate":0}'::jsonb,
                         '{}'::jsonb, ?, ?, ?)
                 """, UUID.randomUUID(), USER_ID, now, now, now);
+    }
+
+    @AfterEach
+    void closeTestPool() {
+        if (dataSource != null) dataSource.close();
     }
 
     @Test

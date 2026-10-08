@@ -147,4 +147,10 @@ for context in trading-backend analysis-service web-dashboard; do
   grep -q '^\.env' "$context/.dockerignore" || fail "$context image context may include secrets"
 done
 
+grep -q '^COPY src/main src/main$' trading-backend/Dockerfile ||
+  fail "runtime image must copy only production source"
+if grep -q 'package spring-boot:repackage' trading-backend/Dockerfile; then
+  fail "runtime image must not repackage twice"
+fi
+
 echo "local stack contract: PASS"

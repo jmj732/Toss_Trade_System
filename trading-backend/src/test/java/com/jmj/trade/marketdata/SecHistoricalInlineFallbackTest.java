@@ -92,9 +92,12 @@ class SecHistoricalInlineFallbackTest {
                 true, false, base, "/", "", "", "", Map.of(), Set.of(), "test@example.com",
                 Map.of(), Map.of(), Map.of(), Map.of(), "INSTANT", Duration.ofSeconds(1),
                 Duration.ofSeconds(1), 0, Duration.ZERO, 100, Duration.ofSeconds(1), "", Map.of());
+        var nanos = new java.util.concurrent.atomic.AtomicLong();
+        var limiter = new ProviderRateLimiter(StockDataProviderId.SEC,
+                configuration.transportPolicy(), nanos::get, nanos::addAndGet);
         return new SecCompanyFactsProvider(configuration, MAPPER,
                 Clock.fixed(OBSERVED_AT, ZoneOffset.UTC), base.resolve("/files/company_tickers.json"), base,
-                Duration.ofHours(6));
+                Duration.ofHours(6), limiter);
     }
 
     private static void stubCompany(Map<String, Object> submissions, JsonNode facts) throws Exception {
