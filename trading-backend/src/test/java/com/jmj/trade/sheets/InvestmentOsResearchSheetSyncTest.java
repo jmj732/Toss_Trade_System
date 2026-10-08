@@ -370,7 +370,7 @@ class InvestmentOsResearchSheetSyncTest {
         ids.put("Thesis State Legacy before DB", 100);
         ids.put("Decision Ledger Legacy before DB", 101);
         when(sheets.sheetIdsByTitle("sheet-1")).thenReturn(ids);
-        var thesisHeaders = List.of("Ticker", "Core Thesis", "Upside Driver", "Expectations Gap",
+        var thesisHeaders = List.of("Ticker", "Legacy Thesis", "Upside Driver", "Expectations Gap",
                 "Fundamental Invalidation", "Revision Invalidation", "Price Risk Trigger",
                 "Price Risk Trigger Price", "Invalidation Status", "Expand Trigger",
                 "Exit Or Discard Trigger", "Classification", "Updated At",
@@ -416,6 +416,52 @@ class InvestmentOsResearchSheetSyncTest {
         verify(sheets).ensureSheetColumnCounts(eq("sheet-1"), argThat(columns ->
                 columns.containsKey("Security Snapshot") && !columns.containsKey("Thesis State")
                         && !columns.containsKey("Decision Ledger")));
+    }
+
+    @Test
+    void updatesExtendedThesisInPlaceWithoutTouchingManualColumns() throws Exception {
+        assertExtendedThesisUpdate(true, "'Thesis State'!A3:N3");
+    }
+
+    @Test
+    void appendsNewThesisAfterExistingManualRows() throws Exception {
+        assertExtendedThesisUpdate(false, "'Thesis State'!A3:N3");
+    }
+
+    private void assertExtendedThesisUpdate(boolean existingTicker, String expectedRange) throws Exception {
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.sheetIdsByTitle("sheet-1")).thenReturn(sheetIds());
+        var headers = List.<Object>of("Ticker", "Core Thesis", "Upside Driver", "Expectations Gap",
+                "Fundamental Invalidation", "Revision Invalidation", "Price Risk Trigger",
+                "Price Risk Trigger Price", "Invalidation Status", "Expand Trigger",
+                "Exit Or Discard Trigger", "Classification", "Updated At",
+                "Sizing Eligible", "Next Catalyst", "Next Review");
+        var current = new java.util.ArrayList<List<Object>>();
+        current.add(headers);
+        current.add(List.of("MSFT", "manual thesis", "", "", "", "", "", "", "", "", "", "", "",
+                "=TRUE", "manual catalyst", "manual review"));
+        if (existingTicker) current.add(List.of("AAPL", "old thesis", "", "", "", "", "", "", "", "", "", "", "",
+                "=N2", "retained catalyst", "retained review"));
+        when(sheets.readValues(eq("sheet-1"), anyString())).thenAnswer(invocation ->
+                new GoogleSheetsClient.SheetValues(invocation.getArgument(1),
+                        "'Thesis State'!A:ZZ".equals(invocation.getArgument(1)) ? current : List.of()));
+        var sync = sync(sheets, mock(InvestmentContextService.class), mock(RiskPolicyService.class), mock(JdbcTemplate.class));
+
+        assertThat(sync.sync(USER_ID)).isEmpty();
+
+        var updates = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        @SuppressWarnings("unchecked")
+        var ranges = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        var thesisUpdates = ranges.stream().filter(value -> value.range().startsWith("'Thesis State'!")).toList();
+        assertThat(thesisUpdates).hasSize(1);
+        assertThat(thesisUpdates.getFirst().range()).isEqualTo(expectedRange);
+        var row = thesisUpdates.getFirst().values().getFirst();
+        assertThat(row).hasSize(14);
+        assertThat(row.get(13)).isEqualTo("NO");
+        assertThat(row.get(0)).isEqualTo("AAPL");
+        assertThat(row.get(1)).isEqualTo("Keep growing subscriptions");
+        verify(sheets, never()).duplicateSheets(anyString(), anyMap());
     }
 
     @Test

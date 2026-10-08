@@ -153,8 +153,8 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
 
         var result = sync.sync();
 
-        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.PARTIAL);
-        assertThat(result.error()).contains("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State");
+        assertThat(result.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
+        assertThat(result.error()).isNull();
         verify(sheets, org.mockito.Mockito.never()).duplicateSheets(anyString(), any());
         var snapshotId = jdbc.queryForObject("""
                 SELECT id FROM investment_os_portfolio_snapshots
@@ -251,7 +251,7 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         var reconciliationHeaders = reconciliation.values().getFirst().stream().map(String::valueOf).toList();
         var reconciliationRow = reconciliation.values().get(1);
         assertThat(reconciliationRow.get(reconciliationHeaders.indexOf("Error")))
-                .isEqualTo("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State");
+                .isEqualTo("");
         var securityUpdate = allUpdates.stream().flatMap(List::stream)
                 .filter(update -> "'Security Snapshot'!A1".equals(update.range())).findFirst().orElseThrow();
         var securityHeaders = securityUpdate.values().getFirst().stream().map(String::valueOf).toList();
@@ -274,10 +274,10 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
                 .contains("ACCOUNT_1", "ACCOUNT_2");
 
         var repeated = sync.sync();
-        assertThat(repeated.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.PARTIAL);
+        assertThat(repeated.outcome()).isEqualTo(InvestmentOsSheetSyncResult.Outcome.SUCCEEDED);
         assertThat(reconciliationValues.get().values()).hasSize(2);
         assertThat(reconciliationValues.get().values().get(1).get(reconciliationHeaders.indexOf("Error")))
-                .isEqualTo("RESEARCH_MIRROR_SCHEMA_CONFLICT_Thesis State");
+                .isEqualTo("");
 
         assertThatThrownBy(() -> jdbc.update(
                 "UPDATE investment_os_portfolio_snapshots SET error_code = 'TAMPER' WHERE id = ?", snapshotId))

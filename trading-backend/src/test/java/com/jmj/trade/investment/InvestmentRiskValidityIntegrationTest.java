@@ -140,6 +140,21 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.softBudgetStatus()).isEqualTo("WITHIN_SOFT_BUDGET");
     }
 
+    @Test
+    void publishesThreeStateEligibilityWithoutReplacingLegacyBoolean() throws Exception {
+        var security = context("OK", "OK").securities().getFirst();
+        assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("YES");
+        assertThat(security.risk().sizingEligible()).isTrue();
+        var conditional = new InvestmentContextService.SecurityView("AAPL", null, null,
+                null, null, null, null, null, null, null, security.thesis(), null);
+        assertThat(mapper.valueToTree(conditional)
+                .path("sizingEligibility").asText()).isEqualTo("CONDITIONAL");
+        var unknown = new InvestmentContextService.SecurityView("AAPL", null, null,
+                null, null, null, null, null, null, null, null, null);
+        assertThat(mapper.valueToTree(unknown)
+                .path("sizingEligibility").asText()).isEqualTo("NO");
+    }
+
     private InvestmentContextService.ContextView context(String portfolioStatus, String priceStatus) throws Exception {
         return context(portfolioStatus, priceStatus, Instant.now());
     }

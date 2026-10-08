@@ -1213,6 +1213,36 @@ public final class InvestmentContextService {
         requireUser(userId);
         var ticker = ticker(rawTicker);
         validateThesis(input);
+        return transaction.execute(ignored -> {
+            lockThesisWriter(userId);
+            return persistThesis(userId, ticker, input);
+        });
+    }
+
+    public ThesisView putThesisProposal(UUID userId, String rawTicker, ThesisInput input, Instant expectedUpdatedAt) {
+        requireUser(userId);
+        var ticker = ticker(rawTicker);
+        validateThesis(input);
+        if (!Set.of("AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED")
+                .contains(input.invalidationStatus().trim().toUpperCase(Locale.ROOT)))
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        return transaction.execute(ignored -> {
+            lockThesisWriter(userId);
+            var current = jdbc.query("SELECT invalidation_status, updated_at FROM investment_thesis_states WHERE user_id=? AND ticker=?",
+                    (rs, row) -> Map.entry(rs.getString(1), rs.getObject(2, OffsetDateTime.class).toInstant()), userId, ticker);
+            if (current.isEmpty() ? expectedUpdatedAt != null
+                    : "CONFIRMED".equals(current.getFirst().getKey())
+                    || !current.getFirst().getValue().equals(expectedUpdatedAt))
+                throw new InvestmentException(InvestmentException.Code.CONFLICT);
+            return persistThesis(userId, ticker, input);
+        });
+    }
+
+    private void lockThesisWriter(UUID userId) {
+        jdbc.queryForList("SELECT id FROM users WHERE id=? FOR NO KEY UPDATE", UUID.class, userId);
+    }
+
+    private ThesisView persistThesis(UUID userId, String ticker, ThesisInput input) {
         var now = timestamp(clock.instant());
         jdbc.update("""
                 INSERT INTO investment_thesis_states (
@@ -3213,7 +3243,8 @@ public final class InvestmentContextService {
     private static void validateThesis(ThesisInput input) {
         if (input == null || blank(input.coreThesis()) || input.coreThesis().length() > 5000
                 || input.invalidationStatus() == null
-                || !Set.of("NOT_REVIEWED", "SUSPECTED", "CONFIRMED", "CLEARED")
+                || !Set.of("NOT_REVIEWED", "SUSPECTED", "CONFIRMED", "CLEARED",
+                "AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED")
                 .contains(input.invalidationStatus().trim().toUpperCase(Locale.ROOT))
                 || input.priceRiskTriggerPrice() != null && input.priceRiskTriggerPrice().signum() < 0
                 || tooLong(input.upsideDriver(), 5000) || tooLong(input.expectationsGap(), 5000)
@@ -3547,6 +3578,12 @@ public final class InvestmentContextService {
 
         public SecurityView {
             tacticalOverlay = tacticalOverlay == null ? SecurityTacticalOverlayView.notConfigured() : tacticalOverlay;
+        }
+
+        /** Operational eligibility only; external thesis confirmation is never inferred. */
+        public String getSizingEligibility() {
+            if (thesis == null || !"CONFIRMED".equals(thesis.invalidationStatus())) return "NO";
+            return risk != null && risk.sizingEligible() ? "YES" : "CONDITIONAL";
         }
     }
 
