@@ -24,12 +24,12 @@ jobs:
       - name: mvnw clean verify
         # Each fork owns its existing Postgres singleton. Keep JUnit methods/classes
         # sequential within a fork because schema tests clean the shared database.
-        # Bound both concurrency and heap on the hosted runner; never skip tests.
-        run: >-
-          ./mvnw --no-transfer-progress
-          -DforkCount=2 -DreuseForks=true -DargLine=-Xmx1024m
-          -Djunit.jupiter.execution.parallel.enabled=false
-          clean verify
+        # Use available hosted-runner CPUs and cap each heap on the hosted runner; never skip tests.
+        run: |
+          echo "Runner CPUs: $(nproc); Surefire one fork per CPU; each heap capped at 1024MiB"
+          ./mvnw --no-transfer-progress \
+            -DforkCount=1C -DreuseForks=true -DargLine=-Xmx1024m \
+            -Djunit.jupiter.execution.parallel.enabled=false clean verify
       - name: Summarize test timings
         if: always()
         run: |
