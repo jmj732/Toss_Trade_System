@@ -153,6 +153,80 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
                 .path("sizingEligibility").asText()).isEqualTo("NO");
     }
 
+    @Test
+    void aiProposedTriggerIsNeverUsedForRiskNumbers() throws Exception {
+        jdbc.update("UPDATE investment_thesis_states SET invalidation_status='AI_PROPOSED' "
+                + "WHERE user_id=? AND ticker='AAPL'", USER_ID);
+        var security = context("OK", "OK").securities().getFirst();
+        var risk = security.risk();
+
+        assertThat(risk.invalidationDownside()).isNull();
+        assertThat(risk.plannedLossContribution()).isNull();
+        assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.UNVERIFIED);
+        assertThat(risk.thesisFailureStress()).isNull();
+        assertThat(risk.sizingEligible()).isFalse();
+        assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("NO");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_NOT_CONFIRMED");
+        assertThat(risk.eligibilityReasons().isEmpty()).isEqualTo(risk.sizingEligible());
+    }
+
+    @Test
+    void aiProposedWithoutTriggerReportsBothMissingApprovalAndMissingPrice() throws Exception {
+        jdbc.update("UPDATE investment_thesis_states SET invalidation_status='AI_PROPOSED', "
+                + "price_risk_trigger_price=NULL WHERE user_id=? AND ticker='AAPL'", USER_ID);
+        var risk = context("OK", "OK").securities().getFirst().risk();
+
+        assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_CONFIGURED);
+        assertThat(risk.invalidationDownside()).isNull();
+        assertThat(risk.eligibilityReasons())
+                .containsExactly("INVALIDATION_NOT_CONFIRMED", "INVALIDATION_PRICE_NOT_CONFIGURED");
+        assertThat(risk.sizingEligible()).isFalse();
+    }
+
+    @Test
+    void confirmedButBreachedTriggerYieldsNoDownsideAndFlagsBreach() throws Exception {
+        jdbc.update("UPDATE investment_thesis_states SET price_risk_trigger_price=120 "
+                + "WHERE user_id=? AND ticker='AAPL'", USER_ID);
+        var risk = context("OK", "OK").securities().getFirst().risk();
+
+        assertThat(risk.invalidationDownside()).isNull();
+        assertThat(risk.plannedLossContribution()).isNull();
+        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_PRICE_BREACHED");
+        assertThat(risk.sizingEligible()).isFalse();
+    }
+
+    @Test
+    void confirmedThesisWithStalePortfolioReportsPortfolioStaleReason() throws Exception {
+        var risk = context("STALE", "OK").securities().getFirst().risk();
+
+        assertThat(risk.eligibilityReasons()).contains("PORTFOLIO_STALE");
+        assertThat(risk.sizingEligible()).isFalse();
+    }
+
+    @Test
+    void confirmedHappyPathHasNoEligibilityReasons() throws Exception {
+        var risk = context("OK", "OK").securities().getFirst().risk();
+
+        assertThat(risk.sizingEligible()).isTrue();
+        assertThat(risk.eligibilityReasons()).isEmpty();
+        assertThat(risk.eligibilityReasons().isEmpty()).isEqualTo(risk.sizingEligible());
+    }
+
+    @Test
+    void putThesisProposalRejectsConfirmedStatus() throws Exception {
+        jdbc.update("DELETE FROM investment_thesis_states WHERE user_id=? AND ticker='AAPL'", USER_ID);
+        var service = service("OK", "OK", Instant.now(), Instant.now());
+        var input = new InvestmentContextService.ThesisInput(
+                "Caller supplied thesis", null, null, null, null, "Breaks below support",
+                new BigDecimal("80"), "CONFIRMED", null, null, "COMPOUNDER");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> service.putThesisProposal(USER_ID, "AAPL", input, null))
+                .isInstanceOf(InvestmentException.class)
+                .extracting(exception -> ((InvestmentException) exception).code())
+                .isEqualTo(InvestmentException.Code.INVALID_INPUT);
+    }
+
     private InvestmentContextService.ContextView context(String portfolioStatus, String priceStatus) throws Exception {
         return context(portfolioStatus, priceStatus, Instant.now());
     }
@@ -163,6 +237,11 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     }
 
     private InvestmentContextService.ContextView context(
+            String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf) throws Exception {
+        return service(portfolioStatus, priceStatus, priceAsOf, consensusAsOf).context(USER_ID);
+    }
+
+    private InvestmentContextService service(
             String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf) throws Exception {
         var now = OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC);
         var snapshot = new PortfolioReadService.PortfolioView(
@@ -198,7 +277,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
                 jdbc, mapper, new DataSourceTransactionManager(jdbc.getDataSource()),
                 new StockDataProviderRegistry(List.of()), mock(ObjectProvider.class), portfolios, watchlist, riskPolicies,
                 Duration.ofMinutes(15), Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10));
-        return service.context(USER_ID);
+        return service;
     }
 
     private static BigDecimal bd(String value) {
