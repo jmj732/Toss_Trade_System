@@ -22,7 +22,7 @@ final class InvestmentOsResearchSheetSync {
 
     private static final List<String> TABS = List.of(
             "Security Snapshot", "Thesis State", "Consensus History", "Watchlist",
-            "Decision Ledger", "Alpha State", "Risk Policy");
+            "Decision Ledger", "Alpha State", "Risk Policy", "Review Log");
     private static final List<String> DECISION_BASE_HEADERS = List.of("Decision ID", "As Of", "Asset", "Action",
             "Reference Price", "Price Session", "Horizon", "Alpha Thesis", "Invalidation",
             "Next Review Trigger", "Confidence", "Risk Policy Check", "Created At");
@@ -62,6 +62,8 @@ final class InvestmentOsResearchSheetSync {
         tables.put("Decision Ledger", decisionLedger(userId, context.decisionOverlays()));
         tables.put("Alpha State", alphaState(userId));
         tables.put("Risk Policy", riskPolicy(userId, policy));
+        // Generated mirror of investment_review_records; review notes never enter the Decision Ledger tab.
+        tables.put("Review Log", reviewLog(userId));
 
         var spreadsheetId = properties.spreadsheetId();
         var sheetIds = sheets.sheetIdsByTitle(spreadsheetId);
@@ -324,6 +326,29 @@ final class InvestmentOsResearchSheetSync {
         },
                 userId);
         return new Table(List.copyOf(headers), rows);
+    }
+
+    private Table reviewLog(UUID userId) {
+        var headers = List.of("Record ID", "Source", "Record Key", "Scope", "Asset", "As Of", "Raw Action",
+                "Outcome", "Rationale", "Next Review Trigger", "Reference Price", "Raw Price Session",
+                "Price Session", "Source As Of", "Actor Type", "Recorded At", "Raw Payload");
+        var rows = jdbc.query("""
+                SELECT id, source, record_key, scope, asset, as_of, raw_action, outcome, rationale,
+                       next_review_trigger, reference_price, raw_price_session, price_session, source_as_of,
+                       actor_type, recorded_at, raw_payload::text AS raw_payload
+                  FROM investment_review_records WHERE user_id = ?
+                 ORDER BY as_of, recorded_at, id
+                """, (resultSet, rowNum) -> row(
+                resultSet.getObject("id", UUID.class), resultSet.getString("source"),
+                resultSet.getString("record_key"), resultSet.getString("scope"), resultSet.getString("asset"),
+                instant(resultSet.getObject("as_of", OffsetDateTime.class)), resultSet.getString("raw_action"),
+                resultSet.getString("outcome"), resultSet.getString("rationale"),
+                resultSet.getString("next_review_trigger"), resultSet.getBigDecimal("reference_price"),
+                resultSet.getString("raw_price_session"), resultSet.getString("price_session"),
+                instant(resultSet.getObject("source_as_of", OffsetDateTime.class)), resultSet.getString("actor_type"),
+                instant(resultSet.getObject("recorded_at", OffsetDateTime.class)), resultSet.getString("raw_payload")),
+                userId);
+        return new Table(headers, rows);
     }
 
     private Table alphaState(UUID userId) {

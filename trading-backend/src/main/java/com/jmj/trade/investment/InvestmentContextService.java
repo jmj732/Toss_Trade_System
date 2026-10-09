@@ -94,6 +94,7 @@ public final class InvestmentContextService {
     private final Duration consensusStaleAfter;
     private InvestmentOsSheetProperties investmentOsSheetProperties;
     private TacticalOverlayService tacticalOverlayService;
+    private InvestmentReviewService reviewService;
 
     @Value("${investment.data.additional-symbols:}")
     private String additionalSymbols = "";
@@ -136,6 +137,11 @@ public final class InvestmentContextService {
     @Autowired(required = false)
     public void setTacticalOverlayService(TacticalOverlayService service) {
         this.tacticalOverlayService = service;
+    }
+
+    @Autowired(required = false)
+    public void setInvestmentReviewService(InvestmentReviewService service) {
+        this.reviewService = service;
     }
 
     private boolean configuredSheetOwner(UUID userId) {
@@ -507,7 +513,8 @@ public final class InvestmentContextService {
                 decisionLedger(userId, 50),
                 pipelineState(userId, "SECURITY_DATA"),
                 tacticalReadModel.portfolio(),
-                tacticalReadModel.decisions());
+                tacticalReadModel.decisions(),
+                reviewService == null ? List.of() : reviewService.recent(userId, InvestmentReviewService.CONTEXT_LIMIT));
     }
 
     public List<ThesisRevisionView> thesisRevisions(UUID userId, String rawTicker, int limit) {
@@ -3862,7 +3869,7 @@ public final class InvestmentContextService {
         return value == null ? null : timestamp(value);
     }
 
-    private static String normalizeSession(String value) {
+    static String normalizeSession(String value) {
         if (value == null) return null;
         var normalized = value.trim().toUpperCase(Locale.ROOT);
         return PRICE_SESSIONS.contains(normalized) ? normalized : null;
@@ -3884,7 +3891,7 @@ public final class InvestmentContextService {
         return left == null ? right : right == null ? left : left.add(right);
     }
 
-    private static String ticker(String value) {
+    static String ticker(String value) {
         if (value == null || !TICKER.matcher(value.trim().toUpperCase(Locale.ROOT)).matches()) {
             throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         }
@@ -3920,18 +3927,30 @@ public final class InvestmentContextService {
             List<DecisionView> decisionLedger,
             PipelineView pipeline,
             TacticalOverlayPortfolioView tacticalOverlay,
-            Map<UUID, DecisionTacticalOverlayView> decisionOverlays
+            Map<UUID, DecisionTacticalOverlayView> decisionOverlays,
+            List<InvestmentReviewService.ReviewView> reviewLog
     ) {
         public ContextView(PortfolioView portfolio, List<SecurityView> securities,
                            List<WatchlistView> watchlist, RiskPolicyService.RiskPolicySnapshot riskPolicy,
                            List<DecisionView> decisionLedger, PipelineView pipeline) {
             this(portfolio, securities, watchlist, riskPolicy, decisionLedger, pipeline,
-                    TacticalOverlayPortfolioView.notConfigured(), Map.of());
+                    TacticalOverlayPortfolioView.notConfigured(), Map.of(), List.of());
+        }
+
+        /** Backward-compatible signature without the additive review log (defaults to empty). */
+        public ContextView(PortfolioView portfolio, List<SecurityView> securities,
+                           List<WatchlistView> watchlist, RiskPolicyService.RiskPolicySnapshot riskPolicy,
+                           List<DecisionView> decisionLedger, PipelineView pipeline,
+                           TacticalOverlayPortfolioView tacticalOverlay,
+                           Map<UUID, DecisionTacticalOverlayView> decisionOverlays) {
+            this(portfolio, securities, watchlist, riskPolicy, decisionLedger, pipeline,
+                    tacticalOverlay, decisionOverlays, List.of());
         }
 
         public ContextView {
             tacticalOverlay = tacticalOverlay == null ? TacticalOverlayPortfolioView.notConfigured() : tacticalOverlay;
             decisionOverlays = decisionOverlays == null ? Map.of() : Map.copyOf(decisionOverlays);
+            reviewLog = reviewLog == null ? List.of() : List.copyOf(reviewLog);
         }
     }
 

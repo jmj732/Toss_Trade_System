@@ -7,6 +7,8 @@ import com.jmj.trade.order.LiveOrderActivationException;
 import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.investment.InvestmentContextService;
+import com.jmj.trade.investment.InvestmentException;
+import com.jmj.trade.investment.InvestmentReviewService;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -187,6 +189,95 @@ class ConnectorMcpProtocolTest {
                 .isEqualTo("INVALID_ARGUMENT");
     }
 
+
+    @Test
+    void listsReviewToolOnlyForTradeScopeAsNonDecisionAuditNote() throws Exception {
+        var review = mock(InvestmentReviewService.class);
+        var protocolWithReview = new ConnectorMcpProtocol(service, (McpOrderExecutionService) null,
+                mock(InvestmentContextService.class), review, new ObjectMapper());
+
+        var readOnly = protocolWithReview.handle(request("read-tools", "tools/list", "{}"), USER, CONNECTION);
+        assertThat(java.util.stream.StreamSupport.stream(readOnly.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText())).doesNotContain("append_investment_review");
+
+        var listed = protocolWithReview.handle(request("review-tools", "tools/list", "{}"), USER, CONNECTION, true);
+        var reviewTool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
+                .filter(tool -> "append_investment_review".equals(tool.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(reviewTool.path("description").asText())
+                .contains("does not create an investment decision").contains("submit an order");
+        assertThat(reviewTool.path("securitySchemes").get(0).path("scopes").get(0).asText())
+                .isEqualTo(ConnectorApiKeyService.TRADE_SCOPE);
+        assertThat(reviewTool.path("annotations").path("readOnlyHint").asBoolean()).isFalse();
+        assertThat(reviewTool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
+        assertThat(reviewTool.path("annotations").path("idempotentHint").asBoolean()).isTrue();
+        var schema = reviewTool.path("inputSchema");
+        assertThat(schema.path("additionalProperties").asBoolean()).isFalse();
+        assertThat(schema.path("properties").has("source")).isFalse();
+        assertThat(schema.path("properties").has("rawPayload")).isFalse();
+        assertThat(schema.path("required").toString()).contains("recordKey", "asOf", "scope")
+                .doesNotContain("referencePrice", "asset");
+        verifyNoInteractions(review);
+    }
+
+    @Test
+    void reviewWriteRequiresTradeScopeAndForcesConnectorSource() throws Exception {
+        var mapper = new ObjectMapper();
+        var review = mock(InvestmentReviewService.class);
+        var writer = new ConnectorMcpProtocol(service, (McpOrderExecutionService) null,
+                mock(InvestmentContextService.class), review, mapper);
+        var args = "{\"recordKey\":\"legacy-row-3\",\"asOf\":\"2026-10-08T15:04:05Z\","
+                + "\"scope\":\"PORTFOLIO\",\"rawAction\":\"REVIEW\",\"outcome\":\"kept watching\","
+                + "\"rawPriceSession\":\"after-close\",\"referencePrice\":null}";
+
+        var denied = writer.handle(toolCall("denied-review", "append_investment_review", args), USER, CONNECTION);
+        assertThat(denied.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("TRADE_SCOPE_REQUIRED");
+        verifyNoInteractions(review);
+
+        var injectedSource = writer.handle(toolCall("source-review", "append_investment_review",
+                "{\"recordKey\":\"k\",\"asOf\":\"2026-10-08T15:04:05Z\",\"scope\":\"PORTFOLIO\","
+                        + "\"source\":\"USER_REST\"}"), USER, CONNECTION, true);
+        assertThat(injectedSource.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        var missingKey = writer.handle(toolCall("missing-review", "append_investment_review",
+                "{\"asOf\":\"2026-10-08T15:04:05Z\",\"scope\":\"PORTFOLIO\"}"), USER, CONNECTION, true);
+        assertThat(missingKey.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        verifyNoInteractions(review);
+
+        var asOf = Instant.parse("2026-10-08T15:04:05Z");
+        var saved = new InvestmentReviewService.ReviewView(UUID.randomUUID(), "CONNECTOR_MCP", "legacy-row-3",
+                "PORTFOLIO", null, asOf, "REVIEW", "kept watching", null, null, null, "after-close", null, null,
+                mapper.readTree(args), "CONNECTOR_MCP", USER, null, asOf);
+        when(review.recordReview(eq(USER), any(InvestmentReviewService.ReviewInput.class),
+                any(InvestmentReviewService.Actor.class))).thenReturn(saved);
+        var response = writer.handle(toolCall("review", "append_investment_review", args), USER, CONNECTION, true);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(response.path("result").path("structuredContent").path("rawAction").asText()).isEqualTo("REVIEW");
+        var priceSession = response.path("result").path("structuredContent").path("priceSession");
+        assertThat(priceSession.isNull() || priceSession.isMissingNode()).isTrue();
+        verify(review).recordReview(eq(USER), argThat(input -> "CONNECTOR_MCP".equals(input.source())
+                        && "legacy-row-3".equals(input.recordKey()) && "PORTFOLIO".equals(input.scope())
+                        && input.asset() == null && asOf.equals(input.asOf()) && "REVIEW".equals(input.rawAction())
+                        && "after-close".equals(input.rawPriceSession()) && input.referencePrice() == null
+                        && input.rawPayload().equals(readTree(mapper, args))),
+                argThat(actor -> "CONNECTOR_MCP".equals(actor.type()) && USER.equals(actor.userId())
+                        && actor.sessionId() == null));
+        verifyNoInteractions(service);
+
+        when(review.recordReview(eq(USER), any(InvestmentReviewService.ReviewInput.class),
+                any(InvestmentReviewService.Actor.class)))
+                .thenThrow(new InvestmentException(InvestmentException.Code.CONFLICT));
+        var conflict = writer.handle(toolCall("conflict-review", "append_investment_review", args), USER, CONNECTION, true);
+        assertThat(conflict.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("REVIEW_CONFLICT");
+    }
+
+    private static tools.jackson.databind.JsonNode readTree(ObjectMapper mapper, String json) {
+        return mapper.readTree(json);
+    }
 
     private static final UUID USER = UUID.fromString("018f0000-0000-7000-8000-000000000001");
     private static final UUID CONNECTION = UUID.fromString("018f0000-0000-7000-8000-000000000002");
