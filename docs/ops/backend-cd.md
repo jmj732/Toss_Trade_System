@@ -217,6 +217,23 @@ The workflow uses `StrictHostKeyChecking=yes`, `IdentitiesOnly=yes`, and the sup
 known-hosts file. It does not log the key, provider credentials, Doppler token, or Compose
 environment.
 
+## Read-only runtime diagnostic
+
+Run the GitHub Actions **Read-only runtime diagnostic** workflow manually. It reuses the CD SSH
+secrets and Doppler `trade/stg` environment. Its remote commands inspect Compose container state,
+GET the local readiness endpoint, and run aggregate SQL inside a read-only PostgreSQL transaction;
+it does not deploy, start/restart containers, or call market-data providers. An optional 40-digit
+`expected_sha` checks whether the running backend image tag matches that commit.
+
+The two-day artifact contains image tag/digest, readiness and Flyway status, owner-scoped row
+counts, and a SHA-256 fingerprint for the latest six stored security projections (AVT, CSTM,
+GOOGL, LUNR, RDW, VST). The fingerprint contract is published in
+[`scripts/runtime-readonly-fingerprint-v1.json`](../../scripts/runtime-readonly-fingerprint-v1.json).
+It encodes selected price, fundamental, provenance, and consensus fields at stated precision;
+freshness statuses, technical/risk fields, and the raw values, symbols, owner IDs, and credentials
+are not emitted. The fingerprint is a comparison aid for those selected fields, not proof that
+other context fields match.
+
 Disable Vercel's direct Git auto-deploy for this project. Otherwise Vercel can create a second
 deployment that bypasses the repository's CI gate; the GitHub Actions `deploy-vercel` job is the
 controlled production path.
