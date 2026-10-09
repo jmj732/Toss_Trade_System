@@ -68,6 +68,7 @@ public final class InvestmentContextService {
             "revenueConsensus", "epsConsensus", "ebitdaConsensus", "fcfConsensus");
     private static final List<String> PRICE_SESSIONS = List.of(
             "REGULAR_CLOSE", "LIVE_REGULAR", "AFTER_HOURS", "PREMARKET");
+    private static final String TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS = "TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS";
     private static final Set<String> QUOTE_UPDATE_FIELDS = Set.of(
             "quote.price", "quote.volume", "quote.change-percent",
             "price.latestPrice", "price.session");
@@ -593,8 +594,10 @@ public final class InvestmentContextService {
                     }
                 }
                 var capturedInput = input;
+                var sessionContext = tossQuotes == null ? null
+                        : priceSessionContext(userId, tossQuotes.connectionId(), input, calendars);
                 var missingReadinessFields = transaction.execute(
-                        status -> persistCapture(userId, capturedInput, selectedFields == null));
+                        status -> persistCapture(userId, capturedInput, selectedFields == null, sessionContext));
                 missingOptionalData |= Boolean.TRUE.equals(missingReadinessFields);
                 sourceResponded |= !input.observations().isEmpty();
                 missingOptionalData |= input.observations().isEmpty()
@@ -1113,12 +1116,160 @@ public final class InvestmentContextService {
             return new TossSessionResult(matches.getFirst(), null);
         }
         if (matches.isEmpty() && !unsupportedSessionMatched && intervalCount > 0 && allIntervalsVerified) {
-            return new TossSessionResult(null, "TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS");
+            return new TossSessionResult(null, TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS);
         }
         return new TossSessionResult(null, "TOSS_SESSION_UNVERIFIED");
     }
 
     private record TossSessionResult(String session, String missingReason) {
+    }
+
+    /** Last completed New York regular session and the instant at which a newer session completes. */
+    record RegularSessionFacts(LocalDate lastCompletedSessionDate, Instant regularCloseValidUntil) {
+    }
+
+    private record PriceSessionContext(
+            RegularSessionFacts regular, String sessionReason, Instant nextDeclaredIntervalStartsAt) {
+    }
+
+    /** A provider-declared regular interval; {@link #NONE} means the calendar declares no regular session. */
+    private record DeclaredInterval(Instant start, Instant end) {
+        private static final DeclaredInterval NONE = new DeclaredInterval(null, null);
+    }
+
+    /**
+     * Captures the calendar facts that the read path later needs to judge price freshness without calling the
+     * broker. Facts come only from the official Toss calendar; anything not verifiable stays null.
+     */
+    private PriceSessionContext priceSessionContext(
+            UUID userId, UUID connectionId, StockAnalysisInput input, Map<LocalDate, JsonNode> calendars
+    ) {
+        String sessionReason = null;
+        Instant quoteAsOf = null;
+        for (var observation : input.observations()) {
+            if (observation.provider() != StockDataProviderId.TOSS) continue;
+            if ("price.session".equals(observation.field()) && sessionReason == null
+                    && !observation.missingData().isEmpty()) {
+                sessionReason = observation.missingData().getFirst();
+            }
+            if ("price.latestPrice".equals(observation.field()) && observation.missingData().isEmpty()) {
+                quoteAsOf = observation.asOf();
+            }
+        }
+        // A rejected Toss quote (currency, timestamp) is never classified with the US calendar; facts stay absent.
+        if (quoteAsOf == null) return null;
+        var collectedAt = input.collectedAt();
+        var today = collectedAt.atZone(NEW_YORK).toLocalDate();
+        var calendar = tossCalendarCached(userId, connectionId, today, calendars);
+        var regular = regularSessionFacts(collectedAt, calendar, null);
+        if (regular != null && regular.regularCloseValidUntil() == null) {
+            regular = regularSessionFacts(collectedAt, calendar,
+                    nextBusinessDayCalendar(userId, connectionId, calendar, today, calendars));
+        }
+        Instant nextDeclared = null;
+        if (TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS.equals(sessionReason)) {
+            var quoteDate = quoteAsOf.atZone(NEW_YORK).toLocalDate();
+            var quoteCalendar = tossCalendarCached(userId, connectionId, quoteDate, calendars);
+            nextDeclared = nextDeclaredIntervalStart(quoteAsOf, quoteCalendar, null);
+            if (nextDeclared == null) {
+                nextDeclared = nextDeclaredIntervalStart(quoteAsOf, quoteCalendar,
+                        nextBusinessDayCalendar(userId, connectionId, quoteCalendar, quoteDate, calendars));
+            }
+        }
+        return new PriceSessionContext(regular, sessionReason, nextDeclared);
+    }
+
+    private JsonNode nextBusinessDayCalendar(UUID userId, UUID connectionId, JsonNode calendar, LocalDate date,
+                                             Map<LocalDate, JsonNode> calendars) {
+        var next = calendarNextBusinessDate(calendar, date);
+        return next == null ? null : tossCalendarCached(userId, connectionId, next, calendars);
+    }
+
+    /**
+     * Returns the last completed regular session for {@code now}'s New York date, or null when the calendar
+     * cannot verify it. {@code regularCloseValidUntil} is null when the end of the next session is not declared.
+     */
+    static RegularSessionFacts regularSessionFacts(
+            Instant now, JsonNode calendar, JsonNode nextBusinessDayCalendar
+    ) {
+        if (now == null) return null;
+        var today = now.atZone(NEW_YORK).toLocalDate();
+        var day = calendarDay(calendar, "today", today);
+        var previous = calendarDayDate(calendar, "previousBusinessDay");
+        if (day == null || previous == null || !previous.isBefore(today)) return null;
+        var regular = declaredRegularInterval(day, today);
+        if (regular == null) return null;
+        if (regular.start() != null && now.isBefore(regular.end())) {
+            return new RegularSessionFacts(previous, regular.end());
+        }
+        var lastCompleted = regular.start() != null ? today : previous;
+        var next = calendarNextBusinessDate(calendar, today);
+        var nextDay = next == null ? null : calendarDay(nextBusinessDayCalendar, "today", next);
+        var nextRegular = nextDay == null ? null : declaredRegularInterval(nextDay, next);
+        return new RegularSessionFacts(lastCompleted,
+                nextRegular == null || nextRegular.start() == null ? null : nextRegular.end());
+    }
+
+    /** Earliest declared interval start after {@code after}, from its New York date or the next business day. */
+    static Instant nextDeclaredIntervalStart(Instant after, JsonNode calendar, JsonNode nextBusinessDayCalendar) {
+        if (after == null) return null;
+        var date = after.atZone(NEW_YORK).toLocalDate();
+        var day = calendarDay(calendar, "today", date);
+        var sameDay = day == null ? null : earliestDeclaredStartAfter(day, after);
+        if (sameDay == null) return null;
+        if (sameDay.isPresent()) return sameDay.get();
+        var next = calendarNextBusinessDate(calendar, date);
+        var nextDay = next == null ? null : calendarDay(nextBusinessDayCalendar, "today", next);
+        var nextStart = nextDay == null ? null : earliestDeclaredStartAfter(nextDay, after);
+        return nextStart == null ? null : nextStart.orElse(null);
+    }
+
+    static LocalDate calendarNextBusinessDate(JsonNode calendar, LocalDate date) {
+        if (date == null || calendarDay(calendar, "today", date) == null) return null;
+        var next = calendarDayDate(calendar, "nextBusinessDay");
+        return next != null && next.isAfter(date) ? next : null;
+    }
+
+    private static JsonNode calendarDay(JsonNode calendar, String key, LocalDate date) {
+        if (calendar == null || date == null) return null;
+        var day = calendar.path(key);
+        return day.isObject() && date.toString().equals(day.path("date").asText(null)) ? day : null;
+    }
+
+    private static LocalDate calendarDayDate(JsonNode calendar, String key) {
+        if (calendar == null) return null;
+        var day = calendar.path(key);
+        return day.isObject() ? localDate(day.path("date").asText(null)) : null;
+    }
+
+    /** Null when unverifiable; an explicit JSON null declares that the date has no regular session. */
+    private static DeclaredInterval declaredRegularInterval(JsonNode day, LocalDate date) {
+        var interval = day.get("regularMarket");
+        if (interval == null) return null;
+        if (interval.isNull()) return DeclaredInterval.NONE;
+        if (!interval.isObject()) return null;
+        var start = tossCalendarBound(interval, "startTime", "open", "openTime", "start");
+        var end = tossCalendarBound(interval, "endTime", "close", "closeTime", "end");
+        if (start == null || end == null || !start.isBefore(end)
+                || !date.equals(start.atZone(NEW_YORK).toLocalDate())
+                || !date.equals(end.minusNanos(1).atZone(NEW_YORK).toLocalDate())) {
+            return null;
+        }
+        return new DeclaredInterval(start, end);
+    }
+
+    /** Null when any declared interval is malformed; empty when no declared interval starts after {@code after}. */
+    private static java.util.Optional<Instant> earliestDeclaredStartAfter(JsonNode day, Instant after) {
+        Instant earliest = null;
+        for (var field : List.of("dayMarket", "preMarket", "regularMarket", "afterMarket")) {
+            var interval = day.get(field);
+            if (interval == null || interval.isNull()) continue;
+            if (!interval.isObject()) return null;
+            var start = tossCalendarBound(interval, "startTime", "open", "openTime", "start");
+            if (start == null) return null;
+            if (start.isAfter(after) && (earliest == null || start.isBefore(earliest))) earliest = start;
+        }
+        return java.util.Optional.ofNullable(earliest);
     }
 
     private static Instant tossCalendarBound(JsonNode interval, String... keys) {
@@ -1334,6 +1485,11 @@ public final class InvestmentContextService {
     }
 
     private boolean persistCapture(UUID userId, StockAnalysisInput input, boolean persistFinancialSnapshots) {
+        return persistCapture(userId, input, persistFinancialSnapshots, null);
+    }
+
+    private boolean persistCapture(UUID userId, StockAnalysisInput input, boolean persistFinancialSnapshots,
+                                   PriceSessionContext sessionContext) {
         var now = timestamp(clock.instant());
         var canonical = hasher.canonicalJson(input);
         jdbc.update("""
@@ -1393,7 +1549,7 @@ public final class InvestmentContextService {
         var asOf = latestAsOf(price, technical, fundamental, consensus, input.collectedAt());
         var snapshot = new LinkedHashMap<String, Object>();
         snapshot.put("asOf", asOf);
-        snapshot.put("price", price);
+        snapshot.put("price", priceView(price, sessionContext, input.collectedAt()));
         snapshot.put("technical", technical.view());
         snapshot.put("fundamentals", fundamental.view());
         snapshot.put("consensus", consensus.view());
@@ -2090,9 +2246,7 @@ public final class InvestmentContextService {
         if (!(value instanceof ObjectNode snapshot)) return value;
         var now = clock.instant();
         var price = object(snapshot, "price");
-        var priceSession = text(price.get("session"));
-        var priceStatus = refreshStatus(price, "status", "latestPriceAsOf",
-                "REGULAR_CLOSE".equals(priceSession) ? regularCloseStaleAfter : priceStaleAfter, now);
+        var priceStatus = refreshPriceStatus(price, now);
         var technicalStatus = refreshStatus(object(snapshot, "technical"), "trendStatus", "asOf",
                 regularCloseStaleAfter, now);
         var fundamentals = object(snapshot, "fundamentals");
@@ -2225,6 +2379,84 @@ public final class InvestmentContextService {
         var sharesAsOf = instant(node.get("sharesAsOf"));
         if (sharesAsOf != null) result.add(metricAsOfStatus(sharesAsOf, true, fundamentalStaleAfter, now));
         node.properties().forEach(entry -> collectMetricInputFreshness(entry.getValue(), now, result));
+    }
+
+    /**
+     * The latest quote and the canonical regular close are judged separately. A quote with a classified live
+     * session keeps the quote window. A quote without a classified session is judged by the declared calendar:
+     * an outside-interval quote stays as captured until the next declared interval starts; without stored
+     * calendar facts it is UNVERIFIED (never wall-clock STALE) until the regular-close maximum age passes.
+     */
+    private DataStatus refreshPriceStatus(ObjectNode price, Instant now) {
+        refreshRegularCloseStatus(price, now);
+        var session = text(price.get("session"));
+        if (session != null) {
+            return refreshStatus(price, "status", "latestPriceAsOf",
+                    "REGULAR_CLOSE".equals(session) ? regularCloseStaleAfter : priceStaleAfter, now);
+        }
+        var status = dataStatus(text(price.get("status")));
+        var asOf = instant(price.get("latestPriceAsOf"));
+        if (asOf == null || !asOf.isBefore(now.minus(priceStaleAfter))
+                || status == DataStatus.SOURCE_CONFLICT || status == DataStatus.DATA_MISSING
+                || status == DataStatus.NOT_APPLICABLE) {
+            return refreshStatus(price, "status", "latestPriceAsOf", priceStaleAfter, now);
+        }
+        var nextDeclared = instant(price.get("nextDeclaredIntervalStartsAt"));
+        if (asOf.isBefore(now.minus(regularCloseStaleAfter))) {
+            status = DataStatus.STALE;
+        } else if (TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS.equals(text(price.get("sessionReason")))
+                && nextDeclared != null) {
+            if (!now.isBefore(nextDeclared)) status = DataStatus.STALE;
+        } else {
+            status = DataStatus.UNVERIFIED;
+        }
+        price.put("status", status.name());
+        return status;
+    }
+
+    /** Regular-close freshness compares New York session dates; it never reads or rewrites the latest quote. */
+    private static void refreshRegularCloseStatus(ObjectNode price, Instant now) {
+        var closeDate = localDate(text(price.get("regularCloseSessionDate")));
+        var closeAsOf = instant(price.get("regularCloseAsOf"));
+        if (closeDate == null && closeAsOf != null) {
+            closeDate = closeAsOf.atZone(NEW_YORK).toLocalDate();
+            price.put("regularCloseSessionDate", closeDate.toString());
+        }
+        var status = regularCloseStatus(decimal(price.get("regularClose")), closeDate,
+                localDate(text(price.get("lastCompletedSessionDate"))));
+        if (status == DataStatus.OK) {
+            var validUntil = instant(price.get("regularCloseValidUntil"));
+            if (validUntil == null) status = DataStatus.UNVERIFIED;
+            else if (!now.isBefore(validUntil)) status = DataStatus.STALE;
+        }
+        price.put("regularCloseStatus", status.name());
+    }
+
+    private static DataStatus regularCloseStatus(BigDecimal close, LocalDate closeDate, LocalDate lastCompleted) {
+        if (close == null || close.signum() <= 0 || closeDate == null) return DataStatus.DATA_MISSING;
+        if (lastCompleted == null || closeDate.isAfter(lastCompleted)) return DataStatus.UNVERIFIED;
+        return closeDate.isBefore(lastCompleted) ? DataStatus.STALE : DataStatus.OK;
+    }
+
+    private ObjectNode priceView(InvestmentDataCalculator.PriceAssessment price, PriceSessionContext context,
+                                 Instant collectedAt) {
+        ObjectNode view = objectMapper.valueToTree(price);
+        var regular = context == null ? null : context.regular();
+        view.put("regularCloseSessionDate", price.regularCloseAsOf() == null ? null
+                : price.regularCloseAsOf().atZone(NEW_YORK).toLocalDate().toString());
+        view.put("lastCompletedSessionDate", regular == null || regular.lastCompletedSessionDate() == null
+                ? null : regular.lastCompletedSessionDate().toString());
+        view.put("regularCloseValidUntil", regular == null || regular.regularCloseValidUntil() == null
+                ? null : regular.regularCloseValidUntil().toString());
+        refreshRegularCloseStatus(view, collectedAt);
+        if (price.session() == null && "TOSS".equals(price.source()) && context != null
+                && context.sessionReason() != null) {
+            view.put("sessionReason", context.sessionReason());
+            if (context.nextDeclaredIntervalStartsAt() != null) {
+                view.put("nextDeclaredIntervalStartsAt", context.nextDeclaredIntervalStartsAt().toString());
+            }
+        }
+        return view;
     }
 
     private static InvestmentDataCalculator.DataStatus refreshStatus(
