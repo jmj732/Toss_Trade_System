@@ -44,16 +44,18 @@ class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void persistsPromptStatusesWithoutChangingTheirMeaningAndKeepsLegacyStatuses() {
+        java.time.Instant lastUpdatedAt = null;
         for (var status : List.of("AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED",
                 "NOT_REVIEWED", "SUSPECTED", "CLEARED")) {
             var saved = service.putThesis(USER, "avt", input(status), null, null, null, null);
             assertThat(saved.invalidationStatus()).isEqualTo(status);
+            lastUpdatedAt = saved.updatedAt();
             assertThat(jdbc.queryForObject("SELECT invalidation_status FROM investment_thesis_states WHERE user_id=? AND ticker='AVT'",
                     String.class, USER)).isEqualTo(status);
         }
-        // CONFIRMED requires sourceAsOf when first set
+        // CONFIRMED requires sourceAsOf when first set and expectedUpdatedAt matching prior updatedAt
         var now = java.time.Instant.now();
-        var confirmed = service.putThesis(USER, "avt", input("CONFIRMED"), null, now, null, null);
+        var confirmed = service.putThesis(USER, "avt", input("CONFIRMED"), lastUpdatedAt, now, null, null);
         assertThat(confirmed.invalidationStatus()).isEqualTo("CONFIRMED");
     }
 
@@ -72,7 +74,7 @@ class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
         var updated = service.putThesisProposal(USER, "AVT", input("UNVERIFIED"), created.updatedAt());
         assertThat(updated.invalidationStatus()).isEqualTo("UNVERIFIED");
         var now = java.time.Instant.now();
-        var confirmed = service.putThesis(USER, "AVT", input("CONFIRMED"), null, now, null, null);
+        var confirmed = service.putThesis(USER, "AVT", input("CONFIRMED"), updated.updatedAt(), now, null, null);
         assertThatThrownBy(() -> service.putThesisProposal(USER, "AVT", input("AI_PROPOSED"), confirmed.updatedAt()))
                 .isInstanceOf(InvestmentException.class);
         assertThat(jdbc.queryForObject("SELECT invalidation_status FROM investment_thesis_states WHERE user_id=?",

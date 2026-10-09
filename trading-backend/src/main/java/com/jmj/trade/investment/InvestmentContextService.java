@@ -1438,7 +1438,10 @@ public final class InvestmentContextService {
                 }
             }
 
-            var currentEntry = current.isEmpty() ? null : Map.entry(Map.entry(current.getFirst().status(), current.getFirst().triggerPrice()), current.getFirst().updatedAt());
+            Map.Entry<Map.Entry<String, BigDecimal>, Instant> currentEntry = current.isEmpty() ? null
+                    : new java.util.AbstractMap.SimpleImmutableEntry<>(
+                            new java.util.AbstractMap.SimpleImmutableEntry<>(current.getFirst().status(), current.getFirst().triggerPrice()),
+                            current.getFirst().updatedAt());
             var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
             return persistThesis(userId, ticker, input, currentList, "USER_SESSION", userId, sessionId, sourceAsOf, reason);
         });
@@ -1460,7 +1463,10 @@ public final class InvestmentContextService {
                     : "CONFIRMED".equals(current.getFirst().status())
                     || !current.getFirst().updatedAt().equals(expectedUpdatedAt))
                 throw new InvestmentException(InvestmentException.Code.CONFLICT);
-            var currentEntry = current.isEmpty() ? null : Map.entry(Map.entry(current.getFirst().status(), current.getFirst().triggerPrice()), current.getFirst().updatedAt());
+            Map.Entry<Map.Entry<String, BigDecimal>, Instant> currentEntry = current.isEmpty() ? null
+                    : new java.util.AbstractMap.SimpleImmutableEntry<>(
+                            new java.util.AbstractMap.SimpleImmutableEntry<>(current.getFirst().status(), current.getFirst().triggerPrice()),
+                            current.getFirst().updatedAt());
             var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
             return persistThesis(userId, ticker, input, currentList, "CONNECTOR_MCP", userId, null, null, null);
         });
