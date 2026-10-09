@@ -510,6 +510,34 @@ public final class InvestmentContextService {
                 tacticalReadModel.decisions());
     }
 
+    public List<ThesisRevisionView> thesisRevisions(UUID userId, String rawTicker, int limit) {
+        requireUser(userId);
+        var ticker = ticker(rawTicker);
+        if (limit < 1 || limit > 200) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
+        return jdbc.query("""
+                SELECT revision, previous_status, new_status, previous_trigger_price, new_trigger_price,
+                       actor_type, actor_user_id, actor_session_id, source_as_of, reason, recorded_at
+                  FROM investment_thesis_revisions
+                 WHERE user_id = ? AND ticker = ?
+                 ORDER BY revision DESC
+                 LIMIT ?
+                """, (rs, row) -> new ThesisRevisionView(
+                        rs.getLong(1),
+                        rs.getString(2),
+                        rs.getString(3),
+                        rs.getBigDecimal(4),
+                        rs.getBigDecimal(5),
+                        rs.getString(6),
+                        (UUID) rs.getObject(7),
+                        (UUID) rs.getObject(8),
+                        rs.getObject(9, java.time.OffsetDateTime.class) == null ? null : rs.getObject(9, java.time.OffsetDateTime.class).toInstant(),
+                        rs.getString(10),
+                        rs.getObject(11, java.time.OffsetDateTime.class).toInstant()
+                ), userId, ticker, limit);
+    }
+
     public TacticalOverlayService.TacticalInputsView tacticalOverlayInputs(UUID userId) {
         requireUser(userId);
         return tacticalService().inputs(userId);
@@ -1360,13 +1388,62 @@ public final class InvestmentContextService {
                 timestamp(capturedAt.minus(fundamentalStaleAfter))));
     }
 
-    public ThesisView putThesis(UUID userId, String rawTicker, ThesisInput input) {
+    public ThesisView putThesis(UUID userId, String rawTicker, ThesisInput input,
+                                 Instant expectedUpdatedAt, Instant sourceAsOf, String reason,
+                                 UUID sessionId) {
         requireUser(userId);
         var ticker = ticker(rawTicker);
         validateThesis(input);
+        if (sourceAsOf != null && sourceAsOf.isAfter(clock.instant())) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
+        if (reason != null && reason.length() > 2000) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
         return transaction.execute(ignored -> {
             lockThesisWriter(userId);
-            return persistThesis(userId, ticker, input);
+            record CurrentState(String status, BigDecimal triggerPrice, Instant updatedAt) {}
+            var current = jdbc.query("SELECT invalidation_status, price_risk_trigger_price, updated_at FROM investment_thesis_states WHERE user_id=? AND ticker=?",
+                    (rs, row) -> new CurrentState(rs.getString(1), rs.getBigDecimal(2), rs.getObject(3, OffsetDateTime.class).toInstant()), userId, ticker);
+            var newStatus = input.invalidationStatus().trim().toUpperCase(Locale.ROOT);
+            var newTriggerPrice = input.priceRiskTriggerPrice();
+            var isConfirming = "CONFIRMED".equals(newStatus);
+
+            // Determine if approval is required: when confirming and either no prior state, or prior not CONFIRMED, or trigger price changed
+            var triggerPriceChanged = false;
+            if (!current.isEmpty()) {
+                var prevPrice = current.getFirst().triggerPrice();
+                triggerPriceChanged = (prevPrice == null) != (newTriggerPrice == null) ||
+                        (prevPrice != null && newTriggerPrice != null && prevPrice.compareTo(newTriggerPrice) != 0);
+            }
+            var requiresApproval = isConfirming &&
+                    (current.isEmpty() ||
+                     !current.getFirst().status().equals("CONFIRMED") ||
+                     triggerPriceChanged);
+
+            if (requiresApproval) {
+                if (sourceAsOf == null) {
+                    throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+                }
+                if (current.isEmpty() ? expectedUpdatedAt != null
+                        : !current.getFirst().updatedAt().equals(expectedUpdatedAt)) {
+                    throw new InvestmentException(InvestmentException.Code.CONFLICT);
+                }
+            } else {
+                // expectedUpdatedAt checked only when supplied
+                if (expectedUpdatedAt != null) {
+                    if (current.isEmpty() || !current.getFirst().updatedAt().equals(expectedUpdatedAt)) {
+                        throw new InvestmentException(InvestmentException.Code.CONFLICT);
+                    }
+                }
+            }
+
+            Map.Entry<Map.Entry<String, BigDecimal>, Instant> currentEntry = current.isEmpty() ? null
+                    : new java.util.AbstractMap.SimpleImmutableEntry<>(
+                            new java.util.AbstractMap.SimpleImmutableEntry<>(current.getFirst().status(), current.getFirst().triggerPrice()),
+                            current.getFirst().updatedAt());
+            var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
+            return persistThesis(userId, ticker, input, currentList, "USER_SESSION", userId, sessionId, sourceAsOf, reason);
         });
     }
 
@@ -1379,13 +1456,19 @@ public final class InvestmentContextService {
             throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         return transaction.execute(ignored -> {
             lockThesisWriter(userId);
-            var current = jdbc.query("SELECT invalidation_status, updated_at FROM investment_thesis_states WHERE user_id=? AND ticker=?",
-                    (rs, row) -> Map.entry(rs.getString(1), rs.getObject(2, OffsetDateTime.class).toInstant()), userId, ticker);
+            record CurrentState(String status, BigDecimal triggerPrice, Instant updatedAt) {}
+            var current = jdbc.query("SELECT invalidation_status, price_risk_trigger_price, updated_at FROM investment_thesis_states WHERE user_id=? AND ticker=?",
+                    (rs, row) -> new CurrentState(rs.getString(1), rs.getBigDecimal(2), rs.getObject(3, OffsetDateTime.class).toInstant()), userId, ticker);
             if (current.isEmpty() ? expectedUpdatedAt != null
-                    : "CONFIRMED".equals(current.getFirst().getKey())
-                    || !current.getFirst().getValue().equals(expectedUpdatedAt))
+                    : "CONFIRMED".equals(current.getFirst().status())
+                    || !current.getFirst().updatedAt().equals(expectedUpdatedAt))
                 throw new InvestmentException(InvestmentException.Code.CONFLICT);
-            return persistThesis(userId, ticker, input);
+            Map.Entry<Map.Entry<String, BigDecimal>, Instant> currentEntry = current.isEmpty() ? null
+                    : new java.util.AbstractMap.SimpleImmutableEntry<>(
+                            new java.util.AbstractMap.SimpleImmutableEntry<>(current.getFirst().status(), current.getFirst().triggerPrice()),
+                            current.getFirst().updatedAt());
+            var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
+            return persistThesis(userId, ticker, input, currentList, "CONNECTOR_MCP", userId, null, null, null);
         });
     }
 
@@ -1393,8 +1476,12 @@ public final class InvestmentContextService {
         jdbc.queryForList("SELECT id FROM users WHERE id=? FOR NO KEY UPDATE", UUID.class, userId);
     }
 
-    private ThesisView persistThesis(UUID userId, String ticker, ThesisInput input) {
+    private ThesisView persistThesis(UUID userId, String ticker, ThesisInput input,
+                                      List<Map.Entry<Map.Entry<String, BigDecimal>, Instant>> current,
+                                      String actorType, UUID actorUserId, UUID actorSessionId,
+                                      Instant sourceAsOf, String reason) {
         var now = timestamp(clock.instant());
+        var newStatus = input.invalidationStatus().trim().toUpperCase(Locale.ROOT);
         jdbc.update("""
                 INSERT INTO investment_thesis_states (
                     user_id, ticker, core_thesis, upside_driver, expectations_gap,
@@ -1418,9 +1505,28 @@ public final class InvestmentContextService {
                 """, userId, ticker, input.coreThesis().trim(), clean(input.upsideDriver()),
                 clean(input.expectationsGap()), clean(input.fundamentalInvalidation()),
                 clean(input.revisionInvalidation()), clean(input.priceRiskTrigger()),
-                input.priceRiskTriggerPrice(), input.invalidationStatus().trim().toUpperCase(Locale.ROOT),
+                input.priceRiskTriggerPrice(), newStatus,
                 clean(input.expandTrigger()), clean(input.exitOrDiscardTrigger()), clean(input.classification()), now);
-        return thesis(userId, ticker);
+
+        var previousStatus = current.isEmpty() ? null : current.getFirst().getKey().getKey();
+        var previousPrice = current.isEmpty() ? null : current.getFirst().getKey().getValue();
+        var nextRevision = current.isEmpty() ? 1L : jdbc.queryForList(
+                "SELECT COALESCE(MAX(revision),0)+1 FROM investment_thesis_revisions WHERE user_id=? AND ticker=?",
+                Long.class, userId, ticker).getFirst();
+
+        var thesisSnapshot = thesis(userId, ticker);
+        jdbc.update("""
+                INSERT INTO investment_thesis_revisions (
+                    id, user_id, ticker, revision, previous_status, new_status,
+                    previous_trigger_price, new_trigger_price, thesis_snapshot,
+                    actor_type, actor_user_id, actor_session_id, source_as_of, reason, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?)
+                """, UUID.randomUUID(), userId, ticker, nextRevision, previousStatus, newStatus,
+                previousPrice, input.priceRiskTriggerPrice(), encode(thesisSnapshot),
+                actorType, actorUserId, actorSessionId, sourceAsOf == null ? null : timestamp(sourceAsOf),
+                reason, now);
+
+        return thesisSnapshot;
     }
 
     public List<DecisionView> decisionLedger(UUID userId, int limit) {
@@ -3384,10 +3490,19 @@ public final class InvestmentContextService {
         var top2 = top2Correlated(userId, held);
         var budget = riskPolicies.current(userId).softRiskBudget();
         var budgetStatus = riskBudgetStatus(budget, thesisFailureStress, thesisFailureStatus);
-        risks.replaceAll((symbol, risk) -> new RiskContributionView(
-                risk.portfolioWeight(), risk.invalidationDownside(), risk.plannedLossContribution(),
-                risk.status(), thesisFailureStress, thesisFailureStatus, top2.stress(), top2.assets(),
-                top2.correlation(), top2.status(), risk.sizingEligible(), budgetStatus, risk.eligibilityReasons()));
+        risks.replaceAll((symbol, risk) -> {
+            var updatedReasons = new ArrayList<>(risk.eligibilityReasons());
+            if (budget == null) updatedReasons.add("RISK_BUDGET_NOT_CONFIGURED");
+            else if (thesisFailureStress == null || thesisFailureStatus != InvestmentDataCalculator.DataStatus.OK)
+                updatedReasons.add("RISK_BUDGET_UNEVALUATED");
+            else if ("OVER_SOFT_BUDGET".equals(budgetStatus))
+                updatedReasons.add("RISK_BUDGET_EXCEEDED");
+            var finalEligible = risk.sizingEligible() && "WITHIN_SOFT_BUDGET".equals(budgetStatus);
+            return new RiskContributionView(
+                    risk.portfolioWeight(), risk.invalidationDownside(), risk.plannedLossContribution(),
+                    risk.status(), thesisFailureStress, thesisFailureStatus, top2.stress(), top2.assets(),
+                    top2.correlation(), top2.status(), finalEligible, budgetStatus, List.copyOf(updatedReasons));
+        });
         return Map.copyOf(risks);
     }
 
@@ -3930,6 +4045,14 @@ public final class InvestmentContextService {
             String fundamentalInvalidation, String revisionInvalidation, String priceRiskTrigger,
             BigDecimal priceRiskTriggerPrice, String invalidationStatus, String expandTrigger,
             String exitOrDiscardTrigger, String classification, Instant updatedAt
+    ) {
+    }
+
+    public record ThesisRevisionView(
+            long revision, String previousStatus, String newStatus,
+            BigDecimal previousTriggerPrice, BigDecimal newTriggerPrice,
+            String actorType, UUID actorUserId, UUID actorSessionId,
+            Instant sourceAsOf, String reason, Instant recordedAt
     ) {
     }
 

@@ -166,7 +166,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.thesisFailureStress()).isNull();
         assertThat(risk.sizingEligible()).isFalse();
         assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("NO");
-        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_NOT_CONFIRMED");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_NOT_CONFIRMED", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.eligibilityReasons().isEmpty()).isEqualTo(risk.sizingEligible());
     }
 
@@ -179,7 +179,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_CONFIGURED);
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.eligibilityReasons())
-                .containsExactly("INVALIDATION_NOT_CONFIRMED", "INVALIDATION_PRICE_NOT_CONFIGURED");
+                .containsExactly("INVALIDATION_NOT_CONFIRMED", "INVALIDATION_PRICE_NOT_CONFIGURED", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.sizingEligible()).isFalse();
     }
 
@@ -191,7 +191,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
 
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.plannedLossContribution()).isNull();
-        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_PRICE_BREACHED");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_PRICE_BREACHED", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.sizingEligible()).isFalse();
     }
 
@@ -238,11 +238,21 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
 
     private InvestmentContextService.ContextView context(
             String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf) throws Exception {
-        return service(portfolioStatus, priceStatus, priceAsOf, consensusAsOf).context(USER_ID);
+        return service(portfolioStatus, priceStatus, priceAsOf, consensusAsOf, bd("0.10")).context(USER_ID);
+    }
+
+    private InvestmentContextService.ContextView context(
+            String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf, BigDecimal softRiskBudget) throws Exception {
+        return service(portfolioStatus, priceStatus, priceAsOf, consensusAsOf, softRiskBudget).context(USER_ID);
     }
 
     private InvestmentContextService service(
             String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf) throws Exception {
+        return service(portfolioStatus, priceStatus, priceAsOf, consensusAsOf, bd("0.10"));
+    }
+
+    private InvestmentContextService service(
+            String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf, BigDecimal softRiskBudget) throws Exception {
         var now = OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC);
         var snapshot = new PortfolioReadService.PortfolioView(
                 UUID.randomUUID(), NOW,
@@ -263,7 +273,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         when(watchlist.list(USER_ID)).thenReturn(List.of());
         var riskPolicies = mock(RiskPolicyService.class);
         when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
-                1, bd("10000"), bd("10000"), bd("100"), BigDecimal.ONE, bd("0.10"), true));
+                1, bd("10000"), bd("10000"), bd("100"), BigDecimal.ONE, softRiskBudget, true));
         var payload = mapper.valueToTree(Map.of(
                 "asOf", NOW.toString(),
                 "price", Map.of("latestPrice", 100, "latestPriceAsOf", priceAsOf.toString(),
@@ -280,7 +290,33 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         return service;
     }
 
+    @Test
+    void riskBudgetExceededMakesSizingIneligible() throws Exception {
+        // Budget 0.01 with stress 0.05 → over budget
+        var risk = context("OK", "OK", Instant.now(), Instant.now(), bd("0.01")).securities().getFirst().risk();
+        assertThat(risk.sizingEligible()).isFalse();
+        assertThat(risk.eligibilityReasons()).contains("RISK_BUDGET_EXCEEDED");
+        assertThat(risk.softBudgetStatus()).isEqualTo("OVER_SOFT_BUDGET");
+    }
+
+    @Test
+    void nullRiskBudgetMakesSizingIneligible() throws Exception {
+        // Budget null → RISK_BUDGET_NOT_CONFIGURED
+        var risk = context("OK", "OK", Instant.now(), Instant.now(), null).securities().getFirst().risk();
+        assertThat(risk.sizingEligible()).isFalse();
+        assertThat(risk.eligibilityReasons()).contains("RISK_BUDGET_NOT_CONFIGURED");
+    }
+
+    @Test
+    void withinBudgetKeepsSizingEligible() throws Exception {
+        // Budget 0.10 with stress within limit → eligible with empty reasons
+        var risk = context("OK", "OK").securities().getFirst().risk();
+        assertThat(risk.sizingEligible()).isTrue();
+        assertThat(risk.eligibilityReasons()).isEmpty();
+        assertThat(risk.softBudgetStatus()).isEqualTo("WITHIN_SOFT_BUDGET");
+    }
+
     private static BigDecimal bd(String value) {
-        return new BigDecimal(value);
+        return value == null ? null : new BigDecimal(value);
     }
 }
