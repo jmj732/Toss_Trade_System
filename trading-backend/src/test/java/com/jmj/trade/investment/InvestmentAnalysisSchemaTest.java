@@ -30,12 +30,13 @@ class InvestmentAnalysisSchemaTest extends PostgresIntegrationTest {
 
     @Test
     void createsInvestmentAnalysisTablesAfterExistingMigrations() throws SQLException {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("57");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("58");
         try (Connection connection = POSTGRES.createConnection("");
              var statement = connection.createStatement()) {
             var tables = List.of("investment_price_snapshots", "fundamental_snapshots", "consensus_snapshots",
                     "investment_security_snapshots", "investment_thesis_states", "investment_decision_ledger",
-                    "investment_pipeline_state", "investment_os_portfolio_snapshots");
+                    "investment_pipeline_state", "investment_os_portfolio_snapshots",
+                    "investment_review_records");
             for (var table : tables) {
                 try (var result = statement.executeQuery("SELECT 1 FROM " + table + " WHERE false")) {
                     assertThat(result.next()).isFalse();

@@ -6,6 +6,7 @@ import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.order.LiveOrderActivationException;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.investment.InvestmentContextService;
+import com.jmj.trade.investment.InvestmentReviewService;
 import org.springframework.dao.DataAccessException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -30,6 +31,7 @@ public final class ConnectorMcpProtocol {
     private final ConnectorService service;
     private final McpOrderExecutionService tradeService;
     private final InvestmentContextService investmentContextService;
+    private final InvestmentReviewService investmentReviewService;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
@@ -40,8 +42,10 @@ public final class ConnectorMcpProtocol {
     @Autowired
     ConnectorMcpProtocol(ConnectorService service, ObjectProvider<McpOrderExecutionService> tradeService,
                          ObjectProvider<InvestmentContextService> investmentContextService,
+                         ObjectProvider<InvestmentReviewService> investmentReviewService,
                          ObjectMapper objectMapper) {
-        this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(), objectMapper);
+        this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(),
+                investmentReviewService.getIfAvailable(), objectMapper);
     }
 
     public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
@@ -51,9 +55,16 @@ public final class ConnectorMcpProtocol {
 
     public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
                                 InvestmentContextService investmentContextService, ObjectMapper objectMapper) {
+        this(service, tradeService, investmentContextService, null, objectMapper);
+    }
+
+    public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                                InvestmentContextService investmentContextService,
+                                InvestmentReviewService investmentReviewService, ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
         this.investmentContextService = investmentContextService;
+        this.investmentReviewService = investmentReviewService;
         this.objectMapper = objectMapper;
     }
 
@@ -144,7 +155,7 @@ public final class ConnectorMcpProtocol {
         tools.add(tool(
                 "get_investment_context",
                 "Get investment context",
-                "Read the authenticated user's persisted investment context, including portfolio, security data, risk, thesis, decisions, and tactical overlays. This tool does not call providers or write data. Optionally filter only the securities array by ticker.",
+                "Read the authenticated user's persisted investment context, including portfolio, security data, risk, thesis, decisions, review notes (reviewLog), and tactical overlays. This tool does not call providers or write data. Optionally filter only the securities array by ticker.",
                 investmentContextSchema(), investmentContextOutputSchema()));
         if (canTrade) {
             if (investmentContextService != null) {
@@ -155,6 +166,12 @@ public final class ConnectorMcpProtocol {
                 tools.add(tool("append_investment_decision", "Append investment decision record",
                         "Append a caller-authored decision record to PostgreSQL for Context and Sheet mirroring. Uses the supplied decisionId for idempotent retries; a different record with that ID conflicts. Stores supplied fields without generating investment judgments and never prepares or submits orders. Requires existing connector write scope; available even when order execution is disabled.",
                         investmentDecisionSchema(), objectSchema(), false, false, true,
+                        ConnectorApiKeyService.TRADE_SCOPE));
+            }
+            if (investmentReviewService != null) {
+                tools.add(tool("append_investment_review", "Append investment review note",
+                        "Append a caller-authored review/audit note to PostgreSQL for Context and Sheet mirroring. A review note records only that something was reviewed and what was observed; it does not create an investment decision, change a thesis, or prepare or submit an order. Raw values such as rawAction (e.g. REVIEW) and rawPriceSession are stored verbatim; priceSession is derived only from an exact supported value and is otherwise null. Uses recordKey for idempotent retries; a different record with the same recordKey conflicts. Requires existing connector write scope; available even when order execution is disabled.",
+                        investmentReviewSchema(), objectSchema(), false, false, true,
                         ConnectorApiKeyService.TRADE_SCOPE));
             }
             tools.add(tool(
@@ -199,6 +216,8 @@ public final class ConnectorMcpProtocol {
                         ? forbiddenTrade(request) : putInvestmentThesis(request, userId, arguments);
                 case "append_investment_decision" -> !tradeScopeGranted
                         ? forbiddenTrade(request) : appendInvestmentDecision(request, userId, arguments);
+                case "append_investment_review" -> !tradeScopeGranted
+                        ? forbiddenTrade(request) : appendInvestmentReview(request, userId, arguments);
                 case "prepare_order" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : !liveExecutionAvailable
@@ -401,6 +420,47 @@ public final class ConnectorMcpProtocol {
         }
     }
 
+    private ObjectNode appendInvestmentReview(ObjectNode request, UUID userId, JsonNode arguments) {
+        if (investmentReviewService == null) return investmentContextUnavailable(request);
+        var textFields = java.util.Set.of("recordKey", "asOf", "scope", "asset", "rawAction", "outcome",
+                "rationale", "nextReviewTrigger", "rawPriceSession", "sourceAsOf");
+        if (arguments == null || !arguments.isObject())
+            return toolError(request, "INVALID_ARGUMENT", "Review arguments must be an object", false, false);
+        for (var field : arguments.propertyNames()) {
+            var value = arguments.path(field);
+            if (textFields.contains(field) ? !value.isNull() && !value.isTextual()
+                    : !"referencePrice".equals(field) || !value.isNull() && !value.isNumber())
+                return toolError(request, "INVALID_ARGUMENT", "Unsupported review field or type", false, false);
+        }
+        for (var field : new String[]{"recordKey", "asOf", "scope"}) {
+            if (!arguments.path(field).isTextual())
+                return toolError(request, "INVALID_ARGUMENT", "recordKey, asOf and scope are required", false, false);
+        }
+        try {
+            var input = objectMapper.treeToValue(arguments, InvestmentReviewService.ReviewInput.class)
+                    .withSource("CONNECTOR_MCP")
+                    .withRawPayload(arguments.deepCopy());
+            return toolResult(request, investmentReviewService.recordReview(userId, input,
+                    InvestmentReviewService.Actor.connector(userId)));
+        } catch (com.jmj.trade.investment.InvestmentException exception) {
+            return switch (exception.code()) {
+                case INVALID_INPUT -> toolError(request, "INVALID_ARGUMENT", "Invalid investment review fields", false, false);
+                case CONFLICT -> toolError(request, "REVIEW_CONFLICT", "recordKey conflicts with an existing review record", false, false);
+                case INVALID_USER -> toolError(request, "AUTHENTICATED_USER_INVALID", "Authenticated user is unavailable", false, true);
+                case NOT_FOUND -> toolError(request, "INVESTMENT_STATE_NOT_FOUND", "Required investment state was not found", false, false);
+            };
+        } catch (DataAccessException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "append_investment_review")
+                    .addKeyValue("outcome", "unavailable")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Investment review storage unavailable");
+            return investmentContextUnavailable(request);
+        } catch (tools.jackson.core.JacksonException | IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", "Invalid investment review fields", false, false);
+        }
+    }
+
     private ObjectNode investmentContextUnavailable(ObjectNode request) {
         return toolError(request, "INVESTMENT_CONTEXT_UNAVAILABLE",
                 "Investment context is temporarily unavailable", true, false);
@@ -586,6 +646,47 @@ public final class ConnectorMcpProtocol {
         return schema;
     }
 
+    private ObjectNode investmentReviewSchema() {
+        var schema = objectMapper.createObjectNode().put("type", "object").put("additionalProperties", false);
+        var fields = schema.putObject("properties");
+        fields.set("recordKey", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 128)
+                .put("description", "Caller idempotency key; any string, need not be a UUID."));
+        fields.set("asOf", objectMapper.createObjectNode().put("type", "string").put("format", "date-time")
+                .put("description", "When the review was made; must not be in the future."));
+        var scope = fields.putObject("scope").put("type", "string");
+        scope.withArray("enum").add("SECURITY").add("PORTFOLIO");
+        fields.set("asset", nullableString(objectMapper.createObjectNode().put("type", "string")
+                .put("pattern", "^[A-Za-z0-9._-]{1,32}$"),
+                "Required for SECURITY scope; omit or null for PORTFOLIO scope."));
+        fields.set("rawAction", nullableString(objectMapper.createObjectNode().put("type", "string")
+                .put("maxLength", 64), "Verbatim review label such as REVIEW; not an investment action."));
+        fields.set("outcome", nullableString(objectMapper.createObjectNode().put("type", "string")
+                .put("maxLength", 2000), null));
+        fields.set("rationale", nullableString(objectMapper.createObjectNode().put("type", "string")
+                .put("maxLength", 5000), null));
+        fields.set("nextReviewTrigger", nullableString(objectMapper.createObjectNode().put("type", "string")
+                .put("maxLength", 2000), null));
+        var referencePrice = fields.putObject("referencePrice");
+        referencePrice.putArray("anyOf")
+                .add(objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0))
+                .add(objectMapper.createObjectNode().put("type", "null"));
+        referencePrice.put("description", "Optional; never required for a review.");
+        fields.set("rawPriceSession", nullableString(objectMapper.createObjectNode().put("type", "string")
+                .put("maxLength", 64), "Verbatim session label; unknown values are kept and priceSession stays null."));
+        fields.set("sourceAsOf", nullableString(objectMapper.createObjectNode().put("type", "string")
+                .put("format", "date-time"), "As-of time of the evidence the review relied on."));
+        schema.putArray("required").add("recordKey").add("asOf").add("scope");
+        return schema;
+    }
+
+    private ObjectNode nullableString(ObjectNode stringSchema, String description) {
+        var schema = objectMapper.createObjectNode();
+        schema.putArray("anyOf").add(stringSchema).add(objectMapper.createObjectNode().put("type", "null"));
+        if (description != null) schema.put("description", description);
+        return schema;
+    }
+
     private ObjectNode investmentContextOutputSchema() {
         var schema = objectMapper.createObjectNode().put("type", "object");
         var anyOf = schema.putArray("anyOf");
@@ -601,6 +702,7 @@ public final class ConnectorMcpProtocol {
         contextProperties.set("decisionOverlays", objectMapper.createObjectNode()
                 .put("type", "object").set("additionalProperties", objectMapper.createObjectNode()
                         .put("type", "object").put("additionalProperties", true)));
+        contextProperties.set("reviewLog", nullableArraySchema());
         var context = objectMapper.createObjectNode().put("type", "object");
         context.set("properties", contextProperties);
         context.putArray("required").add("portfolio").add("securities").add("watchlist")

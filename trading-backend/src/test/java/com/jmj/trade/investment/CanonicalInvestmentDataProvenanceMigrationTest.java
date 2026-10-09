@@ -82,7 +82,7 @@ class CanonicalInvestmentDataProvenanceMigrationTest extends PostgresIntegration
         assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("52");
         flyway.migrate();
 
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("57");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("58");
         var longSourceId = UUID.randomUUID();
         var longEbitdaSource = "SEC_INLINE_XBRL_" + "USD_PER_SHARE_DURATION_ENTITY_CONTEXT_".repeat(8);
         assertThat(longEbitdaSource.length()).isGreaterThan(160);

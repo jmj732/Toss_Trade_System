@@ -57,7 +57,7 @@ class InvestmentOsResearchSheetSyncTest {
         sync.sync(USER_ID);
 
         verify(sheets).ensureSheets(eq("sheet-1"), eq(List.of("Security Snapshot", "Thesis State",
-                "Consensus History", "Watchlist", "Decision Ledger", "Alpha State", "Risk Policy")));
+                "Consensus History", "Watchlist", "Decision Ledger", "Alpha State", "Risk Policy", "Review Log")));
         var updates = org.mockito.ArgumentCaptor.forClass(List.class);
         verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
         @SuppressWarnings("unchecked")
@@ -66,7 +66,7 @@ class InvestmentOsResearchSheetSyncTest {
                 columns.get("Security Snapshot") == tabs.getFirst().values().getFirst().size()));
         assertThat(tabs).extracting(GoogleSheetsClient.SheetValueRange::range).containsExactly(
                 "'Security Snapshot'!A1", "'Thesis State'!A1", "'Consensus History'!A1", "'Watchlist'!A1",
-                "'Decision Ledger'!A1", "'Alpha State'!A1", "'Risk Policy'!A1");
+                "'Decision Ledger'!A1", "'Alpha State'!A1", "'Risk Policy'!A1", "'Review Log'!A1");
         var security = tabs.getFirst().values();
         assertThat(security.getFirst()).contains("Ticker", "Latest Price", "Price Status", "Fundamental Status",
                 "Fundamental Fiscal Period", "Fundamental Reported At", "Fundamental As Of", "Fundamental Source",
@@ -191,13 +191,14 @@ class InvestmentOsResearchSheetSyncTest {
         assertThat(tabs.get(1).values().get(1)).contains("AAPL", "Keep growing subscriptions");
 
         var queries = org.mockito.ArgumentCaptor.forClass(String.class);
-        verify(jdbc, times(3)).query(queries.capture(), any(RowMapper.class), eq(USER_ID));
+        verify(jdbc, times(4)).query(queries.capture(), any(RowMapper.class), eq(USER_ID));
         assertThat(queries.getAllValues()).anyMatch(sql -> sql.contains("FROM consensus_snapshots"))
                 .anyMatch(sql -> sql.contains("estimate_type") && sql.contains("estimate_label")
                         && sql.contains("period_end") && sql.contains("revenue_analyst_count")
                         && sql.contains("eps_analyst_count") && sql.contains("currency"))
                 .anyMatch(sql -> sql.contains("FROM investment_decision_ledger"))
-                .anyMatch(sql -> sql.contains("FROM monitoring_position_contexts"));
+                .anyMatch(sql -> sql.contains("FROM monitoring_position_contexts"))
+                .anyMatch(sql -> sql.contains("FROM investment_review_records"));
     }
 
     @Test
@@ -563,6 +564,85 @@ class InvestmentOsResearchSheetSyncTest {
                 .containsExactly("'Decision Ledger'!N2:P2");
         assertThat(ledgerUpdates.getFirst().values()).containsExactly(List.of("POSITION_ENTRY", new BigDecimal("95"),
                 "BETTER_ENTRY"));
+    }
+
+    @Test
+    void preservesLegacyDecisionLedgerRowsWithoutCanonicalDecisionsWhenReviewRecordsExist() throws Exception {
+        var canonicalHeaders = new java.util.ArrayList<Object>(List.of("Decision ID", "As Of", "Asset", "Action",
+                "Reference Price", "Price Session", "Horizon", "Alpha Thesis", "Invalidation",
+                "Next Review Trigger", "Confidence", "Risk Policy Check", "Created At"));
+        assertLegacyDecisionRowsPreserved(canonicalHeaders, List.of("'Decision Ledger'!N1:P1"));
+        var extendedHeaders = new java.util.ArrayList<Object>(canonicalHeaders);
+        extendedHeaders.addAll(List.of("EntrySetup", "InitialRiskPrice", "OverlayEffect"));
+        assertLegacyDecisionRowsPreserved(extendedHeaders, List.of());
+    }
+
+    private void assertLegacyDecisionRowsPreserved(List<Object> headers, List<String> expectedLedgerRanges)
+            throws Exception {
+        var sheets = mock(GoogleSheetsClient.class);
+        var ids = new java.util.LinkedHashMap<>(sheetIds());
+        ids.put("Review Log", 8);
+        when(sheets.sheetIdsByTitle("sheet-1")).thenReturn(ids);
+        var ledger = new java.util.ArrayList<List<Object>>();
+        ledger.add(headers);
+        for (var index = 1; index <= 7; index++) {
+            // Legacy shapes that are intentionally not canonical decisions: REVIEW, non-UUID ids, odd sessions.
+            ledger.add(List.of("legacy-" + index, "2026-10-0" + index, index == 7 ? "PORTFOLIO" : "AAPL",
+                    "REVIEW", index == 1 ? "101.5" : "", "장마감", "", "legacy note " + index, "", "", "", "", ""));
+        }
+        when(sheets.readValues(eq("sheet-1"), anyString())).thenAnswer(invocation -> {
+            var range = (String) invocation.getArgument(1);
+            return new GoogleSheetsClient.SheetValues(range,
+                    "'Decision Ledger'!A:ZZ".equals(range) ? ledger : List.<List<Object>>of());
+        });
+        var investment = mock(InvestmentContextService.class);
+        var riskPolicies = mock(RiskPolicyService.class);
+        var jdbc = mock(JdbcTemplate.class);
+        var sync = sync(sheets, investment, riskPolicies, jdbc);
+        doAnswer(invocation -> {
+            var sql = (String) invocation.getArgument(0);
+            if (!sql.contains("FROM investment_review_records")) return List.of();
+            @SuppressWarnings("unchecked")
+            var mapper = (RowMapper<Object>) invocation.getArgument(1);
+            return List.of(mapReviewRow(mapper));
+        }).when(jdbc).query(anyString(), any(RowMapper.class), eq(USER_ID));
+
+        var skipped = sync.sync(USER_ID);
+
+        assertThat(skipped).doesNotContain("Decision Ledger");
+        verify(sheets, never()).duplicateSheets(anyString(), anyMap());
+        var updates = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
+        @SuppressWarnings("unchecked")
+        var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
+        assertThat(tabs.stream().filter(update -> update.range().startsWith("'Decision Ledger'!"))
+                .map(GoogleSheetsClient.SheetValueRange::range).toList())
+                .containsExactlyElementsOf(expectedLedgerRanges);
+        var reviewLog = tabs.stream().filter(update -> update.range().equals("'Review Log'!A1"))
+                .findFirst().orElseThrow().values();
+        assertThat(reviewLog).hasSize(2);
+        assertThat(reviewLog.getFirst()).startsWith("Record ID", "Source", "Record Key");
+        assertThat(reviewLog.get(1)).contains("SHEET_LEGACY_IMPORT", "legacy-1", "REVIEW", "장마감");
+        assertThat(tabs).allMatch(update -> !update.range().startsWith("'Decision Ledger'!")
+                || update.values().stream().noneMatch(row -> row.contains("REVIEW")));
+    }
+
+    private static Object mapReviewRow(RowMapper<Object> mapper) throws SQLException {
+        var resultSet = mock(ResultSet.class);
+        when(resultSet.getObject("id", UUID.class)).thenReturn(SECOND_DECISION_ID);
+        when(resultSet.getString("source")).thenReturn("SHEET_LEGACY_IMPORT");
+        when(resultSet.getString("record_key")).thenReturn("legacy-1");
+        when(resultSet.getString("scope")).thenReturn("SECURITY");
+        when(resultSet.getString("asset")).thenReturn("AAPL");
+        when(resultSet.getObject("as_of", java.time.OffsetDateTime.class))
+                .thenReturn(java.time.OffsetDateTime.parse("2026-10-01T00:00:00Z"));
+        when(resultSet.getString("raw_action")).thenReturn("REVIEW");
+        when(resultSet.getString("raw_price_session")).thenReturn("장마감");
+        when(resultSet.getString("raw_payload")).thenReturn("{\"Decision ID\":\"legacy-1\"}");
+        when(resultSet.getString("actor_type")).thenReturn("USER_SESSION");
+        when(resultSet.getObject("recorded_at", java.time.OffsetDateTime.class))
+                .thenReturn(java.time.OffsetDateTime.parse("2026-10-09T00:00:00Z"));
+        return mapper.mapRow(resultSet, 0);
     }
 
     private static Map<String, Integer> sheetIds() {
