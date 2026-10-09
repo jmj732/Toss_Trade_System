@@ -90,6 +90,8 @@ ChatGPT → Toss Connector MCP → Spring Boot → PostgreSQL (스냅샷·입력
 
 커넥터 MCP 전송 경로는 `POST /api/v1/connector/mcp`이며 OAuth scope가 도구 목록을 정한다. 동일 context는 로그인 사용자용 Spring REST `GET /investment/context`에서도 읽는다.
 
+도구를 새로 배포한 뒤에는 기존 ChatGPT 연결에서 **Settings → Plugins → Toss Plugin → Tools Refresh (도구 새로 고침)**를 선택하고, 새 채팅에서 도구 목록을 확인한다. 기존 **Allow all** 설정과 `connector:trade` 범위는 그대로 사용하며 범위 변경이 없으면 재연결이나 새 권한 승인은 필요하지 않다. 새 채팅 GUI에서 `put_investment_thesis`가 발견되고 기존 `AI_PROPOSED` Sheet 행 6개에 호출됐다. 독립 MCP 재조회에서 반환된 11개 필드가 각 행과 일치했고, 자동 Sheet 미러도 확인했다. 이 검증은 새 채팅 GUI에 한정되며 Scheduled Task의 쓰기 실행을 검증한 것은 아니다. 자세한 절차는 [connector 런북](docs/ops/connector-runbook.md)을 참고한다.
+
 | 도구 | 읽는 데이터 |
 |---|---|
 | `get_portfolio` | Toss Invest의 최신 브로커 포트폴리오 스냅샷 |

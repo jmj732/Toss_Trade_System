@@ -24,3 +24,7 @@ The seven existing legacy Sheet rows are not auto-imported: `REVIEW` is not a su
 ## Validation
 
 Protocol tests cover discovery/schema, trade-scope denial, disabled-order availability, exact field mapping, strict arguments/enums, and error separation. PostgreSQL integration verifies append, idempotent replay, and exact parity between the saved row and the subsequent Context decision-ledger entry. Existing Sheet tests continue to cover the DB-backed decision projection.
+
+### CI mock-server timeout note
+
+Two localhost WireMock tests intermittently failed in CI near their 1-second HTTP timeout: one surfaced the normalized `NETWORK` reason, and another observed no quote request. Their test-only connect/read bounds are now 5 seconds, with retries still disabled and request-count assertions unchanged. Production transport settings are unchanged.
