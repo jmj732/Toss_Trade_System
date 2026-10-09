@@ -4,6 +4,7 @@ import com.jmj.trade.security.AuthenticatedUser;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -45,7 +46,7 @@ final class InvestmentContextController {
             @RequestParam(required = false) Instant sourceAsOf,
             @RequestParam(required = false) String reason
     ) {
-        var sessionId = principal instanceof AuthenticatedUser ? ((AuthenticatedUser) principal).sessionId() : null;
+        var sessionId = extractSessionId(principal);
         return service.putThesis(userId(principal), ticker, input, expectedUpdatedAt, sourceAsOf, reason, sessionId);
     }
 
@@ -162,6 +163,19 @@ final class InvestmentContextController {
         } catch (RuntimeException exception) {
             throw new InvestmentException(InvestmentException.Code.INVALID_USER);
         }
+    }
+
+    private static UUID extractSessionId(Principal principal) {
+        if (principal instanceof AuthenticatedUser au) {
+            return au.sessionId();
+        }
+        if (principal instanceof Authentication auth) {
+            var authPrincipal = auth.getPrincipal();
+            if (authPrincipal instanceof AuthenticatedUser au) {
+                return au.sessionId();
+            }
+        }
+        return null;
     }
 
     private static ResponseEntity<PublicError> error(HttpStatus status, String code) {

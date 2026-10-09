@@ -1402,26 +1402,45 @@ public final class InvestmentContextService {
         }
         return transaction.execute(ignored -> {
             lockThesisWriter(userId);
+            record CurrentState(String status, BigDecimal triggerPrice, Instant updatedAt) {}
             var current = jdbc.query("SELECT invalidation_status, price_risk_trigger_price, updated_at FROM investment_thesis_states WHERE user_id=? AND ticker=?",
-                    (rs, row) -> Map.entry(Map.entry(rs.getString(1), rs.getBigDecimal(2)), rs.getObject(3, OffsetDateTime.class).toInstant()), userId, ticker);
+                    (rs, row) -> new CurrentState(rs.getString(1), rs.getBigDecimal(2), rs.getObject(3, OffsetDateTime.class).toInstant()), userId, ticker);
             var newStatus = input.invalidationStatus().trim().toUpperCase(Locale.ROOT);
+            var newTriggerPrice = input.priceRiskTriggerPrice();
             var isConfirming = "CONFIRMED".equals(newStatus);
-            if (isConfirming && !current.isEmpty()) {
-                var previousStatus = current.getFirst().getKey().getKey();
-                if (!previousStatus.equals("CONFIRMED")) {
-                    // Transitioning to CONFIRMED requires sourceAsOf
-                    if (sourceAsOf == null) {
-                        throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+
+            // Determine if approval is required: when confirming and either no prior state, or prior not CONFIRMED, or trigger price changed
+            var triggerPriceChanged = false;
+            if (!current.isEmpty()) {
+                var prevPrice = current.getFirst().triggerPrice();
+                triggerPriceChanged = (prevPrice == null) != (newTriggerPrice == null) ||
+                        (prevPrice != null && newTriggerPrice != null && prevPrice.compareTo(newTriggerPrice) != 0);
+            }
+            var requiresApproval = isConfirming &&
+                    (current.isEmpty() ||
+                     !current.getFirst().status().equals("CONFIRMED") ||
+                     triggerPriceChanged);
+
+            if (requiresApproval) {
+                if (sourceAsOf == null) {
+                    throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+                }
+                if (current.isEmpty() ? expectedUpdatedAt != null
+                        : !current.getFirst().updatedAt().equals(expectedUpdatedAt)) {
+                    throw new InvestmentException(InvestmentException.Code.CONFLICT);
+                }
+            } else {
+                // expectedUpdatedAt checked only when supplied
+                if (expectedUpdatedAt != null) {
+                    if (current.isEmpty() || !current.getFirst().updatedAt().equals(expectedUpdatedAt)) {
+                        throw new InvestmentException(InvestmentException.Code.CONFLICT);
                     }
                 }
             }
-            if (expectedUpdatedAt != null || isConfirming) {
-                if (current.isEmpty() ? expectedUpdatedAt != null
-                        : !current.getFirst().getValue().equals(expectedUpdatedAt)) {
-                    throw new InvestmentException(InvestmentException.Code.CONFLICT);
-                }
-            }
-            return persistThesis(userId, ticker, input, current, "USER_SESSION", userId, sessionId, sourceAsOf, reason);
+
+            var currentEntry = current.isEmpty() ? null : Map.entry(Map.entry(current.getFirst().status(), current.getFirst().triggerPrice()), current.getFirst().updatedAt());
+            var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
+            return persistThesis(userId, ticker, input, currentList, "USER_SESSION", userId, sessionId, sourceAsOf, reason);
         });
     }
 
@@ -1434,13 +1453,16 @@ public final class InvestmentContextService {
             throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         return transaction.execute(ignored -> {
             lockThesisWriter(userId);
+            record CurrentState(String status, BigDecimal triggerPrice, Instant updatedAt) {}
             var current = jdbc.query("SELECT invalidation_status, price_risk_trigger_price, updated_at FROM investment_thesis_states WHERE user_id=? AND ticker=?",
-                    (rs, row) -> Map.entry(Map.entry(rs.getString(1), rs.getBigDecimal(2)), rs.getObject(3, OffsetDateTime.class).toInstant()), userId, ticker);
+                    (rs, row) -> new CurrentState(rs.getString(1), rs.getBigDecimal(2), rs.getObject(3, OffsetDateTime.class).toInstant()), userId, ticker);
             if (current.isEmpty() ? expectedUpdatedAt != null
-                    : "CONFIRMED".equals(current.getFirst().getKey().getKey())
-                    || !current.getFirst().getValue().equals(expectedUpdatedAt))
+                    : "CONFIRMED".equals(current.getFirst().status())
+                    || !current.getFirst().updatedAt().equals(expectedUpdatedAt))
                 throw new InvestmentException(InvestmentException.Code.CONFLICT);
-            return persistThesis(userId, ticker, input, current, "CONNECTOR_MCP", userId, null, null, null);
+            var currentEntry = current.isEmpty() ? null : Map.entry(Map.entry(current.getFirst().status(), current.getFirst().triggerPrice()), current.getFirst().updatedAt());
+            var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
+            return persistThesis(userId, ticker, input, currentList, "CONNECTOR_MCP", userId, null, null, null);
         });
     }
 

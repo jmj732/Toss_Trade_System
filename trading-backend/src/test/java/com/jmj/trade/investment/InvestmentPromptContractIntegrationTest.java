@@ -45,12 +45,16 @@ class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
     @Test
     void persistsPromptStatusesWithoutChangingTheirMeaningAndKeepsLegacyStatuses() {
         for (var status : List.of("AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED",
-                "CONFIRMED", "NOT_REVIEWED", "SUSPECTED", "CLEARED")) {
+                "NOT_REVIEWED", "SUSPECTED", "CLEARED")) {
             var saved = service.putThesis(USER, "avt", input(status), null, null, null, null);
             assertThat(saved.invalidationStatus()).isEqualTo(status);
             assertThat(jdbc.queryForObject("SELECT invalidation_status FROM investment_thesis_states WHERE user_id=? AND ticker='AVT'",
                     String.class, USER)).isEqualTo(status);
         }
+        // CONFIRMED requires sourceAsOf when first set
+        var now = java.time.Instant.now();
+        var confirmed = service.putThesis(USER, "avt", input("CONFIRMED"), null, now, null, null);
+        assertThat(confirmed.invalidationStatus()).isEqualTo("CONFIRMED");
     }
 
     @Test
@@ -67,7 +71,8 @@ class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
                 .isInstanceOf(InvestmentException.class);
         var updated = service.putThesisProposal(USER, "AVT", input("UNVERIFIED"), created.updatedAt());
         assertThat(updated.invalidationStatus()).isEqualTo("UNVERIFIED");
-        var confirmed = service.putThesis(USER, "AVT", input("CONFIRMED"), null, null, null, null);
+        var now = java.time.Instant.now();
+        var confirmed = service.putThesis(USER, "AVT", input("CONFIRMED"), null, now, null, null);
         assertThatThrownBy(() -> service.putThesisProposal(USER, "AVT", input("AI_PROPOSED"), confirmed.updatedAt()))
                 .isInstanceOf(InvestmentException.class);
         assertThat(jdbc.queryForObject("SELECT invalidation_status FROM investment_thesis_states WHERE user_id=?",
