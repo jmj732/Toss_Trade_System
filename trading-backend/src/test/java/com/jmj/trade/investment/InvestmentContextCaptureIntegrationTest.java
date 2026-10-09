@@ -1225,6 +1225,59 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void captureStoresRegularCloseSessionFactsFromTheOfficialCalendarWithoutSubstitutingTheQuote() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var newYork = java.time.ZoneId.of("America/New_York");
+        var now = Instant.now();
+        var today = now.atZone(newYork).toLocalDate();
+        var previous = today.minusDays(1);
+        var next = today.plusDays(1);
+        var nextClose = next.atTime(16, 0).atZone(newYork);
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("105"), null, null,
+                        "USD", now, now.minusSeconds(1)))));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", today))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.MarketCalendarView(
+                        "US", mapper.readTree("""
+                                {"today":{"date":"%s","regularMarket":null},
+                                 "previousBusinessDay":{"date":"%s"},"nextBusinessDay":{"date":"%s"}}
+                                """.formatted(today, previous, next)))));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", next))
+                .thenReturn(calendarResponse(next.toString(),
+                        next.atTime(9, 30).atZone(newYork).toOffsetDateTime().toString(),
+                        nextClose.toOffsetDateTime().toString(), null, null));
+        var candles = List.of(previous.minusDays(1), previous).stream()
+                .map(date -> {
+                    var close = date.equals(previous) ? new BigDecimal("100") : new BigDecimal("99");
+                    return new BrokerSurfaceResponse.CandleView(date.atStartOfDay(newYork).toInstant(),
+                            close, close.add(BigDecimal.ONE), close.subtract(BigDecimal.ONE), close,
+                            BigDecimal.TEN, "USD");
+                })
+                .toList();
+        when(surface.candles(USER_ID, connectionId, "AAPL", "1d", 100, null, false))
+                .thenReturn(BrokerSurfaceResponse.available(new BrokerSurfaceResponse.CandleSeriesView(
+                        "AAPL", "1d", false, candles, null)));
+
+        service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID);
+
+        var price = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID)).path("price");
+        assertThat(price.path("latestPrice").decimalValue()).isEqualByComparingTo("105");
+        assertThat(price.path("regularClose").decimalValue()).isEqualByComparingTo("100");
+        assertThat(price.path("regularCloseSessionDate").asText()).isEqualTo(previous.toString());
+        assertThat(price.path("lastCompletedSessionDate").asText()).isEqualTo(previous.toString());
+        assertThat(Instant.parse(price.path("regularCloseValidUntil").asText())).isEqualTo(nextClose.toInstant());
+        assertThat(price.path("regularCloseStatus").asText()).isEqualTo("OK");
+        assertThat(price.path("session").isNull()).isTrue();
+        assertThat(price.path("status").asText()).isEqualTo("PARTIAL");
+        assertThat(price.path("sessionReason").asText()).isEqualTo("TOSS_SESSION_UNVERIFIED");
+        assertThat(price.has("nextDeclaredIntervalStartsAt")).isFalse();
+    }
+
+    @Test
     void tossSessionClassificationUsesOffsetRangesAndExclusiveEnd() throws Exception {
         var edt = mapper.readTree("""
                 {"today":{"date":"2026-07-06",

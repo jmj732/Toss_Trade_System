@@ -408,6 +408,117 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                 """, USER_ID, ticker, now);
     }
 
+    @Test
+    void outsideIntervalQuoteIsNotEscalatedByTheQuoteWindowBeforeTheNextDeclaredInterval() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        insertStoredPrice("AAPL", now, """
+                {"latestPrice":101,"latestPriceAsOf":"%s","regularClose":100,
+                 "regularCloseAsOf":"2026-10-02T04:00:00Z","session":null,"source":"TOSS","status":"PARTIAL",
+                 "sessionReason":"TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS","nextDeclaredIntervalStartsAt":"%s",
+                 "regularCloseSessionDate":"2026-10-02","lastCompletedSessionDate":"2026-10-02",
+                 "regularCloseValidUntil":"%s","regularCloseStatus":"OK"}
+                """.formatted(now.minus(Duration.ofHours(3)), now.plus(Duration.ofHours(2)),
+                now.plus(Duration.ofHours(20))));
+
+        var security = service(new StockDataProviderRegistry(List.of()), null, "").context(USER_ID)
+                .securities().getFirst();
+
+        var price = security.price();
+        assertThat(price.path("status").asText()).isEqualTo("PARTIAL");
+        assertThat(price.path("regularCloseStatus").asText()).isEqualTo("OK");
+        assertThat(price.path("session").isNull()).isTrue();
+        assertThat(price.path("sessionReason").asText()).isEqualTo("TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS");
+        assertThat(price.path("latestPrice").decimalValue()).isEqualByComparingTo("101");
+        assertThat(price.path("regularClose").decimalValue()).isEqualByComparingTo("100");
+        assertThat(security.readiness().path("priceStatus").asText()).isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void storedSessionFactsExpireOnlyAtTheirDeclaredBoundaries() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        insertStoredPrice("AAPL", now, """
+                {"latestPrice":101,"latestPriceAsOf":"%s","regularClose":100,
+                 "regularCloseAsOf":"2026-10-02T04:00:00Z","session":null,"source":"TOSS","status":"PARTIAL",
+                 "sessionReason":"TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS","nextDeclaredIntervalStartsAt":"%s",
+                 "regularCloseSessionDate":"2026-10-02","lastCompletedSessionDate":"2026-10-02",
+                 "regularCloseValidUntil":"%s","regularCloseStatus":"OK"}
+                """.formatted(now.minus(Duration.ofHours(3)), now.minus(Duration.ofMinutes(1)),
+                now.minus(Duration.ofMinutes(1))));
+
+        var price = service(new StockDataProviderRegistry(List.of()), null, "").context(USER_ID)
+                .securities().getFirst().price();
+
+        assertThat(price.path("status").asText()).isEqualTo("STALE");
+        assertThat(price.path("regularCloseStatus").asText()).isEqualTo("STALE");
+        assertThat(price.path("latestPrice").decimalValue()).isEqualByComparingTo("101");
+    }
+
+    @Test
+    void liveSessionQuoteKeepsTheQuoteWindowWhileTheRegularCloseIsJudgedBySessionDate() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        insertStoredPrice("AAPL", now, """
+                {"latestPrice":101,"latestPriceAsOf":"%s","regularClose":100,
+                 "regularCloseAsOf":"2026-10-02T04:00:00Z","session":"AFTER_HOURS","source":"TOSS","status":"OK",
+                 "regularCloseSessionDate":"2026-10-02","lastCompletedSessionDate":"2026-10-02",
+                 "regularCloseValidUntil":"%s","regularCloseStatus":"OK"}
+                """.formatted(now.minus(Duration.ofHours(3)), now.plus(Duration.ofHours(20))));
+
+        var price = service(new StockDataProviderRegistry(List.of()), null, "").context(USER_ID)
+                .securities().getFirst().price();
+
+        assertThat(price.path("status").asText()).isEqualTo("STALE");
+        assertThat(price.path("regularCloseStatus").asText()).isEqualTo("OK");
+        assertThat(price.path("latestPrice").decimalValue()).isEqualByComparingTo("101");
+    }
+
+    @Test
+    void storedPriceWithoutSessionFactsIsUnverifiedNotWallClockStale() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        insertStoredPrice("AAPL", now, """
+                {"latestPrice":101,"latestPriceAsOf":"%s","regularClose":100,
+                 "regularCloseAsOf":"2026-10-02T04:00:00Z","session":null,"source":"TOSS","status":"PARTIAL"}
+                """.formatted(now.minus(Duration.ofHours(3))));
+
+        var price = service(new StockDataProviderRegistry(List.of()), null, "").context(USER_ID)
+                .securities().getFirst().price();
+
+        assertThat(price.path("status").asText()).isEqualTo("UNVERIFIED");
+        assertThat(price.path("regularCloseStatus").asText()).isEqualTo("UNVERIFIED");
+        assertThat(price.path("regularCloseSessionDate").asText()).isEqualTo("2026-10-02");
+    }
+
+    @Test
+    void sessionFactsNeverOverrideSourceConflictOrRevalidateVeryOldQuotes() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        insertStoredPrice("AAPL", now, """
+                {"latestPrice":101,"latestPriceAsOf":"%s","session":null,"source":"TOSS",
+                 "status":"SOURCE_CONFLICT","sessionReason":"TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS",
+                 "nextDeclaredIntervalStartsAt":"%s","regularCloseStatus":"DATA_MISSING"}
+                """.formatted(now.minus(Duration.ofHours(3)), now.plus(Duration.ofHours(2))));
+        var contextService = service(new StockDataProviderRegistry(List.of()), null, "");
+
+        var conflicted = contextService.context(USER_ID).securities().getFirst().price();
+        assertThat(conflicted.path("status").asText()).isEqualTo("SOURCE_CONFLICT");
+        assertThat(conflicted.path("regularCloseStatus").asText()).isEqualTo("DATA_MISSING");
+
+        insertStoredPrice("AAPL", now.plusSeconds(1), """
+                {"latestPrice":101,"latestPriceAsOf":"%s","session":null,"source":"TOSS","status":"PARTIAL"}
+                """.formatted(now.minus(Duration.ofDays(8))));
+        assertThat(contextService.context(USER_ID).securities().getFirst().price().path("status").asText())
+                .isEqualTo("STALE");
+    }
+
+    private void insertStoredPrice(String ticker, Instant asOf, String priceJson) throws Exception {
+        var payload = mapper.createObjectNode();
+        payload.put("asOf", asOf.toString());
+        payload.set("price", mapper.readTree(priceJson));
+        jdbc.update("""
+                INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
+                VALUES (?, ?, ?, ?, ?::jsonb, ?)
+                """, UUID.randomUUID(), USER_ID, ticker, OffsetDateTime.ofInstant(asOf, ZoneOffset.UTC),
+                mapper.writeValueAsString(payload), OffsetDateTime.ofInstant(asOf, ZoneOffset.UTC));
+    }
+
     private void insertRiskPriceSnapshot(String ticker, Instant now) throws Exception {
         var payload = mapper.createObjectNode();
         payload.put("asOf", now.toString());
