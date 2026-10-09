@@ -3107,6 +3107,7 @@ public final class InvestmentContextService {
             var priceAsOf = instant(priceNode.get("latestPriceAsOf"));
             var weight = portfolioNumbersAvailable ? weights.get(symbol) : null;
             var triggerPrice = thesis == null ? null : thesis.priceRiskTriggerPrice();
+            var confirmed = thesis != null && "CONFIRMED".equals(thesis.invalidationStatus());
             var priceStatus = dataStatus(text(priceNode.get("status")));
             var trustedPriceStatus = priceStatus == InvestmentDataCalculator.DataStatus.OK
                     && (priceAsOf == null || price == null || price.signum() <= 0)
@@ -3114,23 +3115,31 @@ public final class InvestmentContextService {
             var trustedInputs = portfolioNumbersAvailable
                     && trustedPriceStatus == InvestmentDataCalculator.DataStatus.OK
                     && priceAsOf != null && price != null && price.signum() > 0;
-            var downside = trustedInputs
+            // Risk numbers derive only from an approved (CONFIRMED) invalidation trigger. An unapproved
+            // trigger (AI_PROPOSED/UNVERIFIED/INVALIDATION_UNDEFINED) is never fed into downside/loss.
+            var computable = confirmed && triggerPrice != null;
+            var downside = computable && trustedInputs
                     ? InvestmentDataCalculator.invalidationDownside(price, triggerPrice) : null;
-            var loss = trustedInputs ? InvestmentDataCalculator.plannedLossContribution(weight, downside) : null;
+            var loss = computable && trustedInputs
+                    ? InvestmentDataCalculator.plannedLossContribution(weight, downside) : null;
             var riskStatus = triggerPrice == null
                     ? InvestmentDataCalculator.DataStatus.NOT_CONFIGURED
+                    : !confirmed
+                    ? InvestmentDataCalculator.DataStatus.UNVERIFIED
                     : trustedInputs
-                    ? loss == null ? InvestmentDataCalculator.DataStatus.DATA_MISSING
+                    ? downside == null ? InvestmentDataCalculator.DataStatus.DATA_MISSING
                     : portfolioCurrent ? InvestmentDataCalculator.DataStatus.OK : portfolioDataStatus
                     : overall(List.of(portfolioDataStatus, trustedPriceStatus));
-            var eligible = thesis != null && "CONFIRMED".equals(thesis.invalidationStatus())
+            var eligible = confirmed
                     && portfolioCurrent && trustedInputs && weight != null && downside != null && loss != null;
+            var reasons = eligibilityReasons(thesis, confirmed, triggerPrice, downside, trustedInputs,
+                    portfolioDataStatus, portfolioCurrent, portfolioNumbersAvailable, trustedPriceStatus, weight);
             if (position != null) exposures.add(new RiskExposure(symbol, loss, riskStatus));
             risks.put(symbol, new RiskContributionView(weight, downside, loss,
                     riskStatus,
                     null, InvestmentDataCalculator.DataStatus.DATA_MISSING, null, null, null,
                     InvestmentDataCalculator.DataStatus.DATA_MISSING, eligible,
-                    riskBudgetStatus(null, null, null)));
+                    riskBudgetStatus(null, null, null), reasons));
         }
         var held = exposures.stream().filter(item -> positions.containsKey(item.ticker())).toList();
         var thesisFailureStatus = held.isEmpty() ? InvestmentDataCalculator.DataStatus.DATA_MISSING
@@ -3146,8 +3155,39 @@ public final class InvestmentContextService {
         risks.replaceAll((symbol, risk) -> new RiskContributionView(
                 risk.portfolioWeight(), risk.invalidationDownside(), risk.plannedLossContribution(),
                 risk.status(), thesisFailureStress, thesisFailureStatus, top2.stress(), top2.assets(),
-                top2.correlation(), top2.status(), risk.sizingEligible(), budgetStatus));
+                top2.correlation(), top2.status(), risk.sizingEligible(), budgetStatus, risk.eligibilityReasons()));
         return Map.copyOf(risks);
+    }
+
+    /**
+     * Deterministic, additive reasons explaining why a position is not sizing-eligible, separately
+     * distinguishing missing inputs, missing approval, and stale data. Empty exactly when eligible.
+     * Breached trigger keeps the status DATA_MISSING (no value is ever invented); the distinguishing
+     * signal is the INVALIDATION_PRICE_BREACHED reason code.
+     */
+    private static List<String> eligibilityReasons(
+            ThesisView thesis, boolean confirmed, BigDecimal triggerPrice, BigDecimal downside,
+            boolean trustedInputs, InvestmentDataCalculator.DataStatus portfolioDataStatus,
+            boolean portfolioCurrent, boolean portfolioNumbersAvailable,
+            InvestmentDataCalculator.DataStatus trustedPriceStatus, BigDecimal weight) {
+        var reasons = new ArrayList<String>();
+        if (thesis == null) reasons.add("THESIS_MISSING");
+        else if (!confirmed) reasons.add("INVALIDATION_NOT_CONFIRMED");
+        if (triggerPrice == null) reasons.add("INVALIDATION_PRICE_NOT_CONFIGURED");
+        else if (confirmed && trustedInputs && downside == null) reasons.add("INVALIDATION_PRICE_BREACHED");
+        if (portfolioDataStatus == InvestmentDataCalculator.DataStatus.STALE) reasons.add("PORTFOLIO_STALE");
+        else if (portfolioDataStatus == InvestmentDataCalculator.DataStatus.PARTIAL) reasons.add("PORTFOLIO_PARTIAL");
+        else if (!portfolioCurrent || !portfolioNumbersAvailable) reasons.add("PORTFOLIO_UNAVAILABLE");
+        if (trustedPriceStatus != InvestmentDataCalculator.DataStatus.OK) {
+            reasons.add(switch (trustedPriceStatus) {
+                case STALE -> "PRICE_STALE";
+                case DATA_MISSING -> "PRICE_MISSING";
+                case SOURCE_CONFLICT -> "PRICE_SOURCE_CONFLICT";
+                default -> "PRICE_UNVERIFIED";
+            });
+        }
+        if (portfolioNumbersAvailable && weight == null) reasons.add("POSITION_WEIGHT_MISSING");
+        return List.copyOf(reasons);
     }
 
     private Top2Stress top2Correlated(UUID userId, List<RiskExposure> exposures) {
@@ -3681,8 +3721,24 @@ public final class InvestmentContextService {
             InvestmentDataCalculator.DataStatus thesisFailureStressStatus, BigDecimal top2CorrelatedStress,
             String top2CorrelatedAssets, BigDecimal top2Correlation,
             InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
-            String softBudgetStatus
+            String softBudgetStatus, List<String> eligibilityReasons
     ) {
+        public RiskContributionView {
+            eligibilityReasons = eligibilityReasons == null ? List.of() : List.copyOf(eligibilityReasons);
+        }
+
+        /** Backward-compatible signature without the additive eligibility reasons (defaults to empty). */
+        public RiskContributionView(
+                BigDecimal portfolioWeight, BigDecimal invalidationDownside, BigDecimal plannedLossContribution,
+                InvestmentDataCalculator.DataStatus status, BigDecimal thesisFailureStress,
+                InvestmentDataCalculator.DataStatus thesisFailureStressStatus, BigDecimal top2CorrelatedStress,
+                String top2CorrelatedAssets, BigDecimal top2Correlation,
+                InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
+                String softBudgetStatus) {
+            this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
+                    thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of());
+        }
     }
 
     public record PipelineView(String status, Instant lastAttemptAt, Instant lastSuccessAt, String lastError) {
