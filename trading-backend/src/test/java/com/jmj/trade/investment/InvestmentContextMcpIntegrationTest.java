@@ -30,6 +30,7 @@ import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -167,6 +168,97 @@ class InvestmentContextMcpIntegrationTest extends PostgresIntegrationTest {
         assertThat(readTableCounts()).isEqualTo(countsBeforeRead);
         assertThat(providerCalls).hasValue(0);
         verifyNoInteractions(portfolios, connectorService);
+    }
+
+    @Test
+    void mcpDecisionAppendPersistsTheSameUserRecordReturnedByContext() throws Exception {
+        var properties = TacticalOverlayProperties.defaults();
+        var overlay = new TacticalOverlayService(jdbc, mapper, new TacticalOverlayCalculator(properties),
+                properties, new TacticalOverlayAggregationCalculator(), "AVT");
+        var portfolios = mock(PortfolioReadService.class);
+        var watchlist = mock(MonitoringWatchlistService.class);
+        when(watchlist.list(USER_ID)).thenReturn(List.of());
+        var risks = mock(RiskPolicyService.class);
+        when(risks.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
+                0, bd("10000000"), bd("10000"), bd("100"), bd("0.25"), false));
+        @SuppressWarnings("unchecked")
+        ObjectProvider<BrokerSurfaceService> surfaceProvider = mock(ObjectProvider.class);
+        when(surfaceProvider.getIfAvailable()).thenReturn(null);
+        var contextService = new InvestmentContextService(jdbc, mapper, transactions,
+                new StockDataProviderRegistry(List.of()), surfaceProvider, portfolios,
+                watchlist, risks, Duration.ofMinutes(15), Duration.ofDays(7),
+                Duration.ofDays(210), Duration.ofDays(10));
+        contextService.setTacticalOverlayService(overlay);
+        var protocol = new ConnectorMcpProtocol(mock(ConnectorService.class), null, contextService, mapper);
+        var connectorMvc = standaloneSetup(new ConnectorMcpController(
+                protocol, "https://dashboard.example")).build();
+        var tradeAuthentication = tradeAuthentication();
+        var decisionId = UUID.fromString("01990000-0000-7000-8000-000000000003");
+        var asOf = Instant.now().minusSeconds(5).truncatedTo(ChronoUnit.MICROS);
+        var arguments = mapper.createObjectNode()
+                .put("decisionId", decisionId.toString())
+                .put("asOf", asOf.toString())
+                .put("asset", "AVT")
+                .put("action", "HOLD")
+                .put("referencePrice", 123.45)
+                .put("priceSession", "REGULAR_CLOSE")
+                .put("horizon", "caller-defined swing horizon")
+                .put("alphaThesis", "caller-supplied thesis")
+                .put("invalidation", "caller-supplied invalidation")
+                .put("nextReviewTrigger", "caller-supplied review trigger")
+                .put("confidence", 0.65);
+
+        var appended = callMcp(connectorMvc, "append_investment_decision", arguments, tradeAuthentication)
+                .path("structuredContent");
+        assertThat(appended.path("decisionId").asText()).isEqualTo(decisionId.toString());
+        assertThat(appended.path("asset").asText()).isEqualTo("AVT");
+        assertThat(appended.path("action").asText()).isEqualTo("HOLD");
+        assertThat(appended.path("alphaThesis").asText()).isEqualTo("caller-supplied thesis");
+        assertThat(appended.has("riskPolicyCheck")).isTrue();
+        assertThat(appended.has("createdAt")).isTrue();
+
+        var replay = callMcp(connectorMvc, "append_investment_decision", arguments, tradeAuthentication)
+                .path("structuredContent");
+        assertThat(replay).isEqualTo(appended);
+
+        var conflictingArguments = arguments.deepCopy().put("confidence", 0.66);
+        var conflict = callMcp(connectorMvc, "append_investment_decision", conflictingArguments,
+                tradeAuthentication);
+        assertThat(conflict.path("isError").asBoolean()).isTrue();
+        assertThat(conflict.path("structuredContent").path("errorCode").asText())
+                .isEqualTo("DECISION_CONFLICT");
+
+        var context = callMcp(connectorMvc, "get_investment_context", mapper.createObjectNode(), tradeAuthentication)
+                .path("structuredContent");
+        assertThat(context.path("decisionLedger").get(0)).isEqualTo(appended);
+        assertThat(contextService.decisionLedger(USER_ID, 50)).hasSize(1);
+        verifyNoInteractions(portfolios);
+    }
+
+    private ObjectNode mcpCall(String name, ObjectNode arguments) {
+        var request = mapper.createObjectNode().put("jsonrpc", "2.0").put("id", name);
+        request.put("method", "tools/call");
+        request.putObject("params").put("name", name).set("arguments", arguments);
+        return request;
+    }
+
+    private JsonNode callMcp(MockMvc mvc, String tool, ObjectNode arguments,
+                             TestingAuthenticationToken authentication) throws Exception {
+        var body = mvc.perform(post("/api/v1/connector/mcp")
+                        .principal(authentication)
+                        .contentType("application/json")
+                        .accept("application/json")
+                        .content(mapper.writeValueAsString(mcpCall(tool, arguments))))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        return mapper.readTree(body).path("result");
+    }
+
+    private static TestingAuthenticationToken tradeAuthentication() {
+        var token = new TestingAuthenticationToken(USER_ID.toString(), null, "SCOPE_CONNECTOR_TRADE");
+        token.setDetails(new ConnectorApiKeyService.AuthenticatedKey(
+                UUID.randomUUID(), USER_ID, CONNECTION_ID, "", null, false, ConnectorApiKeyService.TRADE_SCOPE));
+        return token;
     }
 
     private void assertOverlayStatuses(JsonNode root, Instant securityAsOf, LocalDate barAsOf,

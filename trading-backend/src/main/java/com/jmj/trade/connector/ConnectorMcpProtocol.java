@@ -152,6 +152,10 @@ public final class ConnectorMcpProtocol {
                         "Store an externally authored proposal in PostgreSQL for Context and Sheet mirroring. Cannot set CONFIRMED or overwrite a confirmed thesis. Supply expectedUpdatedAt when updating an existing proposal; omit it only for creation. Never invent evidence or risk prices. Does not submit orders. Requires existing connector write scope.",
                         investmentThesisSchema(), objectSchema(), false, false, false,
                         ConnectorApiKeyService.TRADE_SCOPE));
+                tools.add(tool("append_investment_decision", "Append investment decision record",
+                        "Append a caller-authored decision record to PostgreSQL for Context and Sheet mirroring. Uses the supplied decisionId for idempotent retries; a different record with that ID conflicts. Stores supplied fields without generating investment judgments and never prepares or submits orders. Requires existing connector write scope; available even when order execution is disabled.",
+                        investmentDecisionSchema(), objectSchema(), false, false, true,
+                        ConnectorApiKeyService.TRADE_SCOPE));
             }
             tools.add(tool(
                     "prepare_order",
@@ -193,6 +197,8 @@ public final class ConnectorMcpProtocol {
                 case "get_investment_context" -> investmentContext(request, userId, arguments);
                 case "put_investment_thesis" -> !tradeScopeGranted
                         ? forbiddenTrade(request) : putInvestmentThesis(request, userId, arguments);
+                case "append_investment_decision" -> !tradeScopeGranted
+                        ? forbiddenTrade(request) : appendInvestmentDecision(request, userId, arguments);
                 case "prepare_order" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : !liveExecutionAvailable
@@ -348,6 +354,50 @@ public final class ConnectorMcpProtocol {
             return toolError(request, "INVALID_ARGUMENT", "Invalid investment thesis payload", false, false);
         } catch (IllegalArgumentException exception) {
             return toolError(request, "INVALID_ARGUMENT", "Invalid investment thesis arguments", false, false);
+        }
+    }
+
+    private ObjectNode appendInvestmentDecision(ObjectNode request, UUID userId, JsonNode arguments) {
+        if (investmentContextService == null) return investmentContextUnavailable(request);
+        var fields = java.util.Set.of("decisionId", "asOf", "asset", "action", "referencePrice",
+                "priceSession", "horizon", "alphaThesis", "invalidation", "nextReviewTrigger", "confidence");
+        if (arguments == null || !arguments.isObject() || arguments.size() != fields.size())
+            return toolError(request, "INVALID_ARGUMENT", "All supported decision fields are required", false, false);
+        for (var field : arguments.propertyNames()) {
+            if (!fields.contains(field))
+                return toolError(request, "INVALID_ARGUMENT", "Unsupported decision field", false, false);
+        }
+        for (var field : new String[]{"decisionId", "asOf", "asset", "action", "priceSession", "horizon",
+                "alphaThesis", "invalidation", "nextReviewTrigger"}) {
+            if (!arguments.path(field).isTextual())
+                return toolError(request, "INVALID_ARGUMENT", "Decision fields have invalid types", false, false);
+        }
+        if (!arguments.path("referencePrice").isNumber() || !arguments.path("confidence").isNumber())
+            return toolError(request, "INVALID_ARGUMENT", "Decision fields have invalid types", false, false);
+        if (!java.util.Set.of("ADD", "HOLD", "REDUCE", "EXIT", "REPLACE")
+                    .contains(arguments.path("action").asText())
+                || !java.util.Set.of("REGULAR_CLOSE", "LIVE_REGULAR", "AFTER_HOURS", "PREMARKET")
+                    .contains(arguments.path("priceSession").asText()))
+            return toolError(request, "INVALID_ARGUMENT", "Decision action or priceSession is unsupported", false, false);
+        try {
+            var input = objectMapper.treeToValue(arguments, InvestmentContextService.DecisionInput.class);
+            return toolResult(request, investmentContextService.recordDecision(userId, input));
+        } catch (com.jmj.trade.investment.InvestmentException exception) {
+            return switch (exception.code()) {
+                case INVALID_INPUT -> toolError(request, "INVALID_ARGUMENT", "Invalid investment decision fields", false, false);
+                case CONFLICT -> toolError(request, "DECISION_CONFLICT", "decisionId conflicts with an existing decision", false, false);
+                case INVALID_USER -> toolError(request, "AUTHENTICATED_USER_INVALID", "Authenticated user is unavailable", false, true);
+                case NOT_FOUND -> toolError(request, "INVESTMENT_STATE_NOT_FOUND", "Required investment state was not found", false, false);
+            };
+        } catch (DataAccessException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "append_investment_decision")
+                    .addKeyValue("outcome", "unavailable")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Investment decision storage unavailable");
+            return investmentContextUnavailable(request);
+        } catch (tools.jackson.core.JacksonException | IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", "Invalid investment decision fields", false, false);
         }
     }
 
@@ -508,6 +558,31 @@ public final class ConnectorMcpProtocol {
         properties.set("thesis", thesis);
         properties.set("expectedUpdatedAt", objectMapper.createObjectNode().put("type", "string").put("format", "date-time"));
         schema.putArray("required").add("ticker").add("thesis");
+        return schema;
+    }
+
+    private ObjectNode investmentDecisionSchema() {
+        var schema = objectMapper.createObjectNode().put("type", "object").put("additionalProperties", false);
+        var fields = schema.putObject("properties");
+        fields.set("decisionId", objectMapper.createObjectNode().put("type", "string").put("format", "uuid"));
+        fields.set("asOf", objectMapper.createObjectNode().put("type", "string").put("format", "date-time"));
+        fields.set("asset", objectMapper.createObjectNode().put("type", "string")
+                .put("pattern", "^[A-Za-z0-9._-]{1,32}$"));
+        var action = fields.putObject("action").put("type", "string");
+        for (var value : new String[]{"ADD", "HOLD", "REDUCE", "EXIT", "REPLACE"}) action.withArray("enum").add(value);
+        fields.set("referencePrice", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        var priceSession = fields.putObject("priceSession").put("type", "string");
+        for (var value : new String[]{"REGULAR_CLOSE", "LIVE_REGULAR", "AFTER_HOURS", "PREMARKET"})
+            priceSession.withArray("enum").add(value);
+        fields.set("horizon", objectMapper.createObjectNode().put("type", "string").put("minLength", 1).put("maxLength", 80));
+        fields.set("alphaThesis", objectMapper.createObjectNode().put("type", "string").put("minLength", 1));
+        fields.set("invalidation", objectMapper.createObjectNode().put("type", "string").put("minLength", 1));
+        fields.set("nextReviewTrigger", objectMapper.createObjectNode().put("type", "string").put("minLength", 1));
+        fields.set("confidence", objectMapper.createObjectNode().put("type", "number")
+                .put("minimum", 0).put("maximum", 1));
+        schema.putArray("required").add("decisionId").add("asOf").add("asset").add("action")
+                .add("referencePrice").add("priceSession").add("horizon").add("alphaThesis")
+                .add("invalidation").add("nextReviewTrigger").add("confidence");
         return schema;
     }
 

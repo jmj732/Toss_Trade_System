@@ -322,7 +322,7 @@ class AlphaVantageEarningsEstimatesProviderTest {
         SERVER.stubFor(get(urlPathEqualTo("/query"))
                 .withQueryParam("function", equalTo("EARNINGS_ESTIMATES"))
                 .willReturn(aResponse().withBody(MAPPER.writeValueAsString(body))));
-        var provider = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC));
+        var provider = provider(Clock.fixed(OBSERVED_AT, ZoneOffset.UTC), Duration.ofSeconds(5));
         var request = new ProviderRequest("AVT", Map.of());
 
         provider.fetch(request);
@@ -488,6 +488,11 @@ class AlphaVantageEarningsEstimatesProviderTest {
         return new AlphaVantageEarningsEstimatesProvider(configuration(), MAPPER, clock);
     }
 
+    private static AlphaVantageEarningsEstimatesProvider provider(Clock clock, Duration timeout) {
+        return new AlphaVantageEarningsEstimatesProvider(
+                configuration("test-token", Map.of(), timeout), MAPPER, clock);
+    }
+
     private static AlphaVantageEarningsEstimatesProvider providerWithKeys(
             Clock clock, String primaryKey, String additionalKeys) {
         return new AlphaVantageEarningsEstimatesProvider(configuration(primaryKey, Map.of()), MAPPER, clock,
@@ -504,10 +509,15 @@ class AlphaVantageEarningsEstimatesProviderTest {
 
     private static StockAnalysisProviderProperties.ProviderConfiguration configuration(
             String apiKey, Map<String, String> fields) {
+        return configuration(apiKey, fields, Duration.ofSeconds(1));
+    }
+
+    private static StockAnalysisProviderProperties.ProviderConfiguration configuration(
+            String apiKey, Map<String, String> fields, Duration timeout) {
         return new StockAnalysisProviderProperties.ProviderConfiguration(
                 true, true, URI.create(SERVER.baseUrl()), "/query", apiKey, "", "apikey",
                 Map.of("function", "EARNINGS_ESTIMATES"), Set.of(), "", Map.of(), Map.of(), Map.of(), Map.of(),
-                "INSTANT", Duration.ofSeconds(1), Duration.ofSeconds(1), 0, Duration.ZERO,
+                "INSTANT", timeout, timeout, 0, Duration.ZERO,
                 1000, Duration.ofSeconds(1), "", fields);
     }
 

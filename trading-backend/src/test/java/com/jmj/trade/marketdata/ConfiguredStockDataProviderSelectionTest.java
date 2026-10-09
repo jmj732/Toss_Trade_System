@@ -60,7 +60,7 @@ class ConfiguredStockDataProviderSelectionTest {
         var configuration = new StockAnalysisProviderProperties.ProviderConfiguration(
                 true, false, URI.create(SERVER.baseUrl()), "/unused", "test-key", "", "",
                 Map.of(), Set.of(), "selection-test", Map.of(), Map.of(), Map.of(), Map.of(), "INSTANT",
-                Duration.ofSeconds(1), Duration.ofSeconds(1), 0, Duration.ZERO, 100, Duration.ofSeconds(1),
+                Duration.ofSeconds(5), Duration.ofSeconds(5), 0, Duration.ZERO, 100, Duration.ofSeconds(1),
                 "", Map.of(), Map.of("quote", quote, "history", history, "fundamentals", fundamentals));
         var provider = new ConfiguredStockDataProvider(
                 StockDataProviderId.FMP, configuration, new tools.jackson.databind.ObjectMapper());
