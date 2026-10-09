@@ -14,15 +14,16 @@ fail() {
   exit 1
 }
 
-python3 - "$script" "$workflow" "$contract" <<'PY'
+python3 - "$script" "$workflow" "$contract" "$0" <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
-script_path, workflow_path, contract_path = map(Path, sys.argv[1:])
+script_path, workflow_path, contract_path, test_path = map(Path, sys.argv[1:])
 script = script_path.read_text()
 workflow = workflow_path.read_text()
+fixture_test = test_path.read_text()
 contract = json.loads(contract_path.read_text())
 assert contract["version"] == 1
 assert contract["tickers"] == ["AVT", "CSTM", "GOOGL", "LUNR", "RDW", "VST"]
@@ -68,6 +69,9 @@ while index < len(field_array):
 assert field_count == len(contract["fields"]), "SQL projection and machine-readable field contract differ in length"
 assert "docker compose" in script and "compose ps -q" in script
 assert "docker inspect" in script and "127.0.0.1:8080/actuator/health/readiness" in script
+assert "postgres_tcp_ready()" in fixture_test
+assert "-h 127.0.0.1" in fixture_test and "-c 'SELECT 1'" in fixture_test
+assert "pg" + "_isready -U trade -d trade" not in fixture_test
 assert "StrictHostKeyChecking=yes" in workflow and "UserKnownHostsFile=" in workflow
 assert "BACKEND_DEPLOY_SSH_KEY" in workflow and "BACKEND_DEPLOY_KNOWN_HOSTS" in workflow
 assert "workflow_dispatch:" in workflow and "workflow_run:" not in workflow
@@ -236,17 +240,25 @@ PY
 if docker info >/dev/null 2>&1; then
   pg_container="runtime-readonly-test-$RANDOM-$$"
   pg_owner='11111111-2222-4333-8444-555555555555'
+  pg_password='read-only-test-only'
   cleanup_pg() { docker rm -f "$pg_container" >/dev/null 2>&1 || true; }
   trap 'cleanup_pg; rm -rf -- "$tmp"' EXIT
   docker run --rm -d --name "$pg_container" \
-    -e POSTGRES_USER=trade -e POSTGRES_PASSWORD=read-only-test-only -e POSTGRES_DB=trade \
+    -e POSTGRES_USER=trade -e "POSTGRES_PASSWORD=$pg_password" -e POSTGRES_DB=trade \
     postgres:16-alpine >/dev/null
+  postgres_tcp_ready() {
+    local result
+    result="$(docker exec -e "PGPASSWORD=$pg_password" "$pg_container" \
+      psql -X -q -t -A -w -v ON_ERROR_STOP=1 -U trade -d trade -h 127.0.0.1 \
+      -c 'SELECT 1' 2>/dev/null)" || return 1
+    [[ "$result" == 1 ]]
+  }
   ready=0
   for _ in {1..30}; do
-    if docker exec "$pg_container" pg_isready -U trade -d trade >/dev/null 2>&1; then ready=1; break; fi
+    if postgres_tcp_ready; then ready=1; break; fi
     sleep 1
   done
-  [[ "$ready" == 1 ]] || fail "local PostgreSQL fixture did not become ready"
+  [[ "$ready" == 1 ]] || fail "local PostgreSQL TCP fixture did not become ready"
   docker exec -i "$pg_container" psql -X -q -v ON_ERROR_STOP=1 -U trade -d trade >/dev/null <<SQL
 CREATE TABLE flyway_schema_history (installed_rank integer, version text, success boolean);
 CREATE TABLE analysis_input_snapshots (id integer, user_id uuid);
