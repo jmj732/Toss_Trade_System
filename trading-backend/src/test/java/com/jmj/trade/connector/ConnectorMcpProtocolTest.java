@@ -59,6 +59,134 @@ class ConnectorMcpProtocolTest {
         verifyNoInteractions(service, tradeService);
     }
 
+    @Test
+    void listsAndWritesDecisionRecordWithTradeScopeEvenWhenOrdersAreDisabled() throws Exception {
+        var mapper = new ObjectMapper();
+        var investment = mock(InvestmentContextService.class);
+        var disabledOrdersProtocol = new ConnectorMcpProtocol(service,
+                (McpOrderExecutionService) null, investment, mapper);
+        var listed = disabledOrdersProtocol.handle(request("decision-tools", "tools/list", "{}"),
+                USER, CONNECTION, true);
+        var tools = listed.path("result").path("tools");
+        var writeTool = java.util.stream.StreamSupport.stream(tools.spliterator(), false)
+                .filter(tool -> "append_investment_decision".equals(tool.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(writeTool.path("securitySchemes").get(0).path("scopes").get(0).asText())
+                .isEqualTo(ConnectorApiKeyService.TRADE_SCOPE);
+        assertThat(writeTool.path("annotations").path("readOnlyHint").asBoolean()).isFalse();
+        assertThat(writeTool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
+        assertThat(writeTool.path("annotations").path("idempotentHint").asBoolean()).isTrue();
+        assertThat(writeTool.path("inputSchema").path("additionalProperties").asBoolean()).isFalse();
+        assertThat(writeTool.path("inputSchema").path("required").toString())
+                .contains("decisionId", "asOf", "asset", "action", "referencePrice", "priceSession",
+                        "horizon", "alphaThesis", "invalidation", "nextReviewTrigger", "confidence");
+
+        var decisionId = UUID.fromString("018f0000-0000-7000-8000-000000000003");
+        var asOf = Instant.parse("2026-10-08T15:04:05Z");
+        var riskCheck = mapper.readTree("{\"status\":\"NOT_CONFIGURED\"}");
+        var saved = new InvestmentContextService.DecisionView(decisionId, asOf, "AVT", "HOLD",
+                new BigDecimal("123.45000000"), "REGULAR_CLOSE", "swing-5d", "caller thesis",
+                "caller invalidation", "review after next close", new BigDecimal("0.75"), riskCheck, asOf);
+        when(investment.recordDecision(eq(USER), any(InvestmentContextService.DecisionInput.class)))
+                .thenReturn(saved);
+        var response = disabledOrdersProtocol.handle(toolCall("append", "append_investment_decision",
+                "{\"decisionId\":\"018f0000-0000-7000-8000-000000000003\","
+                        + "\"asOf\":\"2026-10-08T15:04:05Z\",\"asset\":\"AVT\","
+                        + "\"action\":\"HOLD\",\"referencePrice\":123.45,"
+                        + "\"priceSession\":\"REGULAR_CLOSE\",\"horizon\":\"swing-5d\","
+                        + "\"alphaThesis\":\"caller thesis\",\"invalidation\":\"caller invalidation\","
+                        + "\"nextReviewTrigger\":\"review after next close\",\"confidence\":0.75}"),
+                USER, CONNECTION, true);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(response.path("result").path("structuredContent").path("decisionId").asText())
+                .isEqualTo(decisionId.toString());
+        assertThat(response.path("result").path("structuredContent").path("asset").asText()).isEqualTo("AVT");
+        assertThat(response.path("result").path("structuredContent").path("action").asText()).isEqualTo("HOLD");
+        verify(investment).recordDecision(eq(USER), argThat(input ->
+                decisionId.equals(input.decisionId()) && asOf.equals(input.asOf())
+                        && "AVT".equals(input.asset()) && "HOLD".equals(input.action())
+                        && input.referencePrice().compareTo(new BigDecimal("123.45")) == 0
+                        && "REGULAR_CLOSE".equals(input.priceSession())
+                        && "swing-5d".equals(input.horizon())
+                        && "caller thesis".equals(input.alphaThesis())
+                        && "caller invalidation".equals(input.invalidation())
+                        && "review after next close".equals(input.nextReviewTrigger())
+                        && input.confidence().compareTo(new BigDecimal("0.75")) == 0));
+        verifyNoInteractions(service);
+    }
+
+    @Test
+    void decisionWriteSeparatesScopeAndArgumentFailures() throws Exception {
+        var investment = mock(InvestmentContextService.class);
+        var writer = new ConnectorMcpProtocol(service, (McpOrderExecutionService) null,
+                investment, new ObjectMapper());
+        var validArgs = "{\"decisionId\":\"018f0000-0000-7000-8000-000000000004\","
+                + "\"asOf\":\"2026-10-08T15:04:05Z\",\"asset\":\"AVT\",\"action\":\"HOLD\","
+                + "\"referencePrice\":123.45,\"priceSession\":\"REGULAR_CLOSE\",\"horizon\":\"5d\","
+                + "\"alphaThesis\":\"caller thesis\",\"invalidation\":\"caller supplied\","
+                + "\"nextReviewTrigger\":\"caller supplied\",\"confidence\":0.5}";
+        var denied = writer.handle(toolCall("denied-decision", "append_investment_decision", validArgs),
+                USER, CONNECTION);
+        assertThat(denied.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("TRADE_SCOPE_REQUIRED");
+
+        var invalid = writer.handle(toolCall("invalid-decision", "append_investment_decision",
+                validArgs.substring(0, validArgs.length() - 1) + ",\"unknown\":true}"), USER, CONNECTION, true);
+        assertThat(invalid.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+
+        var invalidEnum = writer.handle(toolCall("invalid-enum", "append_investment_decision",
+                validArgs.replace("\"action\":\"HOLD\"", "\"action\":\"hold\"")),
+                USER, CONNECTION, true);
+        assertThat(invalidEnum.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+
+        var legacyAction = writer.handle(toolCall("legacy-action", "append_investment_decision",
+                validArgs.replace("\"action\":\"HOLD\"", "\"action\":\"REVIEW\"")),
+                USER, CONNECTION, true);
+        var legacySession = writer.handle(toolCall("legacy-session", "append_investment_decision",
+                validArgs.replace("\"priceSession\":\"REGULAR_CLOSE\"", "\"priceSession\":\"PORTFOLIO_VALUE\"")),
+                USER, CONNECTION, true);
+        var missingPrice = writer.handle(toolCall("missing-price", "append_investment_decision",
+                validArgs.replace("\"referencePrice\":123.45", "\"referencePrice\":null")),
+                USER, CONNECTION, true);
+        assertThat(legacyAction.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        assertThat(legacySession.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        assertThat(missingPrice.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        verifyNoInteractions(investment);
+    }
+
+    @Test
+    void decisionWriteReturnsConflictAndValidationAsDistinctSafeErrors() throws Exception {
+        var investment = mock(InvestmentContextService.class);
+        var writer = new ConnectorMcpProtocol(service, (McpOrderExecutionService) null,
+                investment, new ObjectMapper());
+        var validArgs = "{\"decisionId\":\"018f0000-0000-7000-8000-000000000005\","
+                + "\"asOf\":\"2026-10-08T15:04:05Z\",\"asset\":\"AVT\",\"action\":\"HOLD\","
+                + "\"referencePrice\":123.45,\"priceSession\":\"REGULAR_CLOSE\",\"horizon\":\"5d\","
+                + "\"alphaThesis\":\"caller thesis\",\"invalidation\":\"caller supplied\","
+                + "\"nextReviewTrigger\":\"caller supplied\",\"confidence\":0.5}";
+        when(investment.recordDecision(eq(USER), any(InvestmentContextService.DecisionInput.class)))
+                .thenThrow(new com.jmj.trade.investment.InvestmentException(
+                        com.jmj.trade.investment.InvestmentException.Code.CONFLICT));
+        var conflict = writer.handle(toolCall("conflict", "append_investment_decision", validArgs),
+                USER, CONNECTION, true);
+        assertThat(conflict.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("DECISION_CONFLICT");
+
+        when(investment.recordDecision(eq(USER), any(InvestmentContextService.DecisionInput.class)))
+                .thenThrow(new com.jmj.trade.investment.InvestmentException(
+                        com.jmj.trade.investment.InvestmentException.Code.INVALID_INPUT));
+        var invalid = writer.handle(toolCall("validation", "append_investment_decision", validArgs),
+                USER, CONNECTION, true);
+        assertThat(invalid.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+    }
+
 
     private static final UUID USER = UUID.fromString("018f0000-0000-7000-8000-000000000001");
     private static final UUID CONNECTION = UUID.fromString("018f0000-0000-7000-8000-000000000002");

@@ -47,12 +47,16 @@ user. No connector key needs to be copied into ChatGPT.
 The requested OAuth scope determines the MCP tools:
 
 - `connector:read`: `get_portfolio`, `get_orders`, `get_recent_fills`, `get_order`, and `get_investment_context`.
-- `connector:trade`: the five read tools plus `put_investment_thesis`, `prepare_order`, `submit_order`, and `cancel_order`. Thesis proposals reuse this existing write scope; no new scope is introduced.
+- `connector:trade`: the five read tools plus `put_investment_thesis`, `append_investment_decision`, `prepare_order`, `submit_order`, and `cancel_order`. Thesis proposals and decision records reuse this existing write scope; no new scope is introduced.
 
 `put_investment_thesis` stores externally authored proposals only, using `ticker`, `thesis` and optional `expectedUpdatedAt`. Updates require the exact Context timestamp. It cannot set or overwrite `CONFIRMED`, and it does not place orders. See the [proposal contract](investment-context-mcp-contract.md#implemented-proposal-and-confirmation-boundary). Read-scoped scheduled tasks cannot call it. Do not assume deploying a tool changes an existing scheduled task connection or its scope.
 
+`append_investment_decision` records a caller-supplied decision in the existing append-only ledger. It requires `decisionId`, `asOf`, `asset`, `action`, `referencePrice`, `priceSession`, `horizon`, `alphaThesis`, `invalidation`, `nextReviewTrigger`, and `confidence`. Actions are `ADD`, `HOLD`, `REDUCE`, `EXIT`, or `REPLACE`; price sessions are `REGULAR_CLOSE`, `LIVE_REGULAR`, `AFTER_HOURS`, or `PREMARKET`. The backend validates and normalizes these fields, computes `riskPolicyCheck`, and supplies `createdAt`. Repeating the same normalized record with the same UUID returns the existing row; a different record with that UUID returns `DECISION_CONFLICT`. The tool is available with `connector:trade` even when live order execution is disabled. It does not generate decision fields, prepare orders, or submit orders. The `Decision Ledger` Sheet is a DB-backed mirror; it is not an import route. See the [decision record contract](investment-context-mcp-contract.md#append-investment-decision).
+
+The existing seven legacy Sheet decisions are not accepted by this canonical input contract (`REVIEW` action, non-UUID identifiers, unsupported session labels, and six missing reference prices). Do not translate or fill those fields from assumptions. This MCP tool does not import or rewrite the Sheet rows.
+
 If `REAL_ORDER_ENABLED=false`, trade-scoped connections still show the three
-trade tools so the capability is discoverable, but calls return an explicit
+order-execution tools so the capability is discoverable, but order calls return an explicit
 disabled error and no broker order is sent. Reconnect the MCP app after
 changing its requested scope so the client receives a new token and rescans
 the tool list.
