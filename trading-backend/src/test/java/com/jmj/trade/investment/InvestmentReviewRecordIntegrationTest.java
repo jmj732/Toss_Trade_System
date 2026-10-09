@@ -88,6 +88,11 @@ class InvestmentReviewRecordIntegrationTest extends PostgresIntegrationTest {
         assertThat(exact.priceSession()).isEqualTo("REGULAR_CLOSE");
         assertThat(exact.referencePrice()).isEqualByComparingTo("101.5");
 
+        var controlChars = reviews.recordReview(USER, input("USER_REST", "sec-3", "SECURITY", "AAPL", "REVIEW",
+                null, "\tregular_close\n", null), actor);
+        assertThat(controlChars.rawPriceSession()).isEqualTo("\tregular_close\n");
+        assertThat(controlChars.priceSession()).isEqualTo("REGULAR_CLOSE");
+
         var alias = reviews.recordReview(USER, input("USER_REST", "sec-2", "SECURITY", "AAPL", "REVIEW",
                 null, "CLOSE", null), actor);
         assertThat(alias.rawPriceSession()).isEqualTo("CLOSE");

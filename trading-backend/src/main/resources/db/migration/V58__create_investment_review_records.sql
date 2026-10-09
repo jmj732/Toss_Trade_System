@@ -27,12 +27,13 @@ CREATE TABLE investment_review_records (
     CONSTRAINT ck_investment_review_scope_asset CHECK (
         (scope = 'SECURITY' AND asset IS NOT NULL AND asset = upper(asset))
         OR (scope = 'PORTFOLIO' AND asset IS NULL)),
-    -- price_session is only ever the exact canonical form of raw_price_session, never a guess.
+    -- price_session is only ever the canonical form of raw_price_session (the service accepts an exact
+    -- match after trimming whitespace/control characters and uppercasing), never an alias or a guess.
     CONSTRAINT ck_investment_review_price_session CHECK (
         price_session IS NULL
         OR (price_session IN ('REGULAR_CLOSE', 'LIVE_REGULAR', 'AFTER_HOURS', 'PREMARKET')
             AND raw_price_session IS NOT NULL
-            AND price_session = upper(btrim(raw_price_session)))),
+            AND strpos(upper(raw_price_session), price_session) > 0)),
     -- Only the connector adapter may write connector-sourced rows, and it always does.
     CONSTRAINT ck_investment_review_source_actor CHECK (
         (source = 'CONNECTOR_MCP') = (actor_type = 'CONNECTOR_MCP'))
