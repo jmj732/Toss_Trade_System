@@ -3156,8 +3156,13 @@ public final class InvestmentContextService {
         if (inputStatus != InvestmentDataCalculator.DataStatus.OK
                 && inputStatus != InvestmentDataCalculator.DataStatus.STALE) return Top2Stress.missing(inputStatus);
         if (exposures.stream().anyMatch(item -> item.loss() == null)) return Top2Stress.missing(inputStatus);
+        if (exposures.size() < 2) {
+            return Top2Stress.missing(InvestmentDataCalculator.DataStatus.NOT_APPLICABLE);
+        }
         var known = exposures;
         Top2Stress best = Top2Stress.missing();
+        var insufficientHistory = false;
+        var undefinedCorrelation = false;
         for (int leftIndex = 0; leftIndex < known.size(); leftIndex++) {
             var left = known.get(leftIndex);
             var leftCloses = dailyCloses(userId, left.ticker());
@@ -3165,14 +3170,30 @@ public final class InvestmentContextService {
                 var right = known.get(rightIndex);
                 var rightCloses = dailyCloses(userId, right.ticker());
                 var returns = pairedReturns(leftCloses, rightCloses);
-                if (returns.left().size() < 30) continue;
+                if (returns.left().size() < 30) {
+                    insufficientHistory = true;
+                    continue;
+                }
                 var correlation = InvestmentDataCalculator.correlation(returns.left(), returns.right());
-                if (correlation == null || correlation.signum() <= 0) continue;
+                if (correlation == null) {
+                    undefinedCorrelation = true;
+                    continue;
+                }
+                if (correlation.signum() <= 0) continue;
                 if (best.correlation() == null || correlation.compareTo(best.correlation()) > 0) {
                     best = new Top2Stress(left.ticker() + "," + right.ticker(), correlation,
                             left.loss().add(right.loss()), inputStatus);
                 }
             }
+        }
+        if (best.correlation() == null) {
+            if (insufficientHistory) {
+                return Top2Stress.missing(InvestmentDataCalculator.DataStatus.INSUFFICIENT_HISTORY);
+            }
+            if (undefinedCorrelation) {
+                return Top2Stress.missing(InvestmentDataCalculator.DataStatus.UNVERIFIED);
+            }
+            return Top2Stress.missing(InvestmentDataCalculator.DataStatus.NOT_APPLICABLE);
         }
         return best;
     }

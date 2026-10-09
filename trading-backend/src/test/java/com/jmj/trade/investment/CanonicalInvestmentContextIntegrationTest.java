@@ -26,6 +26,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -247,6 +248,52 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
         assertThat(aapl.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
     }
 
+    @Test
+    void topTwoStressReportsInsufficientHistoryWhenNoPairHasThirtyPairedReturns() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var context = freshTwoPositionRiskContext(now);
+
+        var risk = context.securities().stream().filter(security -> security.ticker().equals("AAPL"))
+                .findFirst().orElseThrow().risk();
+
+        assertThat(risk.top2CorrelatedStress()).isNull();
+        assertThat(risk.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.INSUFFICIENT_HISTORY);
+    }
+
+    @Test
+    void topTwoStressIsNotApplicableWhenEveryEvaluablePairIsNonpositive() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        freshTwoPositionRiskContext(now);
+        var aaplCloses = alternatingCloses(100, true);
+        var msftCloses = alternatingCloses(200, false);
+        assertThat(InvestmentDataCalculator.correlation(dailyReturns(aaplCloses), dailyReturns(msftCloses)))
+                .isNegative();
+        insertCloseHistory("AAPL", aaplCloses, now);
+        insertCloseHistory("MSFT", msftCloses, now);
+
+        var risk = configuredSheetContextService().context(USER_ID).securities().stream()
+                .filter(security -> security.ticker().equals("AAPL"))
+                .findFirst().orElseThrow().risk();
+
+        assertThat(risk.top2CorrelatedStress()).isNull();
+        assertThat(risk.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_APPLICABLE);
+    }
+
+    @Test
+    void topTwoStressIsUnverifiedWhenCorrelationIsUndefinedDespiteEnoughHistory() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        freshTwoPositionRiskContext(now);
+        insertCloseHistory("AAPL", closes(100, 1), now);
+        insertCloseHistory("MSFT", java.util.Collections.nCopies(31, BigDecimal.valueOf(100)), now);
+
+        var risk = configuredSheetContextService().context(USER_ID).securities().stream()
+                .filter(security -> security.ticker().equals("AAPL"))
+                .findFirst().orElseThrow().risk();
+
+        assertThat(risk.top2CorrelatedStress()).isNull();
+        assertThat(risk.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.UNVERIFIED);
+    }
+
     private InvestmentOsSheetModel.SheetTable accountStateWithManualRows(String today, Instant now) {
         var headers = new ArrayList<>(InvestmentOsSheetModel.accountHeaders());
         headers.add("asOf");
@@ -294,6 +341,60 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                         UUID.randomUUID(), InvestmentOsSheetModel.ACCOUNT_1,
                         Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(10)));
         return service;
+    }
+
+    private InvestmentContextService.ContextView freshTwoPositionRiskContext(Instant now) throws Exception {
+        persistCombinedSnapshot(LocalDate.now(ZoneId.of("Asia/Seoul")), now);
+        for (var ticker : List.of("AAPL", "MSFT")) {
+            insertConfirmedThesis(ticker);
+            insertRiskPriceSnapshot(ticker, now);
+        }
+        return configuredSheetContextService().context(USER_ID);
+    }
+
+    private static List<BigDecimal> closes(long start, long step) {
+        var result = new ArrayList<BigDecimal>();
+        for (var index = 0; index <= 30; index++) {
+            result.add(BigDecimal.valueOf(start + index * step));
+        }
+        return result;
+    }
+
+    private static List<BigDecimal> alternatingCloses(long start, boolean gainsFirst) {
+        var result = new ArrayList<BigDecimal>();
+        var close = BigDecimal.valueOf(start);
+        var gain = new BigDecimal("1.10");
+        var decline = new BigDecimal("0.90");
+        result.add(close);
+        for (var index = 0; index < 30; index++) {
+            var positiveReturn = (index % 2 == 0) == gainsFirst;
+            close = close.multiply(positiveReturn ? gain : decline);
+            result.add(close);
+        }
+        return result;
+    }
+
+    private static List<BigDecimal> dailyReturns(List<BigDecimal> closes) {
+        var result = new ArrayList<BigDecimal>();
+        for (var index = 1; index < closes.size(); index++) {
+            var prior = closes.get(index - 1);
+            result.add(closes.get(index).subtract(prior).divide(prior, MathContext.DECIMAL128));
+        }
+        return result;
+    }
+
+    private void insertCloseHistory(String ticker, List<BigDecimal> closes, Instant now) {
+        var inputSnapshotId = ensureInputSnapshot(ticker);
+        for (var index = 0; index < closes.size(); index++) {
+            var asOf = now.minus(Duration.ofDays(closes.size() - 1L - index));
+            var date = OffsetDateTime.ofInstant(asOf, ZoneOffset.UTC);
+            jdbc.update("""
+                    INSERT INTO investment_price_snapshots (
+                        id, user_id, input_snapshot_id, ticker, as_of, session,
+                        regular_close, regular_close_as_of, source, observed_at
+                    ) VALUES (?, ?, ?, ?, ?, 'REGULAR_CLOSE', ?, ?, 'SYNTHETIC_TEST', ?)
+                    """, UUID.randomUUID(), USER_ID, inputSnapshotId, ticker, date, closes.get(index), date, date);
+        }
     }
 
     private void insertConfirmedThesis(String ticker) {

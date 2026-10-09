@@ -133,6 +133,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.invalidationDownside()).isEqualByComparingTo("0.20000000");
         assertThat(risk.plannedLossContribution()).isEqualByComparingTo("0.05000000");
         assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.OK);
+        assertThat(risk.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_APPLICABLE);
         assertThat(risk.sizingEligible()).isTrue();
         assertThat(risk.softBudgetStatus()).isEqualTo("WITHIN_SOFT_BUDGET");
     }
