@@ -134,6 +134,7 @@ Ticker는 1~32자의 영문자·숫자·`.`, `_`, `-`만 허용하고 대문자�
 - `get_investment_context` / `GET /investment/context`는 저장된 레코드와 스냅샷만 읽고 context를 구성한다. 이 주기를 실행하거나 refresh하지 않는다. 후장 캡처는 일봉 분석 입력을 수집하고, 5분 주기는 quote-only 입력을 수집한다. 시트 자동 동기화는 계좌 입력을 읽고 생성된 값/미러를 반영한다. 미러는 Sheets 셀에서 MCP로 직접 기록하는 통로가 아니다.
 - 기존 `connector:trade` 쓰기 범위에는 `put_investment_thesis`가 추가된다. 외부 작성 proposal만 DB에 저장하고 Context와 기존 Sheet 동기화가 이를 읽는다. 인자는 `ticker`, `thesis`, 선택적 `expectedUpdatedAt`이다. 생성에는 expected 시각을 생략하고, 기존 proposal 수정에는 Context에서 읽은 정확한 `thesis.updatedAt`을 제공한다. 도구는 `AI_PROPOSED`, `UNVERIFIED`, `INVALIDATION_UNDEFINED`만 허용한다. `CONFIRMED` 요청은 `CONFIRMATION_REQUIRED`, 확정 상태 덮어쓰기 또는 버전 충돌은 `THESIS_STATE_CONFLICT`다. 확정은 기존 로그인 사용자 thesis REST API로 수행한다. 읽기 범위만 가진 키는 쓸 수 없고 새 앱 권한은 추가하지 않는다. 주문을 제출하지 않는다.
 - `get_investment_context`는 읽기 전용이다. Decision과 전술 입력은 기존 로그인 사용자 REST API에 남으며 MCP 쓰기 도구로 추가하지 않는다. 제안 저장은 append-only 감사 이력이나 사용자 확인 이벤트 저장을 추가하지 않는다. 실제 예약 세션에서 도구가 보이는지는 별도 검증이 필요하다. 장중 체결 VWAP feed와 Calibration Log도 이 변경에 포함되지 않는다. [컨트롤러 코드](trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextController.java)와 [계약 감사](docs/ops/investment-context-mcp-contract.md)를 참조한다.
+- 현재 스테이징의 이미지·readiness·Flyway·저장된 스냅샷 fingerprint를 확인할 때는 GitHub Actions의 수동 [read-only runtime diagnostic](.github/workflows/runtime-readonly-diagnostic.yml)을 사용한다. 범위와 fingerprint 필드는 [CD 런북](docs/ops/backend-cd.md#read-only-runtime-diagnostic)에 있다.
 
 ### 문서 갱신 규칙
 

@@ -17,6 +17,7 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/test-backend-cd.sh
+          bash scripts/test-runtime-readonly-diagnostic.sh
           bash scripts/test-cd-image-reuse.sh
           ./scripts/test-local-stack.sh 2>&1 | tee contract-output.log
       - name: local-stack smoke

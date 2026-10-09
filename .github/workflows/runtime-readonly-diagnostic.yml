@@ -1,0 +1,105 @@
+name: Read-only runtime diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Optional 40-character commit SHA expected in the running backend image tag
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Inspect staging runtime without changing it
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate requested image SHA
+        id: expected
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^($|[0-9a-fA-F]{40})$ ]] || {
+            echo "expected_sha must be empty or 40 hexadecimal characters" >&2
+            exit 2
+          }
+
+      - name: Capture sanitized read-only runtime evidence over pinned SSH
+        id: diagnostic
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
+          BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
+          BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
+          BACKEND_DEPLOY_PATH: ${{ secrets.BACKEND_DEPLOY_PATH }}
+          BACKEND_DEPLOY_SSH_KEY: ${{ secrets.BACKEND_DEPLOY_SSH_KEY }}
+          BACKEND_DEPLOY_KNOWN_HOSTS: ${{ secrets.BACKEND_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${BACKEND_DEPLOY_HOST:?missing BACKEND_DEPLOY_HOST}"
+          : "${BACKEND_DEPLOY_PORT:?missing BACKEND_DEPLOY_PORT}"
+          : "${BACKEND_DEPLOY_USER:?missing BACKEND_DEPLOY_USER}"
+          : "${BACKEND_DEPLOY_PATH:?missing BACKEND_DEPLOY_PATH}"
+          : "${BACKEND_DEPLOY_SSH_KEY:?missing BACKEND_DEPLOY_SSH_KEY}"
+          : "${BACKEND_DEPLOY_KNOWN_HOSTS:?missing BACKEND_DEPLOY_KNOWN_HOSTS}"
+
+          key_file="$(mktemp)"
+          known_hosts_file="$(mktemp)"
+          trap 'rm -f -- "$key_file" "$known_hosts_file"' EXIT
+          umask 077
+          printf '%s\n' "$BACKEND_DEPLOY_SSH_KEY" >"$key_file"
+          printf '%s\n' "$BACKEND_DEPLOY_KNOWN_HOSTS" >"$known_hosts_file"
+
+          ssh_args=(
+            -i "$key_file"
+            -p "$BACKEND_DEPLOY_PORT"
+            -o BatchMode=yes
+            -o ConnectTimeout=30
+            -o IdentitiesOnly=yes
+            -o ServerAliveInterval=30
+            -o ServerAliveCountMax=10
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$known_hosts_file"
+          )
+          remote_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
+          remote_sha="$(printf '%q' "$EXPECTED_SHA")"
+          remote_command="export PATH=\"\$HOME/bin:\$PATH\"; BACKEND_DEPLOY_PATH=$remote_path EXPECTED_SHA=$remote_sha doppler run --project trade --config stg -- bash -s"
+          raw_file="$RUNNER_TEMP/runtime-diagnostic-raw.json"
+          evidence_file="$RUNNER_TEMP/runtime-diagnostic.json"
+          ssh_error_file="$RUNNER_TEMP/runtime-diagnostic-ssh.stderr"
+          set +e
+          # The quoted path/SHA are intentionally expanded in the remote command.
+          # shellcheck disable=SC2029
+          ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" "$remote_command" \
+            < scripts/runtime-readonly-diagnostic.sh >"$raw_file" 2>"$ssh_error_file"
+          probe_exit=$?
+          set -e
+          if python3 scripts/sanitize-runtime-diagnostic.py "$raw_file" "$evidence_file"; then
+            sanitize_exit=0
+          else
+            sanitize_exit=$?
+          fi
+          cat "$evidence_file"
+          rm -f -- "$raw_file" "$ssh_error_file"
+          if (( probe_exit != 0 || sanitize_exit != 0 )); then
+            echo "runtime diagnostic failed (remote=$probe_exit, output validation=$sanitize_exit)" >&2
+            exit 1
+          fi
+
+      - name: Upload sanitized diagnostic JSON
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: runtime-readonly-diagnostic
+          path: ${{ runner.temp }}/runtime-diagnostic.json
+          if-no-files-found: ignore
+          retention-days: 2
