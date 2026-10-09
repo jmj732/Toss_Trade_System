@@ -46,7 +46,7 @@ class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
     void persistsPromptStatusesWithoutChangingTheirMeaningAndKeepsLegacyStatuses() {
         for (var status : List.of("AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED",
                 "CONFIRMED", "NOT_REVIEWED", "SUSPECTED", "CLEARED")) {
-            var saved = service.putThesis(USER, "avt", input(status));
+            var saved = service.putThesis(USER, "avt", input(status), null, null, null, null);
             assertThat(saved.invalidationStatus()).isEqualTo(status);
             assertThat(jdbc.queryForObject("SELECT invalidation_status FROM investment_thesis_states WHERE user_id=? AND ticker='AVT'",
                     String.class, USER)).isEqualTo(status);
@@ -55,7 +55,7 @@ class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void rejectsUnknownStatusRatherThanCoercingItToConfirmed() {
-        assertThatThrownBy(() -> service.putThesis(USER, "AVT", input("BUY")))
+        assertThatThrownBy(() -> service.putThesis(USER, "AVT", input("BUY"), null, null, null, null))
                 .isInstanceOf(InvestmentException.class);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM investment_thesis_states", Integer.class)).isZero();
     }
@@ -67,7 +67,7 @@ class InvestmentPromptContractIntegrationTest extends PostgresIntegrationTest {
                 .isInstanceOf(InvestmentException.class);
         var updated = service.putThesisProposal(USER, "AVT", input("UNVERIFIED"), created.updatedAt());
         assertThat(updated.invalidationStatus()).isEqualTo("UNVERIFIED");
-        var confirmed = service.putThesis(USER, "AVT", input("CONFIRMED"));
+        var confirmed = service.putThesis(USER, "AVT", input("CONFIRMED"), null, null, null, null);
         assertThatThrownBy(() -> service.putThesisProposal(USER, "AVT", input("AI_PROPOSED"), confirmed.updatedAt()))
                 .isInstanceOf(InvestmentException.class);
         assertThat(jdbc.queryForObject("SELECT invalidation_status FROM investment_thesis_states WHERE user_id=?",

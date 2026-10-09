@@ -166,7 +166,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.thesisFailureStress()).isNull();
         assertThat(risk.sizingEligible()).isFalse();
         assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("NO");
-        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_NOT_CONFIRMED");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_NOT_CONFIRMED", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.eligibilityReasons().isEmpty()).isEqualTo(risk.sizingEligible());
     }
 
@@ -179,7 +179,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_CONFIGURED);
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.eligibilityReasons())
-                .containsExactly("INVALIDATION_NOT_CONFIRMED", "INVALIDATION_PRICE_NOT_CONFIGURED");
+                .containsExactly("INVALIDATION_NOT_CONFIRMED", "INVALIDATION_PRICE_NOT_CONFIGURED", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.sizingEligible()).isFalse();
     }
 
@@ -191,7 +191,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
 
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.plannedLossContribution()).isNull();
-        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_PRICE_BREACHED");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_PRICE_BREACHED", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.sizingEligible()).isFalse();
     }
 

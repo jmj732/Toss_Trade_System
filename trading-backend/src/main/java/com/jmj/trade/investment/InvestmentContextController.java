@@ -1,5 +1,6 @@
 package com.jmj.trade.investment;
 
+import com.jmj.trade.security.AuthenticatedUser;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -39,9 +40,22 @@ final class InvestmentContextController {
     InvestmentContextService.ThesisView thesis(
             Principal principal,
             @PathVariable String ticker,
-            @RequestBody InvestmentContextService.ThesisInput input
+            @RequestBody InvestmentContextService.ThesisInput input,
+            @RequestParam(required = false) Instant expectedUpdatedAt,
+            @RequestParam(required = false) Instant sourceAsOf,
+            @RequestParam(required = false) String reason
     ) {
-        return service.putThesis(userId(principal), ticker, input);
+        var sessionId = principal instanceof AuthenticatedUser ? ((AuthenticatedUser) principal).sessionId() : null;
+        return service.putThesis(userId(principal), ticker, input, expectedUpdatedAt, sourceAsOf, reason, sessionId);
+    }
+
+    @GetMapping("/securities/{ticker}/thesis/revisions")
+    List<InvestmentContextService.ThesisRevisionView> thesisRevisions(
+            Principal principal,
+            @PathVariable String ticker,
+            @RequestParam(defaultValue = "200") int limit
+    ) {
+        return service.thesisRevisions(userId(principal), ticker, limit);
     }
 
     @GetMapping("/decisions")
