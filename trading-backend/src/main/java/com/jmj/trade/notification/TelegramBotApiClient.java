@@ -24,16 +24,21 @@ final class TelegramBotApiClient implements TelegramMessageSender {
     }
 
     TelegramBotApiClient(URI apiBaseUrl, String botToken, String chatId) {
-        var endpoint = requireEndpoint(apiBaseUrl);
         this.botToken = Objects.requireNonNullElse(botToken, "").trim();
         this.chatId = Objects.requireNonNullElse(chatId, "").trim();
+        this.client = restClient(apiBaseUrl);
+    }
+
+    /** Shared Bot API transport (HTTPS-only endpoint, bounded timeouts) for every Telegram client in this package. */
+    static RestClient restClient(URI apiBaseUrl) {
+        var endpoint = requireEndpoint(apiBaseUrl);
         var httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .version(HttpClient.Version.HTTP_1_1)
                 .build();
         var requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(Duration.ofSeconds(10));
-        this.client = RestClient.builder()
+        return RestClient.builder()
                 .baseUrl(endpoint.toString())
                 .requestFactory(requestFactory)
                 .build();

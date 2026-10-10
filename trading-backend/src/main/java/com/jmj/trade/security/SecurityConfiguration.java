@@ -6,6 +6,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -45,6 +46,8 @@ public class SecurityConfiguration {
                 .requestMatchers("/.well-known/**", "/api/v1/connector/oauth/**").permitAll()
                 .requestMatchers("/api/v1/connector/**").hasAuthority("SCOPE_CONNECTOR_READ")
                 .requestMatchers("/investment/**").authenticated()
+                // Telegram webhook authenticates by its secret_token header inside the controller.
+                .requestMatchers(HttpMethod.POST, "/api/v1/telegram/webhook").permitAll()
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll());
         http.httpBasic(httpBasic -> httpBasic.disable());
