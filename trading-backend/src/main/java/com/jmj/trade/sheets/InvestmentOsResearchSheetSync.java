@@ -28,6 +28,12 @@ final class InvestmentOsResearchSheetSync {
             "Next Review Trigger", "Confidence", "Risk Policy Check", "Created At");
     private static final List<String> DECISION_OVERLAY_HEADERS =
             List.of("EntrySetup", "InitialRiskPrice", "OverlayEffect");
+    private static final List<String> THESIS_BASE_HEADERS = List.of("Ticker", "Core Thesis", "Upside Driver",
+            "Expectations Gap", "Fundamental Invalidation", "Revision Invalidation", "Price Risk Trigger",
+            "Price Risk Trigger Price", "Invalidation Status", "Expand Trigger", "Exit Or Discard Trigger",
+            "Classification", "Updated At", "Sizing Eligible");
+    private static final List<String> THESIS_PROVENANCE_HEADERS = List.of(
+            "Approval Actor", "Policy Version", "Verification Event ID", "Revision ID");
     private final InvestmentOsSheetProperties properties;
     private final GoogleSheetsClient sheets;
     private final InvestmentContextService investment;
@@ -81,7 +87,7 @@ final class InvestmentOsResearchSheetSync {
             if (current.isEmpty() || current.getFirst().equals(table.headers())
                     || (supportsHeaderAppend(tab) && isHeaderPrefix(current.getFirst(), table.headers()))
                     || ("Thesis State".equals(tab)
-                    && supportsThesisExtension(current.getFirst(), table.headers()))
+                    && supportsThesisExtension(current.getFirst()))
                     || ("Decision Ledger".equals(tab)
                     && supportsDecisionLedgerExtension(current.getFirst()))) continue;
 
@@ -115,9 +121,8 @@ final class InvestmentOsResearchSheetSync {
             if (skippedConflictingTabs.contains(tab)) return;
             var current = currentValues.getOrDefault(tab, List.of());
             if ("Thesis State".equals(tab) && !current.isEmpty()
-                    && current.getFirst().size() > table.headers().size()
-                    && supportsThesisExtension(current.getFirst(), table.headers())) {
-                appendThesisRowUpdates(current, table, updates);
+                    && supportsThesisExtension(current.getFirst())) {
+                appendThesisRowUpdates(current, table, updates, requiredColumns);
                 return;
             }
             if ("Decision Ledger".equals(tab) && !current.isEmpty()
@@ -179,7 +184,9 @@ final class InvestmentOsResearchSheetSync {
                 "Manual Account Stale", "Risk Inputs Available", "Position Source Coverage",
                 "Position Accounts Included", "Position Quantity As Of", "Position Price As Of",
                 "Position Manual As Of"));
-        extendedHeaders.addAll(List.of("ThemeId", "TrendStage"));
+        extendedHeaders.addAll(List.of("ThemeId", "TrendStage", "Risk Mark Price", "Risk Mark As Of",
+                "Risk Mark Source", "Risk Mark Basis", "Risk Mark As Of Basis", "Risk Mark Status",
+                "Risk Mark Reason"));
         var rows = securities.stream().map(security -> {
             var price = security.price();
             var technical = security.technical();
@@ -189,6 +196,7 @@ final class InvestmentOsResearchSheetSync {
             var valuation = security.valuation();
             var readiness = security.readiness();
             var position = security.position();
+            var riskMark = security.risk() == null ? null : security.risk().riskMark();
             return row(security.ticker(), instant(security.asOf()), position == null ? null : position.quantity(),
                     position == null ? null : position.weight(), position == null ? null : position.currency(),
                     value(price, "regularClose"), value(price, "regularCloseAsOf"), value(price, "latestPrice"),
@@ -251,24 +259,32 @@ final class InvestmentOsResearchSheetSync {
                     position == null ? "" : instant(position.priceAsOf()),
                     position == null ? "" : date(position.manualAsOf()),
                     security.tacticalOverlay() == null ? null : security.tacticalOverlay().themeId(),
-                    security.tacticalOverlay() == null ? null : security.tacticalOverlay().trendStage());
+                    security.tacticalOverlay() == null ? null : security.tacticalOverlay().trendStage(),
+                    riskMark == null ? null : riskMark.value(),
+                    riskMark == null ? null : instant(riskMark.asOf()),
+                    riskMark == null ? null : riskMark.source(),
+                    riskMark == null ? null : riskMark.basis(),
+                    riskMark == null ? null : riskMark.asOfBasis(),
+                    riskMark == null || riskMark.status() == null ? null : riskMark.status().name(),
+                    riskMark == null ? null : riskMark.reason());
         }).toList();
         return new Table(List.copyOf(extendedHeaders), rows);
     }
 
     private static Table thesis(List<InvestmentContextService.SecurityView> securities) {
-        var headers = List.of("Ticker", "Core Thesis", "Upside Driver", "Expectations Gap",
-                "Fundamental Invalidation", "Revision Invalidation", "Price Risk Trigger",
-                "Price Risk Trigger Price", "Invalidation Status", "Expand Trigger",
-                "Exit Or Discard Trigger", "Classification", "Updated At", "Sizing Eligible");
+        var headers = new ArrayList<>(THESIS_BASE_HEADERS);
+        headers.addAll(THESIS_PROVENANCE_HEADERS);
         var rows = securities.stream().filter(value -> value.thesis() != null).map(value -> {
             var thesis = value.thesis();
             return row(thesis.ticker(), thesis.coreThesis(), thesis.upsideDriver(), thesis.expectationsGap(),
                     thesis.fundamentalInvalidation(), thesis.revisionInvalidation(), thesis.priceRiskTrigger(),
                     thesis.priceRiskTriggerPrice(), thesis.invalidationStatus(), thesis.expandTrigger(),
-                    thesis.exitOrDiscardTrigger(), thesis.classification(), instant(thesis.updatedAt()), value.getSizingEligibility());
+                    thesis.exitOrDiscardTrigger(), thesis.classification(), instant(thesis.updatedAt()),
+                    value.getSizingEligibility(), thesis.approvalActorType(), thesis.policyVersion(),
+                    thesis.verificationEventId() == null ? null : thesis.verificationEventId().toString(),
+                    thesis.revisionId() == null ? null : thesis.revisionId().toString());
         }).toList();
-        return new Table(headers, rows);
+        return new Table(List.copyOf(headers), rows);
     }
 
     private Table consensusHistory(UUID userId) {
@@ -429,15 +445,40 @@ final class InvestmentOsResearchSheetSync {
         return true;
     }
 
-    private static boolean supportsThesisExtension(List<?> existing, List<String> expected) {
-        return existing.size() >= expected.size()
-                && existing.subList(0, expected.size()).equals(expected);
+    private static boolean supportsThesisExtension(List<?> existing) {
+        if (existing == null || existing.size() < THESIS_BASE_HEADERS.size()
+                || !existing.subList(0, THESIS_BASE_HEADERS.size()).equals(THESIS_BASE_HEADERS)) {
+            return false;
+        }
+        return THESIS_PROVENANCE_HEADERS.stream().allMatch(header -> existing.stream()
+                .filter(header::equals).count() <= 1);
     }
 
     private static void appendThesisRowUpdates(
             List<List<Object>> current, Table next,
-            List<GoogleSheetsClient.SheetValueRange> updates
+            List<GoogleSheetsClient.SheetValueRange> updates,
+            Map<String, Integer> requiredColumns
     ) {
+        var headers = new ArrayList<String>();
+        current.getFirst().forEach(value -> headers.add(value == null ? "" : String.valueOf(value)));
+        var usedWidth = Math.max(headers.size(), current.stream().mapToInt(List::size).max().orElse(0));
+        while (headers.size() < usedWidth) headers.add("");
+        var appendedHeaders = new ArrayList<String>();
+        for (var header : THESIS_PROVENANCE_HEADERS) {
+            if (!headers.contains(header)) {
+                headers.add(header);
+                appendedHeaders.add(header);
+            }
+        }
+        requiredColumns.put("Thesis State", headers.size());
+        if (!appendedHeaders.isEmpty()) {
+            var firstColumn = headers.size() - appendedHeaders.size();
+            updates.add(new GoogleSheetsClient.SheetValueRange(
+                    quote("Thesis State") + "!" + columnName(firstColumn) + "1:"
+                            + columnName(headers.size() - 1) + "1",
+                    List.of(new ArrayList<>(appendedHeaders))));
+        }
+
         // Keep row positions stable: extension cells and formulas belong to their ticker.
         var rowsByTicker = new LinkedHashMap<String, List<Object>>();
         next.rows().forEach(row -> rowsByTicker.put(String.valueOf(row.getFirst()), row));
@@ -449,21 +490,52 @@ final class InvestmentOsResearchSheetSync {
             seen.add(ticker);
             var replacement = rowsByTicker.get(ticker);
             if (replacement == null) continue;
-            var sheetRow = index + 1;
-            updates.add(new GoogleSheetsClient.SheetValueRange(
-                    quote("Thesis State") + "!A" + sheetRow + ":"
-                            + columnName(next.headers().size() - 1) + sheetRow,
-                    List.of(pad(replacement, next.headers().size()))));
+            appendThesisCellUpdates(replacement, headers, index + 1, updates);
         }
         var sheetRow = current.size() + 1;
         for (var entry : rowsByTicker.entrySet()) {
             if (seen.contains(entry.getKey())) continue;
-            updates.add(new GoogleSheetsClient.SheetValueRange(
-                    quote("Thesis State") + "!A" + sheetRow + ":"
-                            + columnName(next.headers().size() - 1) + sheetRow,
-                    List.of(pad(entry.getValue(), next.headers().size()))));
+            appendThesisCellUpdates(entry.getValue(), headers, sheetRow, updates);
             sheetRow++;
         }
+    }
+
+    private static void appendThesisCellUpdates(
+            List<Object> replacement, List<String> headers, int sheetRow,
+            List<GoogleSheetsClient.SheetValueRange> updates
+    ) {
+        updates.add(new GoogleSheetsClient.SheetValueRange(
+                quote("Thesis State") + "!A" + sheetRow + ":"
+                        + columnName(THESIS_BASE_HEADERS.size() - 1) + sheetRow,
+                List.of(pad(replacement.subList(0, THESIS_BASE_HEADERS.size()), THESIS_BASE_HEADERS.size()))));
+
+        var metadataColumns = new ArrayList<Integer>();
+        var metadataValues = new ArrayList<Object>();
+        for (var header : THESIS_PROVENANCE_HEADERS) {
+            var headerIndex = headers.indexOf(header);
+            var nextIndex = replacementHeaderIndex(header);
+            metadataColumns.add(headerIndex);
+            metadataValues.add(replacement.get(nextIndex));
+        }
+        var start = 0;
+        while (start < metadataColumns.size()) {
+            var end = start;
+            while (end + 1 < metadataColumns.size()
+                    && metadataColumns.get(end + 1) == metadataColumns.get(end) + 1) {
+                end++;
+            }
+            var firstColumn = metadataColumns.get(start);
+            var lastColumn = metadataColumns.get(end);
+            updates.add(new GoogleSheetsClient.SheetValueRange(
+                    quote("Thesis State") + "!" + columnName(firstColumn) + sheetRow + ":"
+                            + columnName(lastColumn) + sheetRow,
+                    List.of(new ArrayList<>(metadataValues.subList(start, end + 1)))));
+            start = end + 1;
+        }
+    }
+
+    private static int replacementHeaderIndex(String header) {
+        return THESIS_BASE_HEADERS.size() + THESIS_PROVENANCE_HEADERS.indexOf(header);
     }
 
     private static void appendDecisionOverlayColumns(

@@ -258,8 +258,11 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         var securityUpdate = allUpdates.stream().flatMap(List::stream)
                 .filter(update -> "'Security Snapshot'!A1".equals(update.range())).findFirst().orElseThrow();
         var securityHeaders = securityUpdate.values().getFirst().stream().map(String::valueOf).toList();
-        assertThat(securityHeaders).hasSize(121);
+        assertThat(securityHeaders).hasSize(128);
         assertThat(securityHeaders.subList(119, 121)).containsExactly("ThemeId", "TrendStage");
+        assertThat(securityHeaders.subList(121, 128)).containsExactly("Risk Mark Price", "Risk Mark As Of",
+                "Risk Mark Source", "Risk Mark Basis", "Risk Mark As Of Basis", "Risk Mark Status",
+                "Risk Mark Reason");
         var securityAapl = rowForValues(securityUpdate.values().subList(1, securityUpdate.values().size()),
                 securityHeaders, "Ticker", "AAPL");
         assertThat(value(securityAapl, securityHeaders, "Quantity")).isEqualTo(contextAapl.quantity());

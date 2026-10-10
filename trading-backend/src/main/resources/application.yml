@@ -68,6 +68,13 @@ investment-os:
     initial-delay: ${INVESTMENT_OS_SHEET_INITIAL_DELAY:PT1M}
     lock-ttl: ${INVESTMENT_OS_SHEET_LOCK_TTL:PT10M}
 investment:
+  thesis:
+    ai-policy:
+      enabled: ${INVESTMENT_THESIS_AI_POLICY_ENABLED:false}
+      version: ${INVESTMENT_THESIS_AI_POLICY_VERSION:v1}
+      max-evidence-age: ${INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE:PT24H}
+      minimum-source-count: ${INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT:2}
+      max-trigger-below-price-pct: ${INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT:0.25}
   data:
     additional-symbols: ${INVESTMENT_DATA_ADDITIONAL_SYMBOLS:}
     scheduler:

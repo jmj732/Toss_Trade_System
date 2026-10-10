@@ -6,7 +6,9 @@ import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.order.LiveOrderActivationException;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.investment.InvestmentContextService;
+import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
+import com.jmj.trade.investment.InvestmentThesisVerificationService;
 import org.springframework.dao.DataAccessException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -16,8 +18,13 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.net.URI;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -32,47 +39,64 @@ public final class ConnectorMcpProtocol {
     private final McpOrderExecutionService tradeService;
     private final InvestmentContextService investmentContextService;
     private final InvestmentReviewService investmentReviewService;
+    private final InvestmentThesisVerificationService thesisVerificationService;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
     public ConnectorMcpProtocol(ConnectorService service, ObjectMapper objectMapper) {
-        this(service, (McpOrderExecutionService) null, (InvestmentContextService) null, objectMapper);
+        this(service, (McpOrderExecutionService) null, (InvestmentContextService) null,
+                (InvestmentReviewService) null, (InvestmentThesisVerificationService) null, objectMapper);
     }
 
     @Autowired
     ConnectorMcpProtocol(ConnectorService service, ObjectProvider<McpOrderExecutionService> tradeService,
                          ObjectProvider<InvestmentContextService> investmentContextService,
                          ObjectProvider<InvestmentReviewService> investmentReviewService,
+                         ObjectProvider<InvestmentThesisVerificationService> thesisVerificationService,
                          ObjectMapper objectMapper) {
         this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(),
-                investmentReviewService.getIfAvailable(), objectMapper);
+                investmentReviewService.getIfAvailable(), thesisVerificationService.getIfAvailable(), objectMapper);
     }
 
     public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
                                 ObjectMapper objectMapper) {
-        this(service, tradeService, null, objectMapper);
+        this(service, tradeService, null, null, null, objectMapper);
     }
 
     public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
                                 InvestmentContextService investmentContextService, ObjectMapper objectMapper) {
-        this(service, tradeService, investmentContextService, null, objectMapper);
+        this(service, tradeService, investmentContextService, null, null, objectMapper);
     }
 
     public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
                                 InvestmentContextService investmentContextService,
                                 InvestmentReviewService investmentReviewService, ObjectMapper objectMapper) {
+        this(service, tradeService, investmentContextService, investmentReviewService, null, objectMapper);
+    }
+
+    public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                                InvestmentContextService investmentContextService,
+                                InvestmentReviewService investmentReviewService,
+                                InvestmentThesisVerificationService thesisVerificationService,
+                                ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
         this.investmentContextService = investmentContextService;
         this.investmentReviewService = investmentReviewService;
+        this.thesisVerificationService = thesisVerificationService;
         this.objectMapper = objectMapper;
     }
 
     ObjectNode handle(ObjectNode request, UUID userId, UUID connectionId) {
-        return handle(request, userId, connectionId, false);
+        return handle(request, userId, connectionId, null, false);
     }
 
     ObjectNode handle(ObjectNode request, UUID userId, UUID connectionId, boolean canTrade) {
+        return handle(request, userId, connectionId, null, canTrade);
+    }
+
+    ObjectNode handle(ObjectNode request, UUID userId, UUID connectionId,
+                      UUID authenticatedApiKeyId, boolean canTrade) {
         var tradeScopeGranted = canTrade;
         var liveExecutionAvailable = tradeScopeGranted && tradeService != null;
         if (request == null || !"2.0".equals(request.path("jsonrpc").asText(null))) {
@@ -87,7 +111,7 @@ public final class ConnectorMcpProtocol {
             case "notifications/initialized" -> null;
             case "ping" -> result(request, objectMapper.createObjectNode());
             case "tools/list" -> toolsList(request, tradeScopeGranted);
-            case "tools/call" -> toolsCall(request, userId, connectionId,
+            case "tools/call" -> toolsCall(request, userId, connectionId, authenticatedApiKeyId,
                     tradeScopeGranted, liveExecutionAvailable);
             default -> error(request, -32601, "Method not found: " + method);
         };
@@ -157,6 +181,11 @@ public final class ConnectorMcpProtocol {
                 "Get investment context",
                 "Read the authenticated user's persisted investment context, including portfolio, security data, risk, thesis, decisions, review notes (reviewLog), and tactical overlays. This tool does not call providers or write data. Optionally filter only the securities array by ticker.",
                 investmentContextSchema(), investmentContextOutputSchema()));
+        if (thesisVerificationService != null) {
+            tools.add(tool("get_investment_thesis_verification_context", "Get thesis verification context",
+                    "Read the authenticated user's current thesis revision, verification policy, trusted price view, and latest verification event for one ticker. This tool does not call providers or write data.",
+                    verificationContextSchema(), verificationContextOutputSchema()));
+        }
         if (canTrade) {
             if (investmentContextService != null) {
                 tools.add(tool("put_investment_thesis", "Save investment thesis",
@@ -166,6 +195,12 @@ public final class ConnectorMcpProtocol {
                 tools.add(tool("append_investment_decision", "Append investment decision record",
                         "Append a caller-authored decision record to PostgreSQL for Context and Sheet mirroring. Uses the supplied decisionId for idempotent retries; a different record with that ID conflicts. Stores supplied fields without generating investment judgments and never prepares or submits orders. Requires existing connector write scope; available even when order execution is disabled.",
                         investmentDecisionSchema(), objectSchema(), false, false, true,
+                        ConnectorApiKeyService.TRADE_SCOPE));
+            }
+            if (thesisVerificationService != null) {
+                tools.add(tool("verify_investment_thesis", "Verify investment thesis",
+                        "Store an externally authored verification against the current thesis revision and the configured policy. The server applies policy; it does not call a model, infer evidence, or submit orders. Requires the existing connector trade scope.",
+                        thesisVerificationSchema(), verificationResultOutputSchema(), false, false, true,
                         ConnectorApiKeyService.TRADE_SCOPE));
             }
             if (investmentReviewService != null) {
@@ -193,7 +228,7 @@ public final class ConnectorMcpProtocol {
         return result(request, result);
     }
 
-    private ObjectNode toolsCall(ObjectNode request, UUID userId, UUID connectionId,
+    private ObjectNode toolsCall(ObjectNode request, UUID userId, UUID connectionId, UUID authenticatedApiKeyId,
                                  boolean tradeScopeGranted, boolean liveExecutionAvailable) {
         var params = request.path("params");
         var name = params.path("name").asText(null);
@@ -212,6 +247,11 @@ public final class ConnectorMcpProtocol {
                         optionalText(arguments, "brokerOrderId", null),
                         optionalText(arguments, "clientOrderId", null)));
                 case "get_investment_context" -> investmentContext(request, userId, arguments);
+                case "get_investment_thesis_verification_context" ->
+                        investmentThesisVerificationContext(request, userId, arguments);
+                case "verify_investment_thesis" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : verifyInvestmentThesis(request, userId, authenticatedApiKeyId, arguments);
                 case "put_investment_thesis" -> !tradeScopeGranted
                         ? forbiddenTrade(request) : putInvestmentThesis(request, userId, arguments);
                 case "append_investment_decision" -> !tradeScopeGranted
@@ -342,12 +382,12 @@ public final class ConnectorMcpProtocol {
 
     private ObjectNode putInvestmentThesis(ObjectNode request, UUID userId, JsonNode arguments) {
         if (investmentContextService == null) return investmentContextUnavailable(request);
-        if (!arguments.isObject() || arguments.size() < 2 || arguments.size() > 3
+        if (!arguments.isObject() || arguments.size() < 2 || arguments.size() > 4
                 || !arguments.path("ticker").isTextual() || !arguments.path("thesis").isObject())
             return toolError(request, "INVALID_ARGUMENT", "ticker and thesis are required", false, false);
         try {
             for (var name : arguments.propertyNames()) {
-                if (!java.util.Set.of("ticker", "thesis", "expectedUpdatedAt").contains(name))
+                if (!java.util.Set.of("ticker", "thesis", "expectedUpdatedAt", "proposalRunId").contains(name))
                     return toolError(request, "INVALID_ARGUMENT", "Unsupported argument", false, false);
             }
             var ticker = investmentContextTicker(objectMapper.createObjectNode()
@@ -363,8 +403,16 @@ public final class ConnectorMcpProtocol {
             var input = objectMapper.treeToValue(arguments.path("thesis"), InvestmentContextService.ThesisInput.class);
             if ("CONFIRMED".equalsIgnoreCase(input.invalidationStatus()))
                 return toolError(request, "CONFIRMATION_REQUIRED", "Use the authenticated user thesis API to confirm a specific thesis", false, false);
-            return toolResult(request, investmentContextService.putThesisProposal(userId, ticker, input,
-                    optionalInstant(arguments, "expectedUpdatedAt")));
+            String proposalRunId = null;
+            if (arguments.has("proposalRunId")) {
+                proposalRunId = boundedText(arguments, "proposalRunId", 160);
+            }
+            var expectedUpdatedAt = optionalInstant(arguments, "expectedUpdatedAt");
+            var saved = proposalRunId == null
+                    ? investmentContextService.putThesisProposal(userId, ticker, input, expectedUpdatedAt)
+                    : investmentContextService.putThesisProposal(userId, ticker, input, expectedUpdatedAt,
+                            proposalRunId);
+            return toolResult(request, saved);
         } catch (com.jmj.trade.investment.InvestmentException exception) {
             if (exception.code() == com.jmj.trade.investment.InvestmentException.Code.CONFLICT)
                 return toolError(request, "THESIS_STATE_CONFLICT", "Thesis version changed or the current thesis is confirmed", false, false);
@@ -464,6 +512,222 @@ public final class ConnectorMcpProtocol {
     private ObjectNode investmentContextUnavailable(ObjectNode request) {
         return toolError(request, "INVESTMENT_CONTEXT_UNAVAILABLE",
                 "Investment context is temporarily unavailable", true, false);
+    }
+
+    private ObjectNode investmentThesisVerificationContext(ObjectNode request, UUID userId, JsonNode arguments) {
+        if (thesisVerificationService == null) return verificationContextUnavailable(request);
+        final String ticker;
+        try {
+            ticker = investmentContextTicker(arguments);
+            if (ticker == null) throw new IllegalArgumentException("ticker is required");
+        } catch (IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
+        }
+        try {
+            return toolResult(request, thesisVerificationService.verificationContext(userId, ticker));
+        } catch (DataAccessException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_thesis_verification_context")
+                    .addKeyValue("outcome", "unavailable")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Thesis verification context unavailable");
+            return verificationContextUnavailable(request);
+        } catch (InvestmentException exception) {
+            if (exception.code() == InvestmentException.Code.NOT_FOUND) {
+                return toolError(request, "THESIS_CONTEXT_NOT_FOUND", "Thesis verification context was not found",
+                        false, false);
+            }
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_thesis_verification_context")
+                    .addKeyValue("outcome", "failure")
+                    .addKeyValue("error_code", exception.code().name())
+                    .log("Thesis verification context read failed");
+            return toolError(request, "INTERNAL_ERROR", "Thesis verification context could not be read",
+                    false, false);
+        } catch (RuntimeException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_thesis_verification_context")
+                    .addKeyValue("outcome", "failure")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Thesis verification context read failed");
+            return toolError(request, "INTERNAL_ERROR", "Thesis verification context could not be read",
+                    false, false);
+        }
+    }
+
+    private ObjectNode verificationContextUnavailable(ObjectNode request) {
+        return toolError(request, "VERIFICATION_CONTEXT_UNAVAILABLE",
+                "Thesis verification context is temporarily unavailable", true, false);
+    }
+
+    private ObjectNode verifyInvestmentThesis(ObjectNode request, UUID userId, UUID authenticatedApiKeyId,
+                                              JsonNode arguments) {
+        if (thesisVerificationService == null) return verificationUnavailable(request);
+        if (authenticatedApiKeyId == null) {
+            return toolError(request, "AUTHENTICATED_ACTOR_UNAVAILABLE",
+                    "An authenticated connector trade key is required", false, false);
+        }
+        final InvestmentThesisVerificationService.VerificationInput input;
+        try {
+            input = verificationInput(arguments);
+        } catch (IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
+        }
+        try {
+            return toolResult(request, thesisVerificationService.verify(userId, authenticatedApiKeyId, input));
+        } catch (DataAccessException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "verify_investment_thesis")
+                    .addKeyValue("outcome", "unavailable")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Thesis verification unavailable");
+            return verificationUnavailable(request);
+        } catch (InvestmentException exception) {
+            return verificationException(request, exception);
+        } catch (RuntimeException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "verify_investment_thesis")
+                    .addKeyValue("outcome", "failure")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Thesis verification failed");
+            return toolError(request, "INTERNAL_ERROR", "Thesis verification could not be saved", false, false);
+        }
+    }
+
+    private ObjectNode verificationException(ObjectNode request, InvestmentException exception) {
+        return switch (exception.code()) {
+            case INVALID_INPUT -> toolError(request, "INVALID_ARGUMENT", "Invalid thesis verification input",
+                    false, false);
+            case NOT_FOUND -> toolError(request, "THESIS_REVISION_NOT_FOUND",
+                    "The referenced thesis revision was not found", false, false);
+            case CONFLICT -> toolError(request, "VERIFICATION_EVENT_CONFLICT",
+                    "Verification event ID conflicts with a previously stored event", false, false);
+            case INVALID_USER -> toolError(request, "AUTHENTICATED_ACTOR_UNAVAILABLE",
+                    "The authenticated user is unavailable", false, false);
+        };
+    }
+
+    private ObjectNode verificationUnavailable(ObjectNode request) {
+        return toolError(request, "VERIFICATION_UNAVAILABLE",
+                "Thesis verification is temporarily unavailable", true, false);
+    }
+
+    private InvestmentThesisVerificationService.VerificationInput verificationInput(JsonNode arguments) {
+        var fields = Set.of("verificationEventId", "ticker", "thesisRevisionId", "verificationRunId",
+                "provider", "model", "verdict", "sourceAsOf", "sourceUrls", "rationale",
+                "counterevidence", "selectedTriggerPrice");
+        if (arguments == null || !arguments.isObject() || arguments.size() != fields.size()) {
+            throw new IllegalArgumentException("All supported verification fields are required");
+        }
+        for (var field : arguments.properties()) {
+            if (!fields.contains(field.getKey())) throw new IllegalArgumentException("Unsupported verification field");
+        }
+
+        var eventId = requiredUuid(arguments, "verificationEventId");
+        var ticker = investmentContextTicker(objectMapper.createObjectNode()
+                .put("ticker", requiredText(arguments, "ticker")));
+        var revisionId = requiredUuid(arguments, "thesisRevisionId");
+        var runId = boundedText(arguments, "verificationRunId", 160);
+        var provider = boundedText(arguments, "provider", 120);
+        var model = boundedText(arguments, "model", 160);
+        var verdict = requiredText(arguments, "verdict");
+        if (!Set.of("PASS", "REJECT").contains(verdict)) {
+            throw new IllegalArgumentException("verdict must be PASS or REJECT");
+        }
+        var sourceAsOf = requiredInstant(arguments, "sourceAsOf");
+        var sourceUrls = requiredHttpsUrls(arguments, "sourceUrls");
+        var rationale = boundedText(arguments, "rationale", 4000);
+        var counterevidence = boundedText(arguments, "counterevidence", 4000);
+        var selectedTriggerPrice = requiredNullablePositiveFiniteDecimal(arguments, "selectedTriggerPrice");
+        return new InvestmentThesisVerificationService.VerificationInput(eventId, ticker, revisionId, runId,
+                provider, model, verdict, sourceAsOf, sourceUrls, rationale, counterevidence, selectedTriggerPrice);
+    }
+
+    private static UUID requiredUuid(JsonNode arguments, String field) {
+        var value = arguments.path(field);
+        if (!value.isTextual()) throw new IllegalArgumentException(field + " must be a UUID");
+        try {
+            var uuid = UUID.fromString(value.asText());
+            if (!uuid.toString().equalsIgnoreCase(value.asText())) {
+                throw new IllegalArgumentException(field + " must be a UUID");
+            }
+            return uuid;
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException(field + " must be a UUID");
+        }
+    }
+
+    private static String boundedText(JsonNode arguments, String field, int maxLength) {
+        var value = arguments.path(field);
+        if (!value.isTextual() || value.asText().isBlank()
+                || value.asText().codePointCount(0, value.asText().length()) > maxLength) {
+            throw new IllegalArgumentException(field + " must be a non-empty string within its length limit");
+        }
+        return value.asText();
+    }
+
+    private static Instant requiredInstant(JsonNode arguments, String field) {
+        var value = arguments.path(field);
+        if (!value.isTextual() || value.asText().isBlank()) {
+            throw new IllegalArgumentException(field + " must be an ISO-8601 instant");
+        }
+        try {
+            return Instant.parse(value.asText());
+        } catch (DateTimeParseException exception) {
+            throw new IllegalArgumentException(field + " must be an ISO-8601 instant");
+        }
+    }
+
+    private static java.math.BigDecimal requiredNullablePositiveFiniteDecimal(JsonNode arguments, String field) {
+        var value = arguments.path(field);
+        if (value.isNull()) return null;
+        if (!value.isNumber()) throw new IllegalArgumentException(field + " must be a positive finite number");
+        try {
+            var decimal = value.decimalValue();
+            if (decimal.signum() <= 0 || value.isFloatingPointNumber() && !Double.isFinite(value.doubleValue())) {
+                throw new IllegalArgumentException(field + " must be a positive finite number");
+            }
+            return decimal;
+        } catch (ArithmeticException | NumberFormatException exception) {
+            throw new IllegalArgumentException(field + " must be a positive finite number");
+        }
+    }
+
+    private static java.util.List<String> requiredHttpsUrls(JsonNode arguments, String field) {
+        var values = arguments.path(field);
+        if (!values.isArray() || values.size() < 1 || values.size() > 10) {
+            throw new IllegalArgumentException(field + " must contain between 1 and 10 HTTPS URLs");
+        }
+        var result = new ArrayList<String>(values.size());
+        var unique = new HashSet<String>();
+        for (var value : values) {
+            if (!value.isTextual() || value.asText().isBlank()
+                    || value.asText().codePointCount(0, value.asText().length()) > 2000) {
+                throw new IllegalArgumentException(field + " must contain only HTTPS URLs");
+            }
+            try {
+                var uri = URI.create(value.asText());
+                var host = uri.getHost();
+                if (!"https".equalsIgnoreCase(uri.getScheme()) || host == null || host.isBlank()
+                        || uri.getRawUserInfo() != null || uri.getRawFragment() != null
+                        || uri.getPort() > 65535) {
+                    throw new IllegalArgumentException(field + " must contain only credential-free HTTPS URLs");
+                }
+                var port = uri.getPort() == 443 ? -1 : uri.getPort();
+                var path = uri.normalize().getRawPath();
+                var normalized = host.toLowerCase(Locale.ROOT) + ":" + port
+                        + (path == null || path.isEmpty() ? "/" : path)
+                        + (uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery());
+                if (!unique.add(normalized)) {
+                    throw new IllegalArgumentException(field + " must contain unique HTTPS URLs");
+                }
+                result.add(value.asText());
+            } catch (IllegalArgumentException exception) {
+                if (exception.getMessage() != null && exception.getMessage().startsWith(field)) throw exception;
+                throw new IllegalArgumentException(field + " must contain valid HTTPS URLs");
+            }
+        }
+        return java.util.List.copyOf(result);
     }
 
     private static String investmentContextTicker(JsonNode arguments) {
@@ -598,6 +862,139 @@ public final class ConnectorMcpProtocol {
         return schema;
     }
 
+    private ObjectNode thesisVerificationSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("verificationEventId", uuidSchema());
+        properties.set("ticker", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 32)
+                .put("pattern", "^[A-Za-z0-9._-]{1,32}$"));
+        properties.set("thesisRevisionId", uuidSchema());
+        properties.set("verificationRunId", boundedStringSchema(160));
+        properties.set("provider", boundedStringSchema(120));
+        properties.set("model", boundedStringSchema(160));
+        properties.set("verdict", enumSchema("PASS", "REJECT"));
+        properties.set("sourceAsOf", objectMapper.createObjectNode().put("type", "string")
+                .put("format", "date-time"));
+        properties.set("sourceUrls", objectMapper.createObjectNode().put("type", "array")
+                .put("minItems", 1).put("maxItems", 10).put("uniqueItems", true)
+                .set("items", objectMapper.createObjectNode().put("type", "string")
+                        .put("format", "uri").put("pattern", "^https://.+").put("maxLength", 2000)));
+        properties.set("rationale", boundedStringSchema(4000));
+        properties.set("counterevidence", boundedStringSchema(4000));
+        var triggerPrice = objectMapper.createObjectNode();
+        triggerPrice.putArray("anyOf")
+                .add(objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0))
+                .add(objectMapper.createObjectNode().put("type", "null"));
+        properties.set("selectedTriggerPrice", triggerPrice);
+
+        var schema = objectMapper.createObjectNode().put("type", "object");
+        schema.set("properties", properties);
+        schema.put("additionalProperties", false);
+        schema.putArray("required").add("verificationEventId").add("ticker")
+                .add("thesisRevisionId").add("verificationRunId").add("provider")
+                .add("model").add("verdict").add("sourceAsOf").add("sourceUrls")
+                .add("rationale").add("counterevidence").add("selectedTriggerPrice");
+        return schema;
+    }
+
+    private ObjectNode verificationContextSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 32)
+                .put("pattern", "^[A-Za-z0-9._-]{1,32}$"));
+        var schema = objectMapper.createObjectNode().put("type", "object");
+        schema.set("properties", properties);
+        schema.put("additionalProperties", false);
+        schema.putArray("required").add("ticker");
+        return schema;
+    }
+
+    private ObjectNode verificationContextOutputSchema() {
+        var successProperties = objectMapper.createObjectNode();
+        successProperties.set("policy", nullableObjectSchema());
+        successProperties.set("thesis", nullableObjectSchema());
+        successProperties.set("price", nullableObjectSchema());
+        successProperties.set("latestVerification", nullableObjectSchema());
+        var triggerCandidate = objectMapper.createObjectNode().put("type", "object");
+        var candidateProperties = triggerCandidate.putObject("properties");
+        candidateProperties.set("price", objectMapper.createObjectNode().put("type", "number")
+                .put("exclusiveMinimum", 0));
+        candidateProperties.set("source", objectMapper.createObjectNode().put("type", "string"));
+        candidateProperties.set("asOf", nullableString(objectMapper.createObjectNode()
+                .put("type", "string").put("format", "date-time"), null));
+        triggerCandidate.putArray("required").add("price").add("source").add("asOf");
+        triggerCandidate.put("additionalProperties", false);
+        successProperties.set("candidateTriggers", objectMapper.createObjectNode().put("type", "array")
+                .set("items", triggerCandidate));
+        var success = objectMapper.createObjectNode().put("type", "object");
+        success.set("properties", successProperties);
+        success.putArray("required").add("policy").add("thesis").add("price")
+                .add("latestVerification").add("candidateTriggers");
+        success.put("additionalProperties", false);
+
+        var errors = verificationErrorSchema("THESIS_CONTEXT_NOT_FOUND", "VERIFICATION_CONTEXT_UNAVAILABLE",
+                "INTERNAL_ERROR", "INVALID_ARGUMENT");
+        var output = objectMapper.createObjectNode().put("type", "object");
+        output.putArray("anyOf").add(success).add(errors);
+        return output;
+    }
+
+    private ObjectNode verificationResultOutputSchema() {
+        var resultProperties = objectMapper.createObjectNode();
+        resultProperties.set("verificationEventId", nullableString(objectMapper.createObjectNode()
+                .put("type", "string").put("format", "uuid"), null));
+        resultProperties.set("ticker", nullableString(objectMapper.createObjectNode().put("type", "string"), null));
+        resultProperties.set("thesisRevisionId", nullableString(objectMapper.createObjectNode()
+                .put("type", "string").put("format", "uuid"), null));
+        resultProperties.set("outcome", enumSchema("AUTO_APPROVED", "BLOCKED", "REJECTED"));
+        resultProperties.set("reasonCode", nullableString(objectMapper.createObjectNode().put("type", "string"), null));
+        resultProperties.set("verdict", nullableString(enumSchema("PASS", "REJECT"), null));
+        resultProperties.set("policyVersion", nullableString(objectMapper.createObjectNode().put("type", "string"), null));
+        resultProperties.set("authenticatedActorUserId", nullableString(objectMapper.createObjectNode()
+                .put("type", "string").put("format", "uuid"), null));
+        resultProperties.set("authenticatedActorKeyId", nullableString(objectMapper.createObjectNode()
+                .put("type", "string").put("format", "uuid"), null));
+        resultProperties.set("createdAt", nullableString(objectMapper.createObjectNode()
+                .put("type", "string").put("format", "date-time"), null));
+        resultProperties.set("approvedThesis", nullableObjectSchema());
+        var success = objectMapper.createObjectNode().put("type", "object");
+        success.set("properties", resultProperties);
+        success.putArray("required").add("verificationEventId").add("ticker").add("thesisRevisionId")
+                .add("outcome").add("reasonCode").add("verdict").add("policyVersion")
+                .add("authenticatedActorUserId").add("authenticatedActorKeyId").add("createdAt")
+                .add("approvedThesis");
+        success.put("additionalProperties", false);
+
+        var errors = verificationErrorSchema("INVALID_ARGUMENT", "AUTHENTICATED_ACTOR_UNAVAILABLE",
+                "THESIS_REVISION_NOT_FOUND", "VERIFICATION_EVENT_CONFLICT", "VERIFICATION_UNAVAILABLE",
+                "INTERNAL_ERROR");
+        var output = objectMapper.createObjectNode().put("type", "object");
+        output.putArray("anyOf").add(success).add(errors);
+        return output;
+    }
+
+    private ObjectNode verificationErrorSchema(String... codes) {
+        var errorProperties = objectMapper.createObjectNode();
+        errorProperties.set("ok", objectMapper.createObjectNode().put("const", false));
+        errorProperties.set("errorCode", enumSchema(codes));
+        errorProperties.set("retryable", objectMapper.createObjectNode().put("type", "boolean"));
+        errorProperties.set("reauthorizationRequired", objectMapper.createObjectNode().put("type", "boolean"));
+        var errors = objectMapper.createObjectNode().put("type", "object");
+        errors.set("properties", errorProperties);
+        errors.putArray("required").add("ok").add("errorCode").add("retryable").add("reauthorizationRequired");
+        errors.put("additionalProperties", false);
+        return errors;
+    }
+
+    private ObjectNode uuidSchema() {
+        return objectMapper.createObjectNode().put("type", "string").put("format", "uuid");
+    }
+
+    private ObjectNode boundedStringSchema(int maxLength) {
+        return objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", maxLength);
+    }
+
     private ObjectNode investmentThesisSchema() {
         var schema = investmentContextSchema();
         var properties = (ObjectNode) schema.path("properties");
@@ -617,6 +1014,7 @@ public final class ConnectorMcpProtocol {
         thesis.putArray("required").add("coreThesis").add("invalidationStatus");
         properties.set("thesis", thesis);
         properties.set("expectedUpdatedAt", objectMapper.createObjectNode().put("type", "string").put("format", "date-time"));
+        properties.set("proposalRunId", boundedStringSchema(160));
         schema.putArray("required").add("ticker").add("thesis");
         return schema;
     }

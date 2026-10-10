@@ -206,8 +206,20 @@ class TelegramThesisApprovalIntegrationTest extends PostgresIntegrationTest {
         assertThat(after.invalidationStatus()).isEqualTo("CONFIRMED");
         assertThat(after.priceRiskTriggerPrice()).isEqualByComparingTo((BigDecimal) request.get("candidate_trigger"));
         assertThat(after).usingRecursiveComparison()
-                .ignoringFields("invalidationStatus", "priceRiskTriggerPrice", "updatedAt").isEqualTo(before);
+                .ignoringFields("invalidationStatus", "priceRiskTriggerPrice", "updatedAt", "revisionId", "revision",
+                        "approvalActorType", "policyVersion", "verificationEventId", "assertedRunId")
+                .isEqualTo(before);
         assertThat(after.priceRiskTrigger()).isEqualTo(before.priceRiskTrigger());
+        assertThat(after.revision()).isEqualTo(before.revision() + 1);
+        assertThat(after.revisionId()).isNotEqualTo(before.revisionId()).isNotNull();
+        assertThat(after.approvalActorType()).isEqualTo("TELEGRAM");
+        assertThat(after.policyVersion()).isNull();
+        assertThat(after.verificationEventId()).isNull();
+        assertThat(after.assertedRunId()).isNull();
+        assertThat(jdbc.queryForObject("""
+                SELECT id FROM investment_thesis_revisions
+                 WHERE user_id = ? AND ticker = ? ORDER BY revision DESC LIMIT 1
+                """, UUID.class, USER, TICKER)).isEqualTo(after.revisionId());
 
         var revisions = investment.thesisRevisions(USER, TICKER, 10);
         assertThat(revisions).hasSize(2);

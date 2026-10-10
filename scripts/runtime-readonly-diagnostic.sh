@@ -36,9 +36,11 @@ backend_image_id='UNKNOWN'
 backend_state='unknown'
 backend_health='unknown'
 backend_id=''
+ai_policy_deployment_enabled='null'
 if backend_id="$(single_container_id backend)"; then
-  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$backend_id" 2>/dev/null || true)"
-  IFS=$'\t' read -r candidate_tag candidate_image_id candidate_state candidate_health <<<"$inspect"
+  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\t"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{join (slice (split . "=") 1) "="}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
+  IFS=$'\t' read -r candidate_tag candidate_image_id candidate_state candidate_health \
+    candidate_ai_policy_enabled <<<"$inspect"
   if [[ "${candidate_tag:-}" =~ ^trade-backend:[0-9a-f]{40}$ ]]; then backend_tag="$candidate_tag"; fi
   if [[ "${candidate_image_id:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; then backend_image_id="$candidate_image_id"; fi
   case "${candidate_state:-}" in
@@ -46,6 +48,10 @@ if backend_id="$(single_container_id backend)"; then
   esac
   case "${candidate_health:-}" in
     healthy|unhealthy|starting|none) backend_health="$candidate_health" ;;
+  esac
+  case "$(printf '%s' "${candidate_ai_policy_enabled:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" in
+    true|yes|on|1) ai_policy_deployment_enabled='true' ;;
+    false|no|off|0) ai_policy_deployment_enabled='false' ;;
   esac
 fi
 
@@ -95,6 +101,15 @@ portfolio_manual_read_at='#NULL#'
 portfolio_price_synced_present='false'
 portfolio_price_synced_min='#NULL#'
 portfolio_price_synced_max='#NULL#'
+ai_verification_events_available='false'
+ai_verification_count='0'
+ai_approved_count='0'
+ai_blocked_count='0'
+ai_rejected_count='0'
+ai_policy_revisions_available='false'
+ai_policy_revision_count='0'
+ai_policy_owner_scope_configured='false'
+[[ -n "$owner_id" ]] && ai_policy_owner_scope_configured='true'
 
 if db_id="$(single_container_id postgres)"; then
   metadata_sql=$(cat <<'SQL'
@@ -137,6 +152,63 @@ SQL
     decision_count="$candidate_decision_count"
     latest_security_projection_count="$candidate_projection_count"
     db_status='available'
+
+    ai_schema_sql=$(cat <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+SELECT
+  CASE WHEN to_regclass('public.investment_thesis_ai_verification_events') IS NULL THEN 'false' ELSE 'true' END,
+  CASE WHEN to_regclass('public.investment_thesis_ai_policy_revisions') IS NULL THEN 'false' ELSE 'true' END;
+ROLLBACK;
+SQL
+)
+    ai_schema_metadata="$(printf '%s\n' "$ai_schema_sql" | docker exec -i "$db_id" psql -X -q -t -A -w -F $'\t' \
+      -v ON_ERROR_STOP=1 -U trade -d trade -h /var/run/postgresql -f - 2>/dev/null || true)"
+    IFS=$'\t' read -r candidate_ai_events_schema candidate_ai_policy_schema <<<"$ai_schema_metadata"
+
+    if [[ "${candidate_ai_events_schema:-}" == true ]]; then
+      ai_verification_count_sql=$(cat <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+SELECT count(*),
+       count(*) FILTER (WHERE outcome = 'AUTO_APPROVED'),
+       count(*) FILTER (WHERE outcome = 'BLOCKED'),
+       count(*) FILTER (WHERE outcome = 'REJECTED')
+  FROM investment_thesis_ai_verification_events
+ WHERE user_id = :'owner_id'::uuid;
+ROLLBACK;
+SQL
+)
+      ai_event_counts="$(printf '%s\n' "$ai_verification_count_sql" | docker exec -i "$db_id" psql -X -q -t -A -w -F $'\t' \
+        -v ON_ERROR_STOP=1 -v "owner_id=$owner_id" -U trade -d trade -h /var/run/postgresql -f - 2>/dev/null || true)"
+      IFS=$'\t' read -r candidate_ai_verification_count candidate_ai_approved_count \
+        candidate_ai_blocked_count candidate_ai_rejected_count <<<"$ai_event_counts"
+      if [[ "${candidate_ai_verification_count:-}" =~ ^[0-9]+$ &&
+            "${candidate_ai_approved_count:-}" =~ ^[0-9]+$ &&
+            "${candidate_ai_blocked_count:-}" =~ ^[0-9]+$ &&
+            "${candidate_ai_rejected_count:-}" =~ ^[0-9]+$ ]]; then
+        ai_verification_events_available='true'
+        ai_verification_count="$candidate_ai_verification_count"
+        ai_approved_count="$candidate_ai_approved_count"
+        ai_blocked_count="$candidate_ai_blocked_count"
+        ai_rejected_count="$candidate_ai_rejected_count"
+      fi
+    fi
+
+    if [[ "${candidate_ai_policy_schema:-}" == true ]]; then
+      ai_policy_revision_count_sql=$(cat <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+SELECT count(*)
+  FROM investment_thesis_ai_policy_revisions
+ WHERE user_id = :'owner_id'::uuid;
+ROLLBACK;
+SQL
+)
+      ai_policy_revision_count_result="$(printf '%s\n' "$ai_policy_revision_count_sql" | docker exec -i "$db_id" psql -X -q -t -A -w \
+        -v ON_ERROR_STOP=1 -v "owner_id=$owner_id" -U trade -d trade -h /var/run/postgresql -f - 2>/dev/null || true)"
+      if [[ "$ai_policy_revision_count_result" =~ ^[0-9]+$ ]]; then
+        ai_policy_revisions_available='true'
+        ai_policy_revision_count="$ai_policy_revision_count_result"
+      fi
+    fi
 
     # FINGERPRINT_CONTRACT_V1 tickers=AVT,CSTM,GOOGL,LUNR,RDW,VST; selection=latest_per_ticker(as_of_desc,id_desc); row_order=ticker_asc; null=#NULL#_raw; token=UTF8_HEX; token_separator=:; row_separator=LF_with_terminal_LF; hash=SHA256; timestamp=UTC_milliseconds; periodEnd=YYYY-MM-DD; money=2dp; price=4dp; shares_eps_growth=6dp; status=omitted.
     # Field order follows SecurityView's persisted price/fundamentals/consensus:
@@ -459,8 +531,11 @@ printf '"readiness":{"httpStatus":"%s","status":"%s"},"database":{"status":"%s",
   "$readiness_http" "$readiness_status" "$db_status" "$flyway_version_json" "$flyway_success"
 printf '"analysisInputSnapshotCount":%s,"securitySnapshotCount":%s,"priceSnapshotCount":%s,"thesisCount":%s,"decisionCount":%s,' \
   "$analysis_input_snapshot_count" "$security_snapshot_count" "$price_snapshot_count" "$thesis_count" "$decision_count"
-printf '"latestSecurityProjectionCount":%s,"latestSecurityProjectionSha256":"%s"},' \
-  "$latest_security_projection_count" "${latest_security_projection_sha256:-}"
+printf '"latestSecurityProjectionCount":%s,"latestSecurityProjectionSha256":"%s","aiVerificationPolicy":{"verificationEventsAvailable":%s,"verificationCount":%s,"approvedCount":%s,"blockedCount":%s,"rejectedCount":%s,"policyRevisionsAvailable":%s,"aiPolicyRevisionCount":%s,"deploymentEnabled":%s,"ownerScopeConfigured":%s}},' \
+  "$latest_security_projection_count" "${latest_security_projection_sha256:-}" \
+  "$ai_verification_events_available" "$ai_verification_count" "$ai_approved_count" \
+  "$ai_blocked_count" "$ai_rejected_count" "$ai_policy_revisions_available" \
+  "$ai_policy_revision_count" "$ai_policy_deployment_enabled" "$ai_policy_owner_scope_configured"
 
 json_timestamp() {
   if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$ ]]; then

@@ -91,13 +91,17 @@ class InvestmentOsResearchSheetSyncTest {
                 "Manual Account As Of", "Manual Read At", "Manual Account Status", "Manual Account Stale",
                 "Risk Inputs Available", "Position Source Coverage", "Position Accounts Included",
                 "Position Quantity As Of", "Position Price As Of", "Position Manual As Of");
+        assertThat(security.getFirst()).contains("Risk Mark Price", "Risk Mark As Of", "Risk Mark Source",
+                "Risk Mark Basis", "Risk Mark As Of Basis", "Risk Mark Status", "Risk Mark Reason");
         assertThat(security.getFirst()).startsWith("Ticker", "As Of", "Quantity", "Weight", "Currency");
-        assertThat(security.getFirst()).endsWith("ThemeId", "TrendStage")
+        assertThat(security.getFirst()).endsWith("ThemeId", "TrendStage", "Risk Mark Price", "Risk Mark As Of",
+                        "Risk Mark Source", "Risk Mark Basis", "Risk Mark As Of Basis", "Risk Mark Status",
+                        "Risk Mark Reason")
                 .doesNotContain("Indicators", "AVWAP", "Cohorts", "Performance");
         assertThat(security.get(1).get(security.getFirst().indexOf("ThemeId"))).isEqualTo("QUALITY_COMPOUNDERS");
         assertThat(security.get(1).get(security.getFirst().indexOf("TrendStage"))).isEqualTo("BASE");
         assertThat(security.getFirst().stream().filter("Currency"::equals).count()).isEqualTo(1L);
-        assertThat(security.get(1)).contains("AAPL", new BigDecimal("101"), "REGULAR_CLOSE", "SOURCE_CONFLICT",
+        assertThat(security.get(1)).contains("AAPL", new BigDecimal("101"), "VERIFIED_REGULAR_CLOSE", "STALE",
                 "PARTIAL", "FY2025", "2026-02-01T00:00:00Z", "2026-02-02T00:00:00Z", "FMP",
                 new BigDecimal("50"), "SEC_INSTANT", "2026-02-03T00:00:00Z",
                 "TOSS_REGULAR_CLOSE * SEC_BASIC_SHARES", new BigDecimal("250"),
@@ -151,6 +155,19 @@ class InvestmentOsResearchSheetSyncTest {
         assertThat(security.get(1).get(security.getFirst().indexOf("Risk Soft Budget Status")))
                 .isEqualTo("DATA_MISSING");
         assertThat(security.get(1).get(security.getFirst().indexOf("Risk Sizing Eligible"))).isEqualTo(false);
+        assertThat(security.get(1).get(security.getFirst().indexOf("Latest Price"))).isEqualTo(new BigDecimal("101"));
+        assertThat(security.get(1).get(security.getFirst().indexOf("Price Status"))).isEqualTo("STALE");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Mark Price"))).isEqualTo(new BigDecimal("100"));
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Mark As Of")))
+                .isEqualTo("2026-09-16T04:00:00Z");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Mark Source"))).isEqualTo("TOSS");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Mark Basis")))
+                .isEqualTo("VERIFIED_REGULAR_CLOSE");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Mark As Of Basis")))
+                .isEqualTo("PROVIDER_SESSION_LABEL");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Mark Status"))).isEqualTo("OK");
+        assertThat(security.get(1).get(security.getFirst().indexOf("Risk Mark Reason")))
+                .isEqualTo("DECLARED_CLOSED_INTERVAL_REGULAR_CLOSE_ACCEPTED");
         assertThat(security.get(1).get(security.getFirst().indexOf("Combined Portfolio Source")))
                 .isEqualTo("TOSS_API+MANUAL_SHEET");
         assertThat(security.get(1).get(security.getFirst().indexOf("Combined Portfolio Status"))).isEqualTo("OK");
@@ -189,6 +206,14 @@ class InvestmentOsResearchSheetSyncTest {
                 new BigDecimal("100"), new BigDecimal("2"), new BigDecimal("10"), new BigDecimal("8"),
                 "ALPHA_VANTAGE", "ANNUAL", "FY2027", "2027-12-31", 18, 21, "USD");
         assertThat(tabs.get(1).values().get(1)).contains("AAPL", "Keep growing subscriptions");
+        var thesis = tabs.get(1).values();
+        assertThat(thesis.getFirst()).contains("Approval Actor", "Policy Version", "Verification Event ID", "Revision ID");
+        assertThat(thesis.get(1).get(thesis.getFirst().indexOf("Approval Actor"))).isEqualTo("AI_POLICY");
+        assertThat(thesis.get(1).get(thesis.getFirst().indexOf("Policy Version"))).isEqualTo("policy-v1");
+        assertThat(thesis.get(1).get(thesis.getFirst().indexOf("Verification Event ID")))
+                .isEqualTo("44444444-4444-4444-4444-444444444444");
+        assertThat(thesis.get(1).get(thesis.getFirst().indexOf("Revision ID")))
+                .isEqualTo("55555555-5555-5555-5555-555555555555");
 
         var queries = org.mockito.ArgumentCaptor.forClass(String.class);
         verify(jdbc, times(4)).query(queries.capture(), any(RowMapper.class), eq(USER_ID));
@@ -291,9 +316,11 @@ class InvestmentOsResearchSheetSyncTest {
         verify(sheets).batchUpdateValues(eq("sheet-1"), updates.capture());
         @SuppressWarnings("unchecked")
         var tabs = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
-        assertThat(tabs.getFirst().values().getFirst()).hasSize(121)
+        assertThat(tabs.getFirst().values().getFirst()).hasSize(128)
                 .startsWith("Ticker", "As Of", "Quantity", "Weight")
-                .contains("Basic Shares", "Market Cap Formula", "Field Provenance");
+                .contains("Basic Shares", "Market Cap Formula", "Field Provenance",
+                        "Risk Mark Price", "Risk Mark As Of", "Risk Mark Source", "Risk Mark Basis",
+                        "Risk Mark As Of Basis", "Risk Mark Status", "Risk Mark Reason");
     }
 
     @Test
@@ -409,7 +436,7 @@ class InvestmentOsResearchSheetSyncTest {
                 .contains("'Security Snapshot'!A1", "'Consensus History'!A1", "'Watchlist'!A1");
         var security = tabs.stream().filter(update -> update.range().equals("'Security Snapshot'!A1"))
                 .findFirst().orElseThrow().values();
-        assertThat(security.getFirst()).hasSize(121);
+        assertThat(security.getFirst()).hasSize(128);
         assertThat(security).hasSize(2);
         assertThat(security.get(1).get(0)).isEqualTo("AAPL");
         assertThat(((Number) security.get(1).get(2)).intValue()).isEqualTo(4);
@@ -455,13 +482,16 @@ class InvestmentOsResearchSheetSyncTest {
         @SuppressWarnings("unchecked")
         var ranges = (List<GoogleSheetsClient.SheetValueRange>) updates.getValue();
         var thesisUpdates = ranges.stream().filter(value -> value.range().startsWith("'Thesis State'!")).toList();
-        assertThat(thesisUpdates).hasSize(1);
-        assertThat(thesisUpdates.getFirst().range()).isEqualTo(expectedRange);
-        var row = thesisUpdates.getFirst().values().getFirst();
+        assertThat(thesisUpdates).extracting(GoogleSheetsClient.SheetValueRange::range)
+                .containsExactly("'Thesis State'!Q1:T1", expectedRange, "'Thesis State'!Q3:T3");
+        var row = thesisUpdates.get(1).values().getFirst();
         assertThat(row).hasSize(14);
-        assertThat(row.get(13)).isEqualTo("NO");
+        assertThat(row.get(13)).isEqualTo("CONDITIONAL");
         assertThat(row.get(0)).isEqualTo("AAPL");
         assertThat(row.get(1)).isEqualTo("Keep growing subscriptions");
+        assertThat(thesisUpdates.get(2).values().getFirst()).containsExactly("AI_POLICY", "policy-v1",
+                "44444444-4444-4444-4444-444444444444", "55555555-5555-5555-5555-555555555555");
+        assertThat(thesisUpdates).noneMatch(update -> update.range().contains("O") || update.range().contains("P"));
         verify(sheets, never()).duplicateSheets(anyString(), anyMap());
     }
 
@@ -675,10 +705,11 @@ class InvestmentOsResearchSheetSyncTest {
         var security = new InvestmentContextService.SecurityView(
                 "AAPL", position, contextAsOf,
                 mapper.readTree("""
-                        {"regularClose":100,"regularCloseAsOf":"2026-09-16T20:00:00Z",
-                         "latestPrice":101,"latestPriceAsOf":"2026-09-16T20:01:00Z",
-                         "session":"REGULAR_CLOSE","source":"FMP","secondarySource":"POLYGON",
-                         "status":"SOURCE_CONFLICT"}
+                        {"regularClose":100,"regularCloseAsOf":"2026-09-16T04:00:00Z",
+                         "latestPrice":101,"latestPriceAsOf":"2026-09-16T23:00:00Z",
+                         "session":null,"source":"TOSS","secondarySource":null,
+                         "status":"STALE","sessionReason":"TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS",
+                         "nextDeclaredIntervalStartsAt":"2026-09-17T08:00:00Z"}
                         """),
                 mapper.readTree("{}"), mapper.readTree("""
                         {"fiscalPeriod":"FY2025","reportedAt":"2026-02-01T00:00:00Z",
@@ -727,13 +758,19 @@ class InvestmentOsResearchSheetSyncTest {
                         {"fundamentalStatus":"OK","balanceSheetStatus":"OK","overallDataStatus":"PARTIAL"}
                         """),
                 new InvestmentContextService.ThesisView("AAPL", "Keep growing subscriptions", null, null,
-                        null, null, null, null, "UNCONFIRMED", null, null, "GROWTH", Instant.parse("2026-09-16T20:00:00Z")),
+                        null, null, null, null, "CONFIRMED", null, null, "GROWTH", Instant.parse("2026-09-16T20:00:00Z"),
+                        UUID.fromString("55555555-5555-5555-5555-555555555555"), 7L, "AI_POLICY", "policy-v1",
+                        UUID.fromString("44444444-4444-4444-4444-444444444444"), null),
                 new InvestmentContextService.RiskContributionView(null, null, null,
                         com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
                         null, com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
                         null, null, null,
                         com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.DATA_MISSING,
-                        false, "DATA_MISSING"),
+                        false, "DATA_MISSING", List.of(), new InvestmentContextService.RiskMarkView(
+                        new BigDecimal("100"), Instant.parse("2026-09-16T04:00:00Z"), "TOSS",
+                        "VERIFIED_REGULAR_CLOSE", "PROVIDER_SESSION_LABEL",
+                        com.jmj.trade.investment.InvestmentDataCalculator.DataStatus.OK,
+                        "DECLARED_CLOSED_INTERVAL_REGULAR_CLOSE_ACCEPTED")),
                 new InvestmentContextService.SecurityTacticalOverlayView(
                         "READY", null, "QUALITY_COMPOUNDERS", "BASE", "POSITION_ENTRY", new BigDecimal("95"),
                         "BETTER_ENTRY", "TACTICAL_OVERLAY_V1", contextAsOf, LocalDate.parse("2026-09-16"),
