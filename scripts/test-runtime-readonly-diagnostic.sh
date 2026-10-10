@@ -40,8 +40,8 @@ for field in contract["fields"]:
         needle = "'{" + ",".join(path.split(".")) + "}'"
     assert needle in script, f"fingerprint descriptor path is not queried: {path}"
 
-sql_blocks = re.findall(r"(?:metadata_sql|projection_sql)=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
-assert len(sql_blocks) == 2, "expected both read-only SQL blocks"
+sql_blocks = re.findall(r"(?:metadata_sql|projection_sql|portfolio_sql)=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
+assert len(sql_blocks) == 3, "expected all three read-only SQL blocks"
 for sql in sql_blocks:
     assert sql.lstrip().startswith("BEGIN TRANSACTION READ ONLY;")
     assert sql.rstrip().endswith("ROLLBACK;")
@@ -67,6 +67,15 @@ while index < len(field_array):
         field_count += 1
     index += 1
 assert field_count == len(contract["fields"]), "SQL projection and machine-readable field contract differ in length"
+portfolio_sql = re.search(r"portfolio_sql=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S).group(1)
+assert "investment_os_portfolio_snapshots" in portfolio_sql
+assert "flyway_schema_history" not in portfolio_sql and "latest_per_ticker" not in portfolio_sql
+for key in ("account1AsOf", "sessionReason", "sessionReferenceAt", "nextDeclaredIntervalStartsAt",
+            "manualStatus", "manualAsOf", "manualReadAt", "accountState"):
+    assert f"payload->'{key}'" in portfolio_sql or f"payload->>'{key}'" in portfolio_sql, f"portfolio key not read: {key}"
+# Only freshness facts may be selected from the payload: no aggregate/metrics tables or other sheet cells.
+for forbidden in ("'aggregate'", "'metrics'", "Current Price", "Quantity", "Market Value", "'source'"):
+    assert forbidden not in portfolio_sql, f"portfolio query reads a non-freshness sheet field: {forbidden}"
 assert "docker compose" in script and "compose ps -q" in script
 assert "docker inspect" in script and "127.0.0.1:8080/actuator/health/readiness" in script
 assert "postgres_tcp_ready()" in fixture_test
@@ -123,6 +132,30 @@ case "${1:-}" in
     elif [[ "$sql" == *latest_per_ticker* ]]; then
       [[ "${MOCK_FAIL_PROJECTION:-0}" == 0 ]] || exit 97
       printf '%s\n' raw-financial-sentinel raw-provenance-sentinel raw-symbol-sentinel
+    elif [[ "$sql" == *investment_os_portfolio_snapshots* ]]; then
+      [[ "${MOCK_FAIL_PORTFOLIO:-0}" == 0 ]] || exit 100
+      case "${MOCK_PORTFOLIO_MODE:-valid}" in
+        valid)
+          printf '%s\t' 2026-10-10T01:00:00.000Z FAILED 2026-10-10T00:55:00.000Z SHEET_READ_FAILED 3 1 2 \
+            PARTIAL 2026-10-10T00:50:00.000Z 2026-10-09T20:00:00.000Z \
+            PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS 2026-10-09T19:59:00.000Z 2026-10-10T08:00:00.000Z \
+            OK 2026-10-09 2026-10-10T00:50:00.000Z true 2026-10-09T19:59:00.000Z
+          printf '%s\n' 2026-10-09T20:00:00.000Z
+          ;;
+        hostile)
+          printf '%s\t' 2026-10-10T01:00:00.000Z FAILED raw-time-sentinel raw-error-sentinel 0 0 1 \
+            SUCCEEDED 2026-10-09T00:50:00.000Z 2026-10-09T20:00:00Z '#NULL#' raw-reference-sentinel \
+            '#NULL#' raw-manual-sentinel raw-date-sentinel '#NULL#' false 2026-10-10T01:00:00Z
+          printf '%s\n' '#NULL#'
+          ;;
+        malformed)
+          printf '%s\t' 2026-10-10T01:00:00.000Z FAILED 2026-10-10T00:55:00.000Z SHEET_READ_FAILED \
+            raw-count-sentinel 0 0 PARTIAL 2026-10-10T00:50:00.000Z '#NULL#' '#NULL#' '#NULL#' '#NULL#' \
+            OK 2026-10-09 '#NULL#' false '#NULL#'
+          printf '%s\n' '#NULL#'
+          ;;
+        *) exit 101 ;;
+      esac
     else
       exit 98
     fi
@@ -172,6 +205,8 @@ mock_run() {
     MOCK_FLYWAY_SUCCESS="${MOCK_FLYWAY_SUCCESS:-true}" \
     MOCK_FAIL_METADATA="${MOCK_FAIL_METADATA:-0}" \
     MOCK_FAIL_PROJECTION="${MOCK_FAIL_PROJECTION:-0}" \
+    MOCK_FAIL_PORTFOLIO="${MOCK_FAIL_PORTFOLIO:-0}" \
+    MOCK_PORTFOLIO_MODE="${MOCK_PORTFOLIO_MODE:-valid}" \
     bash "$script" >"$output" 2>"$output.stderr"
 }
 
@@ -196,6 +231,26 @@ assert report["database"]["flywayVersion"] == "56"
 assert report["database"]["flywaySuccess"] is True
 assert report["database"]["latestSecurityProjectionCount"] == 6
 assert len(report["database"]["latestSecurityProjectionSha256"]) == 64
+assert report["portfolioFreshness"] == {
+    "querySuccess": True,
+    "observedAt": "2026-10-10T01:00:00.000Z",
+    "latestAttempt": {"status": "FAILED", "attemptedAt": "2026-10-10T00:55:00.000Z", "errorCode": "SHEET_READ_FAILED"},
+    "attemptCountsLast24h": {"SUCCEEDED": 3, "PARTIAL": 1, "FAILED": 2},
+    "latestAccepted": {
+        "status": "PARTIAL",
+        "attemptedAt": "2026-10-10T00:50:00.000Z",
+        "account1AsOf": "2026-10-09T20:00:00.000Z",
+        "sessionReason": "PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS",
+        "sessionReferenceAt": "2026-10-09T19:59:00.000Z",
+        "nextDeclaredIntervalStartsAt": "2026-10-10T08:00:00.000Z",
+        "manualStatus": "OK",
+        "manualAsOf": "2026-10-09",
+        "manualReadAt": "2026-10-10T00:50:00.000Z",
+        "positionsPriceSyncedAtPresent": True,
+        "positionsPriceSyncedAtMin": "2026-10-09T19:59:00.000Z",
+        "positionsPriceSyncedAtMax": "2026-10-09T20:00:00.000Z",
+    },
+}
 raw = Path(sys.argv[1]).read_text()
 for sentinel in ("raw-financial-sentinel", "raw-provenance-sentinel", "raw-symbol-sentinel", "raw-secret-sentinel", "raw-container-id-sentinel", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
     assert sentinel not in raw
@@ -212,6 +267,81 @@ grep -q '"httpStatus":"503","status":"DOWN"' "$tmp/readiness-failure.json" ||
 
 MOCK_FLYWAY_SUCCESS=false mock_run "$tmp/flyway-failure.json" '' && fail "failed Flyway migration passed"
 grep -q '"flywaySuccess":false' "$tmp/flyway-failure.json" || fail "Flyway failure was not recorded"
+
+MOCK_PORTFOLIO_MODE=hostile mock_run "$tmp/portfolio-hostile.json" "$expected_sha" ||
+  fail "hostile portfolio values changed the overall diagnostic status"
+python3 "$sanitizer" "$tmp/portfolio-hostile.json" "$tmp/portfolio-hostile-safe.json" ||
+  fail "redacted portfolio values were rejected by the allowlist"
+python3 - "$tmp/portfolio-hostile.json" "$tmp/portfolio-hostile-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_text()
+for sentinel in ("raw-time-sentinel", "raw-error-sentinel", "raw-reference-sentinel", "raw-manual-sentinel",
+                 "raw-date-sentinel", "#NULL#", "2026-10-09T20:00:00Z", "2026-10-10T01:00:00Z"):
+    assert sentinel not in raw, f"portfolio value leaked unvalidated: {sentinel}"
+report = json.loads(Path(sys.argv[2]).read_text())
+assert report["ok"] is True
+portfolio = report["portfolioFreshness"]
+assert portfolio["querySuccess"] is True
+assert portfolio["latestAttempt"] == {"status": "FAILED", "attemptedAt": None, "errorCode": "REDACTED"}
+assert portfolio["attemptCountsLast24h"] == {"SUCCEEDED": 0, "PARTIAL": 0, "FAILED": 1}
+accepted = portfolio["latestAccepted"]
+assert accepted["status"] == "SUCCEEDED" and accepted["attemptedAt"] == "2026-10-09T00:50:00.000Z"
+assert accepted["account1AsOf"] is None and accepted["sessionReason"] is None
+assert accepted["sessionReferenceAt"] is None and accepted["nextDeclaredIntervalStartsAt"] is None
+assert accepted["manualStatus"] == "REDACTED" and accepted["manualAsOf"] is None and accepted["manualReadAt"] is None
+assert accepted["positionsPriceSyncedAtPresent"] is False
+assert accepted["positionsPriceSyncedAtMin"] is None and accepted["positionsPriceSyncedAtMax"] is None
+PY
+
+for portfolio_case in malformed query-failure; do
+  if [[ "$portfolio_case" == malformed ]]; then
+    MOCK_PORTFOLIO_MODE=malformed mock_run "$tmp/portfolio-$portfolio_case.json" "$expected_sha" ||
+      fail "malformed portfolio row changed the overall diagnostic status"
+  else
+    MOCK_FAIL_PORTFOLIO=1 mock_run "$tmp/portfolio-$portfolio_case.json" "$expected_sha" ||
+      fail "failed portfolio query changed the overall diagnostic status"
+  fi
+  python3 "$sanitizer" "$tmp/portfolio-$portfolio_case.json" "$tmp/portfolio-$portfolio_case-safe.json" ||
+    fail "portfolio $portfolio_case defaults were rejected by the allowlist"
+  python3 - "$tmp/portfolio-$portfolio_case.json" "$tmp/portfolio-$portfolio_case-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+assert "raw-count-sentinel" not in Path(sys.argv[1]).read_text()
+report = json.loads(Path(sys.argv[2]).read_text())
+assert report["ok"] is True
+assert report["portfolioFreshness"] == {
+    "querySuccess": False,
+    "observedAt": None,
+    "latestAttempt": {"status": None, "attemptedAt": None, "errorCode": None},
+    "attemptCountsLast24h": {"SUCCEEDED": 0, "PARTIAL": 0, "FAILED": 0},
+    "latestAccepted": {
+        "status": None, "attemptedAt": None, "account1AsOf": None, "sessionReason": None,
+        "sessionReferenceAt": None, "nextDeclaredIntervalStartsAt": None, "manualStatus": None,
+        "manualAsOf": None, "manualReadAt": None, "positionsPriceSyncedAtPresent": False,
+        "positionsPriceSyncedAtMin": None, "positionsPriceSyncedAtMax": None,
+    },
+}
+PY
+done
+
+python3 - "$tmp/safe.json" "$tmp/portfolio-bad-shape.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+report["portfolioFreshness"]["latestAccepted"]["quantity"] = "raw-quantity-sentinel"
+Path(sys.argv[2]).write_text(json.dumps(report))
+PY
+if python3 "$sanitizer" "$tmp/portfolio-bad-shape.json" "$tmp/portfolio-bad-shape-safe.json"; then
+  fail "unexpected portfolio field passed the allowlist"
+fi
+if grep -q 'raw-quantity-sentinel' "$tmp/portfolio-bad-shape-safe.json"; then fail "sanitizer leaked a portfolio field"; fi
 
 : >"$tmp/docker.log"
 if mock_run "$tmp/invalid-sha.json" bad; then fail "invalid expected SHA passed"; fi
@@ -231,7 +361,7 @@ from pathlib import Path
 
 script = Path(sys.argv[1]).read_text()
 tmp = Path(sys.argv[2])
-for name in ("metadata_sql", "projection_sql"):
+for name in ("metadata_sql", "projection_sql", "portfolio_sql"):
     match = re.search(rf"{name}=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
     assert match, f"missing SQL block {name}"
     (tmp / f"{name}.sql").write_text(match.group(1) + "\n")
@@ -266,6 +396,39 @@ CREATE TABLE investment_security_snapshots (id uuid, user_id uuid, ticker text, 
 CREATE TABLE investment_price_snapshots (id integer, user_id uuid);
 CREATE TABLE investment_thesis_states (id integer, user_id uuid);
 CREATE TABLE investment_decision_ledger (id integer, user_id uuid);
+CREATE TABLE investment_os_portfolio_snapshots (
+  id uuid PRIMARY KEY, user_id uuid NOT NULL,
+  attempt_status varchar(16) NOT NULL CHECK (attempt_status IN ('SUCCEEDED', 'PARTIAL', 'FAILED')),
+  attempted_at timestamptz NOT NULL, error_code varchar(120), payload jsonb, created_at timestamptz NOT NULL);
+INSERT INTO investment_os_portfolio_snapshots VALUES
+  ('00000000-0000-4000-8000-000000000101', '$pg_owner', 'FAILED', now() - interval '1 hour',
+   'SHEET_READ_FAILED', NULL, now() - interval '1 hour'),
+  ('00000000-0000-4000-8000-000000000102', '$pg_owner', 'PARTIAL', now() - interval '2 hours',
+   'OPTIONAL_SOURCE_FAILURE', jsonb_build_object(
+     'accountState', jsonb_build_object(
+       'headers', jsonb_build_array('Account', 'Ticker', 'Quantity', 'Current Price', 'Price Synced At', 'Sheet Id'),
+       'rows', jsonb_build_array(
+         jsonb_build_array('raw-account-id-sentinel', 'AVT', '98765.4321', '4321.9876', '2026-10-09T19:59:00Z', 'raw-sheet-id-sentinel'),
+         jsonb_build_array('raw-account-id-sentinel', 'RDW', '12345.6789', '1234.5678', ' 2026-10-09T20:00:00.123456Z ', 'raw-sheet-id-sentinel'),
+         jsonb_build_array('raw-account-id-sentinel', 'CASH_USD', '55555.5555', '', '', 'raw-sheet-id-sentinel'),
+         jsonb_build_array('raw-account-id-sentinel', 'LUNR', '1.5', '2.5', '2026-02-30T00:00:00Z', 'raw-sheet-id-sentinel'),
+         jsonb_build_array('raw-account-id-sentinel', 'VST', '3.5', '4.5', 'now', 'raw-sheet-id-sentinel'),
+         jsonb_build_object('raw-object-row-sentinel', '2026-01-01T00:00:00Z'))),
+     'aggregate', jsonb_build_object('headers', jsonb_build_array('Ticker', 'Market Value'),
+       'rows', jsonb_build_array(jsonb_build_array('AVT', '77777.7777'))),
+     'metrics', jsonb_build_object('headers', jsonb_build_array('Scope', 'Total Value'),
+       'rows', jsonb_build_array(jsonb_build_array('COMBINED', '66666.6666'))),
+     'account1AsOf', '2026-10-09T20:00:00Z',
+     'sessionReason', 'PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS',
+     'sessionReferenceAt', '2026-13-45T00:00:00Z',
+     'nextDeclaredIntervalStartsAt', '2026-10-12T13:30:00+09:00',
+     'manualStatus', 'OK', 'manualAsOf', '2026-10-09', 'manualReadAt', '2026-10-10T00:50:00.5Z',
+     'source', 'TOSS_API+MANUAL_SHEET', 'attemptStatus', 'PARTIAL', 'failurePresent', true),
+   now() - interval '2 hours'),
+  ('00000000-0000-4000-8000-000000000103', '$pg_owner', 'SUCCEEDED', now() - interval '30 hours',
+   NULL, jsonb_build_object('manualStatus', 'EMPTY_CONFIRMED'), now() - interval '30 hours'),
+  ('00000000-0000-4000-8000-000000000104', '99999999-2222-4333-8444-555555555555', 'SUCCEEDED', now(),
+   NULL, jsonb_build_object('manualStatus', 'raw-other-owner-sentinel'), now());
 INSERT INTO flyway_schema_history VALUES (55, '55', true), (56, '56', true);
 INSERT INTO analysis_input_snapshots VALUES (1, '$pg_owner'), (2, '$pg_owner'), (3, '99999999-2222-4333-8444-555555555555');
 INSERT INTO investment_price_snapshots VALUES (1, '$pg_owner'), (2, '$pg_owner'), (3, '$pg_owner');
@@ -312,7 +475,7 @@ SELECT '00000000-0000-4000-8000-000000000007', '$pg_owner', 'AVT', '2026-10-07T2
   FROM investment_security_snapshots WHERE ticker = 'AVT' LIMIT 1;
 SQL
 
-  read_sql='BEGIN TRANSACTION READ ONLY; SELECT (SELECT count(*) FROM analysis_input_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_security_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_price_snapshots)::text; ROLLBACK;'
+  read_sql='BEGIN TRANSACTION READ ONLY; SELECT (SELECT count(*) FROM analysis_input_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_security_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_price_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_os_portfolio_snapshots)::text; ROLLBACK;'
   before="$(docker exec "$pg_container" psql -X -q -t -A -U trade -d trade -c "$read_sql")"
   metadata="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
     -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - <"$tmp/metadata_sql.sql")"
@@ -411,6 +574,47 @@ for ticker in tickers:
 actual = rows_path.read_text().splitlines()
 assert actual == expected, "real PostgreSQL fingerprint tokens differ from the descriptor-based canonical projection"
 PY
+  portfolio_row="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
+    -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - <"$tmp/portfolio_sql.sql")" ||
+    fail "real PostgreSQL portfolio freshness query failed"
+  printf '%s\n' "$portfolio_row" >"$tmp/portfolio-row.txt"
+  python3 - "$tmp/portfolio-row.txt" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_text()
+for sentinel in ("raw-account-id-sentinel", "raw-sheet-id-sentinel", "raw-object-row-sentinel",
+                 "raw-other-owner-sentinel", "98765.4321", "4321.9876", "12345.6789", "55555.5555",
+                 "77777.7777", "66666.6666", "AVT", "RDW", "TOSS_API"):
+    assert sentinel not in raw, f"portfolio freshness query leaked a raw sheet value: {sentinel}"
+lines = raw.splitlines()
+assert len(lines) == 1, "portfolio freshness query must return exactly one row"
+fields = lines[0].split("\t")
+assert len(fields) == 19 and all(fields), "portfolio freshness row must have 19 non-empty fields"
+utc_ms = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z")
+(observed, latest_status, latest_at, latest_error, succeeded, partial, failed, accepted_status, accepted_at,
+ account1, session_reason, session_reference, next_interval, manual_status, manual_as_of, manual_read_at,
+ synced_present, synced_min, synced_max) = fields
+for value in (observed, latest_at, accepted_at):
+    assert utc_ms.fullmatch(value), value
+assert latest_at > accepted_at and observed > latest_at
+assert (latest_status, latest_error) == ("FAILED", "SHEET_READ_FAILED")
+assert (succeeded, partial, failed) == ("0", "1", "1"), "24-hour counts must be owner-scoped and windowed"
+assert accepted_status == "PARTIAL"
+assert account1 == "2026-10-09T20:00:00.000Z"
+assert session_reason == "PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS"
+assert session_reference == "#NULL#", "impossible timestamp must become #NULL# without failing the query"
+assert next_interval == "2026-10-12T04:30:00.000Z", "offset timestamps must normalize to UTC milliseconds"
+assert (manual_status, manual_as_of, manual_read_at) == ("OK", "2026-10-09", "2026-10-10T00:50:00.500Z")
+assert synced_present == "true"
+assert (synced_min, synced_max) == ("2026-10-09T19:59:00.000Z", "2026-10-09T20:00:00.123Z")
+PY
+  empty_portfolio_row="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
+    -v "owner_id=00000000-0000-4000-8000-00000000ffff" -U trade -d trade -h /var/run/postgresql -f - \
+    <"$tmp/portfolio_sql.sql")" || fail "real PostgreSQL portfolio query failed for an owner without attempts"
+  [[ "$(cut -f 2- <<<"$empty_portfolio_row")" == "$(printf '#NULL#\t#NULL#\t#NULL#\t0\t0\t0\t#NULL#\t#NULL#\t#NULL#\t#NULL#\t#NULL#\t#NULL#\t#NULL#\t#NULL#\t#NULL#\tfalse\t#NULL#\t#NULL#')" ]] ||
+    fail "portfolio query for an owner without attempts did not return the empty default row"
   after="$(docker exec "$pg_container" psql -X -q -t -A -U trade -d trade -c "$read_sql")"
   [[ "$before" == "$after" ]] || fail "read-only SQL changed fixture row counts"
   printf 'read-only runtime diagnostic: mock checks and real PostgreSQL SQL checks passed\n'

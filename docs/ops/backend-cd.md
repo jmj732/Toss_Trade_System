@@ -230,9 +230,51 @@ counts, and a SHA-256 fingerprint for the latest six stored security projections
 GOOGL, LUNR, RDW, VST). The fingerprint contract is published in
 [`scripts/runtime-readonly-fingerprint-v1.json`](../../scripts/runtime-readonly-fingerprint-v1.json).
 It encodes selected price, fundamental, provenance, and consensus fields at stated precision;
-freshness statuses, technical/risk fields, and the raw values, symbols, owner IDs, and credentials
-are not emitted. The fingerprint is a comparison aid for those selected fields, not proof that
-other context fields match.
+the fingerprint omits security freshness statuses and technical/risk fields, and the artifact
+never emits the raw values, symbols, owner IDs, or credentials. The fingerprint is a comparison
+aid for those selected fields, not proof that other context fields match.
+
+The artifact also carries a `portfolioFreshness` object read from the owner's
+`investment_os_portfolio_snapshots` rows (V54). It contains only statuses, reason codes, UTC
+timestamps, booleans, and counts — never amounts, quantities, prices, tickers, account IDs, or
+sheet IDs:
+
+```json
+"portfolioFreshness": {
+  "querySuccess": true,
+  "observedAt": "2026-10-10T01:00:00.000Z",
+  "latestAttempt": {"status": "FAILED", "attemptedAt": "…", "errorCode": "SHEET_READ_FAILED"},
+  "attemptCountsLast24h": {"SUCCEEDED": 0, "PARTIAL": 1, "FAILED": 1},
+  "latestAccepted": {
+    "status": "PARTIAL", "attemptedAt": "…", "account1AsOf": "…",
+    "sessionReason": "PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS",
+    "sessionReferenceAt": "…", "nextDeclaredIntervalStartsAt": "…",
+    "manualStatus": "OK", "manualAsOf": "2026-10-09", "manualReadAt": "…",
+    "positionsPriceSyncedAtPresent": true,
+    "positionsPriceSyncedAtMin": "…", "positionsPriceSyncedAtMax": "…"
+  }
+}
+```
+
+- `observedAt` is the database `now()` of the read-only transaction; the 24-hour counts use
+  `attempted_at >= observedAt - 24h`.
+- `latestAttempt` is the newest attempt of any status, and `latestAccepted` is the newest
+  `SUCCEEDED`/`PARTIAL` attempt. Both use the same ordering as the context read path
+  (`attempted_at DESC, created_at DESC, id DESC`).
+- The `latestAccepted` payload fields come from the stored payload keys of the same names that
+  `InvestmentOsSheetSyncService` writes and `InvestmentContextService` reads.
+- `positionsPriceSyncedAt*` scans every stored `accountState` row's `Price Synced At` cell,
+  including cash rows. That is the same scope `putClosedMarketFacts` uses, not the per-position
+  matching of the context read. `positionsPriceSyncedAtPresent` is true only when at least one
+  cell holds a valid timestamp; the min/max are taken over those valid cells.
+- Timestamps are normalized to UTC milliseconds (`YYYY-MM-DDTHH:MM:SS.mmmZ`) and dates to
+  `YYYY-MM-DD`. A missing or unparseable value is `null`.
+- Status and reason codes must match `^[A-Z0-9_]{1,120}$`; any other non-empty value is
+  reported as `REDACTED`.
+- If the query fails or returns a malformed row, `querySuccess` is `false`, counts are `0`,
+  and every other field is `null`/`false`.
+- These facts are informational. They do not change the top-level `ok`, so a missing table, an
+  owner without attempts, or a failed latest attempt leaves the existing health verdict unchanged.
 
 Disable Vercel's direct Git auto-deploy for this project. Otherwise Vercel can create a second
 deployment that bypasses the repository's CI gate; the GitHub Actions `deploy-vercel` job is the

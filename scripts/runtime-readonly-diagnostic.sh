@@ -75,6 +75,26 @@ latest_security_projection_count='0'
 latest_security_projection_sha256=''
 projection_query_success='false'
 db_id=''
+portfolio_query_success='false'
+portfolio_observed_at='#NULL#'
+portfolio_latest_status='#NULL#'
+portfolio_latest_attempted_at='#NULL#'
+portfolio_latest_error_code='#NULL#'
+portfolio_succeeded_24h='0'
+portfolio_partial_24h='0'
+portfolio_failed_24h='0'
+portfolio_accepted_status='#NULL#'
+portfolio_accepted_attempted_at='#NULL#'
+portfolio_account1_as_of='#NULL#'
+portfolio_session_reason='#NULL#'
+portfolio_session_reference_at='#NULL#'
+portfolio_next_declared_interval_starts_at='#NULL#'
+portfolio_manual_status='#NULL#'
+portfolio_manual_as_of='#NULL#'
+portfolio_manual_read_at='#NULL#'
+portfolio_price_synced_present='false'
+portfolio_price_synced_min='#NULL#'
+portfolio_price_synced_max='#NULL#'
 
 if db_id="$(single_container_id postgres)"; then
   metadata_sql=$(cat <<'SQL'
@@ -255,6 +275,155 @@ SQL
       fi
     fi
   fi
+
+  # Portfolio freshness facts only: statuses, reason codes, timestamps, booleans and counts from
+  # investment_os_portfolio_snapshots. Sheet cells (amounts, quantities, prices, account and sheet
+  # identifiers) never leave PostgreSQL; only "Price Synced At" cells are read, as validated timestamps.
+  # Every column is non-empty (#NULL# for missing) so tab-separated parsing cannot shift fields.
+  portfolio_sql=$(cat <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+WITH pattern AS (
+  SELECT '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}([.][0-9]{1,9})?)?(Z|[+-][0-9]{2}:[0-9]{2})$'::text AS iso,
+         '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'::text AS day,
+         '^[A-Z0-9_]{1,120}$'::text AS code,
+         'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'::text AS utc_ms
+), attempts AS (
+  SELECT id, attempt_status, attempted_at, created_at, error_code, payload
+    FROM investment_os_portfolio_snapshots
+   WHERE user_id = :'owner_id'::uuid
+), latest AS (
+  SELECT attempt_status, attempted_at, error_code
+    FROM attempts
+   ORDER BY attempted_at DESC, created_at DESC, id DESC
+   LIMIT 1
+), counts AS (
+  SELECT count(*) FILTER (WHERE attempt_status = 'SUCCEEDED' AND attempted_at >= now() - interval '24 hours') AS succeeded,
+         count(*) FILTER (WHERE attempt_status = 'PARTIAL' AND attempted_at >= now() - interval '24 hours') AS partial,
+         count(*) FILTER (WHERE attempt_status = 'FAILED' AND attempted_at >= now() - interval '24 hours') AS failed
+    FROM attempts
+), accepted AS (
+  SELECT attempt_status, attempted_at,
+         nullif(btrim(payload->>'account1AsOf'), '') AS account1_as_of,
+         nullif(btrim(payload->>'sessionReason'), '') AS session_reason,
+         nullif(btrim(payload->>'sessionReferenceAt'), '') AS session_reference_at,
+         nullif(btrim(payload->>'nextDeclaredIntervalStartsAt'), '') AS next_declared_interval_starts_at,
+         nullif(btrim(payload->>'manualStatus'), '') AS manual_status,
+         nullif(btrim(payload->>'manualAsOf'), '') AS manual_as_of,
+         nullif(btrim(payload->>'manualReadAt'), '') AS manual_read_at,
+         CASE WHEN jsonb_typeof(payload->'accountState') = 'object' THEN payload->'accountState' END AS account_state
+    FROM attempts
+   WHERE attempt_status IN ('SUCCEEDED', 'PARTIAL') AND jsonb_typeof(payload) = 'object'
+   ORDER BY attempted_at DESC, created_at DESC, id DESC
+   LIMIT 1
+), accepted_typed AS (
+  SELECT accepted.attempt_status, accepted.attempted_at,
+         CASE WHEN account1_as_of ~ pattern.iso AND pg_input_is_valid(account1_as_of, 'timestamptz')
+              THEN account1_as_of::timestamptz END AS account1_as_of,
+         CASE WHEN session_reason IS NULL THEN '#NULL#' WHEN session_reason ~ pattern.code
+              THEN session_reason ELSE 'REDACTED' END AS session_reason,
+         CASE WHEN session_reference_at ~ pattern.iso AND pg_input_is_valid(session_reference_at, 'timestamptz')
+              THEN session_reference_at::timestamptz END AS session_reference_at,
+         CASE WHEN next_declared_interval_starts_at ~ pattern.iso
+                   AND pg_input_is_valid(next_declared_interval_starts_at, 'timestamptz')
+              THEN next_declared_interval_starts_at::timestamptz END AS next_declared_interval_starts_at,
+         CASE WHEN manual_status IS NULL THEN '#NULL#' WHEN manual_status ~ pattern.code
+              THEN manual_status ELSE 'REDACTED' END AS manual_status,
+         CASE WHEN manual_as_of ~ pattern.day AND pg_input_is_valid(manual_as_of, 'date')
+              THEN manual_as_of::date END AS manual_as_of,
+         CASE WHEN manual_read_at ~ pattern.iso AND pg_input_is_valid(manual_read_at, 'timestamptz')
+              THEN manual_read_at::timestamptz END AS manual_read_at,
+         account_state
+    FROM accepted CROSS JOIN pattern
+), price_synced_column AS (
+  SELECT min(header.ordinal)::int - 1 AS position
+    FROM accepted_typed,
+         jsonb_array_elements_text(CASE WHEN jsonb_typeof(account_state->'headers') = 'array'
+                                        THEN account_state->'headers' ELSE '[]'::jsonb END)
+           WITH ORDINALITY AS header(name, ordinal)
+   WHERE regexp_replace(lower(header.name), '[^a-z0-9]', '', 'g') = 'pricesyncedat'
+), price_synced_cells AS (
+  SELECT nullif(btrim(sheet_row.value->>price_synced_column.position), '') AS synced_text
+    FROM accepted_typed
+         CROSS JOIN price_synced_column
+         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(account_state->'rows') = 'array'
+                                                      THEN account_state->'rows' ELSE '[]'::jsonb END) AS sheet_row(value)
+   WHERE price_synced_column.position IS NOT NULL AND jsonb_typeof(sheet_row.value) = 'array'
+), price_synced AS (
+  SELECT count(*) AS valid_count,
+         min(CASE WHEN synced_text ~ pattern.iso AND pg_input_is_valid(synced_text, 'timestamptz')
+                  THEN synced_text::timestamptz END) AS earliest,
+         max(CASE WHEN synced_text ~ pattern.iso AND pg_input_is_valid(synced_text, 'timestamptz')
+                  THEN synced_text::timestamptz END) AS latest
+    FROM price_synced_cells CROSS JOIN pattern
+   WHERE synced_text ~ pattern.iso AND pg_input_is_valid(synced_text, 'timestamptz')
+)
+SELECT
+  to_char(now() AT TIME ZONE 'UTC', pattern.utc_ms),
+  coalesce(latest.attempt_status, '#NULL#'),
+  coalesce(to_char(latest.attempted_at AT TIME ZONE 'UTC', pattern.utc_ms), '#NULL#'),
+  CASE WHEN latest.error_code IS NULL THEN '#NULL#' WHEN latest.error_code ~ pattern.code
+       THEN latest.error_code ELSE 'REDACTED' END,
+  counts.succeeded, counts.partial, counts.failed,
+  coalesce(accepted_typed.attempt_status, '#NULL#'),
+  coalesce(to_char(accepted_typed.attempted_at AT TIME ZONE 'UTC', pattern.utc_ms), '#NULL#'),
+  coalesce(to_char(accepted_typed.account1_as_of AT TIME ZONE 'UTC', pattern.utc_ms), '#NULL#'),
+  coalesce(accepted_typed.session_reason, '#NULL#'),
+  coalesce(to_char(accepted_typed.session_reference_at AT TIME ZONE 'UTC', pattern.utc_ms), '#NULL#'),
+  coalesce(to_char(accepted_typed.next_declared_interval_starts_at AT TIME ZONE 'UTC', pattern.utc_ms), '#NULL#'),
+  coalesce(accepted_typed.manual_status, '#NULL#'),
+  coalesce(to_char(accepted_typed.manual_as_of, 'YYYY-MM-DD'), '#NULL#'),
+  coalesce(to_char(accepted_typed.manual_read_at AT TIME ZONE 'UTC', pattern.utc_ms), '#NULL#'),
+  (price_synced.valid_count > 0)::text,
+  coalesce(to_char(price_synced.earliest AT TIME ZONE 'UTC', pattern.utc_ms), '#NULL#'),
+  coalesce(to_char(price_synced.latest AT TIME ZONE 'UTC', pattern.utc_ms), '#NULL#')
+  FROM pattern
+       CROSS JOIN counts
+       CROSS JOIN price_synced
+       LEFT JOIN latest ON true
+       LEFT JOIN accepted_typed ON true;
+ROLLBACK;
+SQL
+)
+  portfolio_row="$(printf '%s\n' "$portfolio_sql" | docker exec -i "$db_id" psql -X -q -t -A -w -F $'\t' \
+    -v ON_ERROR_STOP=1 -v "owner_id=$owner_id" -U trade -d trade -h /var/run/postgresql -f - 2>/dev/null || true)"
+  IFS=$'\t' read -r candidate_observed_at candidate_latest_status candidate_latest_attempted_at \
+    candidate_latest_error_code candidate_succeeded_24h candidate_partial_24h candidate_failed_24h \
+    candidate_accepted_status candidate_accepted_attempted_at candidate_account1_as_of \
+    candidate_session_reason candidate_session_reference_at candidate_next_declared_interval_starts_at \
+    candidate_manual_status candidate_manual_as_of candidate_manual_read_at \
+    candidate_price_synced_present candidate_price_synced_min candidate_price_synced_max \
+    candidate_portfolio_extra <<<"$portfolio_row"
+  # Structural fields must all validate or the whole row is discarded; free-form fields are validated
+  # individually when the JSON is written (timestamps/dates -> null, unsafe codes -> REDACTED).
+  if [[ "${candidate_latest_status:-}" =~ ^(SUCCEEDED|PARTIAL|FAILED|#NULL#)$ &&
+        "${candidate_succeeded_24h:-}" =~ ^[0-9]+$ &&
+        "${candidate_partial_24h:-}" =~ ^[0-9]+$ &&
+        "${candidate_failed_24h:-}" =~ ^[0-9]+$ &&
+        "${candidate_accepted_status:-}" =~ ^(SUCCEEDED|PARTIAL|#NULL#)$ &&
+        "${candidate_price_synced_present:-}" =~ ^(true|false)$ &&
+        -n "${candidate_price_synced_max:-}" &&
+        -z "${candidate_portfolio_extra:-}" ]]; then
+    portfolio_query_success='true'
+    portfolio_observed_at="$candidate_observed_at"
+    portfolio_latest_status="$candidate_latest_status"
+    portfolio_latest_attempted_at="$candidate_latest_attempted_at"
+    portfolio_latest_error_code="$candidate_latest_error_code"
+    portfolio_succeeded_24h="$candidate_succeeded_24h"
+    portfolio_partial_24h="$candidate_partial_24h"
+    portfolio_failed_24h="$candidate_failed_24h"
+    portfolio_accepted_status="$candidate_accepted_status"
+    portfolio_accepted_attempted_at="$candidate_accepted_attempted_at"
+    portfolio_account1_as_of="$candidate_account1_as_of"
+    portfolio_session_reason="$candidate_session_reason"
+    portfolio_session_reference_at="$candidate_session_reference_at"
+    portfolio_next_declared_interval_starts_at="$candidate_next_declared_interval_starts_at"
+    portfolio_manual_status="$candidate_manual_status"
+    portfolio_manual_as_of="$candidate_manual_as_of"
+    portfolio_manual_read_at="$candidate_manual_read_at"
+    portfolio_price_synced_present="$candidate_price_synced_present"
+    portfolio_price_synced_min="$candidate_price_synced_min"
+    portfolio_price_synced_max="$candidate_price_synced_max"
+  fi
 fi
 
 expected_sha_matches='null'
@@ -290,7 +459,51 @@ printf '"readiness":{"httpStatus":"%s","status":"%s"},"database":{"status":"%s",
   "$readiness_http" "$readiness_status" "$db_status" "$flyway_version_json" "$flyway_success"
 printf '"analysisInputSnapshotCount":%s,"securitySnapshotCount":%s,"priceSnapshotCount":%s,"thesisCount":%s,"decisionCount":%s,' \
   "$analysis_input_snapshot_count" "$security_snapshot_count" "$price_snapshot_count" "$thesis_count" "$decision_count"
-printf '"latestSecurityProjectionCount":%s,"latestSecurityProjectionSha256":"%s"}}\n' \
+printf '"latestSecurityProjectionCount":%s,"latestSecurityProjectionSha256":"%s"},' \
   "$latest_security_projection_count" "${latest_security_projection_sha256:-}"
+
+json_timestamp() {
+  if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$ ]]; then
+    printf '"%s"' "$1"
+  else
+    printf 'null'
+  fi
+}
+
+json_date() {
+  if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then printf '"%s"' "$1"; else printf 'null'; fi
+}
+
+json_code() {
+  if [[ -z "$1" || "$1" == '#NULL#' ]]; then
+    printf 'null'
+  elif [[ "$1" =~ ^[A-Z0-9_]{1,120}$ ]]; then
+    printf '"%s"' "$1"
+  else
+    printf '"REDACTED"'
+  fi
+}
+
+json_status() {
+  if [[ "$1" =~ ^(SUCCEEDED|PARTIAL|FAILED)$ ]]; then printf '"%s"' "$1"; else printf 'null'; fi
+}
+
+printf '"portfolioFreshness":{"querySuccess":%s,"observedAt":%s,' \
+  "$portfolio_query_success" "$(json_timestamp "$portfolio_observed_at")"
+printf '"latestAttempt":{"status":%s,"attemptedAt":%s,"errorCode":%s},' \
+  "$(json_status "$portfolio_latest_status")" "$(json_timestamp "$portfolio_latest_attempted_at")" \
+  "$(json_code "$portfolio_latest_error_code")"
+printf '"attemptCountsLast24h":{"SUCCEEDED":%s,"PARTIAL":%s,"FAILED":%s},' \
+  "$portfolio_succeeded_24h" "$portfolio_partial_24h" "$portfolio_failed_24h"
+printf '"latestAccepted":{"status":%s,"attemptedAt":%s,"account1AsOf":%s,"sessionReason":%s,' \
+  "$(json_status "$portfolio_accepted_status")" "$(json_timestamp "$portfolio_accepted_attempted_at")" \
+  "$(json_timestamp "$portfolio_account1_as_of")" "$(json_code "$portfolio_session_reason")"
+printf '"sessionReferenceAt":%s,"nextDeclaredIntervalStartsAt":%s,"manualStatus":%s,"manualAsOf":%s,' \
+  "$(json_timestamp "$portfolio_session_reference_at")" \
+  "$(json_timestamp "$portfolio_next_declared_interval_starts_at")" \
+  "$(json_code "$portfolio_manual_status")" "$(json_date "$portfolio_manual_as_of")"
+printf '"manualReadAt":%s,"positionsPriceSyncedAtPresent":%s,"positionsPriceSyncedAtMin":%s,"positionsPriceSyncedAtMax":%s}}}\n' \
+  "$(json_timestamp "$portfolio_manual_read_at")" "$portfolio_price_synced_present" \
+  "$(json_timestamp "$portfolio_price_synced_min")" "$(json_timestamp "$portfolio_price_synced_max")"
 
 [[ "$ok" == true ]]

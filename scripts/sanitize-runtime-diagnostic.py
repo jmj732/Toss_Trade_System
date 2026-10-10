@@ -11,6 +11,9 @@ from typing import Any
 
 
 FAILURE = {"schemaVersion": 1, "ok": False, "error": "UNTRUSTED_REMOTE_OUTPUT"}
+TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z")
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+CODE = re.compile(r"[A-Z0-9_]{1,120}")
 
 
 def require_keys(value: Any, keys: set[str]) -> dict[str, Any]:
@@ -25,6 +28,75 @@ def require_count(value: Any) -> int:
     return value
 
 
+def require_optional(value: Any, pattern: re.Pattern[str]) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or pattern.fullmatch(value) is None:
+        raise ValueError("invalid optional field")
+    return value
+
+
+def require_optional_status(value: Any, allowed: set[str]) -> str | None:
+    if value is not None and value not in allowed:
+        raise ValueError("invalid attempt status")
+    return value
+
+
+def require_bool(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError("invalid boolean")
+    return value
+
+
+def sanitize_portfolio_freshness(raw: Any) -> dict[str, Any]:
+    portfolio = require_keys(
+        raw, {"querySuccess", "observedAt", "latestAttempt", "attemptCountsLast24h", "latestAccepted"}
+    )
+    latest = require_keys(portfolio["latestAttempt"], {"status", "attemptedAt", "errorCode"})
+    counts = require_keys(portfolio["attemptCountsLast24h"], {"SUCCEEDED", "PARTIAL", "FAILED"})
+    accepted = require_keys(
+        portfolio["latestAccepted"],
+        {
+            "status",
+            "attemptedAt",
+            "account1AsOf",
+            "sessionReason",
+            "sessionReferenceAt",
+            "nextDeclaredIntervalStartsAt",
+            "manualStatus",
+            "manualAsOf",
+            "manualReadAt",
+            "positionsPriceSyncedAtPresent",
+            "positionsPriceSyncedAtMin",
+            "positionsPriceSyncedAtMax",
+        },
+    )
+    return {
+        "querySuccess": require_bool(portfolio["querySuccess"]),
+        "observedAt": require_optional(portfolio["observedAt"], TIMESTAMP),
+        "latestAttempt": {
+            "status": require_optional_status(latest["status"], {"SUCCEEDED", "PARTIAL", "FAILED"}),
+            "attemptedAt": require_optional(latest["attemptedAt"], TIMESTAMP),
+            "errorCode": require_optional(latest["errorCode"], CODE),
+        },
+        "attemptCountsLast24h": {key: require_count(counts[key]) for key in ("SUCCEEDED", "PARTIAL", "FAILED")},
+        "latestAccepted": {
+            "status": require_optional_status(accepted["status"], {"SUCCEEDED", "PARTIAL"}),
+            "attemptedAt": require_optional(accepted["attemptedAt"], TIMESTAMP),
+            "account1AsOf": require_optional(accepted["account1AsOf"], TIMESTAMP),
+            "sessionReason": require_optional(accepted["sessionReason"], CODE),
+            "sessionReferenceAt": require_optional(accepted["sessionReferenceAt"], TIMESTAMP),
+            "nextDeclaredIntervalStartsAt": require_optional(accepted["nextDeclaredIntervalStartsAt"], TIMESTAMP),
+            "manualStatus": require_optional(accepted["manualStatus"], CODE),
+            "manualAsOf": require_optional(accepted["manualAsOf"], DATE),
+            "manualReadAt": require_optional(accepted["manualReadAt"], TIMESTAMP),
+            "positionsPriceSyncedAtPresent": require_bool(accepted["positionsPriceSyncedAtPresent"]),
+            "positionsPriceSyncedAtMin": require_optional(accepted["positionsPriceSyncedAtMin"], TIMESTAMP),
+            "positionsPriceSyncedAtMax": require_optional(accepted["positionsPriceSyncedAtMax"], TIMESTAMP),
+        },
+    }
+
+
 def sanitize(raw: Any) -> dict[str, Any]:
     root = require_keys(
         raw,
@@ -36,6 +108,7 @@ def sanitize(raw: Any) -> dict[str, Any]:
             "backend",
             "readiness",
             "database",
+            "portfolioFreshness",
         },
     )
     if root["schemaVersion"] != 1 or not isinstance(root["ok"], bool):
@@ -121,6 +194,7 @@ def sanitize(raw: Any) -> dict[str, Any]:
             "status": readiness["status"],
         },
         "database": {key: database[key] for key in sorted(database)},
+        "portfolioFreshness": sanitize_portfolio_freshness(root["portfolioFreshness"]),
     }
 
 
