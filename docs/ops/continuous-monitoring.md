@@ -137,7 +137,7 @@ curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
 
 모니터링 주기마다 사용자별로 다음을 실행한다. 평가 입력 fingerprint 중복 생략과 FastAPI 평가기 호출 **이전**에 독립적으로 실행하므로, thesis 승인이나 가격 변화가 fingerprint에 없어도, 평가기가 실패해도 탐지가 빠지지 않는다. 탐지 실패는 경고 로그만 남기고 기존 위험 평가는 계속한다.
 
-1. **보유 판정**: 이번 주기의 최신 보유 스냅샷(`monitoring.portfolio.max-age`, 기본 15분 이내)에서 수량이 양수인 종목만 대상이다. 스냅샷이 오래되었거나 없으면 대상이 없고 알림도 없다. **미보유 종목은 `CONFIRMED` thesis가 있어도 알림을 만들지 않는다**(자본이 노출되지 않음, investment context의 `INVALIDATION_PRICE_BREACHED` 사유로는 계속 보인다).
+1. **보유 판정**: 이번 주기의 최신 보유 스냅샷(`monitoring.portfolio.max-age`, 기본 15분 이내)에서 수량이 양수인 종목만 대상이다. 스냅샷이 오래되었거나 없으면 대상이 없고 알림도 없다. 이 15분 기준은 바꾸지 않았다. 시트 동기화가 마지막 선언 구간 종료 뒤에 한 번 만드는 계좌 스냅샷([시트 동기화 문서](investment-os-sheet-sync.md))도 다른 스냅샷처럼 15분 동안만 보유 판정에 쓰인다. 가격 검증(아래 3) 역시 그대로이므로 장외 시세로는 알림을 만들지 않는다. **미보유 종목은 `CONFIRMED` thesis가 있어도 알림을 만들지 않는다**(자본이 노출되지 않음, investment context의 `INVALIDATION_PRICE_BREACHED` 사유로는 계속 보인다).
 2. **thesis**: `investment_thesis_states.invalidation_status = 'CONFIRMED'`이고 `price_risk_trigger_price > 0`인 행만 본다. `AI_PROPOSED`·`UNVERIFIED`·`INVALIDATION_UNDEFINED` 등 미승인 트리거는 가격이 아무리 낮아도 BREACH로 취급하지 않는다.
 3. **가격 검증**: investment context 읽기 경로와 같은 freshness 재판정을 거친 최신 `investment_security_snapshots` 가격만 쓴다. 신뢰 조건은 위험 엔진과 같다(상태 `OK`, 기준 시각 있음, 가격 양수). 여기에 정규장 가격(`LIVE_REGULAR`, `REGULAR_CLOSE`)만 허용한다. `STALE`·`UNVERIFIED`·`SOURCE_CONFLICT`·`DATA_MISSING`, 세션 미분류, 프리·애프터마켓 가격은 건너뛰고 알림을 만들지 않는다. 계좌 평가 단가로 대체하지 않는다. 가격 스냅샷은 investment data 스케줄러(`INVESTMENT_DATA_SCHEDULER_ENABLED`, 장중 기본 5분)가 갱신하므로 이 스케줄러가 꺼져 있으면 가격이 곧 `STALE`이 되어 알림이 나오지 않는다.
 4. **수준**: `가격 ≤ 트리거`이면 `BREACH`, `트리거 < 가격 ≤ 트리거 × 1.03`(트리거 위 3% 이내)이면 `NEAR`. 그 위는 알림 없음.
