@@ -18,6 +18,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -465,6 +466,33 @@ class TelegramThesisApprovalIntegrationTest extends PostgresIntegrationTest {
                 .isEqualTo(today.minusDays(1).atTime(21, 0).toInstant(ZoneOffset.UTC));
     }
 
+    @Test
+    void staleQuoteUsesRefreshedOkRegularCloseAsFreshnessBasisAndOtherwiseReportsPriceStale() throws Exception {
+        var now = Instant.now();
+        var today = seedBars(now);
+        var lastSession = today.minusDays(1);
+        // Live-regular quote two days old: refreshed to STALE (outside regular hours, e.g. a weekend).
+        insertStaleQuoteSnapshot(now.minus(Duration.ofDays(2)), lastSession, false);
+        create("COMPUTED_ATR", null).andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.code").value("THESIS_APPROVAL_CANDIDATE_UNVERIFIED"))
+                .andExpect(jsonPath("$.reason").value("PRICE_STALE"));
+
+        // Same stale quote, now with the last completed session's regular close still valid.
+        insertStaleQuoteSnapshot(now.minus(Duration.ofDays(1)), lastSession, true);
+        var created = mapper.readTree(create("COMPUTED_ATR", null).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString());
+        assertThat(created.path("candidateTrigger").decimalValue()).isEqualByComparingTo("96.0000");
+        assertThat(created.path("inputs").path("priceFreshnessBasis").asText()).isEqualTo("REGULAR_CLOSE");
+        assertThat(created.path("inputs").path("priceStatus").asText()).isEqualTo("STALE");
+        assertThat(created.path("inputs").path("regularCloseStatus").asText()).isEqualTo("OK");
+        assertThat(created.path("inputs").path("regularCloseSessionDate").asText()).isEqualTo(lastSession.toString());
+        // Candidate math stays on the stored bars (close 100), never the quote (101) or the regular close.
+        assertThat(new BigDecimal(created.path("inputs").path("lastClose").asText())).isEqualByComparingTo("100");
+        var facts = investment.priceFacts(USER, TICKER);
+        assertThat(facts.status()).isEqualTo("STALE");
+        assertThat(facts.latestPrice()).isEqualByComparingTo("101");
+    }
+
     // ------------------------------------------------------------------ /review and /pending bot commands
 
     @Test
@@ -672,6 +700,13 @@ class TelegramThesisApprovalIntegrationTest extends PostgresIntegrationTest {
     /** 20 completed daily bars (H-L = 2 around close 100) plus today's ignored bar and a fresh OK price. */
     private LocalDate seedCompletedBars() {
         var now = Instant.now();
+        var today = seedBars(now);
+        insertOkPriceSnapshot(now.minusSeconds(60));
+        return today;
+    }
+
+    /** 20 completed daily bars (H-L = 2 around close 100) plus today's ignored bar; no price snapshot. */
+    private LocalDate seedBars(Instant now) {
         var today = LocalDate.ofInstant(now, ZoneId.of("America/New_York"));
         var rows = new ArrayList<Map<String, Object>>();
         for (int i = 20; i >= 1; i--) {
@@ -680,7 +715,6 @@ class TelegramThesisApprovalIntegrationTest extends PostgresIntegrationTest {
         }
         rows.add(barRow(today, "300", now.minusSeconds(30))); // today's bar never counts
         tactical.recordTossBars(USER, TICKER, mapper.valueToTree(rows), now, null);
-        insertOkPriceSnapshot(now.minusSeconds(60));
         return today;
     }
 
@@ -714,6 +748,26 @@ class TelegramThesisApprovalIntegrationTest extends PostgresIntegrationTest {
         snapshot.putObject("price").put("status", "OK").put("latestPrice", 101)
                 .put("latestPriceAsOf", asOf.toString());
         var timestamp = OffsetDateTime.ofInstant(asOf, ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
+                VALUES (?, ?, ?, ?, ?::jsonb, ?)
+                """, UUID.randomUUID(), USER, TICKER, timestamp, mapper.writeValueAsString(snapshot), timestamp);
+    }
+
+    /** A live-regular quote at {@code quoteAsOf} (refreshed to STALE) and, optionally, a still-valid regular close. */
+    private void insertStaleQuoteSnapshot(Instant quoteAsOf, LocalDate session, boolean regularCloseOk) {
+        var snapshot = mapper.createObjectNode().put("asOf", quoteAsOf.toString());
+        var price = snapshot.putObject("price").put("status", "OK").put("session", "LIVE_REGULAR")
+                .put("latestPrice", 101).put("latestPriceAsOf", quoteAsOf.toString());
+        if (regularCloseOk) {
+            price.put("regularClose", 100).put("regularCloseAsOf", session.atTime(20, 0).toInstant(ZoneOffset.UTC)
+                            .toString())
+                    .put("regularCloseSessionDate", session.toString())
+                    .put("lastCompletedSessionDate", session.toString())
+                    .put("regularCloseValidUntil", Instant.now().plus(Duration.ofDays(1)).toString())
+                    .put("regularCloseStatus", "OK");
+        }
+        var timestamp = OffsetDateTime.ofInstant(quoteAsOf, ZoneOffset.UTC);
         jdbc.update("""
                 INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
                 VALUES (?, ?, ?, ?, ?::jsonb, ?)

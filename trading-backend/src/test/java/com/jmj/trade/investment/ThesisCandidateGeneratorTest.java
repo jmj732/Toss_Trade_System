@@ -86,13 +86,68 @@ class ThesisCandidateGeneratorTest {
     }
 
     @Test
-    void priceNotOkOrWithoutAsOfIsPriceUnverified() {
+    void neitherQuoteNorRegularCloseOkMapsTheQuoteStatusToADistinctReason() {
         var bars = flatBars(20, "101", "99", "100");
-        var stale = new InvestmentContextService.PriceFacts("STALE", PRICE_OK.asOf(), bd("100"));
-        var noAsOf = new InvestmentContextService.PriceFacts("OK", null, bd("100"));
-        assertUnverified(ThesisCandidateGenerator.atrCandidate(bars, stale, TODAY, NOW), "PRICE_UNVERIFIED");
-        assertUnverified(ThesisCandidateGenerator.supportCandidate(bars, noAsOf, TODAY, NOW), "PRICE_UNVERIFIED");
-        assertUnverified(ThesisCandidateGenerator.atrCandidate(bars, null, TODAY, NOW), "PRICE_UNVERIFIED");
+        var asOf = PRICE_OK.asOf();
+        var friday = TODAY.minusDays(1);
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(bars,
+                facts("STALE", asOf, "STALE", friday), TODAY, NOW), "PRICE_STALE");
+        assertUnverified(ThesisCandidateGenerator.supportCandidate(bars,
+                facts("SOURCE_CONFLICT", asOf, "UNVERIFIED", friday), TODAY, NOW), "PRICE_SOURCE_CONFLICT");
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(bars,
+                facts("DATA_MISSING", null, "DATA_MISSING", null), TODAY, NOW), "PRICE_MISSING");
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(bars, facts(null, null, null, null), TODAY, NOW),
+                "PRICE_MISSING");
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(bars, null, TODAY, NOW), "PRICE_MISSING");
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(bars,
+                facts("UNVERIFIED", asOf, null, null), TODAY, NOW), "PRICE_UNVERIFIED");
+        // OK without an as-of proves nothing; neither does an OK regular close without its session date.
+        assertUnverified(ThesisCandidateGenerator.supportCandidate(bars,
+                new InvestmentContextService.PriceFacts("OK", null, bd("100")), TODAY, NOW), "PRICE_UNVERIFIED");
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(bars,
+                facts("STALE", asOf, "OK", null), TODAY, NOW), "PRICE_STALE");
+        var blocked = ThesisCandidateGenerator.atrCandidate(bars, facts("STALE", asOf, "STALE", friday), TODAY, NOW);
+        assertThat(blocked.inputs()).doesNotContainKey("priceFreshnessBasis")
+                .containsEntry("priceStatus", "STALE").containsEntry("regularCloseStatus", "STALE");
+    }
+
+    @Test
+    void weekendStaleQuoteWithOkRegularCloseProducesTheSameCandidateOnRegularCloseBasis() {
+        var saturday = LocalDate.parse("2026-10-10");
+        var saturdayNoon = Instant.parse("2026-10-10T16:00:00Z");
+        var friday = LocalDate.parse("2026-10-09");
+        var bars = flatBarsEndingAt(20, friday);
+        var weekend = facts("STALE", Instant.parse("2026-10-09T19:59:00Z"), "OK", friday);
+
+        var atr = ThesisCandidateGenerator.atrCandidate(bars, weekend, saturday, saturdayNoon);
+        var support = ThesisCandidateGenerator.supportCandidate(bars, weekend, saturday, saturdayNoon);
+
+        assertThat(atr.available()).isTrue();
+        assertThat(support.available()).isTrue();
+        // The regular close only gates freshness: the trigger is identical to the quote-basis trigger on the same bars.
+        assertThat(atr.trigger()).isEqualByComparingTo(
+                ThesisCandidateGenerator.atrCandidate(bars, PRICE_OK, saturday, saturdayNoon).trigger());
+        assertThat(atr.trigger()).isEqualByComparingTo("96.0000");
+        assertThat(support.trigger()).isEqualByComparingTo("99.0000");
+        assertThat(atr.inputs()).containsEntry("priceFreshnessBasis", "REGULAR_CLOSE")
+                .containsEntry("priceStatus", "STALE")
+                .containsEntry("regularCloseStatus", "OK")
+                .containsEntry("regularCloseSessionDate", "2026-10-09")
+                .containsEntry("lastClose", "100");
+        assertThat(support.inputs()).containsEntry("priceFreshnessBasis", "REGULAR_CLOSE");
+    }
+
+    @Test
+    void okQuoteIsTheFreshnessBasisEvenWhenTheRegularCloseIsAlsoOk() {
+        var bars = flatBars(20, "101", "99", "100");
+        var both = facts("OK", PRICE_OK.asOf(), "OK", TODAY.minusDays(1));
+
+        var candidate = ThesisCandidateGenerator.atrCandidate(bars, both, TODAY, NOW);
+
+        assertThat(candidate.available()).isTrue();
+        assertThat(candidate.inputs()).containsEntry("priceFreshnessBasis", "QUOTE");
+        assertThat(ThesisCandidateGenerator.supportCandidate(bars, PRICE_OK, TODAY, NOW).inputs())
+                .containsEntry("priceFreshnessBasis", "QUOTE");
     }
 
     @Test
@@ -126,11 +181,30 @@ class ThesisCandidateGeneratorTest {
         assertThat(ThesisCandidateGenerator.atrCandidate(fourDays, PRICE_OK, TODAY, NOW).available()).isTrue();
     }
 
+    @Test
+    void barsMoreThanFourDaysOlderThanTheRegularCloseSessionDateAreStale() {
+        var saturday = LocalDate.parse("2026-10-10");
+        var saturdayNoon = Instant.parse("2026-10-10T16:00:00Z");
+        var weekend = facts("STALE", Instant.parse("2026-10-09T19:59:00Z"), "OK", LocalDate.parse("2026-10-09"));
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(flatBarsEndingAt(20, LocalDate.parse("2026-10-04")),
+                weekend, saturday, saturdayNoon), "STALE_BARS");
+        assertUnverified(ThesisCandidateGenerator.supportCandidate(flatBarsEndingAt(20, LocalDate.parse("2026-10-04")),
+                weekend, saturday, saturdayNoon), "STALE_BARS");
+        assertThat(ThesisCandidateGenerator.atrCandidate(flatBarsEndingAt(20, LocalDate.parse("2026-10-05")),
+                weekend, saturday, saturdayNoon).available()).isTrue();
+    }
+
     private static void assertUnverified(ThesisCandidateGenerator.Candidate candidate, String reason) {
         assertThat(candidate.status()).isEqualTo("UNVERIFIED");
         assertThat(candidate.reason()).isEqualTo(reason);
         assertThat(candidate.trigger()).isNull();
         assertThat(candidate.available()).isFalse();
+    }
+
+    private static InvestmentContextService.PriceFacts facts(String quoteStatus, Instant quoteAsOf,
+                                                             String regularCloseStatus, LocalDate sessionDate) {
+        return new InvestmentContextService.PriceFacts(quoteStatus, quoteAsOf, bd("104"), regularCloseStatus,
+                sessionDate);
     }
 
     private static List<StoredDailyBar> flatBarsEndingAt(int count, LocalDate last) {

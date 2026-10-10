@@ -561,14 +561,23 @@ public final class InvestmentContextService {
         return thesisIfPresent(userId, ticker(rawTicker));
     }
 
-    /** Freshness-refreshed price facts from the latest stored security snapshot (DB read only, no provider call). */
+    /**
+     * Freshness-refreshed price facts from the latest stored security snapshot (DB read only, no provider call).
+     * The quote facts and the separately judged regular-close facts come from the same refreshed price node; the
+     * regular close is never copied into the quote.
+     */
     PriceFacts priceFacts(UUID userId, String rawTicker) {
         var price = node(latestSecuritySnapshot(userId, ticker(rawTicker)), "price");
         return new PriceFacts(text(price.get("status")), instant(price.get("latestPriceAsOf")),
-                decimal(price.get("latestPrice")));
+                decimal(price.get("latestPrice")), text(price.get("regularCloseStatus")),
+                localDate(text(price.get("regularCloseSessionDate"))));
     }
 
-    record PriceFacts(String status, Instant asOf, BigDecimal latestPrice) {
+    record PriceFacts(String status, Instant asOf, BigDecimal latestPrice, String regularCloseStatus,
+                      LocalDate regularCloseSessionDate) {
+        PriceFacts(String status, Instant asOf, BigDecimal latestPrice) {
+            this(status, asOf, latestPrice, null, null);
+        }
     }
 
     public List<ThesisRevisionView> thesisRevisions(UUID userId, String rawTicker, int limit) {
