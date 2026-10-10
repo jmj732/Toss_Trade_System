@@ -33,7 +33,7 @@ class ThesisCandidateGeneratorTest {
         assertThat(candidate.available()).isTrue();
         assertThat(candidate.trigger()).isEqualByComparingTo("100.2857");
         assertThat(candidate.trigger().scale()).isEqualTo(4);
-        assertThat(candidate.sourceAsOf()).isEqualTo(sourceAsOf(TODAY.minusDays(1)));
+        assertThat(candidate.sourceAsOf()).isEqualTo(capturedAt(TODAY.minusDays(1)));
         assertThat(candidate.inputs()).containsEntry("method", "ATR14_WILDER_X2")
                 .containsEntry("priceAdjustment", "UNADJUSTED")
                 .containsEntry("windowBars", 16)
@@ -166,6 +166,47 @@ class ThesisCandidateGeneratorTest {
     }
 
     @Test
+    void sourceAsOfIsTheLatestCaptureTimeOfTheWindowNeverTheBarTradeDateLabel() {
+        var bars = flatBars(20, "101", "99", "100");
+        // An older window bar re-captured late (a corrected value) carries the latest observation time.
+        var recaptured = NOW.minusSeconds(600);
+        var old = bars.get(5);
+        bars.set(5, bar(old.date(), "101", "99", "100", old.sourceAsOf(), recaptured));
+        var lastBar = bars.getLast();
+
+        var atr = ThesisCandidateGenerator.atrCandidate(bars, PRICE_OK, TODAY, NOW);
+        var support = ThesisCandidateGenerator.supportCandidate(bars, PRICE_OK, TODAY, NOW);
+
+        for (var candidate : List.of(atr, support)) {
+            assertThat(candidate.available()).isTrue();
+            assertThat(candidate.sourceAsOf()).isEqualTo(recaptured)
+                    .isNotEqualTo(lastBar.sourceAsOf()).isAfter(lastBar.capturedAt());
+            assertThat(candidate.inputs()).containsEntry("sourceAsOfBasis", "MAX_BAR_CAPTURED_AT")
+                    .containsEntry("windowEnd", lastBar.date().toString());
+        }
+        // The provider label (midnight New York of the trade date) is earlier than the session itself.
+        assertThat(lastBar.sourceAsOf()).isBefore(lastBar.date().atTime(13, 30).toInstant(java.time.ZoneOffset.UTC));
+    }
+
+    @Test
+    void missingOrFutureCaptureTimeBlocksTheCandidate() {
+        var missing = new ArrayList<StoredDailyBar>();
+        for (var bar : flatBars(20, "101", "99", "100")) {
+            missing.add(bar(bar.date(), "101", "99", "100", bar.sourceAsOf(), null));
+        }
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(missing, PRICE_OK, TODAY, NOW), "SOURCE_AS_OF_MISSING");
+        assertUnverified(ThesisCandidateGenerator.supportCandidate(missing, PRICE_OK, TODAY, NOW),
+                "SOURCE_AS_OF_MISSING");
+
+        var future = flatBars(20, "101", "99", "100");
+        var old = future.get(3);
+        future.set(3, bar(old.date(), "101", "99", "100", old.sourceAsOf(), NOW.plusSeconds(1)));
+        assertUnverified(ThesisCandidateGenerator.atrCandidate(future, PRICE_OK, TODAY, NOW), "SOURCE_AS_OF_IN_FUTURE");
+        assertUnverified(ThesisCandidateGenerator.supportCandidate(future, PRICE_OK, TODAY, NOW),
+                "SOURCE_AS_OF_IN_FUTURE");
+    }
+
+    @Test
     void sourceConflictInsideTheWindowBlocksTheCandidate() {
         var bars = flatBars(20, "101", "99", "100");
         bars.set(5, bar(bars.get(5).date(), "101", "99", "100", true));
@@ -221,11 +262,24 @@ class ThesisCandidateGeneratorTest {
     }
 
     private static StoredDailyBar bar(LocalDate date, String high, String low, String close, boolean conflict) {
-        return new StoredDailyBar(date, bd(close), bd(high), bd(low), bd(close), bd("1000"), sourceAsOf(date), conflict);
+        return new StoredDailyBar(date, bd(close), bd(high), bd(low), bd(close), bd("1000"), sourceAsOf(date),
+                capturedAt(date), conflict);
     }
 
+    private static StoredDailyBar bar(LocalDate date, String high, String low, String close, Instant sourceAsOf,
+                                      Instant capturedAt) {
+        return new StoredDailyBar(date, bd(close), bd(high), bd(low), bd(close), bd("1000"), sourceAsOf,
+                capturedAt, false);
+    }
+
+    /** Production-shaped provider label: the trade date's midnight in New York (04:00Z during EDT). */
     private static Instant sourceAsOf(LocalDate date) {
-        return date.atTime(21, 0).toInstant(java.time.ZoneOffset.UTC);
+        return date.atStartOfDay(java.time.ZoneId.of("America/New_York")).toInstant();
+    }
+
+    /** Captured after the session closed: 01:00Z the next day (21:00 New York). */
+    private static Instant capturedAt(LocalDate date) {
+        return date.plusDays(1).atTime(1, 0).toInstant(java.time.ZoneOffset.UTC);
     }
 
     private static BigDecimal bd(String value) {

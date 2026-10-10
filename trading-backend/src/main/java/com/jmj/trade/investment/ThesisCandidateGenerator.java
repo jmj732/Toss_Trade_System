@@ -41,8 +41,12 @@ import java.util.UUID;
  *       passes (by quote status: STALE is PRICE_STALE, SOURCE_CONFLICT is PRICE_SOURCE_CONFLICT, DATA_MISSING or
  *       absent is PRICE_MISSING, anything else is PRICE_UNVERIFIED), the last completed bar is more than 4
  *       calendar days older than the price date (STALE_BARS; a weekend/holiday heuristic, not an exchange
- *       calendar), the window has no source as-of, or the candidate is &lt;= 0 or &gt;= lastClose
- *       (CANDIDATE_OUT_OF_RANGE).</li>
+ *       calendar), the window has no capture time (SOURCE_AS_OF_MISSING) or one after now
+ *       (SOURCE_AS_OF_IN_FUTURE), or the candidate is &lt;= 0 or &gt;= lastClose (CANDIDATE_OUT_OF_RANGE).</li>
+ *   <li>sourceAsOf is the latest stored {@code captured_at} of the window bars (basis
+ *       {@code MAX_BAR_CAPTURED_AT}): when the bar data was actually observed. The bars' own source as-of is only
+ *       the provider's trade-date label (midnight New York), so it is never used; the trade-date labels stay in
+ *       {@code windowStart}/{@code windowEnd}.</li>
  * </ul>
  * Prices are stored as captured (UNADJUSTED); splits inside the window are not corrected.
  */
@@ -58,6 +62,7 @@ public class ThesisCandidateGenerator {
     static final long STALE_BAR_DAYS = 4;
     static final String BASIS_QUOTE = "QUOTE";
     static final String BASIS_REGULAR_CLOSE = "REGULAR_CLOSE";
+    static final String SOURCE_AS_OF_BASIS = "MAX_BAR_CAPTURED_AT";
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
 
     private final TacticalOverlayService tactical;
@@ -152,7 +157,7 @@ public class ThesisCandidateGenerator {
             return Candidate.unverified(source, "CANDIDATE_OUT_OF_RANGE", inputs);
         }
         var sourceAsOf = sourceAsOf(window);
-        inputs.put("sourceAsOfBasis", "MAX_BAR_SOURCE_AS_OF");
+        inputs.put("sourceAsOfBasis", SOURCE_AS_OF_BASIS);
         return new Candidate(source, "OK", null, candidate, sourceAsOf, java.util.Collections.unmodifiableMap(new LinkedHashMap<>(inputs)));
     }
 
@@ -195,8 +200,9 @@ public class ThesisCandidateGenerator {
     record PriceFreshness(String basis, LocalDate priceDate, String reason) {
     }
 
+    /** Latest stored capture time of the window bars; never the bar's trade-date label. */
     private static Instant sourceAsOf(List<StoredDailyBar> window) {
-        return window.stream().map(StoredDailyBar::sourceAsOf).filter(Objects::nonNull)
+        return window.stream().map(StoredDailyBar::capturedAt).filter(Objects::nonNull)
                 .max(Instant::compareTo).orElse(null);
     }
 
