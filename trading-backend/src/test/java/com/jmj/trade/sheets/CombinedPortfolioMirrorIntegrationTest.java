@@ -313,6 +313,90 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         verifyNoInteractions(mockPortfolioReadService);
     }
 
+    @Test
+    void accountSnapshotCapturedInsideAClosedMarketGapStaysCurrentThroughSyncAndContext() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var newYork = ZoneId.of("America/New_York");
+        var today = now.atZone(newYork).toLocalDate();
+        var nextBusinessDay = today.plusDays(2);
+        var nextDayMarketOpen = today.plusDays(1).atTime(20, 0).atZone(newYork).toInstant();
+        var completedAt = now.minus(Duration.ofHours(2));
+        var sheets = mock(GoogleSheetsClient.class);
+        when(sheets.readValues(eq(SPREADSHEET_ID), anyString())).thenAnswer(invocation -> {
+            var range = (String) invocation.getArgument(1);
+            if ("'Account State'!A:Z".equals(range)) {
+                return manualAccountState(LocalDate.now(ZoneId.of("Asia/Seoul")).minusDays(1), completedAt);
+            }
+            if ("'Account Registry'!A:Z".equals(range)) return accountRegistry();
+            return new GoogleSheetsClient.SheetValues(range, List.of());
+        });
+        var connector = mock(ConnectorService.class);
+        var aged = account1Portfolio(completedAt);
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
+                completedAt, true, "SNAPSHOT_TOO_OLD", false, List.of(), List.of(), null,
+                aged.positions(), aged.buyingPower()));
+        when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
+        when(connector.orders(BROKER_ACCOUNT, "OPEN")).thenReturn(List.of());
+        when(connector.orders(BROKER_ACCOUNT, "CLOSED")).thenReturn(List.of());
+        var brokerSurface = mock(BrokerSurfaceService.class);
+        var quoteAt = now.minusSeconds(20);
+        when(brokerSurface.prices(eq(USER_ID), eq(CONNECTION_ID), anyString()))
+                .thenReturn(BrokerSurfaceResponse.available(List.of(
+                        price("AAPL", "100", quoteAt), price("GOOGL", "50", quoteAt), price("VST", "25", quoteAt))));
+        // Declared non-trading days (the last two New York dates) and a next business day whose day market opens
+        // the previous New York evening, in the KST-offset shape the Toss calendar returns.
+        when(brokerSurface.marketCalendar(eq(USER_ID), eq(CONNECTION_ID), eq("US"), any(LocalDate.class)))
+                .thenAnswer(invocation -> {
+                    var date = (LocalDate) invocation.getArgument(3);
+                    String day;
+                    if (date.equals(nextBusinessDay)) {
+                        day = """
+                                {"date":"%s","dayMarket":{"startTime":"%s","endTime":"%s"},
+                                 "preMarket":null,"regularMarket":null,"afterMarket":null}
+                                """.formatted(date, kst(nextDayMarketOpen),
+                                kst(nextDayMarketOpen.plus(Duration.ofHours(8))));
+                    } else if (!date.isAfter(today) && date.isAfter(today.minusDays(2))) {
+                        day = """
+                                {"date":"%s","dayMarket":null,"preMarket":null,"regularMarket":null,"afterMarket":null}
+                                """.formatted(date);
+                    } else {
+                        return null;
+                    }
+                    return BrokerSurfaceResponse.available(new BrokerSurfaceResponse.MarketCalendarView("US",
+                            mapper.readTree("""
+                                    {"today":%s,"previousBusinessDay":{"date":"%s"},"nextBusinessDay":{"date":"%s"}}
+                                    """.formatted(day, today.minusDays(2), nextBusinessDay))));
+                });
+        var properties = new InvestmentOsSheetProperties(true, SPREADSHEET_ID, USER_ID, CONNECTION_ID,
+                InvestmentOsSheetModel.ACCOUNT_1, Duration.ofMinutes(5), Duration.ZERO, Duration.ofMinutes(2));
+        var riskPolicies = mock(RiskPolicyService.class);
+        when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
+                0, bd("10000000"), bd("10000"), bd("100"), bd("0.25"), false));
+        var context = contextService(properties, riskPolicies);
+        var sync = new InvestmentOsSheetSyncService(properties,
+                new InvestmentOsSheetLease(jdbc, Duration.ofMinutes(2)), connector, brokerSurface, sheets,
+                () -> now, null, jdbc, mapper);
+
+        var result = sync.sync();
+
+        assertThat(result.error()).isNull();
+        assertThat(jdbc.queryForObject("""
+                SELECT attempt_status FROM investment_os_portfolio_snapshots
+                 WHERE user_id = ? ORDER BY attempted_at DESC, created_at DESC LIMIT 1
+                """, String.class, USER_ID)).isEqualTo("SUCCEEDED");
+        var view = context.context(USER_ID).portfolio();
+        assertThat(view.account1AsOf()).isEqualTo(completedAt);
+        assertThat(view.stale()).isFalse();
+        assertThat(view.riskNumbersAvailable()).isTrue();
+        assertThat(view.missingFields())
+                .noneMatch(reason -> reason.startsWith("ACCOUNT1_AS_OF_") || reason.startsWith("POSITION_PRICE_AS_OF_")
+                        || reason.equals("SHEET_REFRESH_FAILED"));
+    }
+
+    private static String kst(Instant instant) {
+        return instant.atOffset(java.time.ZoneOffset.ofHours(9)).toString();
+    }
+
     private PortfolioReadService mockPortfolioReadService;
 
     private InvestmentContextService contextService(InvestmentOsSheetProperties properties,

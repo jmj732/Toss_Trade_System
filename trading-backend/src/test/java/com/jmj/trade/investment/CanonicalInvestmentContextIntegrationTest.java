@@ -311,7 +311,94 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                 List.of(account1, account2, manualOnly, account1Cash, account2Cash));
     }
 
+    @Test
+    void snapshotCapturedInsideTheCurrentClosedMarketGapStaysCurrentAfterTheQuoteWindow() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var capturedAt = now.minus(Duration.ofHours(2));
+        persistCombinedSnapshot(LocalDate.now(ZoneId.of("Asia/Seoul")), capturedAt,
+                closedMarketFacts(capturedAt.minus(Duration.ofMinutes(10)), now.plus(Duration.ofDays(1))));
+
+        var context = closedMarketRiskContext(now);
+
+        assertThat(context.portfolio().status()).isEqualTo("OK");
+        assertThat(context.portfolio().stale()).isFalse();
+        assertThat(context.portfolio().riskNumbersAvailable()).isTrue();
+        assertThat(context.portfolio().account1AsOf()).isEqualTo(capturedAt);
+        assertThat(context.portfolio().missingFields())
+                .noneMatch(reason -> reason.startsWith("ACCOUNT1_AS_OF_") || reason.startsWith("POSITION_PRICE_AS_OF_"));
+        var risk = aaplRisk(context);
+        assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.OK);
+        assertThat(risk.eligibilityReasons()).doesNotContain("PORTFOLIO_STALE", "PORTFOLIO_UNAVAILABLE");
+    }
+
+    @Test
+    void snapshotCapturedBeforeTheClosedMarketGapStartedStaysStale() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var capturedAt = now.minus(Duration.ofHours(2));
+        persistCombinedSnapshot(LocalDate.now(ZoneId.of("Asia/Seoul")), capturedAt,
+                closedMarketFacts(capturedAt.plus(Duration.ofMinutes(1)), now.plus(Duration.ofDays(1))));
+
+        var context = closedMarketRiskContext(now);
+
+        assertThat(context.portfolio().status()).isEqualTo("STALE");
+        assertThat(context.portfolio().missingFields()).contains("ACCOUNT1_AS_OF_STALE");
+        assertThat(aaplRisk(context).eligibilityReasons()).contains("PORTFOLIO_STALE");
+    }
+
+    @Test
+    void snapshotIsStaleOnceTheNextDeclaredIntervalHasStarted() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var capturedAt = now.minus(Duration.ofHours(2));
+        persistCombinedSnapshot(LocalDate.now(ZoneId.of("Asia/Seoul")), capturedAt,
+                closedMarketFacts(capturedAt.minus(Duration.ofMinutes(10)), now.minus(Duration.ofMinutes(16))));
+
+        var context = closedMarketRiskContext(now);
+
+        assertThat(context.portfolio().status()).isEqualTo("STALE");
+        assertThat(context.portfolio().missingFields()).contains("ACCOUNT1_AS_OF_STALE");
+        assertThat(aaplRisk(context).eligibilityReasons()).contains("PORTFOLIO_STALE");
+        assertThat(aaplRisk(context).sizingEligible()).isFalse();
+    }
+
+    @Test
+    void snapshotWithoutStoredCalendarFactsKeepsTheQuoteWindow() throws Exception {
+        var now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        var capturedAt = now.minus(Duration.ofHours(2));
+        persistCombinedSnapshot(LocalDate.now(ZoneId.of("Asia/Seoul")), capturedAt, Map.of());
+
+        var context = closedMarketRiskContext(now);
+
+        assertThat(context.portfolio().status()).isEqualTo("STALE");
+        assertThat(context.portfolio().riskNumbersAvailable()).isFalse();
+        assertThat(context.portfolio().missingFields()).contains("ACCOUNT1_AS_OF_STALE");
+        assertThat(aaplRisk(context).eligibilityReasons()).contains("PORTFOLIO_STALE");
+    }
+
+    private static Map<String, String> closedMarketFacts(Instant referenceAt, Instant nextDeclaredIntervalStartsAt) {
+        return Map.of("sessionReason", InvestmentContextService.PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS,
+                "sessionReferenceAt", referenceAt.toString(),
+                "nextDeclaredIntervalStartsAt", nextDeclaredIntervalStartsAt.toString());
+    }
+
+    private InvestmentContextService.ContextView closedMarketRiskContext(Instant now) throws Exception {
+        for (var ticker : List.of("AAPL", "MSFT")) {
+            insertConfirmedThesis(ticker);
+            insertRiskPriceSnapshot(ticker, now);
+        }
+        return configuredSheetContextService().context(USER_ID);
+    }
+
+    private static InvestmentContextService.RiskContributionView aaplRisk(InvestmentContextService.ContextView context) {
+        return context.securities().stream().filter(security -> security.ticker().equals("AAPL"))
+                .findFirst().orElseThrow().risk();
+    }
+
     private void persistCombinedSnapshot(LocalDate manualAsOf, Instant now) throws Exception {
+        persistCombinedSnapshot(manualAsOf, now, Map.of());
+    }
+
+    private void persistCombinedSnapshot(LocalDate manualAsOf, Instant now, Map<String, String> sessionFacts)
+            throws Exception {
         var accountState = accountStateWithManualRows(manualAsOf.toString(), now);
         var aggregate = InvestmentOsSheetModel.aggregate(accountState, now);
         var metrics = InvestmentOsSheetModel.portfolioMetrics(
@@ -326,6 +413,7 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
         payload.put("manualReadAt", now.toString());
         payload.put("account1AsOf", now.toString());
         payload.put("source", "TOSS_API+MANUAL_SHEET");
+        sessionFacts.forEach(payload::put);
         jdbc.update("""
                 INSERT INTO investment_os_portfolio_snapshots (
                     id, user_id, attempt_status, attempted_at, error_code, payload, created_at

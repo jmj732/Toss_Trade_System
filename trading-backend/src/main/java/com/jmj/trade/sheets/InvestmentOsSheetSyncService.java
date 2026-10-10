@@ -1,6 +1,7 @@
 package com.jmj.trade.sheets;
 
 import com.jmj.trade.account.AccountSyncException;
+import com.jmj.trade.account.AccountSyncService;
 import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.broker.BrokerAccountRef;
 import com.jmj.trade.broker.BrokerException;
@@ -8,16 +9,20 @@ import com.jmj.trade.broker.connection.BrokerConnectionException;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.connector.ConnectorResponse;
 import com.jmj.trade.connector.ConnectorService;
+import com.jmj.trade.investment.DeclaredMarketGap;
+import com.jmj.trade.investment.InvestmentContextService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -29,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /** Reads one confirmed Toss snapshot and mirrors the broker plus configured manual account. */
@@ -38,6 +44,11 @@ public final class InvestmentOsSheetSyncService {
     // ponytail: refresh the unbounded CLOSED order history less often; OPEN orders and holdings stay on the 5-minute loop.
     private static final Duration CLOSED_ORDER_REFRESH_INTERVAL = Duration.ofMinutes(30);
     private static final Duration CLOSED_ORDER_RATE_LIMIT_BACKOFF = Duration.ofMinutes(30);
+    // The official calendar for a New York date is reused briefly so the 5-minute loop does not re-request it.
+    private static final Duration MARKET_CALENDAR_REUSE = Duration.ofHours(1);
+    private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
+    // Initial attempt plus two retries per declared closed-market gap, as in the other bounded refresh paths.
+    private static final int POST_CLOSE_CAPTURE_ATTEMPT_LIMIT = 3;
 
     private final InvestmentOsSheetProperties properties;
     private final InvestmentOsSheetLease lease;
@@ -51,6 +62,10 @@ public final class InvestmentOsSheetSyncService {
     private Instant closedOrdersFetchedAt;
     private Instant closedOrdersRetryNotBefore;
     private List<ConnectorResponse.Order> cachedClosedOrders = List.of();
+    private AccountSyncService accountSync;
+    private final Map<LocalDate, CachedCalendar> marketCalendars = new LinkedHashMap<>();
+    private Instant postCloseCaptureGapEnd;
+    private int postCloseCaptureAttempts;
 
     public InvestmentOsSheetSyncService(
             InvestmentOsSheetProperties properties,
@@ -137,6 +152,11 @@ public final class InvestmentOsSheetSyncService {
         this.now = Objects.requireNonNull(now, "now");
     }
 
+    /** Optional read-only account sync used once per declared closed-market gap (post-close capture). */
+    void setAccountSync(AccountSyncService accountSync) {
+        this.accountSync = accountSync;
+    }
+
     public InvestmentOsSheetSyncResult sync() {
         return sync(properties.userId(), properties.connectionId());
     }
@@ -199,8 +219,12 @@ public final class InvestmentOsSheetSyncService {
                     .addKeyValue("broker_fetch_result", "failure").addKeyValue("failure_reason", failure)
                     .log("Toss portfolio fetch failed; existing sheet state preserved");
         }
+        Function<LocalDate, JsonNode> calendars = date -> marketCalendar(userId, connectionId, date, syncedAt);
+        if (portfolio != null) portfolio = capturedAfterClose(userId, connectionId, portfolio, syncedAt, calendars);
+        var portfolioAccepted = portfolio != null && (authoritative(portfolio)
+                || closedMarketCurrent(portfolio, syncedAt, calendars));
 
-        if (portfolio != null && authoritative(portfolio)) {
+        if (portfolioAccepted) {
             BrokerAccountRef orderAccount = null;
             try {
                 orderAccount = connector.brokerAccount(connectionId);
@@ -274,7 +298,7 @@ public final class InvestmentOsSheetSyncService {
             var aggregate = current.aggregate();
             var metrics = current.metrics();
             var registry = current.registry();
-            var authoritative = portfolio != null && authoritative(portfolio);
+            var authoritative = portfolioAccepted;
             var nextAccount = authoritative
                     ? InvestmentOsSheetModel.accountState(account, portfolio, portfolio.completedAt(), properties.accountLabel()) : account;
             var registryReady = authoritative
@@ -349,7 +373,7 @@ public final class InvestmentOsSheetSyncService {
                 var snapshotStatus = completePrices && hasCombinedTotal(snapshotMetrics) && manualMetadataVerified
                         ? "SUCCEEDED" : "PARTIAL";
                 persistAcceptedSnapshot(userId, syncedAt, manualReadAt, portfolio.completedAt(), snapshotStatus,
-                        portfolioAccountState, snapshotAggregate, snapshotMetrics, failure);
+                        portfolioAccountState, snapshotAggregate, snapshotMetrics, failure, calendars);
                 acceptedSnapshotPersisted = portfolioSnapshotJdbc != null && objectMapper != null;
             } else {
                 persistFailedSnapshot(userId, syncedAt, !authoritative ? "PORTFOLIO_NOT_AUTHORITATIVE"
@@ -495,7 +519,92 @@ public final class InvestmentOsSheetSyncService {
     }
 
     private static boolean authoritative(ConnectorResponse.Portfolio portfolio) {
-        if (portfolio.stale() || portfolio.partial() || portfolio.buyingPower() == null || portfolio.positions() == null) {
+        return !portfolio.stale() && completeAccountSnapshot(portfolio);
+    }
+
+    /**
+     * While the market is closed, a persisted account snapshot that is stale only by age stays authoritative when
+     * the official Toss calendar shows it was captured outside every declared interval and no declared interval
+     * has started since: holdings and cash cannot have traded in between. Any other stale reason, a missing
+     * calendar, or an open interval keeps the snapshot non-authoritative.
+     */
+    private static boolean closedMarketCurrent(
+            ConnectorResponse.Portfolio portfolio, Instant now, Function<LocalDate, JsonNode> calendars
+    ) {
+        if (!portfolio.stale() || !"SNAPSHOT_TOO_OLD".equals(portfolio.staleReason())
+                || portfolio.completedAt() == null || portfolio.completedAt().isAfter(now)
+                || !completeAccountSnapshot(portfolio)) {
+            return false;
+        }
+        var nextInterval = DeclaredMarketGap.nextIntervalStartIfOutside(portfolio.completedAt(), calendars);
+        return nextInterval != null && now.isBefore(nextInterval);
+    }
+
+    /**
+     * Post-close capture: when now is outside every declared interval but the persisted account snapshot predates
+     * the current closed-market gap, run the existing read-only account sync (no orders) and re-read the snapshot.
+     * Bounded per gap; any failure keeps the previous snapshot and the existing freshness checks.
+     */
+    private ConnectorResponse.Portfolio capturedAfterClose(
+            UUID userId, UUID connectionId, ConnectorResponse.Portfolio portfolio, Instant now,
+            Function<LocalDate, JsonNode> calendars
+    ) {
+        if (accountSync == null) return portfolio;
+        var gapEnd = DeclaredMarketGap.nextIntervalStartIfOutside(now, calendars);
+        if (gapEnd == null || !now.isBefore(gapEnd)) return portfolio;
+        var completedAt = portfolio.completedAt();
+        if (completedAt != null && !completedAt.isAfter(now)
+                && gapEnd.equals(DeclaredMarketGap.nextIntervalStartIfOutside(completedAt, calendars))) {
+            return portfolio;
+        }
+        if (!gapEnd.equals(postCloseCaptureGapEnd)) {
+            postCloseCaptureGapEnd = gapEnd;
+            postCloseCaptureAttempts = 0;
+        }
+        if (postCloseCaptureAttempts >= POST_CLOSE_CAPTURE_ATTEMPT_LIMIT) return portfolio;
+        postCloseCaptureAttempts++;
+        try {
+            accountSync.syncForMonitoring(userId, connectionId);
+            var captured = connector.portfolio(userId, connectionId);
+            LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
+                    .addKeyValue("post_close_capture", "success")
+                    .log("Toss account captured after the last declared interval ended");
+            return captured == null ? portfolio : captured;
+        } catch (RuntimeException exception) {
+            LOG.atWarn().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
+                    .addKeyValue("post_close_capture", "failure")
+                    .addKeyValue("failure_reason", safeError(exception))
+                    .log("post-close account capture failed; previous snapshot remains subject to freshness checks");
+            return portfolio;
+        }
+    }
+
+    private JsonNode marketCalendar(UUID userId, UUID connectionId, LocalDate date, Instant now) {
+        if (brokerSurface == null || date == null) return null;
+        var cached = marketCalendars.get(date);
+        if (cached != null && !cached.fetchedAt().isAfter(now)
+                && now.isBefore(cached.fetchedAt().plus(MARKET_CALENDAR_REUSE))) {
+            return cached.payload();
+        }
+        JsonNode payload;
+        try {
+            var response = brokerSurface.marketCalendar(userId, connectionId, "US", date);
+            payload = response == null || response.unavailable() || response.data() == null
+                    || !"US".equals(response.data().market()) ? null : response.data().payload();
+        } catch (RuntimeException exception) {
+            payload = null;
+        }
+        if (payload == null) return null;
+        marketCalendars.put(date, new CachedCalendar(now, payload));
+        marketCalendars.keySet().removeIf(key -> key.isBefore(now.atZone(NEW_YORK).toLocalDate().minusDays(7)));
+        return payload;
+    }
+
+    private record CachedCalendar(Instant fetchedAt, JsonNode payload) {
+    }
+
+    private static boolean completeAccountSnapshot(ConnectorResponse.Portfolio portfolio) {
+        if (portfolio.partial() || portfolio.buyingPower() == null || portfolio.positions() == null) {
             return false;
         }
         if (!portfolio.buyingPower().keySet().containsAll(List.of("USD", "KRW"))
@@ -518,7 +627,8 @@ public final class InvestmentOsSheetSyncService {
             InvestmentOsSheetModel.SheetTable portfolioAccountState,
             InvestmentOsSheetModel.SheetTable aggregate,
             InvestmentOsSheetModel.SheetTable metrics,
-            String failure
+            String failure,
+            Function<LocalDate, JsonNode> calendars
     ) {
         if (portfolioSnapshotJdbc == null || objectMapper == null) return;
         var payload = objectMapper.createObjectNode();
@@ -539,11 +649,50 @@ public final class InvestmentOsSheetSyncService {
         else payload.put("manualReadAt", manualReadAt.toString());
         if (account1AsOf == null) payload.putNull("account1AsOf");
         else payload.put("account1AsOf", account1AsOf.toString());
+        putClosedMarketFacts(payload, attemptedAt, account1AsOf, portfolioAccountState, calendars);
         payload.put("source", "TOSS_API+MANUAL_SHEET");
         payload.put("attemptStatus", status);
         payload.put("failurePresent", failure != null);
         insertPortfolioSnapshot(userId, attemptedAt, status,
                 "PARTIAL".equals(status) ? "OPTIONAL_SOURCE_FAILURE" : null, payload);
+    }
+
+    /**
+     * Records calendar facts only when the earliest snapshot timestamp (ACCOUNT_1 as-of and every row's Price
+     * Synced At) lies outside every declared Toss interval and the next declared interval has not started at
+     * capture time. The read path then keeps these timestamps current until that interval starts.
+     */
+    private static void putClosedMarketFacts(
+            ObjectNode payload, Instant attemptedAt, Instant account1AsOf,
+            InvestmentOsSheetModel.SheetTable accountState, Function<LocalDate, JsonNode> calendars
+    ) {
+        if (account1AsOf == null) return;
+        var reference = account1AsOf;
+        if (accountState.hasColumn("Price Synced At")) {
+            for (var row : accountState.rows()) {
+                var synced = parseInstant(cell(accountState, row, "Price Synced At"));
+                if (synced != null && synced.isBefore(reference)) reference = synced;
+            }
+        }
+        if (reference.isAfter(attemptedAt)) return;
+        var nextInterval = DeclaredMarketGap.nextIntervalStartIfOutside(reference, calendars);
+        if (nextInterval == null || !attemptedAt.isBefore(nextInterval)) return;
+        payload.put("sessionReason", InvestmentContextService.PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS);
+        payload.put("sessionReferenceAt", reference.toString());
+        payload.put("nextDeclaredIntervalStartsAt", nextInterval.toString());
+    }
+
+    private static Instant parseInstant(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Instant.parse(value.trim());
+        } catch (RuntimeException ignored) {
+            try {
+                return OffsetDateTime.parse(value.trim()).toInstant();
+            } catch (RuntimeException ignoredOffset) {
+                return null;
+            }
+        }
     }
 
     private void persistFailedSnapshot(UUID userId, Instant attemptedAt, String errorCode) {

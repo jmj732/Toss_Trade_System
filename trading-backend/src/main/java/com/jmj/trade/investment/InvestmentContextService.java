@@ -50,6 +50,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 @Service
@@ -69,6 +70,9 @@ public final class InvestmentContextService {
     private static final List<String> PRICE_SESSIONS = List.of(
             "REGULAR_CLOSE", "LIVE_REGULAR", "AFTER_HOURS", "PREMARKET");
     private static final String TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS = "TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS";
+    /** Stored by the sheet sync when every snapshot timestamp lies in one declared closed-market gap. */
+    public static final String PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS =
+            "PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS";
     private static final Set<String> QUOTE_UPDATE_FIELDS = Set.of(
             "quote.price", "quote.volume", "quote.change-percent",
             "price.latestPrice", "price.session");
@@ -192,9 +196,11 @@ public final class InvestmentContextService {
 
         var combinedTotal = combinedUsdTotal(metrics);
         if (combinedTotal == null || combinedTotal.signum() <= 0) missing.add("COMBINED_USD_TOTAL_UNAVAILABLE");
-        var account1Fresh = isFresh(account1AsOf, priceStaleAfter, now);
+        Predicate<Instant> current = sheetTimestampCurrent(payload, now);
+        var account1Fresh = current.test(account1AsOf);
         if (!account1Fresh) missing.add(account1AsOf == null ? "ACCOUNT1_AS_OF_MISSING" : "ACCOUNT1_AS_OF_STALE");
-        var sheetPositions = sheetPositions(aggregate, accountState, combinedTotal, account1AsOf, now, missing);
+        var sheetPositions = sheetPositions(aggregate, accountState, combinedTotal, account1AsOf, now, current,
+                missing);
         var acceptedStatus = snapshots.payloadStatus();
         if ("PARTIAL".equals(acceptedStatus)) missing.add("SHEET_SNAPSHOT_PARTIAL");
         var stale = latestAttemptFailed || manualStale || !account1Fresh || !sheetPositions.pricesFresh();
@@ -264,6 +270,7 @@ public final class InvestmentContextService {
             BigDecimal combinedTotal,
             Instant account1AsOf,
             Instant now,
+            Predicate<Instant> current,
             List<String> missing
     ) {
         var positions = new LinkedHashMap<String, PositionView>();
@@ -301,7 +308,7 @@ public final class InvestmentContextService {
                     : InvestmentOsSheetModel.manualAsOf(accountState, ticker);
             var tickerManualStale = !manualRows.isEmpty() && !isFreshDate(tickerManualAsOf, now);
             var tickerPriceFresh = !sourceRows.isEmpty() && priceRows.size() == 1
-                    && priceInstants.stream().allMatch(value -> isFresh(value, priceStaleAfter, now));
+                    && priceInstants.stream().allMatch(current);
             pricesFresh &= tickerPriceFresh;
             if (!tickerPriceFresh) missing.add("POSITION_PRICE_AS_OF_STALE:" + ticker);
             if (tickerManualStale) missing.add(tickerManualAsOf == null
@@ -369,6 +376,23 @@ public final class InvestmentContextService {
 
     private static boolean isFresh(Instant asOf, Duration maxAge, Instant now) {
         return asOf != null && !asOf.isAfter(now) && !asOf.isBefore(now.minus(maxAge));
+    }
+
+    /**
+     * A sheet timestamp (ACCOUNT_1 as-of or a holding's Price Synced At) is current within the quote window, or,
+     * while the market is closed, when the accepted snapshot stored calendar facts showing that all its timestamps
+     * fall in one declared closed-market gap (at or after {@code sessionReferenceAt}, before
+     * {@code nextDeclaredIntervalStartsAt}) and that next declared interval has not started yet. Without those
+     * stored facts the quote window alone applies; the read path never calls the broker.
+     */
+    private Predicate<Instant> sheetTimestampCurrent(JsonNode payload, Instant now) {
+        var reference = PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS.equals(text(payload.get("sessionReason")))
+                ? instant(payload.get("sessionReferenceAt")) : null;
+        var nextDeclared = reference == null ? null : instant(payload.get("nextDeclaredIntervalStartsAt"));
+        var closedGapCurrent = reference != null && nextDeclared != null && reference.isBefore(nextDeclared)
+                && !now.isBefore(reference) && now.isBefore(nextDeclared);
+        return value -> isFresh(value, priceStaleAfter, now) || closedGapCurrent && value != null
+                && !value.isBefore(reference) && value.isBefore(nextDeclared) && !value.isAfter(now);
     }
 
     private static LocalDate earlierDate(LocalDate first, LocalDate second) {
@@ -1360,7 +1384,7 @@ public final class InvestmentContextService {
         return next != null && next.isAfter(date) ? next : null;
     }
 
-    private static JsonNode calendarDay(JsonNode calendar, String key, LocalDate date) {
+    static JsonNode calendarDay(JsonNode calendar, String key, LocalDate date) {
         if (calendar == null || date == null) return null;
         var day = calendar.path(key);
         return day.isObject() && date.toString().equals(day.path("date").asText(null)) ? day : null;
@@ -1402,7 +1426,7 @@ public final class InvestmentContextService {
         return java.util.Optional.ofNullable(earliest);
     }
 
-    private static Instant tossCalendarBound(JsonNode interval, String... keys) {
+    static Instant tossCalendarBound(JsonNode interval, String... keys) {
         Instant bound = null;
         for (var key : keys) {
             var value = interval.get(key);
