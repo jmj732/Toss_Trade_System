@@ -64,7 +64,7 @@ V59부터 Telegram 인라인 버튼으로 투자 논리(thesis)의 무효화 트
 | `TELEGRAM_WEBHOOK_SECRET` | 선택. `[A-Za-z0-9_-]{1,256}`만 허용하며 형식이 틀리면 모든 웹훅을 거부한다. 비우면 봇 토큰에서 파생한다. |
 | `TELEGRAM_APPROVAL_TTL=PT24H`, `TELEGRAM_CONFIRM_TTL=PT5M` | 요청 만료와 최종 승인 대기 시간. |
 
-위 값이 하나라도 없거나 숫자가 아니면 기능은 꺼진 것으로 취급한다. 웹훅은 404, 요청 생성 REST는 409 `THESIS_APPROVAL_NOT_READY`를 돌려준다. 요청은 `TELEGRAM_USER_ID` 사용자만 만들 수 있다.
+위 값이 하나라도 없거나 숫자가 아니면 기능은 꺼진 것으로 취급한다. 웹훅은 404, 요청 생성 REST는 409 `THESIS_APPROVAL_NOT_READY`를 돌려준다. 요청은 `TELEGRAM_USER_ID` 사용자 것으로만 만들어진다. 생성 경로는 두 가지다. 로그인 사용자 REST(`POST /investment/securities/{ticker}/thesis/approval-requests`)와 승인자의 Telegram `/review` 명령(아래)이다. 운영 Vercel은 `/investment/...` 사용자 REST를 프록시하지 않으므로 운영에서는 `/review`가 실제 생성 경로다.
 
 ### 웹훅 시크릿과 등록
 
@@ -74,12 +74,12 @@ V59부터 Telegram 인라인 버튼으로 투자 논리(thesis)의 무효화 트
 printf '%s' 'telegram-webhook-v1' | openssl dgst -sha256 -hmac "$TELEGRAM_BOT_TOKEN" | awk '{print $NF}'
 ```
 
-`setWebhook`로 등록하고 `getWebhookInfo`로 확인한다. `allowed_updates`는 `callback_query`만 받는다.
+`setWebhook`로 등록하고 `getWebhookInfo`로 확인한다. `allowed_updates`는 `["callback_query","message"]`다. 버튼만 쓰던 기존 등록(`["callback_query"]`)은 `message`를 받지 않아 `/review`가 동작하지 않으므로 아래 명령으로 `setWebhook`를 다시 실행해야 한다.
 
 ```sh
 curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   -H 'Content-Type: application/json' \
-  -d "{\"url\":\"https://web-dashboard-phi-lac.vercel.app/api/v1/telegram/webhook\",\"secret_token\":\"${WEBHOOK_SECRET}\",\"allowed_updates\":[\"callback_query\"]}"
+  -d "{\"url\":\"https://web-dashboard-phi-lac.vercel.app/api/v1/telegram/webhook\",\"secret_token\":\"${WEBHOOK_SECRET}\",\"allowed_updates\":[\"callback_query\",\"message\"]}"
 curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
 ```
 
@@ -89,9 +89,23 @@ curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
 
 1. 기능 꺼짐: 404
 2. 시크릿 헤더 없음: 401. 불일치(상수 시간 비교)이거나 사용 가능한 시크릿이 없으면 403
-3. `callback_query`가 아니거나 형식이 깨진 update: 200, 아무것도 하지 않음
-4. `message.chat.id` 또는 `from.id`가 설정과 다름: 200. 상태를 바꾸지 않고 Telegram 호출(answerCallbackQuery 포함)도 하지 않음
-5. `update_id` 중복 제거와 상태 전이. 인증된 정상 update에는 항상 2xx를 돌려준다. 후속 Telegram 호출 실패는 사유 코드만 로그에 남긴다.
+3. `callback_query`도 텍스트 `message`도 아니거나 형식이 깨진 update(`update_id`·`chat.id`·`from.id`·`text` 누락 포함): 200, 아무것도 하지 않음
+4. `message.chat.id` 또는 `from.id`가 설정과 다름: 200. 상태를 바꾸지 않고 Telegram 호출(answerCallbackQuery·답장 포함)도 하지 않음
+5. 명령이 아닌 텍스트나 `/review`·`/pending` 외의 명령: 200, 답장 없음, `update_id`도 기록하지 않음
+6. `update_id` 중복 제거와 상태 전이(또는 `/review` 요청 생성). 인증된 정상 update에는 항상 2xx를 돌려준다. 후속 Telegram 호출 실패는 사유 코드만 로그에 남긴다.
+
+### Telegram 명령
+
+승인 채팅에서 승인자만 쓸 수 있다. 그룹에서는 `/review@봇이름` 형식도 받는다(봇 이름은 검사하지 않는다).
+
+| 명령 | 동작 |
+| --- | --- |
+| `/review TICKER [ATR\|SUPPORT\|PROPOSAL]` | `TELEGRAM_USER_ID` 사용자의 해당 종목 승인 요청을 만들고 [상세 검토]·[승인]·[보류] 버튼 메시지를 보낸다. 출처는 대소문자 무관이며 기본값은 `PROPOSAL`(=`EXISTING_PROPOSAL`, 저장된 제안 트리거)이다. `ATR`=`COMPUTED_ATR`, `SUPPORT`=`COMPUTED_SUPPORT`. 종목은 REST와 같은 정규화(대문자, `[A-Z0-9._-]{1,32}`)를 거친다. |
+| `/pending` | 대상 사용자의 열린(`PENDING`·`AWAITING_CONFIRM`, 미만료) 요청을 종목·출처·상태·만료 시각만으로 최대 20건 보여준다. 읽기 전용이다. |
+
+- `/review`는 REST와 같은 서비스 메서드·전제조건으로 요청을 만든다. `expectedThesisUpdatedAt`은 생략한 것과 같아 현재 DB 값을 쓴다. 메시지에서 가격이나 트리거를 받지 않는다. 생성은 thesis를 바꾸지 않으며, `CONFIRMED`는 여전히 [승인] → [최종 승인] 두 단계 버튼으로만 된다. 같은 종목의 열린 요청은 새 요청으로 대체된다.
+- 인자가 없거나 많거나, 출처·종목 형식이 틀리면 사용법 한 줄을 답장한다. 생성 거부는 한국어 사유와 오류 코드만 답장한다. 예: `투자 논리(thesis) 없음 (THESIS_APPROVAL_THESIS_NOT_FOUND)`, `후보 UNVERIFIED (THESIS_APPROVAL_CANDIDATE_UNVERIFIED/INSUFFICIENT_HISTORY)`, `이미 같은 무효화 가격으로 CONFIRMED (THESIS_APPROVAL_ALREADY_CONFIRMED)`, `승인 기능 준비 안 됨 (THESIS_APPROVAL_NOT_READY)`. 거부 답장에는 가격·계좌 값이 없다.
+- 보안: 버튼과 같은 관문이다. `message.chat.id == TELEGRAM_CHAT_ID`이고 `message.from.id == TELEGRAM_APPROVER_ID`일 때만 처리한다. 그 밖의 발신자는 200을 받고 상태 변화·답장·`update_id` 기록이 모두 없다. 처리하는 명령은 먼저 `telegram_webhook_updates`에 `update_id`를 선점하므로 Telegram이 같은 update를 다시 보내도 요청이 두 번 생기거나 답장이 두 번 가지 않는다. 명령 본문은 로그에 남기지 않는다.
 
 ### 상태 머신과 2단계 규칙
 

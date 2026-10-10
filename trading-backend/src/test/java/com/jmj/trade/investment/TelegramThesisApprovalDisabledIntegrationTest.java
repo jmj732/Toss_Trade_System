@@ -51,6 +51,17 @@ class TelegramThesisApprovalDisabledIntegrationTest extends PostgresIntegrationT
     }
 
     @Test
+    void reviewCommandWebhookIsNotFoundWhenTheWorkflowIsOff() throws Exception {
+        var body = "{\"update_id\":2,\"message\":{\"message_id\":1,\"from\":{\"id\":1},"
+                + "\"chat\":{\"id\":1},\"text\":\"/review ACME\"}}";
+        mvc.perform(post("/api/v1/telegram/webhook").header("X-Telegram-Bot-Api-Secret-Token", "anything")
+                .contentType("application/json").content(body)).andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM telegram_webhook_updates", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM investment_thesis_approval_requests", Integer.class))
+                .isZero();
+    }
+
+    @Test
     void creationIsRejectedWith409WhenTheWorkflowIsOff() throws Exception {
         investment.putThesisProposal(USER, "ACME", new InvestmentContextService.ThesisInput("Core", null, null,
                 null, null, null, new BigDecimal("90"), "AI_PROPOSED", null, null, null), null);

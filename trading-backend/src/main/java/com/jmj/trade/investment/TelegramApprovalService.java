@@ -44,7 +44,8 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 
 /**
- * Telegram 2-step approval of a thesis invalidation trigger: request creation (user REST) and webhook callbacks.
+ * Telegram 2-step approval of a thesis invalidation trigger: request creation (user REST or the approver's
+ * {@code /review} bot command), webhook callbacks and the read-only {@code /pending} command.
  *
  * <p>State machine: PENDING -(승인)-> AWAITING_CONFIRM -(최종 승인)-> APPROVED; PENDING/AWAITING_CONFIRM
  * -(보류/취소)-> HELD; expiry -> EXPIRED; a newer request -> SUPERSEDED; a rejected thesis write -> CONFLICT/FAILED;
@@ -75,6 +76,16 @@ public class TelegramApprovalService {
             telegram_message_id, confirm_message_id, decided_at, created_at, updated_at""";
     private static final String UNAVAILABLE = "이미 처리되었거나 유효하지 않은 요청입니다. 변경 없음.";
     private static final String NO_RISK = "리스크 미산출(보유·관심 대상 아님)";
+    /** Bot command at the start of a message text, optionally addressed as {@code /cmd@AnyBotName}. */
+    private static final Pattern COMMAND = Pattern.compile("^/([A-Za-z]+)(?:@[A-Za-z0-9_]+)?(?:\\s+(.*))?$",
+            Pattern.DOTALL);
+    private static final Map<String, String> COMMAND_SOURCES = Map.of(
+            "PROPOSAL", EXISTING_PROPOSAL,
+            "ATR", ThesisCandidateGenerator.COMPUTED_ATR,
+            "SUPPORT", ThesisCandidateGenerator.COMPUTED_SUPPORT);
+    static final String REVIEW_USAGE = "사용법: /review TICKER [ATR|SUPPORT|PROPOSAL]\n"
+            + "기본값 PROPOSAL(저장된 제안 무효화 가격). ATR·SUPPORT는 저장된 완료 일봉으로 서버가 계산합니다. "
+            + "가격은 입력받지 않습니다.";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -350,7 +361,11 @@ public class TelegramApprovalService {
     }
 
     private boolean claimAlone(Callback callback, Instant now) {
-        return Boolean.TRUE.equals(transaction.execute(status -> claim(callback.updateId(), now)));
+        return claimAlone(callback.updateId(), now);
+    }
+
+    private boolean claimAlone(long updateId, Instant now) {
+        return Boolean.TRUE.equals(transaction.execute(status -> claim(updateId, now)));
     }
 
     /** 상세 검토: read-only, does not consume the token; unknown or closed tokens reveal nothing. */
@@ -367,6 +382,101 @@ public class TelegramApprovalService {
             client().sendMessage(detailText(request), List.of());
         } catch (TelegramInteractiveException failure) {
             log.warn("Telegram approval detail delivery failed: {}", failure.reason());
+        }
+    }
+
+    // ------------------------------------------------------------------ bot commands
+
+    /**
+     * Handles an authenticated text message. Same gate as callbacks: another chat or sender changes nothing and
+     * triggers no outbound call. Only {@code /review} and {@code /pending} are handled; every other text is ignored
+     * silently. A handled command claims its update_id first, so a redelivered update creates nothing and sends
+     * no second reply. {@code /review} creates the request through {@link #createRequest} for the configured target
+     * user with the current thesis version; the message never supplies a price.
+     */
+    public void handleCommand(Command command) {
+        if (!settings.isReady()) return;
+        if (!settings.isAuthorizedActor(command.chatId(), command.fromId())) {
+            log.warn("Telegram command ignored: UNAUTHORIZED_ACTOR");
+            return;
+        }
+        var matcher = COMMAND.matcher(Objects.requireNonNullElse(command.text(), "").strip());
+        if (!matcher.matches()) return;
+        var name = matcher.group(1).toLowerCase(Locale.ROOT);
+        if (!"review".equals(name) && !"pending".equals(name)) return;
+        var now = clock.instant();
+        if (!claimAlone(command.updateId(), now)) return;
+        var args = Objects.requireNonNullElse(matcher.group(2), "").strip();
+        if ("pending".equals(name)) {
+            reply(pendingText(now));
+        } else {
+            review(args.isEmpty() ? new String[0] : args.split("\\s+"));
+        }
+    }
+
+    private void review(String[] args) {
+        if (args.length < 1 || args.length > 2) {
+            reply(REVIEW_USAGE);
+            return;
+        }
+        var source = args.length == 1 ? EXISTING_PROPOSAL : COMMAND_SOURCES.get(args[1].toUpperCase(Locale.ROOT));
+        String ticker;
+        try {
+            ticker = InvestmentContextService.ticker(args[0]);
+        } catch (InvestmentException invalid) {
+            ticker = null;
+        }
+        if (source == null || ticker == null) {
+            reply(REVIEW_USAGE);
+            return;
+        }
+        try {
+            createRequest(settings.targetUserId(), ticker, source, null);
+        } catch (Rejected rejected) {
+            reply("요청을 만들지 못했습니다: " + rejectionText(rejected) + "\n투자 논리(thesis)는 변경되지 않았습니다.");
+        } catch (InvestmentException failure) {
+            reply("요청을 만들지 못했습니다: 코드 INVESTMENT_" + failure.code().name()
+                    + "\n투자 논리(thesis)는 변경되지 않았습니다.");
+        }
+    }
+
+    private static String rejectionText(Rejected rejected) {
+        var reason = switch (rejected.reason()) {
+            case NOT_READY -> "승인 기능 준비 안 됨";
+            case INVALID_SOURCE -> "후보 출처 오류";
+            case THESIS_NOT_FOUND -> "투자 논리(thesis) 없음";
+            case THESIS_CHANGED -> "투자 논리(thesis)가 방금 변경됨, 다시 시도";
+            case TRIGGER_MISSING -> "저장된 제안에 숫자 무효화 가격 없음";
+            case CANDIDATE_UNVERIFIED -> "후보 UNVERIFIED";
+            case ALREADY_CONFIRMED -> "이미 같은 무효화 가격으로 CONFIRMED";
+            case INVALID_THESIS -> "확정 시 검증 실패";
+        };
+        var code = "THESIS_APPROVAL_" + rejected.reason().name();
+        return reason + " (" + (rejected.detail() == null ? code : code + "/" + rejected.detail()) + ")";
+    }
+
+    /** Open, unexpired requests of the target user: ticker, source, status and expiry only (no prices). */
+    private String pendingText(Instant now) {
+        var open = jdbc.query("SELECT " + COLUMNS + " FROM " + TABLE + " WHERE user_id=?"
+                + " AND status IN ('PENDING','AWAITING_CONFIRM') AND expires_at>?"
+                + " AND (confirm_expires_at IS NULL OR confirm_expires_at>?) ORDER BY created_at DESC, id DESC LIMIT 20",
+                ROW, settings.targetUserId(), ts(now), ts(now));
+        if (open.isEmpty()) return "[대기 중인 승인 요청] 없음";
+        var text = new StringBuilder("[대기 중인 승인 요청]");
+        for (var request : open) {
+            text.append("\n- ").append(request.ticker()).append(" | ").append(request.candidateSource())
+                    .append(" | ").append(request.status()).append(" | 만료 ")
+                    .append(request.confirmExpiresAt() != null ? request.confirmExpiresAt() : request.expiresAt());
+        }
+        return text.toString();
+    }
+
+    private void reply(String text) {
+        try {
+            client().sendMessage(TelegramInteractiveClient.truncate(text, TelegramInteractiveClient.MAX_TEXT_LENGTH),
+                    List.of());
+        } catch (TelegramInteractiveException failure) {
+            log.warn("Telegram command reply failed: {}", failure.reason());
         }
     }
 
@@ -635,6 +745,10 @@ public class TelegramApprovalService {
 
     /** One authenticated Telegram callback_query. */
     public record Callback(long updateId, long chatId, long fromId, String callbackQueryId, String data) {
+    }
+
+    /** One authenticated Telegram text message (bot command candidate). */
+    public record Command(long updateId, long chatId, long fromId, String text) {
     }
 
     /** Public request view; token hashes and Telegram message ids are deliberately absent. */
