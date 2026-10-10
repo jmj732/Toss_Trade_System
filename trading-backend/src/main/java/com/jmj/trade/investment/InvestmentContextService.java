@@ -452,27 +452,17 @@ public final class InvestmentContextService {
 
     public ContextView context(UUID userId) {
         requireUser(userId);
-        var portfolio = readPortfolio(userId);
-        var watchEntries = watchlist.list(userId);
-        var symbols = new LinkedHashSet<String>();
-        portfolio.positions().forEach(position -> symbols.add(position.ticker()));
-        watchEntries.stream().filter(entry -> !"INVALIDATED".equals(entry.status()))
-                .map(MonitoringWatchlistService.WatchlistEntry::symbol).forEach(symbols::add);
-        additionalSymbols().forEach(symbols::add);
-        if (tacticalOverlayService != null) tacticalOverlayService.trackedSymbols().forEach(symbols::add);
+        var inputs = riskInputs(userId);
+        var portfolio = inputs.portfolio();
+        var watchEntries = inputs.watchEntries();
+        var symbols = inputs.symbols();
         var tacticalReadModel = tacticalOverlayService == null
                 ? new TacticalOverlayService.ReadModel(TacticalOverlayPortfolioView.notConfigured(), Map.of(), Map.of())
                 : tacticalOverlayService.context(userId, List.copyOf(symbols));
-
-        var positions = new LinkedHashMap<String, PositionView>();
-        portfolio.positions().forEach(position -> positions.put(position.ticker(), position));
-        var analysis = new LinkedHashMap<String, JsonNode>();
-        var theses = theses(userId, symbols);
-        for (var symbol : symbols) {
-            analysis.put(symbol, latestSecuritySnapshot(userId, symbol));
-        }
-        var weights = portfolioWeights(portfolio);
-        var risks = riskContributions(userId, symbols, positions, weights, portfolio, theses, analysis);
+        var positions = inputs.positions();
+        var analysis = inputs.analysis();
+        var theses = inputs.theses();
+        var risks = riskContributions(userId, symbols, positions, inputs.weights(), portfolio, theses, analysis);
         var securities = symbols.stream().sorted().map(symbol -> {
             var snapshot = analysis.get(symbol);
             var risk = risks.get(symbol);
@@ -515,6 +505,70 @@ public final class InvestmentContextService {
                 tacticalReadModel.portfolio(),
                 tacticalReadModel.decisions(),
                 reviewService == null ? List.of() : reviewService.recent(userId, InvestmentReviewService.CONTEXT_LIMIT));
+    }
+
+    /** Read-only assembly of every input riskContributions needs; shared by context() and hypotheticalRisk(). */
+    private RiskInputs riskInputs(UUID userId) {
+        var portfolio = readPortfolio(userId);
+        var watchEntries = watchlist.list(userId);
+        var symbols = new LinkedHashSet<String>();
+        portfolio.positions().forEach(position -> symbols.add(position.ticker()));
+        watchEntries.stream().filter(entry -> !"INVALIDATED".equals(entry.status()))
+                .map(MonitoringWatchlistService.WatchlistEntry::symbol).forEach(symbols::add);
+        additionalSymbols().forEach(symbols::add);
+        if (tacticalOverlayService != null) tacticalOverlayService.trackedSymbols().forEach(symbols::add);
+        var positions = new LinkedHashMap<String, PositionView>();
+        portfolio.positions().forEach(position -> positions.put(position.ticker(), position));
+        var analysis = new LinkedHashMap<String, JsonNode>();
+        var theses = theses(userId, symbols);
+        for (var symbol : symbols) {
+            analysis.put(symbol, latestSecuritySnapshot(userId, symbol));
+        }
+        return new RiskInputs(portfolio, watchEntries, symbols, positions, portfolioWeights(portfolio), theses, analysis);
+    }
+
+    private record RiskInputs(
+            PortfolioView portfolio, List<MonitoringWatchlistService.WatchlistEntry> watchEntries,
+            LinkedHashSet<String> symbols, Map<String, PositionView> positions, Map<String, BigDecimal> weights,
+            Map<String, ThesisView> theses, Map<String, JsonNode> analysis) {
+    }
+
+    /**
+     * What-if risk for {@code ticker} if its thesis were CONFIRMED at {@code triggerPrice}. Read-only: swaps an
+     * in-memory thesis copy into the same inputs context() uses and reuses riskContributions (same soft budget and
+     * eligibilityReasons). The result is hypothetical and is never persisted. Null when no thesis row exists.
+     */
+    RiskContributionView hypotheticalRisk(UUID userId, String rawTicker, BigDecimal triggerPrice) {
+        requireUser(userId);
+        var ticker = ticker(rawTicker);
+        var inputs = riskInputs(userId);
+        var symbols = new LinkedHashSet<>(inputs.symbols());
+        var analysis = new LinkedHashMap<>(inputs.analysis());
+        var theses = new LinkedHashMap<>(inputs.theses());
+        if (symbols.add(ticker)) analysis.put(ticker, latestSecuritySnapshot(userId, ticker));
+        var current = theses.containsKey(ticker) ? theses.get(ticker) : thesisIfPresent(userId, ticker);
+        if (current == null) return null;
+        theses.put(ticker, new ThesisView(current.ticker(), current.coreThesis(), current.upsideDriver(),
+                current.expectationsGap(), current.fundamentalInvalidation(), current.revisionInvalidation(),
+                current.priceRiskTrigger(), triggerPrice, "CONFIRMED", current.expandTrigger(),
+                current.exitOrDiscardTrigger(), current.classification(), current.updatedAt()));
+        return riskContributions(userId, symbols, inputs.positions(), inputs.weights(), inputs.portfolio(),
+                theses, analysis).get(ticker);
+    }
+
+    /** Current stored thesis or null; read-only accessor for the approval workflow (same row mapper as context). */
+    ThesisView currentThesis(UUID userId, String rawTicker) {
+        return thesisIfPresent(userId, ticker(rawTicker));
+    }
+
+    /** Freshness-refreshed price facts from the latest stored security snapshot (DB read only, no provider call). */
+    PriceFacts priceFacts(UUID userId, String rawTicker) {
+        var price = node(latestSecuritySnapshot(userId, ticker(rawTicker)), "price");
+        return new PriceFacts(text(price.get("status")), instant(price.get("latestPriceAsOf")),
+                decimal(price.get("latestPrice")));
+    }
+
+    record PriceFacts(String status, Instant asOf, BigDecimal latestPrice) {
     }
 
     public List<ThesisRevisionView> thesisRevisions(UUID userId, String rawTicker, int limit) {
@@ -1456,7 +1510,7 @@ public final class InvestmentContextService {
                             new java.util.AbstractMap.SimpleImmutableEntry<>(current.getFirst().status(), current.getFirst().triggerPrice()),
                             current.getFirst().updatedAt());
             var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
-            return persistThesis(userId, ticker, input, currentList, actor.value(), userId, sessionId, sourceAsOf, reason);
+            return persistThesis(userId, ticker, input, currentList, actor.name(), userId, sessionId, sourceAsOf, reason);
         });
     }
 
@@ -3661,7 +3715,7 @@ public final class InvestmentContextService {
                 && existing.confidence().compareTo(input.confidence()) == 0;
     }
 
-    private static void validateThesis(ThesisInput input) {
+    static void validateThesis(ThesisInput input) {
         if (input == null || blank(input.coreThesis()) || input.coreThesis().length() > 5000
                 || input.invalidationStatus() == null
                 || !Set.of("NOT_REVIEWED", "SUSPECTED", "CONFIRMED", "CLEARED",

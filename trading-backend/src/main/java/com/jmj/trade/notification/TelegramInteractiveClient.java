@@ -1,38 +1,52 @@
 package com.jmj.trade.notification;
 
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Objects;
+
 /**
- * Interactive Telegram client for approval workflows with keyboard buttons and callbacks.
- * Provides methods for sending messages with inline keyboards, answering callback queries,
- * and editing messages.
+ * Interactive Telegram Bot API calls used by the thesis approval workflow (inline keyboards and callback answers).
+ * Messages are always sent to the configured chat without {@code parse_mode}. Failures surface as
+ * {@link TelegramInteractiveException} whose {@code reason()} is a sanitized code safe to log.
  */
 public interface TelegramInteractiveClient {
-    /**
-     * Sends a message with an inline keyboard to the configured chat.
-     *
-     * @param message The message text (truncated to 4096 chars). No parse_mode set.
-     * @param keyboard List of keyboard rows, each row is a list of (buttonText, callbackData) pairs.
-     *                 callbackData must be ≤64 bytes total per button.
-     * @return The Telegram message ID for later editing/deletion
-     * @throws TelegramInteractiveException if send fails
-     */
-    Long sendWithKeyboard(String message, java.util.List<java.util.List<java.util.Map.Entry<String, String>>> keyboard);
+
+    /** Telegram's sendMessage/editMessageText text limit. */
+    int MAX_TEXT_LENGTH = 4096;
+    /** Telegram's answerCallbackQuery text limit. */
+    int MAX_CALLBACK_ANSWER_LENGTH = 200;
+    /** Telegram's callback_data limit in bytes. */
+    int MAX_CALLBACK_DATA_BYTES = 64;
 
     /**
-     * Answers a callback query (user tap on inline button).
+     * Sends {@code text} to the configured chat with an optional inline keyboard (empty list = no keyboard).
      *
-     * @param callbackQueryId The callback_query.id from the Telegram update
-     * @param text Optional notification text to show to the user
-     * @param alert If true, shows an alert dialog instead of a toast
-     * @throws TelegramInteractiveException if answer fails
+     * @return the Telegram message_id of the sent message
      */
-    void answerCallbackQuery(String callbackQueryId, String text, boolean alert);
+    long sendMessage(String text, List<List<Button>> keyboard);
 
-    /**
-     * Edits an existing message's text (e.g., to remove keyboard after decision).
-     *
-     * @param messageId The message ID to edit
-     * @param newText The new message text (≤4096 chars)
-     * @throws TelegramInteractiveException if edit fails
-     */
-    void editMessageText(Long messageId, String newText);
+    /** Answers a callback query so the client stops its loading indicator; {@code text} may be blank. */
+    void answerCallbackQuery(String callbackQueryId, String text);
+
+    /** Replaces a sent message's text; omitting reply_markup removes its inline keyboard. */
+    void editMessageText(long messageId, String text);
+
+    record Button(String text, String callbackData) {
+        public Button {
+            Objects.requireNonNull(text, "text");
+            Objects.requireNonNull(callbackData, "callbackData");
+            var size = callbackData.getBytes(StandardCharsets.UTF_8).length;
+            if (size < 1 || size > MAX_CALLBACK_DATA_BYTES) {
+                throw new IllegalArgumentException("callback_data must be 1-64 bytes");
+            }
+        }
+    }
+
+    /** Truncates to {@code limit} UTF-16 units without splitting a surrogate pair. */
+    static String truncate(String text, int limit) {
+        var value = Objects.requireNonNullElse(text, "");
+        if (value.length() <= limit) return value;
+        var end = Character.isHighSurrogate(value.charAt(limit - 1)) ? limit - 1 : limit;
+        return value.substring(0, end);
+    }
 }

@@ -1,119 +1,92 @@
 package com.jmj.trade.investment;
 
 import com.jmj.trade.notification.TelegramApprovalSettings;
-import org.springframework.beans.factory.ObjectProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-
 /**
- * Webhook endpoint for Telegram callback queries (inline button presses).
- * Validates secret, parses callback_query updates, delegates to TelegramApprovalService.
+ * Telegram webhook for inline-button callbacks of the thesis approval workflow. Unauthenticated at the HTTP
+ * layer (permitAll); authenticated by Telegram's secret_token header. Order of checks:
+ * <ol>
+ *   <li>workflow not ready: 404</li>
+ *   <li>secret header missing: 401; mismatch (constant time) or no usable secret configured: 403</li>
+ *   <li>non-callback_query or malformed update: 200, no-op</li>
+ *   <li>chat.id / from.id not the configured approver: 200, no state change, no outbound call</li>
+ *   <li>update_id dedupe + state transition</li>
+ * </ol>
+ * Authenticated updates always get 2xx so Telegram does not retry; failures are logged by category only.
  */
 @RestController
-@RequestMapping("/api/v1/telegram")
-public class TelegramWebhookController {
+final class TelegramWebhookController {
 
-    private final TelegramApprovalService approvalService;
-    private final ObjectProvider<TelegramApprovalSettings> approvalSettings;
-    private final String botToken;
-    private final ObjectMapper objectMapper;
+    static final String PATH = "/api/v1/telegram/webhook";
+    private static final Logger log = LoggerFactory.getLogger(TelegramWebhookController.class);
 
-    @org.springframework.beans.factory.annotation.Autowired
-    public TelegramWebhookController(
-            TelegramApprovalService approvalService,
-            ObjectProvider<TelegramApprovalSettings> approvalSettings,
-            ObjectMapper objectMapper,
-            @org.springframework.beans.factory.annotation.Value("${notification.telegram.bot-token:}") String botTokenValue) {
-        this.approvalService = approvalService;
-        this.approvalSettings = approvalSettings;
-        this.botToken = botTokenValue;
-        this.objectMapper = objectMapper;
+    private final TelegramApprovalService approvals;
+    private final TelegramApprovalSettings settings;
+    private final ObjectMapper mapper;
+
+    TelegramWebhookController(TelegramApprovalService approvals, TelegramApprovalSettings settings,
+                              ObjectMapper mapper) {
+        this.approvals = approvals;
+        this.settings = settings;
+        this.mapper = mapper;
     }
 
-    @PostMapping("/webhook")
-    public ResponseEntity<Void> handleWebhook(
-            @RequestHeader(value = "X-Telegram-Bot-Api-Secret-Token", required = false) String secretHeader,
-            @RequestBody byte[] rawBody) {
+    @PostMapping(PATH)
+    ResponseEntity<Void> webhook(
+            @RequestHeader(value = "X-Telegram-Bot-Api-Secret-Token", required = false) String secret,
+            @RequestBody(required = false) byte[] body
+    ) {
+        if (!settings.isReady()) return ResponseEntity.notFound().build();
+        if (secret == null || secret.isEmpty()) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        if (!settings.webhookSecretMatches(secret)) return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
 
-        var settings = approvalSettings.getIfAvailable();
-        if (settings == null || !settings.isReady()) {
-            return ResponseEntity.notFound().build();
-        }
-
-        // Validate secret
-        var expectedSecret = settings.webhookSecret();
-        if (expectedSecret == null || expectedSecret.isBlank()) {
-            // Derive from bot token
-            expectedSecret = TelegramApprovalSettings.deriveWebhookSecret(botToken);
-        }
-
-        if (secretHeader == null || !constantTimeEquals(secretHeader.getBytes(StandardCharsets.UTF_8), expectedSecret.getBytes(StandardCharsets.UTF_8))) {
-            if (secretHeader == null) {
-                return ResponseEntity.status(401).build();
-            } else {
-                return ResponseEntity.status(403).build();
-            }
-        }
-
-        // Parse JSON
-        JsonNode update;
+        var callback = callback(body);
+        if (callback == null) return ResponseEntity.ok().build();
         try {
-            update = objectMapper.readTree(rawBody);
-        } catch (Exception e) {
-            return ResponseEntity.ok().build();
+            approvals.handleCallback(callback);
+        } catch (RuntimeException failure) {
+            log.warn("Telegram callback processing failed: {}", failure.getClass().getSimpleName());
         }
-
-        // Check for callback_query (non-callback updates are ignored)
-        var callbackQuery = update.path("callback_query");
-        if (!callbackQuery.isObject()) {
-            return ResponseEntity.ok().build();
-        }
-
-        // Extract fields
-        var updateId = update.path("update_id").asLong();
-        var message = callbackQuery.path("message");
-        var chatId = message.path("chat").path("id").asLong();
-        var fromId = callbackQuery.path("from").path("id").asLong();
-        var callbackData = callbackQuery.path("data").asText();
-        var callbackQueryId = callbackQuery.path("id").asText();
-
-        if (updateId == 0 || chatId == 0 || fromId == 0 || callbackData.isEmpty() || callbackQueryId.isEmpty()) {
-            return ResponseEntity.ok().build();
-        }
-
-        // Delegate to approval service
-        try {
-            approvalService.handleCallbackQuery(updateId, chatId, fromId, callbackData, callbackQueryId);
-        } catch (Exception e) {
-            // Log but return 200 to Telegram
-            System.err.println("Error handling callback: " + e.getMessage());
-        }
-
         return ResponseEntity.ok().build();
     }
 
-    private boolean constantTimeEquals(byte[] a, byte[] b) {
-        if (a == null || b == null) {
-            return a == b;
+    private TelegramApprovalService.Callback callback(byte[] body) {
+        if (body == null || body.length == 0) return null;
+        JsonNode update;
+        try {
+            update = mapper.readTree(body);
+        } catch (RuntimeException malformed) {
+            return null;
         }
-        if (a.length != b.length) {
-            return false;
+        if (update == null) return null;
+        var query = update.get("callback_query");
+        if (query == null || !query.isObject()) return null;
+        var updateId = integral(update.get("update_id"));
+        var message = query.get("message");
+        var chatId = message == null || !message.isObject() ? null
+                : integral(message.path("chat").get("id"));
+        var fromId = integral(query.path("from").get("id"));
+        var id = query.get("id");
+        var data = query.get("data");
+        if (updateId == null || chatId == null || fromId == null || id == null || !id.isTextual()
+                || id.asText().isBlank()) {
+            return null;
         }
-        int result = 0;
-        for (int i = 0; i < a.length; i++) {
-            result |= a[i] ^ b[i];
-        }
-        return result == 0;
+        return new TelegramApprovalService.Callback(updateId, chatId, fromId, id.asText(),
+                data != null && data.isTextual() ? data.asText() : null);
+    }
+
+    private static Long integral(JsonNode node) {
+        return node != null && node.isIntegralNumber() && node.canConvertToLong() ? node.longValue() : null;
     }
 }

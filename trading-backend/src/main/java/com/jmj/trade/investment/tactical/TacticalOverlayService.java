@@ -882,12 +882,37 @@ public class TacticalOverlayService {
         return new History(bars, refs, sourceAsOf, conflicted, List.copyOf(latestRows));
     }
 
-    private static List<BenchmarkBar> benchmarkBars(History history) {
-        var conflictDates = history.rows().stream().collect(java.util.stream.Collectors.groupingBy(
+    /**
+     * Read-only view of the stored daily bars for {@code symbol} (latest capture per date, oldest first), each with
+     * its per-date source conflict flag and latest source as-of. Includes the current session's bar if stored;
+     * callers decide which bars count as completed. Never fetches prices or bars.
+     */
+    public List<StoredDailyBar> storedDailyBars(UUID userId, String symbol) {
+        var history = history(userId, ticker(symbol));
+        var conflictDates = conflictDates(history);
+        var sourceAsOfByDate = history.rows().stream().filter(row -> row.sourceAsOf() != null)
+                .collect(java.util.stream.Collectors.toMap(BarRow::date, BarRow::sourceAsOf,
+                        (left, right) -> left.isAfter(right) ? left : right));
+        return history.bars().stream()
+                .map(bar -> new StoredDailyBar(bar.date(), bar.open(), bar.high(), bar.low(), bar.close(),
+                        bar.volume(), sourceAsOfByDate.get(bar.date()), conflictDates.contains(bar.date())))
+                .toList();
+    }
+
+    public record StoredDailyBar(LocalDate date, BigDecimal open, BigDecimal high, BigDecimal low,
+                                 BigDecimal close, BigDecimal volume, Instant sourceAsOf, boolean sourceConflict) {
+    }
+
+    private static java.util.Set<LocalDate> conflictDates(History history) {
+        return history.rows().stream().collect(java.util.stream.Collectors.groupingBy(
                 BarRow::date, java.util.TreeMap::new, java.util.stream.Collectors.toList())).entrySet().stream()
                 .filter(entry -> entry.getValue().stream().anyMatch(BarRow::sourceConflict)
                         || entry.getValue().stream().map(BarRow::bar).distinct().count() > 1)
                 .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toSet());
+    }
+
+    private static List<BenchmarkBar> benchmarkBars(History history) {
+        var conflictDates = conflictDates(history);
         return history.bars().stream()
                 .map(bar -> new BenchmarkBar(bar.date(), bar.close(), conflictDates.contains(bar.date())))
                 .toList();

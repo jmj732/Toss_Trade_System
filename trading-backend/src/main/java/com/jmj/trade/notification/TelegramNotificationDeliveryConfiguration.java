@@ -25,6 +25,26 @@ class TelegramNotificationDeliveryConfiguration {
         return new TelegramDeliverySettings(enabled, botToken, chatId, targetUserId);
     }
 
+    /** Always registered (bean inventory stays stable); readiness is evaluated at runtime by its callers. */
+    @Bean
+    TelegramApprovalSettings telegramApprovalSettings(
+            TelegramDeliverySettings delivery,
+            @Value("${notification.telegram.approval-enabled:false}") boolean approvalEnabled,
+            @Value("${notification.telegram.approver-id:}") String approverId,
+            @Value("${notification.telegram.webhook-secret:}") String webhookSecret
+    ) {
+        return TelegramApprovalSettings.of(delivery.enabled(), approvalEnabled, delivery.botToken(),
+                delivery.chatId(), approverId, delivery.targetUserId(), webhookSecret);
+    }
+
+    /** Only when both Telegram delivery and the approval workflow are switched on. */
+    @Bean
+    @ConditionalOnProperty(prefix = "notification.telegram", name = {"enabled", "approval-enabled"},
+            havingValue = "true")
+    TelegramInteractiveClient telegramInteractiveClient(TelegramDeliverySettings settings) {
+        return new TelegramBotApiInteractiveClient(settings.botToken(), settings.chatId());
+    }
+
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnProperty(prefix = "notification.telegram", name = "enabled", havingValue = "true")
     @EnableScheduling

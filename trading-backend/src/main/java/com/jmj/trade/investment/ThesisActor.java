@@ -1,20 +1,11 @@
 package com.jmj.trade.investment;
 
 /**
- * Actor type for thesis revisions. Determines the source of thesis changes.
+ * Who performs a {@code putThesis} write; stored verbatim as {@code investment_thesis_revisions.actor_type}.
+ * Package-private so only the investment domain (user REST, Telegram 2-step approval) can select an actor;
+ * the connector/MCP path uses {@code putThesisProposal} and can never reach a CONFIRMED write.
  */
 enum ThesisActor {
-    USER_SESSION("USER_SESSION"),
-    CONNECTOR_MCP("CONNECTOR_MCP"),
-    TELEGRAM("TELEGRAM");
-
-    private final String value;
-
-    ThesisActor(String value) {
-        this.value = value;
-    }
-
-    public String value() {
-        return value;
-    }
+    USER_SESSION,
+    TELEGRAM
 }
