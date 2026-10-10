@@ -41,17 +41,22 @@ class ThesisCandidateGeneratorTest {
     }
 
     @Test
-    void atrWithNullPricesReturnsUnverified() {
+    void atrWithManyNullPricesReturnsUnverified() {
         var bars = new ArrayList<ThesisCandidateGenerator.BarData>();
-        bars.add(new ThesisCandidateGenerator.BarData(bd(100), null, bd(95), bd(100), bd(1000000)));
-        for (int i = 1; i < 20; i++) {
+        // Add 8 bars with nulls
+        for (int i = 0; i < 8; i++) {
+            bars.add(new ThesisCandidateGenerator.BarData(bd(100), null, bd(95), bd(100), bd(1000000)));
+        }
+        // Add 10 valid bars
+        for (int i = 0; i < 10; i++) {
             bars.add(new ThesisCandidateGenerator.BarData(
                     bd(100), bd(105), bd(95), bd(100), bd(1000000)));
         }
 
         var result = ThesisCandidateGenerator.atrCandidate(bars);
-        // After filtering nulls, should have 19 bars - INSUFFICIENT_HISTORY
+        // After filtering nulls, should have 10 bars - INSUFFICIENT_HISTORY
         assertThat(result.verified).isFalse();
+        assertThat(result.reason).isEqualTo("INSUFFICIENT_HISTORY");
     }
 
     @Test
