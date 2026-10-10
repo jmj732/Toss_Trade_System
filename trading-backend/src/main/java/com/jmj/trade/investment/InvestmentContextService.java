@@ -1398,6 +1398,12 @@ public final class InvestmentContextService {
     public ThesisView putThesis(UUID userId, String rawTicker, ThesisInput input,
                                  Instant expectedUpdatedAt, Instant sourceAsOf, String reason,
                                  UUID sessionId) {
+        return putThesis(ThesisActor.USER_SESSION, userId, rawTicker, input, expectedUpdatedAt, sourceAsOf, reason, sessionId);
+    }
+
+    ThesisView putThesis(ThesisActor actor, UUID userId, String rawTicker, ThesisInput input,
+                         Instant expectedUpdatedAt, Instant sourceAsOf, String reason,
+                         UUID sessionId) {
         requireUser(userId);
         var ticker = ticker(rawTicker);
         validateThesis(input);
@@ -1450,7 +1456,7 @@ public final class InvestmentContextService {
                             new java.util.AbstractMap.SimpleImmutableEntry<>(current.getFirst().status(), current.getFirst().triggerPrice()),
                             current.getFirst().updatedAt());
             var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
-            return persistThesis(userId, ticker, input, currentList, "USER_SESSION", userId, sessionId, sourceAsOf, reason);
+            return persistThesis(userId, ticker, input, currentList, actor.value(), userId, sessionId, sourceAsOf, reason);
         });
     }
 
@@ -1479,7 +1485,7 @@ public final class InvestmentContextService {
         });
     }
 
-    private void lockThesisWriter(UUID userId) {
+    void lockThesisWriter(UUID userId) {
         jdbc.queryForList("SELECT id FROM users WHERE id=? FOR NO KEY UPDATE", UUID.class, userId);
     }
 

@@ -18,9 +18,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.math.BigDecimal;
 
 @RestController
 @RequestMapping("/investment")
@@ -157,6 +159,35 @@ final class InvestmentContextController {
         return error(HttpStatus.BAD_REQUEST, "INVESTMENT_INPUT_INVALID");
     }
 
+    @PostMapping("/securities/{ticker}/thesis/approval-requests")
+    ResponseEntity<?> createApprovalRequest(
+            @PathVariable String ticker,
+            @RequestBody ApprovalRequestInput input,
+            Principal principal) {
+        try {
+            var uid = userId(principal);
+            approvalService.createApprovalRequest(uid, ticker, input.candidateSource(), input.candidateTrigger(),
+                    input.inputs(), input.sourceAsOf(), input.expectedThesisUpdatedAt());
+            return ResponseEntity.ok(Map.of("status", "PENDING"));
+        } catch (InvestmentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.code().name());
+        }
+    }
+
+    @GetMapping("/thesis/approval-requests")
+    ResponseEntity<?> listApprovalRequests(Principal principal) {
+        try {
+            var uid = userId(principal);
+            // TODO: Implement listing
+            return ResponseEntity.ok(List.of());
+        } catch (InvestmentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.code().name());
+        }
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private TelegramApprovalService approvalService;
+
     private static UUID userId(Principal principal) {
         try {
             return UUID.fromString(principal.getName());
@@ -183,5 +214,14 @@ final class InvestmentContextController {
     }
 
     record PublicError(String code) {
+    }
+
+    record ApprovalRequestInput(
+            String candidateSource,
+            BigDecimal candidateTrigger,
+            Map<String, Object> inputs,
+            Instant sourceAsOf,
+            Instant expectedThesisUpdatedAt
+    ) {
     }
 }

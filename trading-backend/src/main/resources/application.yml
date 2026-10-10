@@ -133,6 +133,11 @@ notification:
     interval: ${TELEGRAM_INTERVAL:PT15S}
     initial-delay: ${TELEGRAM_INITIAL_DELAY:PT10S}
     batch-size: ${TELEGRAM_BATCH_SIZE:1}
+    approval-enabled: ${TELEGRAM_APPROVAL_ENABLED:false}
+    approver-id: ${TELEGRAM_APPROVER_ID:}
+    webhook-secret: ${TELEGRAM_WEBHOOK_SECRET:}
+    approval-ttl: ${TELEGRAM_APPROVAL_TTL:PT24H}
+    confirm-ttl: ${TELEGRAM_CONFIRM_TTL:PT5M}
 management:
   endpoints:
     web:
