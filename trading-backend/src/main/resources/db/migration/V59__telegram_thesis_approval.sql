@@ -31,13 +31,15 @@ CREATE TABLE investment_thesis_approval_requests (
     status_reason TEXT CHECK (status_reason IS NULL OR char_length(status_reason) <= 500),
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
-    CONSTRAINT uq_open_approval UNIQUE (user_id, ticker)
-        WHERE status IN ('PENDING','AWAITING_CONFIRM'),
     CONSTRAINT ck_approval_confirm_tokens CHECK (
         (status IN ('AWAITING_CONFIRM','APPROVED','HELD','EXPIRED','CONFLICT','FAILED') AND confirm_token_sha256 IS NOT NULL)
         OR (status IN ('PENDING','SUPERSEDED') AND confirm_token_sha256 IS NULL)
     )
 );
+
+CREATE UNIQUE INDEX uq_open_approval
+    ON investment_thesis_approval_requests(user_id, ticker)
+    WHERE status IN ('PENDING','AWAITING_CONFIRM');
 
 CREATE INDEX idx_investment_thesis_approval_requests_owner
     ON investment_thesis_approval_requests(user_id, created_at DESC);
