@@ -123,7 +123,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
     @Test
     void unavailableOptionalProviderIsPartialWhenTossAndSecCanonicalInputsArePresent() {
         var fiscalPeriod = LocalDate.now(ZoneOffset.UTC).minusDays(35);
-        var asOf = Instant.parse("2026-10-02T20:00:00Z");
+        var asOf = recentRegularCloseAsOf();
         var toss = providerWithValues(List.of(
                 decimal("price.regularClose", "100", asOf),
                 observedText("price.session", "REGULAR_CLOSE", asOf)), StockDataProviderId.TOSS);
@@ -1470,11 +1470,24 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         };
     }
 
+    /**
+     * 16:00 New York close of the most recent weekday before today. A fixed literal here aged past the
+     * {@code regular-close-stale-after=P7D} window and turned these PARTIAL-capture scenarios into STALE ones.
+     */
+    private static Instant recentRegularCloseAsOf() {
+        var newYork = java.time.ZoneId.of("America/New_York");
+        var date = LocalDate.now(newYork).minusDays(1);
+        while (date.getDayOfWeek() == java.time.DayOfWeek.SATURDAY || date.getDayOfWeek() == java.time.DayOfWeek.SUNDAY) {
+            date = date.minusDays(1);
+        }
+        return date.atTime(16, 0).atZone(newYork).toInstant();
+    }
+
     private StockDataProviderRegistry canonicalProviders() {
         var fiscalPeriod = LocalDate.now(ZoneOffset.UTC).minusDays(35);
         var toss = providerWithValues(List.of(
-                decimal("price.regularClose", "100", Instant.parse("2026-10-02T20:00:00Z")),
-                observedText("price.session", "REGULAR_CLOSE", Instant.parse("2026-10-02T20:00:00Z"))),
+                decimal("price.regularClose", "100", recentRegularCloseAsOf()),
+                observedText("price.session", "REGULAR_CLOSE", recentRegularCloseAsOf())),
                 StockDataProviderId.TOSS);
         var sec = providerWithValues(List.of(
                 text("fundamental.fiscalPeriod", fiscalPeriod.toString(), fiscalPeriod),
