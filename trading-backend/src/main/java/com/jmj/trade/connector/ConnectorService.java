@@ -45,7 +45,15 @@ public final class ConnectorService {
     }
 
     public ConnectorResponse.Portfolio portfolio(UUID userId, UUID connectionId) {
-        var source = portfolios.read(userId, connectionId);
+        return portfolio(portfolios.read(userId, connectionId));
+    }
+
+    /** The persisted account snapshot only; unlike {@link #portfolio} it never synchronizes from the broker. */
+    public ConnectorResponse.Portfolio persistedPortfolio(UUID userId, UUID connectionId) {
+        return portfolio(portfolios.readPersisted(userId, connectionId));
+    }
+
+    private static ConnectorResponse.Portfolio portfolio(PortfolioReadService.PortfolioView source) {
         return new ConnectorResponse.Portfolio(
                 source.completedAt(), source.stale(), source.staleReason(), source.partial(),
                 source.missingSections(), source.unknownFields(), account(source.account()),

@@ -208,8 +208,9 @@ public final class InvestmentOsSheetSyncService {
         String failure = null;
         boolean closedFromCache = false;
 
+        Function<LocalDate, JsonNode> calendars = date -> marketCalendar(userId, connectionId, date, syncedAt);
         try {
-            portfolio = connector.portfolio(userId, connectionId);
+            portfolio = readPortfolio(userId, connectionId, syncedAt, calendars);
             LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                     .addKeyValue("broker_fetch_result", portfolio == null ? "empty" : "success")
                     .log("Toss portfolio fetch completed");
@@ -219,8 +220,6 @@ public final class InvestmentOsSheetSyncService {
                     .addKeyValue("broker_fetch_result", "failure").addKeyValue("failure_reason", failure)
                     .log("Toss portfolio fetch failed; existing sheet state preserved");
         }
-        Function<LocalDate, JsonNode> calendars = date -> marketCalendar(userId, connectionId, date, syncedAt);
-        if (portfolio != null) portfolio = capturedAfterClose(userId, connectionId, portfolio, syncedAt, calendars);
         var portfolioAccepted = portfolio != null && (authoritative(portfolio)
                 || closedMarketCurrent(portfolio, syncedAt, calendars));
 
@@ -541,22 +540,50 @@ public final class InvestmentOsSheetSyncService {
     }
 
     /**
-     * Post-close capture: when now is outside every declared interval but the persisted account snapshot predates
-     * the current closed-market gap, run the existing read-only account sync (no orders) and re-read the snapshot.
-     * Bounded per gap; any failure keeps the previous snapshot and the existing freshness checks.
+     * Reads the account for this attempt. Outside a verified closed-market gap (or when the calendar cannot verify
+     * one) this is the existing read-through, which synchronizes from the broker. Inside a gap the persisted
+     * snapshot is read without any broker call when it was captured in that same gap, because holdings and cash
+     * cannot trade until the next declared interval; otherwise (including a later failed account sync) the bounded
+     * post-close capture runs.
+     */
+    private ConnectorResponse.Portfolio readPortfolio(
+            UUID userId, UUID connectionId, Instant syncedAt, Function<LocalDate, JsonNode> calendars
+    ) {
+        var gapEnd = DeclaredMarketGap.nextIntervalStartIfOutside(syncedAt, calendars);
+        if (gapEnd == null || !syncedAt.isBefore(gapEnd)) return connector.portfolio(userId, connectionId);
+        ConnectorResponse.Portfolio persisted;
+        try {
+            persisted = connector.persistedPortfolio(userId, connectionId);
+        } catch (RuntimeException exception) {
+            // No readable persisted snapshot (e.g. no successful sync yet): keep the existing read-through.
+            return connector.portfolio(userId, connectionId);
+        }
+        if (persisted == null) return null;
+        // A later failed account sync (dashboard read-through, scheduled refresh) leaves LATEST_SYNC_FAILED, which is
+        // never accepted; the bounded capture replaces the read-through retry that used to clear it.
+        if (capturedInGap(persisted, gapEnd, calendars) && !"LATEST_SYNC_FAILED".equals(persisted.staleReason())) {
+            return persisted;
+        }
+        return capturedAfterClose(userId, connectionId, persisted, gapEnd);
+    }
+
+    private boolean capturedInGap(
+            ConnectorResponse.Portfolio portfolio, Instant gapEnd, Function<LocalDate, JsonNode> calendars
+    ) {
+        var completedAt = portfolio.completedAt();
+        return completedAt != null && !completedAt.isAfter(now.get())
+                && gapEnd.equals(DeclaredMarketGap.nextIntervalStartIfOutside(completedAt, calendars));
+    }
+
+    /**
+     * Post-close capture: the persisted account snapshot predates the current closed-market gap, so run the existing
+     * read-only account sync (no orders) and re-read the persisted snapshot. Bounded per gap; any failure keeps the
+     * previous snapshot and the existing freshness checks, and never falls back to the read-through.
      */
     private ConnectorResponse.Portfolio capturedAfterClose(
-            UUID userId, UUID connectionId, ConnectorResponse.Portfolio portfolio, Instant now,
-            Function<LocalDate, JsonNode> calendars
+            UUID userId, UUID connectionId, ConnectorResponse.Portfolio portfolio, Instant gapEnd
     ) {
         if (accountSync == null) return portfolio;
-        var gapEnd = DeclaredMarketGap.nextIntervalStartIfOutside(now, calendars);
-        if (gapEnd == null || !now.isBefore(gapEnd)) return portfolio;
-        var completedAt = portfolio.completedAt();
-        if (completedAt != null && !completedAt.isAfter(now)
-                && gapEnd.equals(DeclaredMarketGap.nextIntervalStartIfOutside(completedAt, calendars))) {
-            return portfolio;
-        }
         if (!gapEnd.equals(postCloseCaptureGapEnd)) {
             postCloseCaptureGapEnd = gapEnd;
             postCloseCaptureAttempts = 0;
@@ -565,7 +592,7 @@ public final class InvestmentOsSheetSyncService {
         postCloseCaptureAttempts++;
         try {
             accountSync.syncForMonitoring(userId, connectionId);
-            var captured = connector.portfolio(userId, connectionId);
+            var captured = connector.persistedPortfolio(userId, connectionId);
             LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                     .addKeyValue("post_close_capture", "success")
                     .log("Toss account captured after the last declared interval ended");
@@ -587,14 +614,25 @@ public final class InvestmentOsSheetSyncService {
             return cached.payload();
         }
         JsonNode payload;
+        String unavailable = null;
         try {
             var response = brokerSurface.marketCalendar(userId, connectionId, "US", date);
             payload = response == null || response.unavailable() || response.data() == null
                     || !"US".equals(response.data().market()) ? null : response.data().payload();
+            if (payload == null) {
+                unavailable = response == null ? "EMPTY_RESPONSE" : response.unavailableReason() == null
+                        ? "CALENDAR_UNAVAILABLE" : response.unavailableReason();
+            }
         } catch (RuntimeException exception) {
             payload = null;
+            unavailable = safeError(exception);
         }
-        if (payload == null) return null;
+        if (payload == null) {
+            LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("market_calendar_date", date)
+                    .addKeyValue("failure_reason", unavailable)
+                    .log("official market calendar unavailable; closed-market state stays unverified");
+            return null;
+        }
         marketCalendars.put(date, new CachedCalendar(now, payload));
         marketCalendars.keySet().removeIf(key -> key.isBefore(now.atZone(NEW_YORK).toLocalDate().minusDays(7)));
         return payload;
@@ -649,7 +687,9 @@ public final class InvestmentOsSheetSyncService {
         else payload.put("manualReadAt", manualReadAt.toString());
         if (account1AsOf == null) payload.putNull("account1AsOf");
         else payload.put("account1AsOf", account1AsOf.toString());
-        putClosedMarketFacts(payload, attemptedAt, account1AsOf, portfolioAccountState, calendars);
+        // The account and quotes are read after the attempt starts (the read-through sync completes seconds later),
+        // so the facts are bounded by the time the payload is recorded, not by attemptedAt.
+        putClosedMarketFacts(payload, now.get(), account1AsOf, portfolioAccountState, calendars);
         payload.put("source", "TOSS_API+MANUAL_SHEET");
         payload.put("attemptStatus", status);
         payload.put("failurePresent", failure != null);
@@ -659,11 +699,12 @@ public final class InvestmentOsSheetSyncService {
 
     /**
      * Records calendar facts only when the earliest snapshot timestamp (ACCOUNT_1 as-of and every row's Price
-     * Synced At) lies outside every declared Toss interval and the next declared interval has not started at
-     * capture time. The read path then keeps these timestamps current until that interval starts.
+     * Synced At) lies outside every declared Toss interval and the next declared interval has not started when
+     * the payload is recorded ({@code recordedAt}). The read path then keeps these timestamps current until that
+     * interval starts. A timestamp later than {@code recordedAt} is never used as the reference.
      */
     private static void putClosedMarketFacts(
-            ObjectNode payload, Instant attemptedAt, Instant account1AsOf,
+            ObjectNode payload, Instant recordedAt, Instant account1AsOf,
             InvestmentOsSheetModel.SheetTable accountState, Function<LocalDate, JsonNode> calendars
     ) {
         if (account1AsOf == null) return;
@@ -674,9 +715,21 @@ public final class InvestmentOsSheetSyncService {
                 if (synced != null && synced.isBefore(reference)) reference = synced;
             }
         }
-        if (reference.isAfter(attemptedAt)) return;
-        var nextInterval = DeclaredMarketGap.nextIntervalStartIfOutside(reference, calendars);
-        if (nextInterval == null || !attemptedAt.isBefore(nextInterval)) return;
+        String skipped = null;
+        Instant nextInterval = null;
+        if (recordedAt == null || reference.isAfter(recordedAt)) {
+            skipped = "REFERENCE_AFTER_RECORDED_AT";
+        } else {
+            nextInterval = DeclaredMarketGap.nextIntervalStartIfOutside(reference, calendars);
+            if (nextInterval == null) skipped = "INSIDE_DECLARED_INTERVAL_OR_CALENDAR_UNVERIFIED";
+            else if (!recordedAt.isBefore(nextInterval)) skipped = "NEXT_DECLARED_INTERVAL_STARTED";
+        }
+        if (skipped != null) {
+            LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("closed_market_facts", "not_recorded")
+                    .addKeyValue("reason", skipped).addKeyValue("reference_at", reference)
+                    .log("closed-market facts not recorded; the 15-minute freshness rule applies");
+            return;
+        }
         payload.put("sessionReason", InvestmentContextService.PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS);
         payload.put("sessionReferenceAt", reference.toString());
         payload.put("nextDeclaredIntervalStartsAt", nextInterval.toString());

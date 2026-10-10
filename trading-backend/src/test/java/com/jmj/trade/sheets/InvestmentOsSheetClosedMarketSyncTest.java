@@ -95,7 +95,7 @@ class InvestmentOsSheetClosedMarketSyncTest {
     @Test
     void ageStaleSnapshotCapturedAfterTheLastIntervalIsAcceptedWithClosedMarketFacts() throws Exception {
         stubWeekendCalendars();
-        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio(FRIDAY_AFTER_CLOSE, true));
+        when(connector.persistedPortfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio(FRIDAY_AFTER_CLOSE, true));
         var service = service();
 
         var first = service.sync();
@@ -104,6 +104,8 @@ class InvestmentOsSheetClosedMarketSyncTest {
         assertThat(first.error()).isNull();
         assertThat(second.error()).isNull();
         verify(accountSync, never()).syncForMonitoring(any(), any());
+        // Captured in the current closed gap: the persisted snapshot is read without the broker read-through.
+        verify(connector, never()).portfolio(any(), any());
         var payloads = acceptedPayloads(2);
         for (var payload : payloads) {
             assertThat(payload.path("account1AsOf").asText()).isEqualTo(FRIDAY_AFTER_CLOSE.toString());
@@ -123,7 +125,7 @@ class InvestmentOsSheetClosedMarketSyncTest {
     void snapshotCapturedInsideTheAfterMarketTriggersOnePostCloseCaptureAndIsThenAccepted() throws Exception {
         stubWeekendCalendars();
         var captured = SATURDAY.minus(Duration.ofMinutes(1));
-        when(connector.portfolio(USER_ID, CONNECTION_ID))
+        when(connector.persistedPortfolio(USER_ID, CONNECTION_ID))
                 .thenReturn(portfolio(FRIDAY_AFTER_MARKET, true), portfolio(captured, false));
         var service = service();
 
@@ -133,6 +135,7 @@ class InvestmentOsSheetClosedMarketSyncTest {
         assertThat(first.error()).isNull();
         assertThat(second.error()).isNull();
         verify(accountSync, times(1)).syncForMonitoring(USER_ID, CONNECTION_ID);
+        verify(connector, never()).portfolio(any(), any());
         var payload = acceptedPayloads(2).getFirst();
         assertThat(payload.path("account1AsOf").asText()).isEqualTo(captured.toString());
         assertThat(payload.path("sessionReferenceAt").asText()).isEqualTo(captured.toString());
@@ -142,7 +145,7 @@ class InvestmentOsSheetClosedMarketSyncTest {
     @Test
     void failedPostCloseCaptureIsBoundedPerClosedGapAndTheSnapshotStaysNonAuthoritative() {
         stubWeekendCalendars();
-        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio(FRIDAY_AFTER_MARKET, true));
+        when(connector.persistedPortfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio(FRIDAY_AFTER_MARKET, true));
         when(accountSync.syncForMonitoring(USER_ID, CONNECTION_ID)).thenThrow(new RuntimeException("rate limited"));
         var service = service();
 
@@ -151,6 +154,8 @@ class InvestmentOsSheetClosedMarketSyncTest {
         }
 
         verify(accountSync, times(3)).syncForMonitoring(USER_ID, CONNECTION_ID);
+        // Exhausted post-close attempts never fall back to the unbounded read-through.
+        verify(connector, never()).portfolio(any(), any());
         verify(jdbc, times(4)).update(startsWith("INSERT INTO investment_os_portfolio_snapshots"), any(),
                 eq(USER_ID), eq("FAILED"), any(), eq("PORTFOLIO_NOT_AUTHORITATIVE"), any(), any());
         verify(connector, never()).orders(any(), anyString());
@@ -171,14 +176,16 @@ class InvestmentOsSheetClosedMarketSyncTest {
     @Test
     void otherStaleReasonsAreNeverAcceptedEvenInsideAClosedGap() {
         stubWeekendCalendars();
-        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
+        when(connector.persistedPortfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
                 FRIDAY_AFTER_CLOSE, true, "LATEST_SYNC_FAILED", false, List.of(), List.of(), null,
                 List.of(position(FRIDAY_AFTER_CLOSE)), buyingPower(FRIDAY_AFTER_CLOSE)));
 
         var result = service().sync();
 
         assertThat(result.error()).isEqualTo("NON_AUTHORITATIVE_PORTFOLIO");
-        verify(accountSync, never()).syncForMonitoring(any(), any());
+        // LATEST_SYNC_FAILED triggers one bounded read-only capture; the re-read snapshot is still rejected.
+        verify(accountSync, times(1)).syncForMonitoring(USER_ID, CONNECTION_ID);
+        verify(connector, never()).portfolio(any(), any());
     }
 
     @Test

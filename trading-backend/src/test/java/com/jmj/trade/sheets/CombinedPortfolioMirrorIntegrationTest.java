@@ -41,6 +41,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -332,7 +333,8 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         });
         var connector = mock(ConnectorService.class);
         var aged = account1Portfolio(completedAt);
-        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
+        // Inside a verified closed gap the sync reads the persisted snapshot without the broker read-through.
+        when(connector.persistedPortfolio(USER_ID, CONNECTION_ID)).thenReturn(new ConnectorResponse.Portfolio(
                 completedAt, true, "SNAPSHOT_TOO_OLD", false, List.of(), List.of(), null,
                 aged.positions(), aged.buyingPower()));
         when(connector.brokerAccount(CONNECTION_ID)).thenReturn(BROKER_ACCOUNT);
@@ -380,6 +382,7 @@ class CombinedPortfolioMirrorIntegrationTest extends PostgresIntegrationTest {
         var result = sync.sync();
 
         assertThat(result.error()).isNull();
+        verify(connector, never()).portfolio(any(), any());
         assertThat(jdbc.queryForObject("""
                 SELECT attempt_status FROM investment_os_portfolio_snapshots
                  WHERE user_id = ? ORDER BY attempted_at DESC, created_at DESC LIMIT 1

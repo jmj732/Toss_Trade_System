@@ -54,6 +54,16 @@ public final class FreshPortfolioReadService {
         return degradedFallback(userId, connectionId, outcome);
     }
 
+    /**
+     * Reads the persisted snapshot without synchronizing from the broker. Staleness is classified exactly as for a
+     * fallback (run status, then {@code portfolio.snapshot.max-age}).
+     */
+    public PortfolioReadService.PortfolioView readPersisted(UUID userId, UUID connectionId) {
+        Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(connectionId, "connectionId");
+        return reads.read(userId, connectionId);
+    }
+
     private PortfolioReadService.PortfolioView degradedFallback(
             UUID userId,
             UUID connectionId,

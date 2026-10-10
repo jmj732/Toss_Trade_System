@@ -18,6 +18,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class FreshPortfolioReadServiceTest {
@@ -41,6 +42,19 @@ class FreshPortfolioReadServiceTest {
         var order = inOrder(sync, reads);
         order.verify(sync).sync(USER_ID, CONNECTION_ID);
         order.verify(reads).read(USER_ID, CONNECTION_ID);
+    }
+
+    @Test
+    void persistedReadNeverSynchronizesFromTheBroker() {
+        var reads = mock(PortfolioReadService.class);
+        var sync = mock(AccountSyncService.class);
+        var persisted = view(OBSERVED_AT, true, "SNAPSHOT_TOO_OLD");
+        when(reads.read(USER_ID, CONNECTION_ID)).thenReturn(persisted);
+
+        var service = new FreshPortfolioReadService(reads, provider(sync));
+
+        assertThat(service.readPersisted(USER_ID, CONNECTION_ID)).isSameAs(persisted);
+        verifyNoInteractions(sync);
     }
 
     @Test
