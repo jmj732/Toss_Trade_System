@@ -884,8 +884,10 @@ public class TacticalOverlayService {
 
     /**
      * Read-only view of the stored daily bars for {@code symbol} (latest capture per date, oldest first), each with
-     * its per-date source conflict flag and latest source as-of. Includes the current session's bar if stored;
-     * callers decide which bars count as completed. Never fetches prices or bars.
+     * its per-date source conflict flag, latest source as-of (the provider's bar label, e.g. the trade date's
+     * midnight in New York) and stored {@code captured_at} (when that bar version was observed and stored).
+     * Includes the current session's bar if stored; callers decide which bars count as completed. Never fetches
+     * prices or bars.
      */
     public List<StoredDailyBar> storedDailyBars(UUID userId, String symbol) {
         var history = history(userId, ticker(symbol));
@@ -893,14 +895,19 @@ public class TacticalOverlayService {
         var sourceAsOfByDate = history.rows().stream().filter(row -> row.sourceAsOf() != null)
                 .collect(java.util.stream.Collectors.toMap(BarRow::date, BarRow::sourceAsOf,
                         (left, right) -> left.isAfter(right) ? left : right));
+        var capturedAtByDate = history.rows().stream().filter(row -> row.capturedAt() != null)
+                .collect(java.util.stream.Collectors.toMap(BarRow::date, BarRow::capturedAt,
+                        (left, right) -> left.isAfter(right) ? left : right));
         return history.bars().stream()
                 .map(bar -> new StoredDailyBar(bar.date(), bar.open(), bar.high(), bar.low(), bar.close(),
-                        bar.volume(), sourceAsOfByDate.get(bar.date()), conflictDates.contains(bar.date())))
+                        bar.volume(), sourceAsOfByDate.get(bar.date()), capturedAtByDate.get(bar.date()),
+                        conflictDates.contains(bar.date())))
                 .toList();
     }
 
     public record StoredDailyBar(LocalDate date, BigDecimal open, BigDecimal high, BigDecimal low,
-                                 BigDecimal close, BigDecimal volume, Instant sourceAsOf, boolean sourceConflict) {
+                                 BigDecimal close, BigDecimal volume, Instant sourceAsOf, Instant capturedAt,
+                                 boolean sourceConflict) {
     }
 
     private static java.util.Set<LocalDate> conflictDates(History history) {

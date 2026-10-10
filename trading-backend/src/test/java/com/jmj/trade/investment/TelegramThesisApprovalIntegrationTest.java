@@ -462,8 +462,52 @@ class TelegramThesisApprovalIntegrationTest extends PostgresIntegrationTest {
         assertThat(created.path("candidateTrigger").decimalValue()).isEqualByComparingTo("96.0000");
         assertThat(created.path("inputs").path("method").asText()).isEqualTo("ATR14_WILDER_X2");
         assertThat(created.path("inputs").path("windowEnd").asText()).isEqualTo(today.minusDays(1).toString());
-        assertThat(Instant.parse(created.path("sourceAsOf").asText()))
-                .isEqualTo(today.minusDays(1).atTime(21, 0).toInstant(ZoneOffset.UTC));
+        // sourceAsOf is the stored capture time of the window bars, not a bar's trade-date label.
+        assertThat(Instant.parse(created.path("sourceAsOf").asText())).isEqualTo(maxCompletedBarCapturedAt(today));
+        assertThat(created.path("inputs").path("sourceAsOfBasis").asText()).isEqualTo("MAX_BAR_CAPTURED_AT");
+    }
+
+    @Test
+    void computedAtrRequestAndConfirmRevisionRecordTheStoredBarCaptureTimeNotTheBarLabel() throws Exception {
+        var newYork = ZoneId.of("America/New_York");
+        var now = Instant.now();
+        var today = LocalDate.ofInstant(now, newYork);
+        var captured = now.minus(Duration.ofMinutes(10)).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        // Production-shaped provider label: the trade date's midnight in New York, before the session even opened.
+        var rows = new ArrayList<Map<String, Object>>();
+        for (int i = 20; i >= 1; i--) {
+            var date = today.minusDays(i);
+            rows.add(barRow(date, "100", date.atStartOfDay(newYork).toInstant()));
+        }
+        tactical.recordTossBars(USER, TICKER, mapper.valueToTree(rows), captured, null);
+        // Today's incomplete bar is captured later and must not leak into the window's capture time.
+        tactical.recordTossBars(USER, TICKER, mapper.valueToTree(List.of(barRow(today, "300", now.minusSeconds(30)))),
+                now, null);
+        insertOkPriceSnapshot(now.minusSeconds(60));
+        assertThat(maxCompletedBarCapturedAt(today)).isEqualTo(captured);
+
+        var created = mapper.readTree(create("COMPUTED_ATR", null).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString());
+        var label = today.minusDays(1).atStartOfDay(newYork).toInstant();
+        assertThat(Instant.parse(created.path("sourceAsOf").asText())).isEqualTo(captured).isNotEqualTo(label);
+        assertThat(created.path("inputs").path("sourceAsOfBasis").asText()).isEqualTo("MAX_BAR_CAPTURED_AT");
+        assertThat(created.path("inputs").path("windowEnd").asText()).isEqualTo(today.minusDays(1).toString());
+        var request = jdbc.queryForMap("SELECT id, source_as_of FROM investment_thesis_approval_requests");
+        assertThat(((java.sql.Timestamp) request.get("source_as_of")).toInstant()).isEqualTo(captured);
+
+        webhook(callbackBody(nextUpdate(), CHAT, APPROVER, "A:" + token(sent.getLast(), "A:")));
+        webhook(callbackBody(nextUpdate(), CHAT, APPROVER, "F:" + confirmToken()));
+
+        assertThat(requestStatus()).isEqualTo("APPROVED");
+        var confirm = investment.thesisRevisions(USER, TICKER, 10).getFirst();
+        assertThat(confirm.actorType()).isEqualTo("TELEGRAM");
+        assertThat(confirm.newStatus()).isEqualTo("CONFIRMED");
+        assertThat(confirm.reason()).isEqualTo("TELEGRAM_APPROVAL request=" + request.get("id"));
+        assertThat(confirm.sourceAsOf()).isEqualTo(captured);
+        assertThat(jdbc.queryForObject(
+                "SELECT source_as_of FROM investment_thesis_revisions WHERE new_status='CONFIRMED'",
+                java.sql.Timestamp.class).toInstant()).isEqualTo(captured);
+        assertNoOrders();
     }
 
     @Test
@@ -695,6 +739,13 @@ class TelegramThesisApprovalIntegrationTest extends PostgresIntegrationTest {
         message.putObject("from").put("id", fromId).put("is_bot", false);
         message.putObject("chat").put("id", chatId).put("type", "private");
         return mapper.writeValueAsString(root);
+    }
+
+    private Instant maxCompletedBarCapturedAt(LocalDate today) {
+        return jdbc.queryForObject("""
+                SELECT max(captured_at) FROM investment_tactical_overlay_bar_snapshots
+                 WHERE user_id = ? AND ticker = ? AND bar_date < ?
+                """, java.sql.Timestamp.class, USER, TICKER, today).toInstant();
     }
 
     /** 20 completed daily bars (H-L = 2 around close 100) plus today's ignored bar and a fresh OK price. */
