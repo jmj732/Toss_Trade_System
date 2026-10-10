@@ -54,6 +54,7 @@ class MonitoringCoordinator {
     private final MonitoringWatchlistService watchlist;
     private final MonitoringEvaluator evaluator;
     private final MonitoringEvaluationPersister persister;
+    private final MonitoringThesisTriggerDetector thesisTriggers;
     private final Duration priceInterval;
     private final Clock clock = Clock.systemUTC();
 
@@ -69,6 +70,7 @@ class MonitoringCoordinator {
             MonitoringWatchlistService watchlist,
             MonitoringEvaluator evaluator,
             MonitoringEvaluationPersister persister,
+            MonitoringThesisTriggerDetector thesisTriggers,
             @Value("${monitoring.price-interval:PT10M}") Duration priceInterval
     ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
@@ -82,6 +84,7 @@ class MonitoringCoordinator {
         this.watchlist = Objects.requireNonNull(watchlist, "watchlist");
         this.evaluator = Objects.requireNonNull(evaluator, "evaluator");
         this.persister = Objects.requireNonNull(persister, "persister");
+        this.thesisTriggers = Objects.requireNonNull(thesisTriggers, "thesisTriggers");
         this.priceInterval = positive(priceInterval);
     }
 
@@ -117,6 +120,7 @@ class MonitoringCoordinator {
         series.addAll(marketSeries.loadRatios(userId, now));
         var fx = latestFx(series, now);
         var portfolio = portfolios.read(userId, now, fx);
+        detectThesisTriggers(userId, portfolio);
         var watchEntries = watchlist.list(userId);
         var symbols = new LinkedHashSet<String>();
         portfolio.positions().stream().map(MonitoringEvaluationContract.PositionInput::symbol)
@@ -151,6 +155,23 @@ class MonitoringCoordinator {
         var result = evaluator.evaluate(request);
         persister.persist(userId, request, result);
         recordEvaluation(userId, hash, now);
+    }
+
+    /**
+     * Runs before the evaluation fingerprint short-circuit and the external evaluator call: thesis rows and the
+     * stored investment price are not part of the fingerprint, and an evaluator outage must not hide a review
+     * prompt. Failures are isolated so the risk evaluation still runs.
+     */
+    private void detectThesisTriggers(UUID userId, MonitoringEvaluationContract.PortfolioInput portfolio) {
+        try {
+            thesisTriggers.detect(userId, portfolio);
+        } catch (RuntimeException exception) {
+            LOG.atWarn()
+                    .addKeyValue("operation", "monitoring_thesis_trigger_review")
+                    .addKeyValue("user_id", userId)
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("thesis trigger review detection did not complete");
+        }
     }
 
     private void refreshPortfolio(UUID userId, List<UUID> connectionIds, Instant now) {

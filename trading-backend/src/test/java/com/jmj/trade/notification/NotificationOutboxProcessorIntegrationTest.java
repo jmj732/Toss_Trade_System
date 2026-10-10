@@ -258,6 +258,24 @@ class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresI
     }
 
     @Test
+    void rendersThesisTriggerReviewWithTickerLevelAndDistanceOnly() {
+        var id = insertRawOutboxEvent("MONITORING_ALERT", UUID.randomUUID(), """
+                {"scope":"THESIS_REVIEW","alertType":"REVIEW","subjectKey":"AAPL","level":"BREACH",
+                 "distancePct":"-2.50","sessionDate":"2026-10-09","thesisStatusChanged":false,
+                 "orderAction":"NONE"}
+                """);
+
+        assertThat(processor.process(10).processed()).isEqualTo(1);
+
+        var stored = jdbc.queryForMap(
+                "SELECT type, title, body FROM notifications WHERE outbox_event_id = ?", id);
+        assertThat(stored.get("type")).isEqualTo("MONITORING_ALERT");
+        assertThat(stored.get("title")).isEqualTo("[THESIS REVIEW] AAPL BREACH");
+        assertThat(stored.get("body")).isEqualTo(
+                "투자 논리 재검토 필요 — 자동 무효화·주문 없음\n대상: AAPL\n수준: BREACH\n무효화 기준 대비: -2.50%");
+    }
+
+    @Test
     void telegramDeliversOnlyMonitoringAlertsForTheConfiguredUser() {
         var allowedId = insertRawOutboxEvent(USER_ID, "MONITORING_ALERT", UUID.randomUUID(), """
                 {"scope":"MARKET","subjectKey":"MARKET","previousState":"NORMAL",

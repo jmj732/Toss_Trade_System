@@ -189,6 +189,14 @@ final class NotificationOutboxProcessor {
 
     private Rendered renderMonitoringAlert(JsonNode payload) {
         var scope = text(payload, "scope");
+        if ("THESIS_REVIEW".equals(scope)) {
+            // Review prompt only: ticker, level and trigger-relative distance; no raw price or trigger values.
+            var ticker = text(payload, "subjectKey");
+            var level = text(payload, "level");
+            return new Rendered("[THESIS REVIEW] %s %s".formatted(ticker, level),
+                    "투자 논리 재검토 필요 — 자동 무효화·주문 없음\n대상: %s\n수준: %s\n무효화 기준 대비: %s%%".formatted(
+                            ticker, level, text(payload, "distancePct")));
+        }
         var previousState = text(payload, "previousState");
         var newState = text(payload, "newState");
         var subjectKey = text(payload, "subjectKey");

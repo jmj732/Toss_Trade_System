@@ -92,6 +92,7 @@ class BeanInventoryDefaultProfileTest extends PostgresIntegrationTest {
             "monitoringMarketSeriesStore : com.jmj.trade.monitoring.MonitoringMarketSeriesStore",
             "monitoringPortfolioReader : com.jmj.trade.monitoring.MonitoringPortfolioReader",
             "monitoringStateStore : com.jmj.trade.monitoring.MonitoringStateStore",
+            "monitoringThesisTriggerDetector : com.jmj.trade.monitoring.MonitoringThesisTriggerDetector",
             "monitoringWatchlistService : com.jmj.trade.monitoring.MonitoringWatchlistService",
             "notificationController : com.jmj.trade.notification.NotificationController",
             "notificationOutboxProcessor : com.jmj.trade.notification.NotificationOutboxProcessor",

@@ -108,6 +108,42 @@ curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
 - 다음 경우에는 후보를 만들지 않고 `UNVERIFIED`로 둔다. 창 안에 소스 충돌 봉이 있으면 `SOURCE_CONFLICT`다. 가격 스냅샷 상태가 `OK`가 아니거나 기준 시각이 없으면 `PRICE_UNVERIFIED`다. 마지막 완료 봉이 가격 기준일보다 4일 넘게 오래되면 `STALE_BARS`다. 이 4일은 주말·휴일을 감안한 경험값이며 거래소 달력이 아니다. 후보가 0 이하이거나 `lastClose` 이상이면 `CANDIDATE_OUT_OF_RANGE`다.
 - 가정 리스크는 thesis를 메모리에서만 `CONFIRMED`+후보 트리거로 바꾼 사본으로 기존 위험 계산(`riskContributions`, 같은 soft budget과 사유)을 다시 실행한 값이다. 저장하지 않는다.
 
+## 보유 종목 CONFIRMED thesis 무효화 가격 재검토 알림
+
+### 역할 분리
+
+| 테이블 | 역할 | 이 기능에서의 사용 |
+| --- | --- | --- |
+| `investment_thesis_states` (V52, V56, V57) | canonical thesis. 상태(`AI_PROPOSED`/`UNVERIFIED`/`INVALIDATION_UNDEFINED`/`CONFIRMED` 등)와 숫자 무효화 트리거 `price_risk_trigger_price`. 승인은 사용자 REST 또는 Telegram 2단계 최종 승인으로만 가능하고 모든 쓰기는 `investment_thesis_revisions`에 남는다. | **무효화 가격의 유일한 기준.** `CONFIRMED` 행의 양수 트리거만 읽는다. |
+| `monitoring_position_contexts` (V47) | 모니터링 메타데이터. 섹터·팩터·베타·상관, 자유 텍스트 `thesis`·`primary_alpha`·`conditions.{add,reduce,exit,invalidation}`. FastAPI 평가기 입력으로 쓰인다. | 사용하지 않는다. 기존 API와 데이터는 그대로 둔다(마이그레이션·삭제 없음). |
+
+### 탐지 규칙
+
+모니터링 주기마다 사용자별로 다음을 실행한다. 평가 입력 fingerprint 중복 생략과 FastAPI 평가기 호출 **이전**에 독립적으로 실행하므로, thesis 승인이나 가격 변화가 fingerprint에 없어도, 평가기가 실패해도 탐지가 빠지지 않는다. 탐지 실패는 경고 로그만 남기고 기존 위험 평가는 계속한다.
+
+1. **보유 판정**: 이번 주기의 최신 보유 스냅샷(`monitoring.portfolio.max-age`, 기본 15분 이내)에서 수량이 양수인 종목만 대상이다. 스냅샷이 오래되었거나 없으면 대상이 없고 알림도 없다. **미보유 종목은 `CONFIRMED` thesis가 있어도 알림을 만들지 않는다**(자본이 노출되지 않음, investment context의 `INVALIDATION_PRICE_BREACHED` 사유로는 계속 보인다).
+2. **thesis**: `investment_thesis_states.invalidation_status = 'CONFIRMED'`이고 `price_risk_trigger_price > 0`인 행만 본다. `AI_PROPOSED`·`UNVERIFIED`·`INVALIDATION_UNDEFINED` 등 미승인 트리거는 가격이 아무리 낮아도 BREACH로 취급하지 않는다.
+3. **가격 검증**: investment context 읽기 경로와 같은 freshness 재판정을 거친 최신 `investment_security_snapshots` 가격만 쓴다. 신뢰 조건은 위험 엔진과 같다(상태 `OK`, 기준 시각 있음, 가격 양수). 여기에 정규장 가격(`LIVE_REGULAR`, `REGULAR_CLOSE`)만 허용한다. `STALE`·`UNVERIFIED`·`SOURCE_CONFLICT`·`DATA_MISSING`, 세션 미분류, 프리·애프터마켓 가격은 건너뛰고 알림을 만들지 않는다. 계좌 평가 단가로 대체하지 않는다. 가격 스냅샷은 investment data 스케줄러(`INVESTMENT_DATA_SCHEDULER_ENABLED`, 장중 기본 5분)가 갱신하므로 이 스케줄러가 꺼져 있으면 가격이 곧 `STALE`이 되어 알림이 나오지 않는다.
+4. **수준**: `가격 ≤ 트리거`이면 `BREACH`, `트리거 < 가격 ≤ 트리거 × 1.03`(트리거 위 3% 이내)이면 `NEAR`. 그 위는 알림 없음.
+
+### 알림과 중복 제거
+
+- 기존 `notification_outbox_events`에 `MONITORING_ALERT`로 기록하므로 알림 센터와 Telegram 전달 경로를 그대로 탄다. payload는 `scope=THESIS_REVIEW`, `alertType=REVIEW`, 종목, 수준, 트리거 대비 거리 %(`distancePct`, 부호 포함 소수 2자리), 가격의 뉴욕 세션 날짜, `thesisStatusChanged=false`, `orderAction=NONE`만 담는다. **가격·트리거 원값은 payload와 메시지에 넣지 않는다.**
+- 메시지: 제목 `[THESIS REVIEW] {종목} {수준}`, 본문 `투자 논리 재검토 필요 — 자동 무효화·주문 없음` / 대상 / 수준 / 무효화 기준 대비 거리 %.
+- 중복 제거: `사용자 + 종목 + 트리거 + 수준 + 가격의 뉴욕 세션 날짜`로 결정적 `source_id`(UUID v3)를 만들고 outbox의 기존 `ON CONFLICT (event_type, source_id) DO NOTHING`에 맡긴다. 같은 세션에서 반복 주기는 알림을 다시 만들지 않는다. 같은 날 `NEAR` 다음 `BREACH`는 수준이 달라 각각 한 번씩 알린다. 사용자가 트리거를 바꾸면 새 키가 된다. 정규장 종가가 주말 동안 `OK`로 남아도 세션 날짜가 같으므로 다시 알리지 않는다. 마이그레이션은 추가하지 않는다(`event_type`에는 CHECK 제약이 없다).
+
+### 자동 무효화·주문 없음
+
+- 이 탐지는 thesis 상태나 트리거를 바꾸지 않고 `investment_thesis_states`·`investment_thesis_revisions`에 쓰지 않는다. 주문을 생성·제출·취소하지 않는다.
+- **가격 하락만으로 thesis를 무효화하지 않는다.** 알림은 사용자가 thesis를 다시 검토하라는 요청이다. 상태 변경은 사용자 승인 경로(`PUT /investment/securities/{ticker}/thesis` 또는 Telegram 2단계 최종 승인)로만 한다.
+
+### 데이터 일관성 점검 결과(구조 분석, 데이터 이전 없음)
+
+- `monitoring_position_contexts.thesis`와 `investment_thesis_states.core_thesis`는 서로 동기화되지 않는 별개의 자유 텍스트다. 같은 종목에서 내용이 다를 수 있다. 무효화 가격 판단에는 canonical 숫자 트리거만 쓴다.
+- `monitoring_position_contexts.conditions.invalidation`은 자유 텍스트이며 숫자 트리거와 다른 가격 수준을 적을 수 있다. 이 문장은 트리거 판정에 쓰지 않는다.
+- Spring은 FastAPI 평가기에 `invalidationEvidence`를 항상 빈 목록으로 보낸다. 평가기는 `PRICE` 종류 근거를 무효화에서 제외한다. 따라서 현재 운영 경로에서 PORTFOLIO 상태 `THESIS_INVALIDATED`는 만들어지지 않는다. 만들어지더라도 모니터링 상태일 뿐이며 `investment_thesis_states`는 바뀌지 않는다.
+- `monitoring_watchlist.levels.invalidate`와 watchlist 상태 `INVALIDATED`는 진입 셋업용 가격대 상태다. thesis 상태가 아니며 thesis 트리거와도 무관하다.
+
 ## 확인
 
 로컬 fake data 테스트는 취약성 단독, 전염축 동시 악화, 금융기관 사고와 강제 디레버리징, 정책 위반, material event, watchlist 상태 전이, 반복 실행 중복 제거를 포함한다. 실제 API 운영 전에는 사용 계정의 CIK·피드·시장 지표 매핑과 관측 지연을 확인한다.

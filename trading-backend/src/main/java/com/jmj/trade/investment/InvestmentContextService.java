@@ -599,6 +599,38 @@ public final class InvestmentContextService {
                 ), userId, ticker, limit);
     }
 
+    /**
+     * Read-only view of CONFIRMED (approved) invalidation triggers for the given tickers, each paired with the
+     * stored security price after the same freshness refresh the context read path applies. Unapproved
+     * statuses (AI_PROPOSED/UNVERIFIED/INVALIDATION_UNDEFINED/...) and missing or non-positive triggers are never
+     * returned. The price is exposed only when it is trusted exactly as the risk engine trusts it (status OK,
+     * as-of present, price &gt; 0); otherwise {@code latestPrice} is null and {@code priceStatus} says why.
+     * Nothing is written: neither thesis state, revisions, nor snapshots.
+     */
+    public List<ConfirmedTriggerObservation> confirmedTriggerObservations(UUID userId, Set<String> tickers) {
+        requireUser(userId);
+        if (tickers == null || tickers.isEmpty()) return List.of();
+        var triggers = jdbc.query("""
+                SELECT ticker, price_risk_trigger_price FROM investment_thesis_states
+                 WHERE user_id = ? AND invalidation_status = 'CONFIRMED'
+                   AND price_risk_trigger_price IS NOT NULL AND price_risk_trigger_price > 0
+                 ORDER BY ticker
+                """, (resultSet, rowNum) -> Map.entry(resultSet.getString(1), resultSet.getBigDecimal(2)), userId);
+        var result = new ArrayList<ConfirmedTriggerObservation>();
+        for (var trigger : triggers) {
+            if (!tickers.contains(trigger.getKey())) continue;
+            var priceNode = node(latestSecuritySnapshot(userId, trigger.getKey()), "price");
+            var price = decimal(priceNode.get("latestPrice"));
+            var priceAsOf = instant(priceNode.get("latestPriceAsOf"));
+            var status = dataStatus(text(priceNode.get("status")));
+            var trusted = status == DataStatus.OK && priceAsOf != null && price != null && price.signum() > 0;
+            result.add(new ConfirmedTriggerObservation(trigger.getKey(), trigger.getValue(),
+                    trusted ? DataStatus.OK : status == DataStatus.OK ? DataStatus.DATA_MISSING : status,
+                    trusted ? price : null, trusted ? priceAsOf : null, text(priceNode.get("session"))));
+        }
+        return List.copyOf(result);
+    }
+
     public TacticalOverlayService.TacticalInputsView tacticalOverlayInputs(UUID userId) {
         requireUser(userId);
         return tacticalService().inputs(userId);
@@ -4124,6 +4156,13 @@ public final class InvestmentContextService {
             String fundamentalInvalidation, String revisionInvalidation, String priceRiskTrigger,
             BigDecimal priceRiskTriggerPrice, String invalidationStatus, String expandTrigger,
             String exitOrDiscardTrigger, String classification, Instant updatedAt
+    ) {
+    }
+
+    /** A CONFIRMED trigger and its trusted price; {@code latestPrice} is null unless {@code priceStatus} is OK. */
+    public record ConfirmedTriggerObservation(
+            String ticker, BigDecimal triggerPrice, DataStatus priceStatus,
+            BigDecimal latestPrice, Instant latestPriceAsOf, String priceSession
     ) {
     }
 
