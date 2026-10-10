@@ -1,9 +1,11 @@
 package com.jmj.trade.sheets;
 
+import com.jmj.trade.account.AccountSyncService;
 import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.connector.ConnectorService;
 import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.risk.RiskPolicyService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -65,11 +67,14 @@ public class InvestmentOsSheetConfiguration {
             GoogleSheetsClient googleSheetsClient,
             InvestmentOsResearchSheetSync investmentOsResearchSheetSync,
             JdbcTemplate jdbcTemplate,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            ObjectProvider<AccountSyncService> accountSyncServices
     ) {
-        return new InvestmentOsSheetSyncService(properties, lease, connectorService,
+        var service = new InvestmentOsSheetSyncService(properties, lease, connectorService,
                 brokerSurfaceService, googleSheetsClient, Clock.systemUTC(), investmentOsResearchSheetSync,
                 jdbcTemplate, objectMapper);
+        service.setAccountSync(accountSyncServices.getIfAvailable());
+        return service;
     }
 
     @Bean
