@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -105,11 +106,15 @@ class InvestmentOsSheetWeekendProductionShapeTest {
     @Test
     void saturdayCaptureWithLegacyManualRowsRecordsClosedMarketFacts() throws Exception {
         stubWeekendCalendars();
-        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio(SATURDAY_CAPTURE, false, null));
+        // The account snapshot completed five seconds after the attempt started, as the 10:47:59 production attempt.
+        when(connector.persistedPortfolio(USER_ID, CONNECTION_ID))
+                .thenReturn(portfolio(SATURDAY_CAPTURE, false, null));
 
         var result = service(SATURDAY_SYNC).sync();
 
         assertThat(result.error()).isNull();
+        verify(connector, never()).portfolio(any(), any());
+        verify(accountSync, never()).syncForMonitoring(any(), any());
         var payload = acceptedPayloads(1).getFirst();
         assertThat(payload.path("manualStatus").asText()).isEqualTo("OK");
         assertThat(payload.path("account1AsOf").asText()).isEqualTo(SATURDAY_CAPTURE.toString());
@@ -120,15 +125,74 @@ class InvestmentOsSheetWeekendProductionShapeTest {
                 .isEqualTo(MONDAY_DAY_MARKET_OPEN.toString());
     }
 
+    @Test
+    void weekendSyncsAfterAnInGapCaptureReadThePersistedSnapshotWithoutCallingTheBroker() throws Exception {
+        stubWeekendCalendars();
+        var fridayAfterMarket = Instant.parse("2026-10-09T23:45:00Z");
+        var captured = Instant.parse("2026-10-10T10:42:53Z");
+        when(connector.persistedPortfolio(USER_ID, CONNECTION_ID)).thenReturn(
+                portfolio(fridayAfterMarket, true, "SNAPSHOT_TOO_OLD"),
+                portfolio(captured, false, null),
+                portfolio(captured, false, null),
+                portfolio(captured, true, "SNAPSHOT_TOO_OLD"));
+        var clock = new SteppingClock();
+        var service = service(clock);
+
+        for (var start : List.of("2026-10-10T10:42:48Z", "2026-10-10T10:47:59Z", "2026-10-10T11:10:00Z")) {
+            clock.start(Instant.parse(start));
+            assertThat(service.sync().error()).isNull();
+        }
+
+        // One bounded read-only capture for the gap; every other sync reads the persisted snapshot only.
+        verify(accountSync, times(1)).syncForMonitoring(USER_ID, CONNECTION_ID);
+        verify(connector, never()).portfolio(any(), any());
+        for (var payload : acceptedPayloads(3)) {
+            assertThat(payload.path("account1AsOf").asText()).isEqualTo(captured.toString());
+            assertThat(payload.path("sessionReason").asText())
+                    .isEqualTo(InvestmentContextService.PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS);
+            assertThat(payload.path("sessionReferenceAt").asText()).isEqualTo(captured.toString());
+            assertThat(payload.path("nextDeclaredIntervalStartsAt").asText())
+                    .isEqualTo(MONDAY_DAY_MARKET_OPEN.toString());
+        }
+    }
+
+    @Test
+    void anUnverifiableCalendarKeepsTheExistingReadThrough() {
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio(SATURDAY_CAPTURE, false, null));
+
+        service(SATURDAY_SYNC).sync();
+
+        verify(connector, times(1)).portfolio(USER_ID, CONNECTION_ID);
+        verify(connector, never()).persistedPortfolio(any(), any());
+        verify(accountSync, never()).syncForMonitoring(any(), any());
+    }
+
+    @Test
+    void insideADeclaredIntervalTheReadThroughIsKept() {
+        stubWeekendCalendars();
+        var fridayRegular = Instant.parse("2026-10-09T15:00:00Z");
+        when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio(fridayRegular, false, null));
+
+        service(fridayRegular).sync();
+
+        verify(connector, times(1)).portfolio(USER_ID, CONNECTION_ID);
+        verify(connector, never()).persistedPortfolio(any(), any());
+        verify(accountSync, never()).syncForMonitoring(any(), any());
+    }
+
     /**
      * The attempt starts at {@code startedAt}; every later clock reading is 30 seconds on, after the read-through
      * account sync and quote fetch have completed, as in production.
      */
     private InvestmentOsSheetSyncService service(Instant startedAt) {
-        var readings = new java.util.concurrent.atomic.AtomicInteger();
+        var clock = new SteppingClock();
+        clock.start(startedAt);
+        return service(clock);
+    }
+
+    private InvestmentOsSheetSyncService service(SteppingClock clock) {
         var service = new InvestmentOsSheetSyncService(properties(), lease, connector, brokerSurface, sheets,
-                () -> readings.getAndIncrement() == 0 ? startedAt : startedAt.plusSeconds(30), null, jdbc,
-                new ObjectMapper());
+                clock::read, null, jdbc, new ObjectMapper());
         service.setAccountSync(accountSync);
         return service;
     }
@@ -190,6 +254,21 @@ class InvestmentOsSheetWeekendProductionShapeTest {
     private static Map<String, ConnectorResponse.BuyingPower> buyingPower(Instant observedAt) {
         return Map.of("USD", new ConnectorResponse.BuyingPower(bd("100"), observedAt),
                 "KRW", new ConnectorResponse.BuyingPower(bd("0"), observedAt));
+    }
+
+    /** Returns the attempt start on its first reading and 30 seconds later afterwards. */
+    private static final class SteppingClock {
+        private Instant startedAt;
+        private int readings;
+
+        void start(Instant startedAt) {
+            this.startedAt = startedAt;
+            this.readings = 0;
+        }
+
+        Instant read() {
+            return readings++ == 0 ? startedAt : startedAt.plusSeconds(30);
+        }
     }
 
     private static BigDecimal bd(String value) {

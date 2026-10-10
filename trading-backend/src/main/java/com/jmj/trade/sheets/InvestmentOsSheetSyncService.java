@@ -208,8 +208,9 @@ public final class InvestmentOsSheetSyncService {
         String failure = null;
         boolean closedFromCache = false;
 
+        Function<LocalDate, JsonNode> calendars = date -> marketCalendar(userId, connectionId, date, syncedAt);
         try {
-            portfolio = connector.portfolio(userId, connectionId);
+            portfolio = readPortfolio(userId, connectionId, syncedAt, calendars);
             LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                     .addKeyValue("broker_fetch_result", portfolio == null ? "empty" : "success")
                     .log("Toss portfolio fetch completed");
@@ -219,8 +220,6 @@ public final class InvestmentOsSheetSyncService {
                     .addKeyValue("broker_fetch_result", "failure").addKeyValue("failure_reason", failure)
                     .log("Toss portfolio fetch failed; existing sheet state preserved");
         }
-        Function<LocalDate, JsonNode> calendars = date -> marketCalendar(userId, connectionId, date, syncedAt);
-        if (portfolio != null) portfolio = capturedAfterClose(userId, connectionId, portfolio, syncedAt, calendars);
         var portfolioAccepted = portfolio != null && (authoritative(portfolio)
                 || closedMarketCurrent(portfolio, syncedAt, calendars));
 
@@ -541,22 +540,44 @@ public final class InvestmentOsSheetSyncService {
     }
 
     /**
-     * Post-close capture: when now is outside every declared interval but the persisted account snapshot predates
-     * the current closed-market gap, run the existing read-only account sync (no orders) and re-read the snapshot.
-     * Bounded per gap; any failure keeps the previous snapshot and the existing freshness checks.
+     * Reads the account for this attempt. Outside a verified closed-market gap (or when the calendar cannot verify
+     * one) this is the existing read-through, which synchronizes from the broker. Inside a gap the persisted
+     * snapshot is read without any broker call when it was captured in that same gap, because holdings and cash
+     * cannot trade until the next declared interval; otherwise the bounded post-close capture runs.
+     */
+    private ConnectorResponse.Portfolio readPortfolio(
+            UUID userId, UUID connectionId, Instant syncedAt, Function<LocalDate, JsonNode> calendars
+    ) {
+        var gapEnd = DeclaredMarketGap.nextIntervalStartIfOutside(syncedAt, calendars);
+        if (gapEnd == null || !syncedAt.isBefore(gapEnd)) return connector.portfolio(userId, connectionId);
+        ConnectorResponse.Portfolio persisted;
+        try {
+            persisted = connector.persistedPortfolio(userId, connectionId);
+        } catch (RuntimeException exception) {
+            // No readable persisted snapshot (e.g. no successful sync yet): keep the existing read-through.
+            return connector.portfolio(userId, connectionId);
+        }
+        if (persisted == null || capturedInGap(persisted, gapEnd, calendars)) return persisted;
+        return capturedAfterClose(userId, connectionId, persisted, gapEnd);
+    }
+
+    private boolean capturedInGap(
+            ConnectorResponse.Portfolio portfolio, Instant gapEnd, Function<LocalDate, JsonNode> calendars
+    ) {
+        var completedAt = portfolio.completedAt();
+        return completedAt != null && !completedAt.isAfter(now.get())
+                && gapEnd.equals(DeclaredMarketGap.nextIntervalStartIfOutside(completedAt, calendars));
+    }
+
+    /**
+     * Post-close capture: the persisted account snapshot predates the current closed-market gap, so run the existing
+     * read-only account sync (no orders) and re-read the persisted snapshot. Bounded per gap; any failure keeps the
+     * previous snapshot and the existing freshness checks, and never falls back to the read-through.
      */
     private ConnectorResponse.Portfolio capturedAfterClose(
-            UUID userId, UUID connectionId, ConnectorResponse.Portfolio portfolio, Instant now,
-            Function<LocalDate, JsonNode> calendars
+            UUID userId, UUID connectionId, ConnectorResponse.Portfolio portfolio, Instant gapEnd
     ) {
         if (accountSync == null) return portfolio;
-        var gapEnd = DeclaredMarketGap.nextIntervalStartIfOutside(now, calendars);
-        if (gapEnd == null || !now.isBefore(gapEnd)) return portfolio;
-        var completedAt = portfolio.completedAt();
-        if (completedAt != null && !completedAt.isAfter(now)
-                && gapEnd.equals(DeclaredMarketGap.nextIntervalStartIfOutside(completedAt, calendars))) {
-            return portfolio;
-        }
         if (!gapEnd.equals(postCloseCaptureGapEnd)) {
             postCloseCaptureGapEnd = gapEnd;
             postCloseCaptureAttempts = 0;
@@ -565,7 +586,7 @@ public final class InvestmentOsSheetSyncService {
         postCloseCaptureAttempts++;
         try {
             accountSync.syncForMonitoring(userId, connectionId);
-            var captured = connector.portfolio(userId, connectionId);
+            var captured = connector.persistedPortfolio(userId, connectionId);
             LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("account", properties.accountLabel())
                     .addKeyValue("post_close_capture", "success")
                     .log("Toss account captured after the last declared interval ended");
