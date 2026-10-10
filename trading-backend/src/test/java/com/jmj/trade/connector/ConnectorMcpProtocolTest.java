@@ -9,6 +9,7 @@ import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
+import com.jmj.trade.investment.InvestmentThesisVerificationService;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -32,6 +33,175 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
+    @Test
+    void exposesStrictThesisVerificationToolOnlyWithTradeScope() throws Exception {
+        var investment = mock(InvestmentContextService.class);
+        var verification = mock(InvestmentThesisVerificationService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, investment, null, verification, new ObjectMapper());
+
+        var readOnly = protocol.handle(request("read-tools", "tools/list", "{}"), USER, CONNECTION);
+        assertThat(java.util.stream.StreamSupport.stream(readOnly.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText()))
+                .doesNotContain("verify_investment_thesis");
+        var contextTool = java.util.stream.StreamSupport.stream(readOnly.path("result").path("tools").spliterator(), false)
+                .filter(item -> "get_investment_thesis_verification_context".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(contextTool.path("annotations").path("readOnlyHint").asBoolean()).isTrue();
+        assertThat(contextTool.path("securitySchemes").get(0).path("scopes").get(0).asText())
+                .isEqualTo(ConnectorApiKeyService.READ_SCOPE);
+        assertThat(contextTool.path("inputSchema").path("additionalProperties").asBoolean()).isFalse();
+        assertThat(contextTool.path("inputSchema").path("required").toString()).contains("ticker");
+
+        var writable = protocol.handle(request("write-tools", "tools/list", "{}"), USER, CONNECTION, true);
+        var tool = java.util.stream.StreamSupport.stream(writable.path("result").path("tools").spliterator(), false)
+                .filter(item -> "verify_investment_thesis".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(tool.path("description").asText())
+                .contains("external", "revision", "does not call a model", "infer evidence", "submit orders");
+        assertThat(tool.path("annotations").path("readOnlyHint").asBoolean()).isFalse();
+        assertThat(tool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
+        assertThat(tool.path("annotations").path("idempotentHint").asBoolean()).isTrue();
+        assertThat(tool.path("securitySchemes").get(0).path("scopes").get(0).asText())
+                .isEqualTo(ConnectorApiKeyService.TRADE_SCOPE);
+
+        var schema = tool.path("inputSchema");
+        assertThat(schema.path("additionalProperties").asBoolean()).isFalse();
+        assertThat(schema.path("required").toString()).contains("verificationEventId", "ticker",
+                "thesisRevisionId", "verificationRunId", "provider", "model", "verdict",
+                "sourceAsOf", "sourceUrls", "rationale", "counterevidence", "selectedTriggerPrice");
+        assertThat(schema.path("properties").has("actorUserId")).isFalse();
+        assertThat(schema.path("properties").path("selectedTriggerPrice").path("anyOf").toString())
+                .contains("\"type\":\"null\"");
+    }
+
+    @Test
+    void verificationUsesAuthenticatedUserAndKeyAndReturnsStoredResult() throws Exception {
+        var mapper = new ObjectMapper();
+        var verification = mock(InvestmentThesisVerificationService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, verification, mapper);
+        var eventId = UUID.fromString("018f0000-0000-7000-8000-000000000020");
+        var revisionId = UUID.fromString("018f0000-0000-7000-8000-000000000021");
+        var keyId = UUID.fromString("018f0000-0000-7000-8000-000000000022");
+        var sourceAsOf = Instant.parse("2026-10-09T13:55:00Z");
+        var createdAt = Instant.parse("2026-10-09T14:00:00Z");
+        var expected = new InvestmentThesisVerificationService.VerificationResult(
+                eventId, "AVT", revisionId, "AUTO_APPROVED", "POLICY_APPROVED", "PASS", "policy-v1",
+                USER, keyId, createdAt, null);
+        when(verification.verify(eq(USER), eq(keyId), any())).thenReturn(expected);
+
+        var response = protocol.handle(toolCall("verify", "verify_investment_thesis", verificationArguments()),
+                USER, CONNECTION, keyId, true);
+
+        var structured = response.path("result").path("structuredContent");
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(structured).isEqualTo(mapper.valueToTree(expected));
+        assertThat(mapper.readTree(response.path("result").path("content").get(0).path("text").asText()))
+                .isEqualTo(structured);
+        verify(verification).verify(eq(USER), eq(keyId), argThat(input ->
+                eventId.equals(input.verificationEventId())
+                        && "AVT".equals(input.ticker())
+                        && revisionId.equals(input.thesisRevisionId())
+                        && "verification-run-42".equals(input.verificationRunId())
+                        && "OPENAI".equals(input.provider())
+                        && "gpt-5.5".equals(input.model())
+                        && "PASS".equals(input.verdict())
+                        && sourceAsOf.equals(input.sourceAsOf())
+                        && input.sourceUrls().equals(List.of("https://example.org/filing", "https://example.org/transcript"))
+                        && "Evidence supports the proposal.".equals(input.rationale())
+                        && "The cited risk is not contradicted by the evidence.".equals(input.counterevidence())
+                        && input.selectedTriggerPrice().compareTo(new BigDecimal("125.50")) == 0));
+        verifyNoInteractions(service, tradeService);
+    }
+
+    @Test
+    void verificationRejectsCallerIdentityAndMissingAuthenticatedKey() throws Exception {
+        var verification = mock(InvestmentThesisVerificationService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, verification, new ObjectMapper());
+        var keyId = UUID.fromString("018f0000-0000-7000-8000-000000000022");
+        var spoofed = verificationArguments().replace("\"ticker\":\"avt\"",
+                "\"actorUserId\":\"018f0000-0000-7000-8000-000000000099\",\"ticker\":\"avt\"");
+
+        var invalid = protocol.handle(toolCall("spoof", "verify_investment_thesis", spoofed),
+                USER, CONNECTION, keyId, true);
+        var missingKey = protocol.handle(toolCall("missing-key", "verify_investment_thesis", verificationArguments()),
+                USER, CONNECTION, true);
+        var denied = protocol.handle(toolCall("scope", "verify_investment_thesis", verificationArguments()),
+                USER, CONNECTION);
+
+        assertThat(invalid.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        assertThat(invalid.path("result").path("content").get(0).path("text").asText())
+                .doesNotContain("018f0000-0000-7000-8000-000000000099");
+        assertThat(missingKey.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("AUTHENTICATED_ACTOR_UNAVAILABLE");
+        assertThat(denied.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("TRADE_SCOPE_REQUIRED");
+        verifyNoInteractions(verification);
+    }
+
+    @Test
+    void verificationAllowsExplicitNullTriggerPriceWithoutInventingOne() throws Exception {
+        var mapper = new ObjectMapper();
+        var verification = mock(InvestmentThesisVerificationService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, verification, mapper);
+        var eventId = UUID.fromString("018f0000-0000-7000-8000-000000000020");
+        var revisionId = UUID.fromString("018f0000-0000-7000-8000-000000000021");
+        var keyId = UUID.fromString("018f0000-0000-7000-8000-000000000022");
+        var expected = new InvestmentThesisVerificationService.VerificationResult(
+                eventId, "AVT", revisionId, "REJECTED", "EXTERNAL_VERIFICATION_REJECTED", "REJECT", "policy-v1",
+                USER, keyId, Instant.parse("2026-10-09T14:00:00Z"), null);
+        when(verification.verify(eq(USER), eq(keyId), any())).thenReturn(expected);
+        var args = verificationArguments()
+                .replace("\"verdict\":\"PASS\"", "\"verdict\":\"REJECT\"")
+                .replace("\"selectedTriggerPrice\":125.50", "\"selectedTriggerPrice\":null");
+
+        var response = protocol.handle(toolCall("null-trigger", "verify_investment_thesis", args),
+                USER, CONNECTION, keyId, true);
+
+        assertThat(response.path("result").path("structuredContent")).isEqualTo(mapper.valueToTree(expected));
+        verify(verification).verify(eq(USER), eq(keyId), argThat(input ->
+                "REJECT".equals(input.verdict()) && input.selectedTriggerPrice() == null));
+        verifyNoInteractions(service, tradeService);
+    }
+
+    @Test
+    void verificationContextPassesOnlyAuthenticatedUserAndNormalizedTicker() throws Exception {
+        var mapper = new ObjectMapper();
+        var verification = mock(InvestmentThesisVerificationService.class);
+        var policy = new InvestmentThesisVerificationService.PolicyView(true, "DEPLOYMENT", "policy-v1", 86400,
+                2, new BigDecimal("0.05"), UUID.fromString("018f0000-0000-7000-8000-000000000023"),
+                USER, Instant.parse("2026-10-09T14:00:00Z"));
+        var price = new InvestmentThesisVerificationService.PriceView(new BigDecimal("123.45"), "FRESH",
+                Instant.parse("2026-10-09T13:55:00Z"), "TOSS", "REGULAR_CLOSE", new BigDecimal("120.00"),
+                Instant.parse("2026-10-09T13:55:00Z"), "TOSS", "REGULAR_CLOSE", "QUOTE_AS_OF", "FRESH", null);
+        var trigger = new InvestmentThesisVerificationService.TriggerCandidate(new BigDecimal("115.00"),
+                "EXISTING_PROPOSAL", Instant.parse("2026-10-08T12:00:00Z"));
+        var expected = new InvestmentThesisVerificationService.VerificationContextView(policy, null, price, null,
+                List.of(trigger));
+        when(verification.verificationContext(USER, "AVT")).thenReturn(expected);
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, verification, mapper);
+
+        var response = protocol.handle(toolCall("verification-context", "get_investment_thesis_verification_context",
+                "{\"ticker\":\"avt\"}"), USER, CONNECTION);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(response.path("result").path("structuredContent")).isEqualTo(mapper.valueToTree(expected));
+        verify(verification).verificationContext(USER, "AVT");
+        verifyNoInteractions(service, tradeService);
+    }
+
+    private static String verificationArguments() {
+        return "{\"verificationEventId\":\"018f0000-0000-7000-8000-000000000020\","
+                + "\"ticker\":\"avt\",\"thesisRevisionId\":\"018f0000-0000-7000-8000-000000000021\","
+                + "\"verificationRunId\":\"verification-run-42\",\"provider\":\"OPENAI\","
+                + "\"model\":\"gpt-5.5\",\"verdict\":\"PASS\","
+                + "\"sourceAsOf\":\"2026-10-09T13:55:00Z\","
+                + "\"sourceUrls\":[\"https://example.org/filing\",\"https://example.org/transcript\"],"
+                + "\"rationale\":\"Evidence supports the proposal.\","
+                + "\"counterevidence\":\"The cited risk is not contradicted by the evidence.\","
+                + "\"selectedTriggerPrice\":125.50}";
+    }
+
     @Test
     void cannotConfirmThesisThroughModelTool() throws Exception {
         var investment = mock(InvestmentContextService.class);
@@ -59,6 +229,36 @@ class ConnectorMcpProtocolTest {
         verify(investment).putThesisProposal(eq(USER), eq("AVT"), argThat(input ->
                 input.coreThesis().equals("External evidence") && input.invalidationStatus().equals("AI_PROPOSED")), org.mockito.ArgumentMatchers.isNull());
         verifyNoInteractions(service, tradeService);
+    }
+
+    @Test
+    void proposalRunIdIsOptionalAndPersistedWithTheProposal() throws Exception {
+        var mapper = new ObjectMapper();
+        var investment = mock(InvestmentContextService.class);
+        var writer = new ConnectorMcpProtocol(service, null, investment, mapper);
+        var tools = writer.handle(request("thesis-tools", "tools/list", "{}"), USER, CONNECTION, true)
+                .path("result").path("tools");
+        var tool = java.util.stream.StreamSupport.stream(tools.spliterator(), false)
+                .filter(item -> "put_investment_thesis".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(tool.path("inputSchema").path("properties").path("proposalRunId").path("maxLength").asInt())
+                .isEqualTo(160);
+        assertThat(tool.path("inputSchema").path("required").toString()).doesNotContain("proposalRunId");
+
+        var saved = new InvestmentContextService.ThesisView("AVT", "External evidence", null, null,
+                null, null, null, null, "AI_PROPOSED", null, null, null, Instant.now());
+        when(investment.putThesisProposal(eq(USER), eq("AVT"), any(), org.mockito.ArgumentMatchers.isNull(),
+                eq("proposal-run-7"))).thenReturn(saved);
+        var args = "{\"ticker\":\"avt\",\"proposalRunId\":\"proposal-run-7\","
+                + "\"thesis\":{\"coreThesis\":\"External evidence\","
+                + "\"invalidationStatus\":\"AI_PROPOSED\"}}";
+
+        var response = writer.handle(toolCall("proposal-run", "put_investment_thesis", args),
+                USER, CONNECTION, true);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        verify(investment).putThesisProposal(eq(USER), eq("AVT"), any(),
+                org.mockito.ArgumentMatchers.isNull(), eq("proposal-run-7"));
     }
 
     @Test

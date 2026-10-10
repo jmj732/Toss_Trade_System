@@ -110,7 +110,7 @@ public final class ConnectorMcpController {
 
     private ObjectNode handle(ObjectNode request, ConnectorApiKeyService.AuthenticatedKey key) {
         return key.canTrade()
-                ? protocol.handle(request, key.userId(), key.connectionId(), true)
+                ? protocol.handle(request, key.userId(), key.connectionId(), key.id(), true)
                 : protocol.handle(request, key.userId(), key.connectionId());
     }
 

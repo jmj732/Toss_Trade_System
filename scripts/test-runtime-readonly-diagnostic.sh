@@ -40,12 +40,20 @@ for field in contract["fields"]:
         needle = "'{" + ",".join(path.split(".")) + "}'"
     assert needle in script, f"fingerprint descriptor path is not queried: {path}"
 
-sql_blocks = re.findall(r"(?:metadata_sql|projection_sql|portfolio_sql)=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
-assert len(sql_blocks) == 3, "expected all three read-only SQL blocks"
+sql_blocks = re.findall(r"(?:metadata_sql|projection_sql|portfolio_sql|ai_schema_sql|ai_verification_count_sql|ai_policy_revision_count_sql)=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
+assert len(sql_blocks) == 6, "expected all six read-only SQL blocks"
 for sql in sql_blocks:
     assert sql.lstrip().startswith("BEGIN TRANSACTION READ ONLY;")
     assert sql.rstrip().endswith("ROLLBACK;")
     assert re.search(r"(?im)^\s*(INSERT|UPDATE|DELETE|ALTER|DROP|TRUNCATE|CREATE|GRANT|REVOKE)\b", sql) is None
+for required_probe in (
+    "to_regclass('public.investment_thesis_ai_verification_events')",
+    "to_regclass('public.investment_thesis_ai_policy_revisions')",
+    "count(*) FILTER (WHERE outcome = 'AUTO_APPROVED')",
+    "count(*) FILTER (WHERE outcome = 'BLOCKED')",
+    "count(*) FILTER (WHERE outcome = 'REJECTED')",
+):
+    assert required_probe in script, f"AI verification diagnostic is missing {required_probe}"
 projection_sql = re.search(r"projection_sql=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S).group(1)
 field_array = projection_sql.split("SELECT ticker, ARRAY[", 1)[1].split("] AS fingerprint_fields", 1)[0]
 depth = 0
@@ -78,6 +86,9 @@ for forbidden in ("'aggregate'", "'metrics'", "Current Price", "Quantity", "Mark
     assert forbidden not in portfolio_sql, f"portfolio query reads a non-freshness sheet field: {forbidden}"
 assert "docker compose" in script and "compose ps -q" in script
 assert "docker inspect" in script and "127.0.0.1:8080/actuator/health/readiness" in script
+assert 'range .Config.Env' in script and '"INVESTMENT_THESIS_AI_POLICY_ENABLED"' in script
+assert 'join (slice (split . "=") 1) "="' in script
+assert '{{range .Config.Env}}{{println .}}{{end}}' not in script
 assert "postgres_tcp_ready()" in fixture_test
 assert "-h 127.0.0.1" in fixture_test and "-c 'SELECT 1'" in fixture_test
 assert "pg" + "_isready -U trade -d trade" not in fixture_test
@@ -115,8 +126,10 @@ case "${1:-}" in
     esac
     ;;
   inspect)
-    printf '%s\tsha256:%s\t%s\t%s\n' \
-      "$MOCK_IMAGE_TAG" "$MOCK_IMAGE_DIGEST" "$MOCK_BACKEND_STATE" "$MOCK_BACKEND_HEALTH"
+    policy_enabled="$MOCK_BACKEND_AI_POLICY_ENABLED"
+    [[ "$policy_enabled" != __UNSET__ ]] || policy_enabled='-'
+    printf '%s\tsha256:%s\t%s\t%s\t%s\n' \
+      "$MOCK_IMAGE_TAG" "$MOCK_IMAGE_DIGEST" "$MOCK_BACKEND_STATE" "$MOCK_BACKEND_HEALTH" "$policy_enabled"
     ;;
   exec)
     [[ "${2:-}" == -i ]] || exit 93
@@ -126,7 +139,15 @@ case "${1:-}" in
     if grep -Eqi '^[[:space:]]*(INSERT|UPDATE|DELETE|ALTER|DROP|TRUNCATE|CREATE|GRANT|REVOKE)\b' <<<"$sql"; then
       exit 95
     fi
-    if [[ "$sql" == *flyway_schema_history* ]]; then
+    if [[ "$sql" == *"to_regclass('public.investment_thesis_ai_verification_events')"* ]]; then
+      printf '%s\t%s\n' "$MOCK_AI_EVENT_SCHEMA" "$MOCK_AI_POLICY_SCHEMA"
+    elif [[ "$sql" == *"FROM investment_thesis_ai_verification_events"* ]]; then
+      [[ "${MOCK_FAIL_AI_EVENTS:-0}" == 0 ]] || exit 102
+      printf '5\t2\t1\t2\n'
+    elif [[ "$sql" == *"FROM investment_thesis_ai_policy_revisions"* ]]; then
+      [[ "${MOCK_FAIL_AI_POLICY:-0}" == 0 ]] || exit 103
+      printf '3\n'
+    elif [[ "$sql" == *flyway_schema_history* ]]; then
       [[ "${MOCK_FAIL_METADATA:-0}" == 0 ]] || exit 96
       printf '56\t%s\t12\t7\t9\t0\t0\t6\n' "$MOCK_FLYWAY_SUCCESS"
     elif [[ "$sql" == *latest_per_ticker* ]]; then
@@ -200,6 +221,7 @@ mock_run() {
     MOCK_IMAGE_DIGEST="$image_digest" \
     MOCK_BACKEND_STATE="${MOCK_BACKEND_STATE:-running}" \
     MOCK_BACKEND_HEALTH="${MOCK_BACKEND_HEALTH:-healthy}" \
+    MOCK_BACKEND_AI_POLICY_ENABLED="${MOCK_BACKEND_AI_POLICY_ENABLED:-true}" \
     MOCK_READINESS_HTTP="${MOCK_READINESS_HTTP:-200}" \
     MOCK_READINESS_STATUS="${MOCK_READINESS_STATUS:-UP}" \
     MOCK_FLYWAY_SUCCESS="${MOCK_FLYWAY_SUCCESS:-true}" \
@@ -207,6 +229,11 @@ mock_run() {
     MOCK_FAIL_PROJECTION="${MOCK_FAIL_PROJECTION:-0}" \
     MOCK_FAIL_PORTFOLIO="${MOCK_FAIL_PORTFOLIO:-0}" \
     MOCK_PORTFOLIO_MODE="${MOCK_PORTFOLIO_MODE:-valid}" \
+    MOCK_AI_EVENT_SCHEMA="${MOCK_AI_EVENT_SCHEMA:-true}" \
+    MOCK_AI_POLICY_SCHEMA="${MOCK_AI_POLICY_SCHEMA:-true}" \
+    MOCK_FAIL_AI_EVENTS="${MOCK_FAIL_AI_EVENTS:-0}" \
+    MOCK_FAIL_AI_POLICY="${MOCK_FAIL_AI_POLICY:-0}" \
+    INVESTMENT_THESIS_AI_POLICY_ENABLED="${MOCK_AI_POLICY_ENABLED:-false}" \
     bash "$script" >"$output" 2>"$output.stderr"
 }
 
@@ -231,6 +258,17 @@ assert report["database"]["flywayVersion"] == "56"
 assert report["database"]["flywaySuccess"] is True
 assert report["database"]["latestSecurityProjectionCount"] == 6
 assert len(report["database"]["latestSecurityProjectionSha256"]) == 64
+assert report["database"]["aiVerificationPolicy"] == {
+    "verificationEventsAvailable": True,
+    "verificationCount": 5,
+    "approvedCount": 2,
+    "blockedCount": 1,
+    "rejectedCount": 2,
+    "policyRevisionsAvailable": True,
+    "aiPolicyRevisionCount": 3,
+    "deploymentEnabled": True,
+    "ownerScopeConfigured": True,
+}
 assert report["portfolioFreshness"] == {
     "querySuccess": True,
     "observedAt": "2026-10-10T01:00:00.000Z",
@@ -255,6 +293,122 @@ raw = Path(sys.argv[1]).read_text()
 for sentinel in ("raw-financial-sentinel", "raw-provenance-sentinel", "raw-symbol-sentinel", "raw-secret-sentinel", "raw-container-id-sentinel", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
     assert sentinel not in raw
 PY
+
+MOCK_AI_EVENT_SCHEMA=false MOCK_AI_POLICY_SCHEMA=false MOCK_AI_POLICY_ENABLED=false \
+  mock_run "$tmp/ai-schema-absent.json" "$expected_sha" ||
+  fail "absent optional AI policy tables changed the overall diagnostic status"
+python3 "$sanitizer" "$tmp/ai-schema-absent.json" "$tmp/ai-schema-absent-safe.json" ||
+  fail "absent optional AI policy tables were rejected by the allowlist"
+python3 - "$tmp/ai-schema-absent-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+assert report["database"]["aiVerificationPolicy"] == {
+    "verificationEventsAvailable": False,
+    "verificationCount": 0,
+    "approvedCount": 0,
+    "blockedCount": 0,
+    "rejectedCount": 0,
+    "policyRevisionsAvailable": False,
+    "aiPolicyRevisionCount": 0,
+    "deploymentEnabled": True,
+    "ownerScopeConfigured": True,
+}
+PY
+
+MOCK_AI_POLICY_ENABLED=true MOCK_BACKEND_AI_POLICY_ENABLED=__UNSET__ \
+  mock_run "$tmp/ai-policy-unknown.json" "$expected_sha" ||
+  fail "unknown AI policy deployment setting changed the overall diagnostic status"
+python3 "$sanitizer" "$tmp/ai-policy-unknown.json" "$tmp/ai-policy-unknown-safe.json" ||
+  fail "unknown AI policy deployment setting was rejected by the allowlist"
+python3 - "$tmp/ai-policy-unknown-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+assert report["database"]["aiVerificationPolicy"]["deploymentEnabled"] is None
+PY
+
+MOCK_AI_POLICY_ENABLED=true MOCK_BACKEND_AI_POLICY_ENABLED=false \
+  mock_run "$tmp/ai-policy-backend-disabled.json" "$expected_sha" ||
+  fail "backend disabled policy state changed the overall diagnostic status"
+python3 "$sanitizer" "$tmp/ai-policy-backend-disabled.json" "$tmp/ai-policy-backend-disabled-safe.json" ||
+  fail "backend disabled policy state was rejected by the allowlist"
+python3 - "$tmp/ai-policy-backend-disabled-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+assert report["database"]["aiVerificationPolicy"]["deploymentEnabled"] is False
+PY
+
+python3 - "$tmp/safe.json" "$tmp/legacy-artifact.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+del report["database"]["aiVerificationPolicy"]
+Path(sys.argv[2]).write_text(json.dumps(report))
+PY
+python3 "$sanitizer" "$tmp/legacy-artifact.json" "$tmp/legacy-artifact-safe.json" ||
+  fail "legacy schemaVersion 1 artifact without AI metadata was rejected"
+python3 - "$tmp/legacy-artifact-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+assert report["database"]["aiVerificationPolicy"] == {
+    "verificationEventsAvailable": False,
+    "verificationCount": 0,
+    "approvedCount": 0,
+    "blockedCount": 0,
+    "rejectedCount": 0,
+    "policyRevisionsAvailable": False,
+    "aiPolicyRevisionCount": 0,
+    "deploymentEnabled": None,
+    "ownerScopeConfigured": False,
+}
+PY
+
+MOCK_FAIL_AI_EVENTS=1 MOCK_FAIL_AI_POLICY=1 \
+  mock_run "$tmp/ai-count-query-failure.json" "$expected_sha" ||
+  fail "optional AI count-query failures changed the overall diagnostic status"
+python3 "$sanitizer" "$tmp/ai-count-query-failure.json" "$tmp/ai-count-query-failure-safe.json" ||
+  fail "optional AI count-query failure defaults were rejected by the allowlist"
+python3 - "$tmp/ai-count-query-failure-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+ai = report["database"]["aiVerificationPolicy"]
+assert ai["verificationEventsAvailable"] is False and ai["verificationCount"] == 0
+assert ai["policyRevisionsAvailable"] is False and ai["aiPolicyRevisionCount"] == 0
+PY
+
+python3 - "$tmp/valid.json" "$tmp/ai-policy-untrusted.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+report["database"]["aiVerificationPolicy"]["rationale"] = "raw-ai-rationale-sentinel"
+Path(sys.argv[2]).write_text(json.dumps(report))
+PY
+if python3 "$sanitizer" "$tmp/ai-policy-untrusted.json" "$tmp/ai-policy-untrusted-safe.json"; then
+  fail "unexpected AI evidence field passed the allowlist"
+fi
+grep -q 'UNTRUSTED_REMOTE_OUTPUT' "$tmp/ai-policy-untrusted-safe.json" ||
+  fail "sanitizer did not write generic failure JSON for unexpected AI evidence"
+if grep -q 'raw-ai-rationale-sentinel' "$tmp/ai-policy-untrusted-safe.json"; then
+  fail "sanitizer leaked AI evidence"
+fi
 
 MOCK_IMAGE_TAG="trade-backend:ffffffffffffffffffffffffffffffffffffffff" \
   mock_run "$tmp/sha-mismatch.json" "$expected_sha" && fail "mismatched SHA passed"
@@ -361,7 +515,8 @@ from pathlib import Path
 
 script = Path(sys.argv[1]).read_text()
 tmp = Path(sys.argv[2])
-for name in ("metadata_sql", "projection_sql", "portfolio_sql"):
+for name in ("metadata_sql", "projection_sql", "portfolio_sql", "ai_schema_sql",
+             "ai_verification_count_sql", "ai_policy_revision_count_sql"):
     match = re.search(rf"{name}=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
     assert match, f"missing SQL block {name}"
     (tmp / f"{name}.sql").write_text(match.group(1) + "\n")
@@ -375,7 +530,12 @@ if docker info >/dev/null 2>&1; then
   trap 'cleanup_pg; rm -rf -- "$tmp"' EXIT
   docker run --rm -d --name "$pg_container" \
     -e POSTGRES_USER=trade -e "POSTGRES_PASSWORD=$pg_password" -e POSTGRES_DB=trade \
+    -e INVESTMENT_THESIS_AI_POLICY_ENABLED=true -e SECRET_SENTINEL=must-not-appear \
     postgres:16-alpine >/dev/null
+  inspect_policy="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\t"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{join (slice (split . "=") 1) "="}}{{end}}{{end}}' "$pg_container")"
+  IFS=$'\t' read -r _ _ _ _ inspect_policy_enabled <<<"$inspect_policy"
+  [[ "$inspect_policy_enabled" == true ]] || fail "narrow Docker inspection did not read the selected policy flag"
+  [[ "$inspect_policy" != *SECRET_SENTINEL* ]] || fail "narrow Docker inspection exposed unrelated container environment"
   postgres_tcp_ready() {
     local result
     result="$(docker exec -e "PGPASSWORD=$pg_password" "$pg_container" \
@@ -389,6 +549,10 @@ if docker info >/dev/null 2>&1; then
     sleep 1
   done
   [[ "$ready" == 1 ]] || fail "local PostgreSQL TCP fixture did not become ready"
+  absent_ai_schema="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
+    -U trade -d trade -h /var/run/postgresql -f - <"$tmp/ai_schema_sql.sql")" ||
+    fail "real PostgreSQL AI schema probe failed before optional tables existed"
+  [[ "$absent_ai_schema" == $'false\tfalse' ]] || fail "AI schema probe did not report both optional tables absent"
   docker exec -i "$pg_container" psql -X -q -v ON_ERROR_STOP=1 -U trade -d trade >/dev/null <<SQL
 CREATE TABLE flyway_schema_history (installed_rank integer, version text, success boolean);
 CREATE TABLE analysis_input_snapshots (id integer, user_id uuid);
@@ -396,6 +560,11 @@ CREATE TABLE investment_security_snapshots (id uuid, user_id uuid, ticker text, 
 CREATE TABLE investment_price_snapshots (id integer, user_id uuid);
 CREATE TABLE investment_thesis_states (id integer, user_id uuid);
 CREATE TABLE investment_decision_ledger (id integer, user_id uuid);
+CREATE TABLE investment_thesis_ai_verification_events (
+  verification_event_id uuid PRIMARY KEY, user_id uuid NOT NULL, outcome varchar(24) NOT NULL,
+  source_urls jsonb NOT NULL, rationale text NOT NULL, counterevidence text NOT NULL);
+CREATE TABLE investment_thesis_ai_policy_revisions (
+  id uuid PRIMARY KEY, user_id uuid NOT NULL, policy_version text NOT NULL, enabled boolean NOT NULL);
 CREATE TABLE investment_os_portfolio_snapshots (
   id uuid PRIMARY KEY, user_id uuid NOT NULL,
   attempt_status varchar(16) NOT NULL CHECK (attempt_status IN ('SUCCEEDED', 'PARTIAL', 'FAILED')),
@@ -432,6 +601,18 @@ INSERT INTO investment_os_portfolio_snapshots VALUES
 INSERT INTO flyway_schema_history VALUES (55, '55', true), (56, '56', true);
 INSERT INTO analysis_input_snapshots VALUES (1, '$pg_owner'), (2, '$pg_owner'), (3, '99999999-2222-4333-8444-555555555555');
 INSERT INTO investment_price_snapshots VALUES (1, '$pg_owner'), (2, '$pg_owner'), (3, '$pg_owner');
+INSERT INTO investment_thesis_ai_verification_events VALUES
+  ('00000000-0000-4000-8000-000000000201', '$pg_owner', 'AUTO_APPROVED', '["raw-ai-url-sentinel"]', 'raw-ai-rationale-sentinel', 'raw-ai-counterevidence-sentinel'),
+  ('00000000-0000-4000-8000-000000000202', '$pg_owner', 'AUTO_APPROVED', '["raw-ai-url-sentinel"]', 'raw-ai-rationale-sentinel', 'raw-ai-counterevidence-sentinel'),
+  ('00000000-0000-4000-8000-000000000203', '$pg_owner', 'BLOCKED', '["raw-ai-url-sentinel"]', 'raw-ai-rationale-sentinel', 'raw-ai-counterevidence-sentinel'),
+  ('00000000-0000-4000-8000-000000000204', '$pg_owner', 'REJECTED', '["raw-ai-url-sentinel"]', 'raw-ai-rationale-sentinel', 'raw-ai-counterevidence-sentinel'),
+  ('00000000-0000-4000-8000-000000000205', '$pg_owner', 'REJECTED', '["raw-ai-url-sentinel"]', 'raw-ai-rationale-sentinel', 'raw-ai-counterevidence-sentinel'),
+  ('00000000-0000-4000-8000-000000000206', '99999999-2222-4333-8444-555555555555', 'AUTO_APPROVED', '["raw-other-ai-url-sentinel"]', 'raw-other-ai-rationale-sentinel', 'raw-other-ai-counterevidence-sentinel');
+INSERT INTO investment_thesis_ai_policy_revisions VALUES
+  ('00000000-0000-4000-8000-000000000301', '$pg_owner', 'raw-ai-policy-version-sentinel', true),
+  ('00000000-0000-4000-8000-000000000302', '$pg_owner', 'raw-ai-policy-version-sentinel', false),
+  ('00000000-0000-4000-8000-000000000303', '$pg_owner', 'raw-ai-policy-version-sentinel', true),
+  ('00000000-0000-4000-8000-000000000304', '99999999-2222-4333-8444-555555555555', 'raw-other-ai-policy-version-sentinel', true);
 WITH payload AS (
   SELECT jsonb_build_object(
     'asOf', '2026-10-08T20:00:00Z',
@@ -475,7 +656,24 @@ SELECT '00000000-0000-4000-8000-000000000007', '$pg_owner', 'AVT', '2026-10-07T2
   FROM investment_security_snapshots WHERE ticker = 'AVT' LIMIT 1;
 SQL
 
-  read_sql='BEGIN TRANSACTION READ ONLY; SELECT (SELECT count(*) FROM analysis_input_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_security_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_price_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_os_portfolio_snapshots)::text; ROLLBACK;'
+  present_ai_schema="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
+    -U trade -d trade -h /var/run/postgresql -f - <"$tmp/ai_schema_sql.sql")" ||
+    fail "real PostgreSQL AI schema probe failed after optional tables existed"
+  [[ "$present_ai_schema" == $'true\ttrue' ]] || fail "AI schema probe did not report both optional tables present"
+  ai_event_counts="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
+    -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - \
+    <"$tmp/ai_verification_count_sql.sql")" || fail "real PostgreSQL AI verification count query failed"
+  [[ "$ai_event_counts" == $'5\t2\t1\t2' ]] || fail "AI verification counts were not owner-scoped or outcome-correct"
+  ai_policy_count="$(docker exec -i "$pg_container" psql -X -q -t -A -w -v ON_ERROR_STOP=1 \
+    -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - \
+    <"$tmp/ai_policy_revision_count_sql.sql")" || fail "real PostgreSQL AI policy revision count query failed"
+  [[ "$ai_policy_count" == 3 ]] || fail "AI policy revision count was not owner-scoped"
+  for sentinel in raw-ai-url-sentinel raw-ai-rationale-sentinel raw-ai-counterevidence-sentinel \
+    raw-other-ai-url-sentinel raw-ai-policy-version-sentinel raw-other-ai-policy-version-sentinel; do
+    [[ "$ai_event_counts$ai_policy_count" != *"$sentinel"* ]] || fail "AI count output leaked evidence or policy text"
+  done
+
+  read_sql='BEGIN TRANSACTION READ ONLY; SELECT (SELECT count(*) FROM analysis_input_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_security_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_price_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_os_portfolio_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_thesis_ai_verification_events)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_thesis_ai_policy_revisions)::text; ROLLBACK;'
   before="$(docker exec "$pg_container" psql -X -q -t -A -U trade -d trade -c "$read_sql")"
   metadata="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
     -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - <"$tmp/metadata_sql.sql")"

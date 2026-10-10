@@ -591,16 +591,42 @@ public final class InvestmentContextService {
      * regular close is never copied into the quote.
      */
     PriceFacts priceFacts(UUID userId, String rawTicker) {
-        var price = node(latestSecuritySnapshot(userId, ticker(rawTicker)), "price");
+        return priceFactsFromNode(node(latestSecuritySnapshot(userId, ticker(rawTicker)), "price"));
+    }
+
+    private static PriceFacts priceFactsFromNode(JsonNode price) {
+        var close = decimal(price.get("regularClose"));
+        var closeSource = text(price.get("regularCloseSource"));
+        // All verified regular closes in investment_security_snapshots come from the Toss close history.
+        if (closeSource == null && close != null && close.signum() > 0) closeSource = "TOSS";
         return new PriceFacts(text(price.get("status")), instant(price.get("latestPriceAsOf")),
                 decimal(price.get("latestPrice")), text(price.get("regularCloseStatus")),
-                localDate(text(price.get("regularCloseSessionDate"))));
+                localDate(text(price.get("regularCloseSessionDate"))), text(price.get("source")),
+                text(price.get("session")), text(price.get("sessionReason")),
+                instant(price.get("nextDeclaredIntervalStartsAt")), close,
+                instant(price.get("regularCloseAsOf")), closeSource,
+                localDate(text(price.get("lastCompletedSessionDate"))));
     }
 
     record PriceFacts(String status, Instant asOf, BigDecimal latestPrice, String regularCloseStatus,
-                      LocalDate regularCloseSessionDate) {
+                      LocalDate regularCloseSessionDate, String source, String session, String sessionReason,
+                      Instant nextDeclaredIntervalStartsAt, BigDecimal regularClose, Instant regularCloseAsOf,
+                      String regularCloseSource, LocalDate lastCompletedSessionDate) {
         PriceFacts(String status, Instant asOf, BigDecimal latestPrice) {
-            this(status, asOf, latestPrice, null, null);
+            this(status, asOf, latestPrice, null, null, null, null, null, null,
+                    null, null, null, null);
+        }
+        PriceFacts(String status, Instant asOf, BigDecimal latestPrice, String regularCloseStatus,
+                   LocalDate regularCloseSessionDate) {
+            this(status, asOf, latestPrice, regularCloseStatus, regularCloseSessionDate,
+                    null, null, null, null, null, null, null, null);
+        }
+
+        InvestmentRiskMarkSelector.Selection riskMark(Instant now) {
+            return InvestmentRiskMarkSelector.select(new InvestmentRiskMarkSelector.Input(
+                    latestPrice, asOf, source, session, dataStatus(status), sessionReason,
+                    nextDeclaredIntervalStartsAt, regularClose, regularCloseAsOf, regularCloseSource,
+                    regularCloseSessionDate, lastCompletedSessionDate, dataStatus(regularCloseStatus), now));
         }
     }
 
@@ -612,7 +638,8 @@ public final class InvestmentContextService {
         }
         return jdbc.query("""
                 SELECT revision, previous_status, new_status, previous_trigger_price, new_trigger_price,
-                       actor_type, actor_user_id, actor_session_id, source_as_of, reason, recorded_at
+                       actor_type, actor_user_id, actor_session_id, source_as_of, reason, recorded_at,
+                       policy_version, verification_event_id, asserted_run_id
                   FROM investment_thesis_revisions
                  WHERE user_id = ? AND ticker = ?
                  ORDER BY revision DESC
@@ -629,6 +656,7 @@ public final class InvestmentContextService {
                         rs.getObject(9, java.time.OffsetDateTime.class) == null ? null : rs.getObject(9, java.time.OffsetDateTime.class).toInstant(),
                         rs.getString(10),
                         rs.getObject(11, java.time.OffsetDateTime.class).toInstant()
+                        , rs.getString(12), (UUID) rs.getObject(13), rs.getString(14)
                 ), userId, ticker, limit);
     }
 
@@ -1580,9 +1608,16 @@ public final class InvestmentContextService {
     }
 
     public ThesisView putThesisProposal(UUID userId, String rawTicker, ThesisInput input, Instant expectedUpdatedAt) {
+        return putThesisProposal(userId, rawTicker, input, expectedUpdatedAt, null);
+    }
+
+    public ThesisView putThesisProposal(UUID userId, String rawTicker, ThesisInput input, Instant expectedUpdatedAt,
+                                        String proposalRunId) {
         requireUser(userId);
         var ticker = ticker(rawTicker);
         validateThesis(input);
+        if (proposalRunId != null && (proposalRunId.isBlank() || proposalRunId.length() > 160))
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         if (!Set.of("AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED")
                 .contains(input.invalidationStatus().trim().toUpperCase(Locale.ROOT)))
             throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
@@ -1600,7 +1635,8 @@ public final class InvestmentContextService {
                             new java.util.AbstractMap.SimpleImmutableEntry<>(current.getFirst().status(), current.getFirst().triggerPrice()),
                             current.getFirst().updatedAt());
             var currentList = currentEntry == null ? List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of() : List.of(currentEntry);
-            return persistThesis(userId, ticker, input, currentList, "CONNECTOR_MCP", userId, null, null, null);
+            return persistThesis(userId, ticker, input, currentList, "CONNECTOR_MCP", userId, null,
+                    null, null, null, null, proposalRunId);
         });
     }
 
@@ -1612,6 +1648,15 @@ public final class InvestmentContextService {
                                       List<Map.Entry<Map.Entry<String, BigDecimal>, Instant>> current,
                                       String actorType, UUID actorUserId, UUID actorSessionId,
                                       Instant sourceAsOf, String reason) {
+        return persistThesis(userId, ticker, input, current, actorType, actorUserId, actorSessionId,
+                sourceAsOf, reason, null, null, null);
+    }
+
+    private ThesisView persistThesis(UUID userId, String ticker, ThesisInput input,
+                                      List<Map.Entry<Map.Entry<String, BigDecimal>, Instant>> current,
+                                      String actorType, UUID actorUserId, UUID actorSessionId,
+                                      Instant sourceAsOf, String reason, String policyVersion,
+                                      UUID verificationEventId, String assertedRunId) {
         var now = timestamp(clock.instant());
         var newStatus = input.invalidationStatus().trim().toUpperCase(Locale.ROOT);
         jdbc.update("""
@@ -1646,20 +1691,72 @@ public final class InvestmentContextService {
                 "SELECT COALESCE(MAX(revision),0)+1 FROM investment_thesis_revisions WHERE user_id=? AND ticker=?",
                 Long.class, userId, ticker).getFirst();
 
-        var thesisSnapshot = thesis(userId, ticker);
+        var revisionId = UUID.randomUUID();
+        var revisionNumber = nextRevision;
+        var persistedState = thesis(userId, ticker);
+        var thesisSnapshot = new ThesisView(
+                persistedState.ticker(), persistedState.coreThesis(), persistedState.upsideDriver(),
+                persistedState.expectationsGap(), persistedState.fundamentalInvalidation(),
+                persistedState.revisionInvalidation(), persistedState.priceRiskTrigger(),
+                persistedState.priceRiskTriggerPrice(), persistedState.invalidationStatus(),
+                persistedState.expandTrigger(), persistedState.exitOrDiscardTrigger(), persistedState.classification(),
+                persistedState.updatedAt(), revisionId, revisionNumber, actorType, policyVersion,
+                verificationEventId, assertedRunId);
         jdbc.update("""
                 INSERT INTO investment_thesis_revisions (
                     id, user_id, ticker, revision, previous_status, new_status,
                     previous_trigger_price, new_trigger_price, thesis_snapshot,
-                    actor_type, actor_user_id, actor_session_id, source_as_of, reason, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?)
-                """, UUID.randomUUID(), userId, ticker, nextRevision, previousStatus, newStatus,
+                    actor_type, actor_user_id, actor_session_id, source_as_of, reason, recorded_at,
+                    policy_version, verification_event_id, asserted_run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, revisionId, userId, ticker, nextRevision, previousStatus, newStatus,
                 previousPrice, input.priceRiskTriggerPrice(), encode(thesisSnapshot),
                 actorType, actorUserId, actorSessionId, sourceAsOf == null ? null : timestamp(sourceAsOf),
-                reason, now);
+                reason, now, policyVersion, verificationEventId, assertedRunId);
 
-        return thesisSnapshot;
+        return thesis(userId, ticker);
     }
+
+    ThesisView confirmAiPolicyThesis(UUID userId, String rawTicker, UUID expectedRevisionId,
+                                     UUID verificationEventId, String policyVersion,
+                                     BigDecimal triggerPrice, Instant sourceAsOf, String reason) {
+        requireUser(userId);
+        var normalizedTicker = ticker(rawTicker);
+        return transaction.execute(ignored -> {
+            lockThesisWriter(userId);
+            var currentRevision = jdbc.query("""
+                    SELECT id, revision FROM investment_thesis_revisions
+                     WHERE user_id = ? AND ticker = ? ORDER BY revision DESC LIMIT 1
+                    """, (rs, row) -> new RevisionRef((UUID) rs.getObject(1), rs.getLong(2)),
+                    userId, normalizedTicker).stream().findFirst().orElse(null);
+            if (currentRevision == null || !currentRevision.id().equals(expectedRevisionId))
+                throw new InvestmentException(InvestmentException.Code.CONFLICT);
+            var currentState = jdbc.query("""
+                    SELECT invalidation_status, price_risk_trigger_price, updated_at FROM investment_thesis_states
+                     WHERE user_id = ? AND ticker = ?
+                    """, (rs, row) -> new ThesisCurrent(rs.getString(1), rs.getBigDecimal(2),
+                    instant(rs.getObject(3, OffsetDateTime.class))), userId, normalizedTicker)
+                    .stream().findFirst().orElseThrow(() -> new InvestmentException(InvestmentException.Code.NOT_FOUND));
+            if (!Set.of("AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED").contains(currentState.status()))
+                throw new InvestmentException(InvestmentException.Code.CONFLICT);
+            Map.Entry<String, BigDecimal> priorThesisValues = new java.util.AbstractMap.SimpleImmutableEntry<>(
+                    currentState.status(), currentState.triggerPrice());
+            Map.Entry<Map.Entry<String, BigDecimal>, Instant> currentEntry =
+                    new java.util.AbstractMap.SimpleImmutableEntry<>(priorThesisValues, currentState.updatedAt());
+            var currentThesis = currentThesis(userId, normalizedTicker);
+            var confirmed = new ThesisInput(currentThesis.coreThesis(), currentThesis.upsideDriver(),
+                    currentThesis.expectationsGap(), currentThesis.fundamentalInvalidation(),
+                    currentThesis.revisionInvalidation(), currentThesis.priceRiskTrigger(), triggerPrice,
+                    "CONFIRMED", currentThesis.expandTrigger(), currentThesis.exitOrDiscardTrigger(),
+                    currentThesis.classification());
+            return persistThesis(userId, normalizedTicker, confirmed,
+                    List.<Map.Entry<Map.Entry<String, BigDecimal>, Instant>>of(currentEntry),
+                    "AI_POLICY", userId, null, sourceAsOf, reason, policyVersion, verificationEventId, null);
+        });
+    }
+
+    private record ThesisCurrent(String status, BigDecimal triggerPrice, Instant updatedAt) {}
+    private record RevisionRef(UUID id, long revision) {}
 
     public List<DecisionView> decisionLedger(UUID userId, int limit) {
         requireUser(userId);
@@ -2682,6 +2779,8 @@ public final class InvestmentContextService {
         var regular = context == null ? null : context.regular();
         view.put("regularCloseSessionDate", price.regularCloseAsOf() == null ? null
                 : price.regularCloseAsOf().atZone(NEW_YORK).toLocalDate().toString());
+        view.put("regularCloseSource", price.regularClose() != null && price.regularClose().signum() > 0
+                ? "TOSS" : null);
         view.put("lastCompletedSessionDate", regular == null || regular.lastCompletedSessionDate() == null
                 ? null : regular.lastCompletedSessionDate().toString());
         view.put("regularCloseValidUntil", regular == null || regular.regularCloseValidUntil() == null
@@ -2735,8 +2834,19 @@ public final class InvestmentContextService {
         return jdbc.query("""
                 SELECT ticker, core_thesis, upside_driver, expectations_gap, fundamental_invalidation,
                        revision_invalidation, price_risk_trigger, price_risk_trigger_price,
-                       invalidation_status, expand_trigger, exit_or_discard_trigger, classification, updated_at
-                  FROM investment_thesis_states WHERE user_id = ? AND ticker = ?
+                       invalidation_status, expand_trigger, exit_or_discard_trigger, classification, updated_at,
+                       latest_revision.id AS revision_id, latest_revision.revision AS revision,
+                       latest_revision.actor_type AS approval_actor_type,
+                       latest_revision.policy_version, latest_revision.verification_event_id,
+                       latest_revision.asserted_run_id
+                  FROM investment_thesis_states state
+                  LEFT JOIN LATERAL (
+                      SELECT id, revision, actor_type, policy_version, verification_event_id, asserted_run_id
+                        FROM investment_thesis_revisions
+                       WHERE user_id = state.user_id AND ticker = state.ticker
+                       ORDER BY revision DESC LIMIT 1
+                  ) latest_revision ON true
+                 WHERE state.user_id = ? AND state.ticker = ?
                 """, thesisRow(), userId, ticker).stream().findFirst().orElse(null);
     }
 
@@ -2754,7 +2864,11 @@ public final class InvestmentContextService {
                 resultSet.getString("price_risk_trigger"), resultSet.getBigDecimal("price_risk_trigger_price"),
                 resultSet.getString("invalidation_status"), resultSet.getString("expand_trigger"),
                 resultSet.getString("exit_or_discard_trigger"), resultSet.getString("classification"),
-                instant(resultSet.getObject("updated_at", OffsetDateTime.class)));
+                instant(resultSet.getObject("updated_at", OffsetDateTime.class)),
+                (UUID) resultSet.getObject("revision_id"),
+                resultSet.getObject("revision") == null ? null : resultSet.getLong("revision"),
+                resultSet.getString("approval_actor_type"), resultSet.getString("policy_version"),
+                (UUID) resultSet.getObject("verification_event_id"), resultSet.getString("asserted_run_id"));
     }
 
     private RowMapper<DecisionView> decisionRow() {
@@ -3572,19 +3686,16 @@ public final class InvestmentContextService {
             var thesis = theses.get(symbol);
             var position = positions.get(symbol);
             var priceNode = node(analysis.get(symbol), "price");
-            var price = decimal(priceNode.get("latestPrice"));
-            if (price == null && position != null) price = position.lastPrice();
-            var priceAsOf = instant(priceNode.get("latestPriceAsOf"));
+            var mark = priceFactsFromNode(priceNode).riskMark(clock.instant());
+            var price = mark.value();
+            var priceAsOf = mark.asOf();
             var weight = portfolioNumbersAvailable ? weights.get(symbol) : null;
             var triggerPrice = thesis == null ? null : thesis.priceRiskTriggerPrice();
             var confirmed = thesis != null && "CONFIRMED".equals(thesis.invalidationStatus());
-            var priceStatus = dataStatus(text(priceNode.get("status")));
-            var trustedPriceStatus = priceStatus == InvestmentDataCalculator.DataStatus.OK
-                    && (priceAsOf == null || price == null || price.signum() <= 0)
-                    ? InvestmentDataCalculator.DataStatus.DATA_MISSING : priceStatus;
+            var trustedPriceStatus = mark.status();
             var trustedInputs = portfolioNumbersAvailable
                     && trustedPriceStatus == InvestmentDataCalculator.DataStatus.OK
-                    && priceAsOf != null && price != null && price.signum() > 0;
+                    && mark.available() && priceAsOf != null && price != null && price.signum() > 0;
             // Risk numbers derive only from an approved (CONFIRMED) invalidation trigger. An unapproved
             // trigger (AI_PROPOSED/UNVERIFIED/INVALIDATION_UNDEFINED) is never fed into downside/loss.
             var computable = confirmed && triggerPrice != null;
@@ -3609,7 +3720,9 @@ public final class InvestmentContextService {
                     riskStatus,
                     null, InvestmentDataCalculator.DataStatus.DATA_MISSING, null, null, null,
                     InvestmentDataCalculator.DataStatus.DATA_MISSING, eligible,
-                    riskBudgetStatus(null, null, null), reasons));
+                    riskBudgetStatus(null, null, null), reasons,
+                    new RiskMarkView(mark.value(), mark.asOf(), mark.source(), mark.basis(),
+                            mark.asOfBasis(), mark.status(), mark.reason())));
         }
         var held = exposures.stream().filter(item -> positions.containsKey(item.ticker())).toList();
         var thesisFailureStatus = held.isEmpty() ? InvestmentDataCalculator.DataStatus.DATA_MISSING
@@ -3633,7 +3746,8 @@ public final class InvestmentContextService {
             return new RiskContributionView(
                     risk.portfolioWeight(), risk.invalidationDownside(), risk.plannedLossContribution(),
                     risk.status(), thesisFailureStress, thesisFailureStatus, top2.stress(), top2.assets(),
-                    top2.correlation(), top2.status(), finalEligible, budgetStatus, List.copyOf(updatedReasons));
+                    top2.correlation(), top2.status(), finalEligible, budgetStatus, List.copyOf(updatedReasons),
+                    risk.riskMark());
         });
         return Map.copyOf(risks);
     }
@@ -4188,8 +4302,18 @@ public final class InvestmentContextService {
             String ticker, String coreThesis, String upsideDriver, String expectationsGap,
             String fundamentalInvalidation, String revisionInvalidation, String priceRiskTrigger,
             BigDecimal priceRiskTriggerPrice, String invalidationStatus, String expandTrigger,
-            String exitOrDiscardTrigger, String classification, Instant updatedAt
+            String exitOrDiscardTrigger, String classification, Instant updatedAt,
+            UUID revisionId, Long revision, String approvalActorType, String policyVersion,
+            UUID verificationEventId, String assertedRunId
     ) {
+        public ThesisView(String ticker, String coreThesis, String upsideDriver, String expectationsGap,
+                          String fundamentalInvalidation, String revisionInvalidation, String priceRiskTrigger,
+                          BigDecimal priceRiskTriggerPrice, String invalidationStatus, String expandTrigger,
+                          String exitOrDiscardTrigger, String classification, Instant updatedAt) {
+            this(ticker, coreThesis, upsideDriver, expectationsGap, fundamentalInvalidation, revisionInvalidation,
+                    priceRiskTrigger, priceRiskTriggerPrice, invalidationStatus, expandTrigger,
+                    exitOrDiscardTrigger, classification, updatedAt, null, null, null, null, null, null);
+        }
     }
 
     /** A CONFIRMED trigger and its trusted price; {@code latestPrice} is null unless {@code priceStatus} is OK. */
@@ -4203,8 +4327,16 @@ public final class InvestmentContextService {
             long revision, String previousStatus, String newStatus,
             BigDecimal previousTriggerPrice, BigDecimal newTriggerPrice,
             String actorType, UUID actorUserId, UUID actorSessionId,
-            Instant sourceAsOf, String reason, Instant recordedAt
+            Instant sourceAsOf, String reason, Instant recordedAt,
+            String policyVersion, UUID verificationEventId, String assertedRunId
     ) {
+        public ThesisRevisionView(long revision, String previousStatus, String newStatus,
+                                  BigDecimal previousTriggerPrice, BigDecimal newTriggerPrice,
+                                  String actorType, UUID actorUserId, UUID actorSessionId,
+                                  Instant sourceAsOf, String reason, Instant recordedAt) {
+            this(revision, previousStatus, newStatus, previousTriggerPrice, newTriggerPrice, actorType,
+                    actorUserId, actorSessionId, sourceAsOf, reason, recordedAt, null, null, null);
+        }
     }
 
     public record DecisionInput(
@@ -4221,13 +4353,16 @@ public final class InvestmentContextService {
     ) {
     }
 
+    public record RiskMarkView(BigDecimal value, Instant asOf, String source, String basis,
+                               String asOfBasis, InvestmentDataCalculator.DataStatus status, String reason) {}
+
     public record RiskContributionView(
             BigDecimal portfolioWeight, BigDecimal invalidationDownside, BigDecimal plannedLossContribution,
             InvestmentDataCalculator.DataStatus status, BigDecimal thesisFailureStress,
             InvestmentDataCalculator.DataStatus thesisFailureStressStatus, BigDecimal top2CorrelatedStress,
             String top2CorrelatedAssets, BigDecimal top2Correlation,
             InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
-            String softBudgetStatus, List<String> eligibilityReasons
+            String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark
     ) {
         public RiskContributionView {
             eligibilityReasons = eligibilityReasons == null ? List.of() : List.copyOf(eligibilityReasons);
@@ -4243,7 +4378,20 @@ public final class InvestmentContextService {
                 String softBudgetStatus) {
             this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
                     thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
-                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of());
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of(), null);
+        }
+
+        /** Backward-compatible signature with eligibility reasons but without separate trusted risk mark. */
+        public RiskContributionView(
+                BigDecimal portfolioWeight, BigDecimal invalidationDownside, BigDecimal plannedLossContribution,
+                InvestmentDataCalculator.DataStatus status, BigDecimal thesisFailureStress,
+                InvestmentDataCalculator.DataStatus thesisFailureStressStatus, BigDecimal top2CorrelatedStress,
+                String top2CorrelatedAssets, BigDecimal top2Correlation,
+                InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
+                String softBudgetStatus, List<String> eligibilityReasons) {
+            this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
+                    thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, null);
         }
     }
 

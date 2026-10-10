@@ -141,21 +141,24 @@ def sanitize(raw: Any) -> dict[str, Any]:
     if not isinstance(readiness["status"], str) or re.fullmatch(r"[A-Z_]+", readiness["status"]) is None:
         raise ValueError("invalid readiness status")
 
-    database = require_keys(
-        root["database"],
-        {
-            "status",
-            "flywayVersion",
-            "flywaySuccess",
-            "analysisInputSnapshotCount",
-            "securitySnapshotCount",
-            "priceSnapshotCount",
-            "thesisCount",
-            "decisionCount",
-            "latestSecurityProjectionCount",
-            "latestSecurityProjectionSha256",
-        },
-    )
+    database_keys = {
+        "status",
+        "flywayVersion",
+        "flywaySuccess",
+        "analysisInputSnapshotCount",
+        "securitySnapshotCount",
+        "priceSnapshotCount",
+        "thesisCount",
+        "decisionCount",
+        "latestSecurityProjectionCount",
+        "latestSecurityProjectionSha256",
+    }
+    database = root["database"]
+    if not isinstance(database, dict) or frozenset(database) not in {
+        frozenset(database_keys),
+        frozenset(database_keys | {"aiVerificationPolicy"}),
+    }:
+        raise ValueError("invalid object shape")
     if database["status"] not in {"available", "unavailable"}:
         raise ValueError("invalid database status")
     version = database["flywayVersion"]
@@ -178,6 +181,60 @@ def sanitize(raw: Any) -> dict[str, Any]:
     if not isinstance(fingerprint, str) or fingerprint not in {""} and re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
         raise ValueError("invalid projection fingerprint")
 
+    ai_policy_defaults = {
+        "verificationEventsAvailable": False,
+        "verificationCount": 0,
+        "approvedCount": 0,
+        "blockedCount": 0,
+        "rejectedCount": 0,
+        "policyRevisionsAvailable": False,
+        "aiPolicyRevisionCount": 0,
+        "deploymentEnabled": None,
+        "ownerScopeConfigured": False,
+    }
+    ai_policy = require_keys(
+        database.get("aiVerificationPolicy", ai_policy_defaults),
+        {
+            "verificationEventsAvailable",
+            "verificationCount",
+            "approvedCount",
+            "blockedCount",
+            "rejectedCount",
+            "policyRevisionsAvailable",
+            "aiPolicyRevisionCount",
+            "deploymentEnabled",
+            "ownerScopeConfigured",
+        },
+    )
+    event_schema_available = require_bool(ai_policy["verificationEventsAvailable"])
+    policy_schema_available = require_bool(ai_policy["policyRevisionsAvailable"])
+    event_counts = {
+        key: require_count(ai_policy[key])
+        for key in ("verificationCount", "approvedCount", "blockedCount", "rejectedCount")
+    }
+    policy_revision_count = require_count(ai_policy["aiPolicyRevisionCount"])
+    if event_schema_available:
+        if event_counts["verificationCount"] != sum(
+            event_counts[key] for key in ("approvedCount", "blockedCount", "rejectedCount")
+        ):
+            raise ValueError("inconsistent verification outcome counts")
+    elif any(event_counts.values()):
+        raise ValueError("verification counts present while schema is unavailable")
+    if not policy_schema_available and policy_revision_count:
+        raise ValueError("policy revision count present while schema is unavailable")
+    deployment_enabled = ai_policy["deploymentEnabled"]
+    if deployment_enabled is not None and not isinstance(deployment_enabled, bool):
+        raise ValueError("invalid deployment enabled state")
+    owner_scope_configured = require_bool(ai_policy["ownerScopeConfigured"])
+    sanitized_ai_policy = {
+        "verificationEventsAvailable": event_schema_available,
+        **event_counts,
+        "policyRevisionsAvailable": policy_schema_available,
+        "aiPolicyRevisionCount": policy_revision_count,
+        "deploymentEnabled": deployment_enabled,
+        "ownerScopeConfigured": owner_scope_configured,
+    }
+
     return {
         "schemaVersion": 1,
         "ok": root["ok"],
@@ -193,7 +250,10 @@ def sanitize(raw: Any) -> dict[str, Any]:
             "httpStatus": readiness["httpStatus"],
             "status": readiness["status"],
         },
-        "database": {key: database[key] for key in sorted(database)},
+        "database": {
+            **{key: database[key] for key in sorted(database) if key != "aiVerificationPolicy"},
+            "aiVerificationPolicy": sanitized_ai_policy,
+        },
         "portfolioFreshness": sanitize_portfolio_freshness(root["portfolioFreshness"]),
     }
 

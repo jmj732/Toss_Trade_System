@@ -15,10 +15,15 @@ import org.junit.jupiter.api.AfterEach;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -32,12 +37,15 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     private static final UUID USER_ID = UUID.fromString("432a230c-8f0a-4aa2-9141-d3a395090d1d");
     private static final UUID CONNECTION_ID = UUID.fromString("a0b4732d-65c2-4b49-9c97-530d630e83a2");
     private static final Instant NOW = Instant.parse("2026-10-01T16:00:00Z");
+    private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
     private JdbcTemplate jdbc;
     private HikariDataSource dataSource;
     private ObjectMapper mapper;
+    private int snapshotSequence;
 
     @BeforeEach
     void migrateAndSeed() {
+        snapshotSequence = 0;
         freshMigratedSchema();
         dataSource = pooledTestDataSource();
         jdbc = new JdbcTemplate(dataSource);
@@ -112,6 +120,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(security.readiness().get("priceStatus").asText()).isEqualTo("STALE");
         assertThat(security.readiness().get("overallDataStatus").asText()).isEqualTo("STALE");
         assertThat(security.risk().status()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+        assertThat(security.risk().riskMark().status()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
         assertThat(security.risk().plannedLossContribution()).isNull();
         assertThat(security.risk().sizingEligible()).isFalse();
     }
@@ -213,6 +222,65 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void declaredClosedGapUsesVerifiedCloseForRiskWithoutChangingStaleQuote() throws Exception {
+        var price = closedGapPrice(true);
+        var context = service("OK", "STALE", Instant.parse((String) price.get("latestPriceAsOf")), Instant.now(),
+                bd("0.10"), price).context(USER_ID);
+        var security = context.securities().getFirst();
+
+        assertThat(security.price().path("status").asText()).isEqualTo("STALE");
+        assertThat(security.price().path("latestPrice").decimalValue()).isEqualByComparingTo("101");
+        assertThat(security.risk().riskMark().status()).isEqualTo(InvestmentDataCalculator.DataStatus.OK);
+        assertThat(security.risk().riskMark().value()).isEqualByComparingTo("100");
+        assertThat(security.risk().riskMark().basis())
+                .isEqualTo(InvestmentRiskMarkSelector.REGULAR_CLOSE_BASIS);
+        assertThat(security.risk().riskMark().asOfBasis())
+                .isEqualTo(InvestmentRiskMarkSelector.PROVIDER_SESSION_LABEL_BASIS);
+        assertThat(security.risk().invalidationDownside()).isEqualByComparingTo("0.20000000");
+        assertThat(security.risk().plannedLossContribution()).isEqualByComparingTo("0.05000000");
+    }
+
+    @Test
+    void reopenedOrUndeclaredCalendarGapDoesNotUseRegularClose() throws Exception {
+        var reopenedPrice = closedGapPrice(true);
+        reopenedPrice.put("nextDeclaredIntervalStartsAt", Instant.now().minusSeconds(60).toString());
+        var reopened = securityWithPrice(reopenedPrice);
+
+        assertThat(reopened.price().path("status").asText()).isEqualTo("STALE");
+        assertThat(reopened.risk().riskMark().status()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+        assertThat(reopened.risk().riskMark().value()).isNull();
+        assertThat(reopened.risk().invalidationDownside()).isNull();
+
+        var missingCalendarPrice = closedGapPrice(false);
+        var missingCalendar = securityWithPrice(missingCalendarPrice);
+
+        assertThat(missingCalendar.risk().riskMark().status())
+                .isEqualTo(InvestmentDataCalculator.DataStatus.UNVERIFIED);
+        assertThat(missingCalendar.risk().riskMark().value()).isNull();
+        assertThat(missingCalendar.risk().invalidationDownside()).isNull();
+    }
+
+    @Test
+    void absentPolicyEnabledIsRejectedWhileExplicitFalseDisablesPolicy() throws Exception {
+        var verification = new InvestmentThesisVerificationService(jdbc,
+                new DataSourceTransactionManager(dataSource), service("OK", "OK", Instant.now(), Instant.now()),
+                mapper, Clock.fixed(Instant.now(), ZoneOffset.UTC), false, false, "", "test-v1",
+                Duration.ofHours(24), 2, bd("0.25"));
+        var omittedEnabled = mapper.readValue("{}", InvestmentThesisVerificationService.PolicyInput.class);
+
+        assertThat(omittedEnabled.enabled()).isNull();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> verification.updatePolicy(USER_ID, omittedEnabled))
+                .isInstanceOf(InvestmentException.class)
+                .extracting(exception -> ((InvestmentException) exception).code())
+                .isEqualTo(InvestmentException.Code.INVALID_INPUT);
+
+        var disabled = verification.updatePolicy(USER_ID,
+                new InvestmentThesisVerificationService.PolicyInput(false, null));
+        assertThat(disabled.enabled()).isFalse();
+        assertThat(verification.policy(USER_ID).enabled()).isFalse();
+    }
+
+    @Test
     void putThesisProposalRejectsConfirmedStatus() throws Exception {
         jdbc.update("DELETE FROM investment_thesis_states WHERE user_id=? AND ticker='AAPL'", USER_ID);
         var service = service("OK", "OK", Instant.now(), Instant.now());
@@ -253,7 +321,14 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
 
     private InvestmentContextService service(
             String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf, BigDecimal softRiskBudget) throws Exception {
+        return service(portfolioStatus, priceStatus, priceAsOf, consensusAsOf, softRiskBudget, Map.of());
+    }
+
+    private InvestmentContextService service(
+            String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf,
+            BigDecimal softRiskBudget, Map<String, Object> priceOverrides) throws Exception {
         var now = OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC);
+        var snapshotAsOf = OffsetDateTime.ofInstant(NOW.plusMillis(snapshotSequence++), ZoneOffset.UTC);
         var snapshot = new PortfolioReadService.PortfolioView(
                 UUID.randomUUID(), NOW,
                 "STALE".equals(portfolioStatus),
@@ -274,20 +349,58 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         var riskPolicies = mock(RiskPolicyService.class);
         when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
                 1, bd("10000"), bd("10000"), bd("100"), BigDecimal.ONE, softRiskBudget, true));
+        var price = new LinkedHashMap<String, Object>();
+        price.put("latestPrice", 100);
+        price.put("latestPriceAsOf", priceAsOf.toString());
+        price.put("session", "LIVE_REGULAR");
+        price.put("status", priceStatus);
+        price.put("source", "TOSS");
+        price.putAll(priceOverrides);
         var payload = mapper.valueToTree(Map.of(
                 "asOf", NOW.toString(),
-                "price", Map.of("latestPrice", 100, "latestPriceAsOf", priceAsOf.toString(),
-                        "session", "LIVE_REGULAR", "status", priceStatus),
+                "price", price,
                 "consensus", Map.of("asOf", consensusAsOf.toString(), "status", "OK")));
         jdbc.update("""
                 INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
                 VALUES (?, ?, 'AAPL', ?, CAST(? AS jsonb), ?)
-                """, UUID.randomUUID(), USER_ID, now, mapper.writeValueAsString(payload), now);
+                """, UUID.randomUUID(), USER_ID, snapshotAsOf, mapper.writeValueAsString(payload), now);
         var service = new InvestmentContextService(
                 jdbc, mapper, new DataSourceTransactionManager(jdbc.getDataSource()),
                 new StockDataProviderRegistry(List.of()), mock(ObjectProvider.class), portfolios, watchlist, riskPolicies,
                 Duration.ofMinutes(15), Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10));
         return service;
+    }
+
+    private InvestmentContextService.SecurityView securityWithPrice(Map<String, Object> price) throws Exception {
+        return service("OK", "STALE", Instant.parse((String) price.get("latestPriceAsOf")), Instant.now(),
+                bd("0.10"), price).context(USER_ID).securities().getFirst();
+    }
+
+    private static Map<String, Object> closedGapPrice(boolean includeCalendar) {
+        var now = Instant.now();
+        var quoteAsOf = now.minus(Duration.ofHours(3));
+        var sessionDate = quoteAsOf.atZone(NEW_YORK).toLocalDate().minusDays(1);
+        while (sessionDate.getDayOfWeek() == DayOfWeek.SATURDAY
+                || sessionDate.getDayOfWeek() == DayOfWeek.SUNDAY) {
+            sessionDate = sessionDate.minusDays(1);
+        }
+        var closeAsOf = sessionDate.atTime(16, 0).atZone(NEW_YORK).toInstant();
+        var price = new LinkedHashMap<String, Object>();
+        price.put("latestPrice", 101);
+        price.put("latestPriceAsOf", quoteAsOf.toString());
+        price.put("session", null);
+        price.put("status", "STALE");
+        price.put("source", "TOSS");
+        price.put("sessionReason", InvestmentRiskMarkSelector.CLOSED_INTERVAL_REASON);
+        price.put("regularClose", 100);
+        price.put("regularCloseAsOf", closeAsOf.toString());
+        price.put("regularCloseSessionDate", sessionDate.toString());
+        price.put("lastCompletedSessionDate", sessionDate.toString());
+        price.put("regularCloseValidUntil", now.plus(Duration.ofDays(2)).toString());
+        if (includeCalendar) {
+            price.put("nextDeclaredIntervalStartsAt", now.plus(Duration.ofDays(1)).toString());
+        }
+        return price;
     }
 
     @Test

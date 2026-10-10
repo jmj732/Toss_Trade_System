@@ -612,7 +612,7 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
         payload.put("asOf", now.toString());
         payload.set("price", mapper.readTree("""
                 {"latestPrice":100,"latestPriceAsOf":"%s","regularClose":100,
-                 "regularCloseAsOf":"%s","session":"REGULAR_CLOSE","status":"OK"}
+                 "regularCloseAsOf":"%s","session":"REGULAR_CLOSE","source":"TOSS","status":"OK"}
                 """.formatted(now, now)));
         jdbc.update("""
                 INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)

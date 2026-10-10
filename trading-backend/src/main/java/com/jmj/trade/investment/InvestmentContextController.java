@@ -1,6 +1,7 @@
 package com.jmj.trade.investment;
 
 import com.jmj.trade.security.AuthenticatedUser;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -27,9 +28,38 @@ import java.time.LocalDate;
 final class InvestmentContextController {
 
     private final InvestmentContextService service;
+    private final InvestmentThesisVerificationService thesisVerification;
 
     InvestmentContextController(InvestmentContextService service) {
+        this(service, null);
+    }
+
+    @Autowired
+    InvestmentContextController(InvestmentContextService service,
+                                InvestmentThesisVerificationService thesisVerification) {
         this.service = service;
+        this.thesisVerification = thesisVerification;
+    }
+
+    @GetMapping("/thesis/ai-policy")
+    InvestmentThesisVerificationService.PolicyView thesisAiPolicy(Principal principal) {
+        return thesisVerification.policy(userId(principal));
+    }
+
+    @PutMapping("/thesis/ai-policy")
+    InvestmentThesisVerificationService.PolicyView updateThesisAiPolicy(
+            Principal principal,
+            @RequestBody InvestmentThesisVerificationService.PolicyInput input
+    ) {
+        return thesisVerification.updatePolicy(userId(principal), input);
+    }
+
+    @GetMapping("/securities/{ticker}/thesis/verification-context")
+    InvestmentThesisVerificationService.VerificationContextView thesisVerificationContext(
+            Principal principal,
+            @PathVariable String ticker
+    ) {
+        return thesisVerification.verificationContext(userId(principal), ticker);
     }
 
     @GetMapping("/context")
