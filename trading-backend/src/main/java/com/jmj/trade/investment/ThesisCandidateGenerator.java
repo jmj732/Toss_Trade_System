@@ -31,10 +31,18 @@ import java.util.UUID;
  *       mean of the first 14 TRs, then ATR_t = (13*ATR_{t-1} + TR_t)/14. Fewer than 15 bars (14 TRs) is
  *       INSUFFICIENT_HISTORY. Candidate = lastClose - 2*ATR, DECIMAL128, setScale(4, FLOOR) only at the end.</li>
  *   <li>COMPUTED_SUPPORT: lowest low of the last 20 completed bars; fewer than 20 is INSUFFICIENT_HISTORY.</li>
- *   <li>UNVERIFIED (no candidate) when a window bar has a source conflict (SOURCE_CONFLICT), the price snapshot
- *       is not OK or has no as-of (PRICE_UNVERIFIED), the last completed bar is more than 4 calendar days older
- *       than the price as-of date (STALE_BARS; a weekend/holiday heuristic, not an exchange calendar), the
- *       window has no source as-of, or the candidate is &lt;= 0 or &gt;= lastClose (CANDIDATE_OUT_OF_RANGE).</li>
+ *   <li>Price freshness: the refreshed quote passes when its status is OK with an as-of (basis QUOTE, price date =
+ *       quote as-of in New York); otherwise the separately refreshed regular close passes when its status is OK
+ *       with a session date (basis REGULAR_CLOSE, price date = that session date), so candidates also exist
+ *       outside live regular hours. The regular close only gates freshness: it is never copied into the quote and
+ *       the candidate math always uses the stored completed bars. The basis is recorded as
+ *       {@code priceFreshnessBasis}.</li>
+ *   <li>UNVERIFIED (no candidate) when a window bar has a source conflict (SOURCE_CONFLICT), neither price basis
+ *       passes (by quote status: STALE is PRICE_STALE, SOURCE_CONFLICT is PRICE_SOURCE_CONFLICT, DATA_MISSING or
+ *       absent is PRICE_MISSING, anything else is PRICE_UNVERIFIED), the last completed bar is more than 4
+ *       calendar days older than the price date (STALE_BARS; a weekend/holiday heuristic, not an exchange
+ *       calendar), the window has no source as-of, or the candidate is &lt;= 0 or &gt;= lastClose
+ *       (CANDIDATE_OUT_OF_RANGE).</li>
  * </ul>
  * Prices are stored as captured (UNADJUSTED); splits inside the window are not corrected.
  */
@@ -48,6 +56,8 @@ public class ThesisCandidateGenerator {
     static final int SUPPORT_WINDOW = 20;
     static final BigDecimal ATR_MULTIPLIER = BigDecimal.valueOf(2);
     static final long STALE_BAR_DAYS = 4;
+    static final String BASIS_QUOTE = "QUOTE";
+    static final String BASIS_REGULAR_CLOSE = "REGULAR_CLOSE";
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
 
     private final TacticalOverlayService tactical;
@@ -149,13 +159,40 @@ public class ThesisCandidateGenerator {
     private static String blockedReason(List<StoredDailyBar> window, InvestmentContextService.PriceFacts price,
                                         Instant now) {
         if (window.stream().anyMatch(StoredDailyBar::sourceConflict)) return "SOURCE_CONFLICT";
-        if (price == null || !"OK".equals(price.status()) || price.asOf() == null) return "PRICE_UNVERIFIED";
-        var priceDate = LocalDate.ofInstant(price.asOf(), NEW_YORK);
-        if (ChronoUnit.DAYS.between(window.getLast().date(), priceDate) > STALE_BAR_DAYS) return "STALE_BARS";
+        var freshness = priceFreshness(price);
+        if (freshness.reason() != null) return freshness.reason();
+        if (ChronoUnit.DAYS.between(window.getLast().date(), freshness.priceDate()) > STALE_BAR_DAYS) {
+            return "STALE_BARS";
+        }
         var sourceAsOf = sourceAsOf(window);
         if (sourceAsOf == null) return "SOURCE_AS_OF_MISSING";
         if (sourceAsOf.isAfter(now)) return "SOURCE_AS_OF_IN_FUTURE";
         return null;
+    }
+
+    /**
+     * Which price fact proves freshness: the OK quote first, else the OK regular close. Neither passing yields the
+     * reason mapped from the quote status; the regular close never stands in for the quote price itself.
+     */
+    static PriceFreshness priceFreshness(InvestmentContextService.PriceFacts price) {
+        if (price != null && "OK".equals(price.status()) && price.asOf() != null) {
+            return new PriceFreshness(BASIS_QUOTE, LocalDate.ofInstant(price.asOf(), NEW_YORK), null);
+        }
+        if (price != null && "OK".equals(price.regularCloseStatus()) && price.regularCloseSessionDate() != null) {
+            return new PriceFreshness(BASIS_REGULAR_CLOSE, price.regularCloseSessionDate(), null);
+        }
+        var status = price == null ? null : price.status();
+        var reason = switch (status == null ? "DATA_MISSING" : status) {
+            case "STALE" -> "PRICE_STALE";
+            case "SOURCE_CONFLICT" -> "PRICE_SOURCE_CONFLICT";
+            case "DATA_MISSING" -> "PRICE_MISSING";
+            default -> "PRICE_UNVERIFIED";
+        };
+        return new PriceFreshness(null, null, reason);
+    }
+
+    /** Exactly one of {@code basis}+{@code priceDate} or {@code reason} is set. */
+    record PriceFreshness(String basis, LocalDate priceDate, String reason) {
     }
 
     private static Instant sourceAsOf(List<StoredDailyBar> window) {
@@ -184,6 +221,14 @@ public class ThesisCandidateGenerator {
         }
         inputs.put("priceStatus", price == null || price.status() == null ? "DATA_MISSING" : price.status());
         if (price != null && price.asOf() != null) inputs.put("priceAsOf", price.asOf().toString());
+        if (price != null && price.regularCloseStatus() != null) {
+            inputs.put("regularCloseStatus", price.regularCloseStatus());
+        }
+        if (price != null && price.regularCloseSessionDate() != null) {
+            inputs.put("regularCloseSessionDate", price.regularCloseSessionDate().toString());
+        }
+        var freshness = priceFreshness(price);
+        if (freshness.basis() != null) inputs.put("priceFreshnessBasis", freshness.basis());
         inputs.put("staleBarThresholdDays", STALE_BAR_DAYS);
         return inputs;
     }
