@@ -543,7 +543,8 @@ public final class InvestmentOsSheetSyncService {
      * Reads the account for this attempt. Outside a verified closed-market gap (or when the calendar cannot verify
      * one) this is the existing read-through, which synchronizes from the broker. Inside a gap the persisted
      * snapshot is read without any broker call when it was captured in that same gap, because holdings and cash
-     * cannot trade until the next declared interval; otherwise the bounded post-close capture runs.
+     * cannot trade until the next declared interval; otherwise (including a later failed account sync) the bounded
+     * post-close capture runs.
      */
     private ConnectorResponse.Portfolio readPortfolio(
             UUID userId, UUID connectionId, Instant syncedAt, Function<LocalDate, JsonNode> calendars
@@ -557,7 +558,12 @@ public final class InvestmentOsSheetSyncService {
             // No readable persisted snapshot (e.g. no successful sync yet): keep the existing read-through.
             return connector.portfolio(userId, connectionId);
         }
-        if (persisted == null || capturedInGap(persisted, gapEnd, calendars)) return persisted;
+        if (persisted == null) return null;
+        // A later failed account sync (dashboard read-through, scheduled refresh) leaves LATEST_SYNC_FAILED, which is
+        // never accepted; the bounded capture replaces the read-through retry that used to clear it.
+        if (capturedInGap(persisted, gapEnd, calendars) && !"LATEST_SYNC_FAILED".equals(persisted.staleReason())) {
+            return persisted;
+        }
         return capturedAfterClose(userId, connectionId, persisted, gapEnd);
     }
 

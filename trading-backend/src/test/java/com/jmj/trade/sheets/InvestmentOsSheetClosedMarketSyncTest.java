@@ -183,7 +183,9 @@ class InvestmentOsSheetClosedMarketSyncTest {
         var result = service().sync();
 
         assertThat(result.error()).isEqualTo("NON_AUTHORITATIVE_PORTFOLIO");
-        verify(accountSync, never()).syncForMonitoring(any(), any());
+        // LATEST_SYNC_FAILED triggers one bounded read-only capture; the re-read snapshot is still rejected.
+        verify(accountSync, times(1)).syncForMonitoring(USER_ID, CONNECTION_ID);
+        verify(connector, never()).portfolio(any(), any());
     }
 
     @Test

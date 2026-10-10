@@ -157,6 +157,31 @@ class InvestmentOsSheetWeekendProductionShapeTest {
     }
 
     @Test
+    void aFailedAccountSyncAfterTheInGapCaptureIsRecoveredByTheBoundedCapture() throws Exception {
+        stubWeekendCalendars();
+        var captured = Instant.parse("2026-10-10T10:42:53Z");
+        var recaptured = Instant.parse("2026-10-10T11:10:04Z");
+        // Another account sync (dashboard read-through, scheduled refresh) failed after the in-gap capture.
+        when(connector.persistedPortfolio(USER_ID, CONNECTION_ID)).thenReturn(
+                portfolio(captured, true, "LATEST_SYNC_FAILED"),
+                portfolio(recaptured, false, null));
+        var clock = new SteppingClock();
+        clock.start(Instant.parse("2026-10-10T11:10:00Z"));
+
+        var result = service(clock).sync();
+
+        assertThat(result.error()).isNull();
+        verify(accountSync, times(1)).syncForMonitoring(USER_ID, CONNECTION_ID);
+        verify(connector, never()).portfolio(any(), any());
+        var payload = acceptedPayloads(1).getFirst();
+        assertThat(payload.path("account1AsOf").asText()).isEqualTo(recaptured.toString());
+        assertThat(payload.path("sessionReason").asText())
+                .isEqualTo(InvestmentContextService.PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS);
+        assertThat(payload.path("nextDeclaredIntervalStartsAt").asText())
+                .isEqualTo(MONDAY_DAY_MARKET_OPEN.toString());
+    }
+
+    @Test
     void anUnverifiableCalendarKeepsTheExistingReadThrough() {
         when(connector.portfolio(USER_ID, CONNECTION_ID)).thenReturn(portfolio(SATURDAY_CAPTURE, false, null));
 
