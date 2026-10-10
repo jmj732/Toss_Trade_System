@@ -50,6 +50,64 @@ Telegram 전송 큐는 PostgreSQL에 남고 실패 시 재시도한다. Telegram
 
 Watchlist 거래량 배수는 당일 누적 거래량을 직전 20개 완성 거래일의 일간 평균과 비교한다. 시간대별 보정은 없어서 장 초반에는 `PREPARE`·`ACTION_CANDIDATE` 조건이 늦게 충족될 수 있다.
 
+## Telegram thesis 2단계 승인
+
+V59부터 Telegram 인라인 버튼으로 투자 논리(thesis)의 무효화 트리거를 `CONFIRMED`로 승인할 수 있다. 기본값은 꺼져 있고, 켜도 주문은 만들지 않으며 MCP 도구는 여전히 `CONFIRMED`를 쓸 수 없다. 아래 명령은 운영자가 직접 실행할 절차이며 저장소 변경으로 실행된 적은 없다.
+
+### 활성화 조건
+
+| 환경 변수 | 용도 |
+| --- | --- |
+| `TELEGRAM_ENABLED=true`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_USER_ID` | 기존 Telegram 전달 설정. `TELEGRAM_CHAT_ID`는 반드시 숫자 chat id여야 한다(그룹은 `-100…`). `@username`은 거부되어 승인 기능이 꺼진 상태로 남는다. |
+| `TELEGRAM_APPROVAL_ENABLED=true` | 승인 기능 스위치. 기본 `false`. |
+| `TELEGRAM_APPROVER_ID` | 버튼을 누를 수 있는 Telegram 사용자 숫자 id(`from.id`). |
+| `TELEGRAM_WEBHOOK_SECRET` | 선택. `[A-Za-z0-9_-]{1,256}`만 허용하며 형식이 틀리면 모든 웹훅을 거부한다. 비우면 봇 토큰에서 파생한다. |
+| `TELEGRAM_APPROVAL_TTL=PT24H`, `TELEGRAM_CONFIRM_TTL=PT5M` | 요청 만료와 최종 승인 대기 시간. |
+
+위 값이 하나라도 없거나 숫자가 아니면 기능은 꺼진 것으로 취급한다. 웹훅은 404, 요청 생성 REST는 409 `THESIS_APPROVAL_NOT_READY`를 돌려준다. 요청은 `TELEGRAM_USER_ID` 사용자만 만들 수 있다.
+
+### 웹훅 시크릿과 등록
+
+명시 시크릿이 없으면 시크릿은 `hex(HMAC-SHA256(key=봇 토큰, msg="telegram-webhook-v1"))`(소문자 hex 64자)이다. 값은 출력이 셸 기록이나 로그에 남지 않는 환경(예: Doppler 주입 셸)에서 계산한다.
+
+```sh
+printf '%s' 'telegram-webhook-v1' | openssl dgst -sha256 -hmac "$TELEGRAM_BOT_TOKEN" | awk '{print $NF}'
+```
+
+`setWebhook`로 등록하고 `getWebhookInfo`로 확인한다. `allowed_updates`는 `callback_query`만 받는다.
+
+```sh
+curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  -H 'Content-Type: application/json' \
+  -d "{\"url\":\"https://web-dashboard-phi-lac.vercel.app/api/v1/telegram/webhook\",\"secret_token\":\"${WEBHOOK_SECRET}\",\"allowed_updates\":[\"callback_query\"]}"
+curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+```
+
+`getWebhookInfo`의 `url`, `allowed_updates`, `pending_update_count`, `last_error_message`를 본다. 봇 토큰을 교체하면 파생 시크릿도 바뀌므로 새 시크릿으로 `setWebhook`를 다시 실행한다. 명시 시크릿을 바꿀 때도 같다. 이 URL은 Vercel `web-dashboard`를 거친다. Vercel이 `X-Telegram-Bot-Api-Secret-Token` 헤더와 POST 본문을 백엔드까지 그대로 전달하는지는 아직 검증하지 않았다. `last_error_message`에 401이 보이면 헤더가 전달되지 않은 것이다.
+
+### 웹훅 판정 순서
+
+1. 기능 꺼짐: 404
+2. 시크릿 헤더 없음: 401. 불일치(상수 시간 비교)이거나 사용 가능한 시크릿이 없으면 403
+3. `callback_query`가 아니거나 형식이 깨진 update: 200, 아무것도 하지 않음
+4. `message.chat.id` 또는 `from.id`가 설정과 다름: 200. 상태를 바꾸지 않고 Telegram 호출(answerCallbackQuery 포함)도 하지 않음
+5. `update_id` 중복 제거와 상태 전이. 인증된 정상 update에는 항상 2xx를 돌려준다. 후속 Telegram 호출 실패는 사유 코드만 로그에 남긴다.
+
+### 상태 머신과 2단계 규칙
+
+`PENDING →[승인]→ AWAITING_CONFIRM →[최종 승인]→ APPROVED`. `PENDING`/`AWAITING_CONFIRM`에서 [보류]/[취소]를 누르면 `HELD`(사유 `CANCELLED`)가 된다. 만료되면 `EXPIRED`, 같은 종목의 새 요청이 생기면 `SUPERSEDED`, 최종 승인 시 thesis가 요청 이후 바뀌었으면 `CONFLICT`, 그 밖의 쓰기 거부와 Telegram 전송 실패는 `FAILED`다. `CONFIRMED`로 가는 모든 전이는 중요 승인이므로 항상 두 단계를 거친다. [승인]만 누르면 thesis는 바뀌지 않는다. 최종 승인은 thesis 상태를 `CONFIRMED`로, 트리거를 요청 행의 값으로 바꾸며 나머지 필드와 `priceRiskTrigger` 문구는 그대로 둔다. 이 때문에 숫자와 문구가 다를 수 있다. revision에는 actor `TELEGRAM`, 요청 `sourceAsOf`, 사유 `TELEGRAM_APPROVAL request=<id>`가 남는다.
+
+모든 전이는 한 트랜잭션에서 처리한다. 순서는 요청 소유자 `users` 행 잠금, `telegram_webhook_updates`에 `update_id` 선점(`ON CONFLICT DO NOTHING`), 조건부 `UPDATE … RETURNING`이다. 요청 생성도 같은 사용자 행을 먼저 잠근다. 버튼 토큰은 32바이트 난수(base64url 43자)이며 DB에는 SHA-256 hex만 저장한다. 1단계 토큰은 [상세 검토]·[승인]·[보류]가 공유하고, 2단계 토큰은 [최종 승인]·[취소] 전용이다. `callback_data`는 `<동작 1자>:<토큰>`으로 45바이트다. [상세 검토]는 읽기 전용이고 토큰을 소모하지 않는다. 결정이 나면 키보드를 제거한다. 메시지는 `parse_mode` 없이 4096자 이내로 보내고, 위험은 비율(%)로만 표시하며 계좌 금액·수량은 넣지 않는다. 최종 승인 후에는 context를 다시 읽어 `sizingEligible`, `eligibilityReasons`, 무효화 하락폭, 계획 손실 기여를 보낸다. 보유·관심 대상이 아니면 `리스크 미산출(보유·관심 대상 아님)`으로 표시한다.
+
+### 후보 계산
+
+후보는 저장된 일봉만 사용하고 외부 데이터를 가져오지 않는다. `bar_date < 오늘(America/New_York)`인 완료 봉만 쓰며 가격은 수정주가가 아니다(`UNADJUSTED`).
+
+- `COMPUTED_ATR`: 최근 완료 봉 60개 창을 쓴다. `TR_i = max(H_i−L_i, |H_i−C_{i−1}|, |L_i−C_{i−1}|)`(두 번째 봉부터 계산)이다. 첫 14개 TR의 단순평균을 시드로 쓰고 이후 `ATR_t = (13·ATR_{t−1} + TR_t)/14`로 갱신한다. 봉이 15개 미만이면 `INSUFFICIENT_HISTORY`다. 후보는 `lastClose − 2·ATR`이며 DECIMAL128로 계산한 뒤 마지막에만 `setScale(4, FLOOR)`한다.
+- `COMPUTED_SUPPORT`: 최근 완료 봉 20개의 최저 저가다. 20개 미만이면 `INSUFFICIENT_HISTORY`다.
+- 다음 경우에는 후보를 만들지 않고 `UNVERIFIED`로 둔다. 창 안에 소스 충돌 봉이 있으면 `SOURCE_CONFLICT`다. 가격 스냅샷 상태가 `OK`가 아니거나 기준 시각이 없으면 `PRICE_UNVERIFIED`다. 마지막 완료 봉이 가격 기준일보다 4일 넘게 오래되면 `STALE_BARS`다. 이 4일은 주말·휴일을 감안한 경험값이며 거래소 달력이 아니다. 후보가 0 이하이거나 `lastClose` 이상이면 `CANDIDATE_OUT_OF_RANGE`다.
+- 가정 리스크는 thesis를 메모리에서만 `CONFIRMED`+후보 트리거로 바꾼 사본으로 기존 위험 계산(`riskContributions`, 같은 soft budget과 사유)을 다시 실행한 값이다. 저장하지 않는다.
+
 ## 확인
 
 로컬 fake data 테스트는 취약성 단독, 전염축 동시 악화, 금융기관 사고와 강제 디레버리징, 정책 위반, material event, watchlist 상태 전이, 반복 실행 중복 제거를 포함한다. 실제 API 운영 전에는 사용 계정의 CIK·피드·시장 지표 매핑과 관측 지연을 확인한다.
