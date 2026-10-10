@@ -587,14 +587,25 @@ public final class InvestmentOsSheetSyncService {
             return cached.payload();
         }
         JsonNode payload;
+        String unavailable = null;
         try {
             var response = brokerSurface.marketCalendar(userId, connectionId, "US", date);
             payload = response == null || response.unavailable() || response.data() == null
                     || !"US".equals(response.data().market()) ? null : response.data().payload();
+            if (payload == null) {
+                unavailable = response == null ? "EMPTY_RESPONSE" : response.unavailableReason() == null
+                        ? "CALENDAR_UNAVAILABLE" : response.unavailableReason();
+            }
         } catch (RuntimeException exception) {
             payload = null;
+            unavailable = safeError(exception);
         }
-        if (payload == null) return null;
+        if (payload == null) {
+            LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("market_calendar_date", date)
+                    .addKeyValue("failure_reason", unavailable)
+                    .log("official market calendar unavailable; closed-market state stays unverified");
+            return null;
+        }
         marketCalendars.put(date, new CachedCalendar(now, payload));
         marketCalendars.keySet().removeIf(key -> key.isBefore(now.atZone(NEW_YORK).toLocalDate().minusDays(7)));
         return payload;
@@ -649,7 +660,9 @@ public final class InvestmentOsSheetSyncService {
         else payload.put("manualReadAt", manualReadAt.toString());
         if (account1AsOf == null) payload.putNull("account1AsOf");
         else payload.put("account1AsOf", account1AsOf.toString());
-        putClosedMarketFacts(payload, attemptedAt, account1AsOf, portfolioAccountState, calendars);
+        // The account and quotes are read after the attempt starts (the read-through sync completes seconds later),
+        // so the facts are bounded by the time the payload is recorded, not by attemptedAt.
+        putClosedMarketFacts(payload, now.get(), account1AsOf, portfolioAccountState, calendars);
         payload.put("source", "TOSS_API+MANUAL_SHEET");
         payload.put("attemptStatus", status);
         payload.put("failurePresent", failure != null);
@@ -659,11 +672,12 @@ public final class InvestmentOsSheetSyncService {
 
     /**
      * Records calendar facts only when the earliest snapshot timestamp (ACCOUNT_1 as-of and every row's Price
-     * Synced At) lies outside every declared Toss interval and the next declared interval has not started at
-     * capture time. The read path then keeps these timestamps current until that interval starts.
+     * Synced At) lies outside every declared Toss interval and the next declared interval has not started when
+     * the payload is recorded ({@code recordedAt}). The read path then keeps these timestamps current until that
+     * interval starts. A timestamp later than {@code recordedAt} is never used as the reference.
      */
     private static void putClosedMarketFacts(
-            ObjectNode payload, Instant attemptedAt, Instant account1AsOf,
+            ObjectNode payload, Instant recordedAt, Instant account1AsOf,
             InvestmentOsSheetModel.SheetTable accountState, Function<LocalDate, JsonNode> calendars
     ) {
         if (account1AsOf == null) return;
@@ -674,9 +688,21 @@ public final class InvestmentOsSheetSyncService {
                 if (synced != null && synced.isBefore(reference)) reference = synced;
             }
         }
-        if (reference.isAfter(attemptedAt)) return;
-        var nextInterval = DeclaredMarketGap.nextIntervalStartIfOutside(reference, calendars);
-        if (nextInterval == null || !attemptedAt.isBefore(nextInterval)) return;
+        String skipped = null;
+        Instant nextInterval = null;
+        if (recordedAt == null || reference.isAfter(recordedAt)) {
+            skipped = "REFERENCE_AFTER_RECORDED_AT";
+        } else {
+            nextInterval = DeclaredMarketGap.nextIntervalStartIfOutside(reference, calendars);
+            if (nextInterval == null) skipped = "INSIDE_DECLARED_INTERVAL_OR_CALENDAR_UNVERIFIED";
+            else if (!recordedAt.isBefore(nextInterval)) skipped = "NEXT_DECLARED_INTERVAL_STARTED";
+        }
+        if (skipped != null) {
+            LOG.atInfo().addKeyValue("operation", OPERATION).addKeyValue("closed_market_facts", "not_recorded")
+                    .addKeyValue("reason", skipped).addKeyValue("reference_at", reference)
+                    .log("closed-market facts not recorded; the 15-minute freshness rule applies");
+            return;
+        }
         payload.put("sessionReason", InvestmentContextService.PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS);
         payload.put("sessionReferenceAt", reference.toString());
         payload.put("nextDeclaredIntervalStartsAt", nextInterval.toString());
