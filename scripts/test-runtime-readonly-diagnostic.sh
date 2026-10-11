@@ -40,8 +40,8 @@ for field in contract["fields"]:
         needle = "'{" + ",".join(path.split(".")) + "}'"
     assert needle in script, f"fingerprint descriptor path is not queried: {path}"
 
-sql_blocks = re.findall(r"(?:metadata_sql|projection_sql|portfolio_sql|ai_schema_sql|ai_verification_count_sql|ai_policy_revision_count_sql)=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
-assert len(sql_blocks) == 6, "expected all six read-only SQL blocks"
+sql_blocks = re.findall(r"(?:metadata_sql|projection_sql|portfolio_sql|ai_schema_sql|ai_verification_count_sql|ai_policy_revision_count_sql|thesis_revision_sql)=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
+assert len(sql_blocks) == 7, "expected all seven read-only SQL blocks"
 for sql in sql_blocks:
     assert sql.lstrip().startswith("BEGIN TRANSACTION READ ONLY;")
     assert sql.rstrip().endswith("ROLLBACK;")
@@ -49,6 +49,9 @@ for sql in sql_blocks:
 for required_probe in (
     "to_regclass('public.investment_thesis_ai_verification_events')",
     "to_regclass('public.investment_thesis_ai_policy_revisions')",
+    "to_regclass('public.investment_thesis_revisions')",
+    "actor_type = 'LEGACY_BASELINE'",
+    "asserted_run_id IS NOT NULL",
     "count(*) FILTER (WHERE outcome = 'AUTO_APPROVED')",
     "count(*) FILTER (WHERE outcome = 'BLOCKED')",
     "count(*) FILTER (WHERE outcome = 'REJECTED')",
@@ -87,7 +90,13 @@ for forbidden in ("'aggregate'", "'metrics'", "Current Price", "Quantity", "Mark
 assert "docker compose" in script and "compose ps -q" in script
 assert "docker inspect" in script and "127.0.0.1:8080/actuator/health/readiness" in script
 assert 'range .Config.Env' in script and '"INVESTMENT_THESIS_AI_POLICY_ENABLED"' in script
-assert 'join (slice (split . "=") 1) "="' in script
+for safe_setting in (
+    '"INVESTMENT_OS_SHEET_ENABLED"', '"INVESTMENT_OS_SHEET_USER_ID"',
+    '"INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"',
+    '"INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT"',
+    '"INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT"',
+):
+    assert safe_setting in script
 assert '{{range .Config.Env}}{{println .}}{{end}}' not in script
 assert "postgres_tcp_ready()" in fixture_test
 assert "-h 127.0.0.1" in fixture_test and "-c 'SELECT 1'" in fixture_test
@@ -127,9 +136,14 @@ case "${1:-}" in
     ;;
   inspect)
     policy_enabled="$MOCK_BACKEND_AI_POLICY_ENABLED"
-    [[ "$policy_enabled" != __UNSET__ ]] || policy_enabled='-'
-    printf '%s\tsha256:%s\t%s\t%s\t%s\n' \
-      "$MOCK_IMAGE_TAG" "$MOCK_IMAGE_DIGEST" "$MOCK_BACKEND_STATE" "$MOCK_BACKEND_HEALTH" "$policy_enabled"
+    printf '%s\tsha256:%s\t%s\t%s\n' \
+      "$MOCK_IMAGE_TAG" "$MOCK_IMAGE_DIGEST" "$MOCK_BACKEND_STATE" "$MOCK_BACKEND_HEALTH"
+    [[ "$policy_enabled" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_ENABLED=%s\n' "$policy_enabled"
+    [[ "$MOCK_BACKEND_SHEET_ENABLED" == __UNSET__ ]] || printf 'INVESTMENT_OS_SHEET_ENABLED=%s\n' "$MOCK_BACKEND_SHEET_ENABLED"
+    [[ "$MOCK_BACKEND_SHEET_OWNER_ID" == __UNSET__ ]] || printf 'INVESTMENT_OS_SHEET_USER_ID=%s\n' "$MOCK_BACKEND_SHEET_OWNER_ID"
+    [[ "$MOCK_BACKEND_MAX_EVIDENCE_AGE" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE=%s\n' "$MOCK_BACKEND_MAX_EVIDENCE_AGE"
+    [[ "$MOCK_BACKEND_MINIMUM_SOURCE_COUNT" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT=%s\n' "$MOCK_BACKEND_MINIMUM_SOURCE_COUNT"
+    [[ "$MOCK_BACKEND_MAX_TRIGGER_PCT" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT=%s\n' "$MOCK_BACKEND_MAX_TRIGGER_PCT"
     ;;
   exec)
     [[ "${2:-}" == -i ]] || exit 93
@@ -140,16 +154,19 @@ case "${1:-}" in
       exit 95
     fi
     if [[ "$sql" == *"to_regclass('public.investment_thesis_ai_verification_events')"* ]]; then
-      printf '%s\t%s\n' "$MOCK_AI_EVENT_SCHEMA" "$MOCK_AI_POLICY_SCHEMA"
+      printf '%s\t%s\t%s\n' "$MOCK_AI_EVENT_SCHEMA" "$MOCK_AI_POLICY_SCHEMA" "$MOCK_THESIS_REVISION_SCHEMA"
+    elif [[ "$sql" == *"WITH latest_revision AS"* ]]; then
+      [[ "${MOCK_FAIL_THESIS_REVISIONS:-0}" == 0 ]] || exit 104
+      printf '6\t0\t6\t6\t6\t0\t0\t6\n'
     elif [[ "$sql" == *"FROM investment_thesis_ai_verification_events"* ]]; then
       [[ "${MOCK_FAIL_AI_EVENTS:-0}" == 0 ]] || exit 102
       printf '5\t2\t1\t2\n'
     elif [[ "$sql" == *"FROM investment_thesis_ai_policy_revisions"* ]]; then
       [[ "${MOCK_FAIL_AI_POLICY:-0}" == 0 ]] || exit 103
-      printf '3\n'
+      printf '3\t%s\t86400\t2\t0.25\n' "$MOCK_STORED_POLICY_ENABLED"
     elif [[ "$sql" == *flyway_schema_history* ]]; then
       [[ "${MOCK_FAIL_METADATA:-0}" == 0 ]] || exit 96
-      printf '56\t%s\t12\t7\t9\t0\t0\t6\n' "$MOCK_FLYWAY_SUCCESS"
+      printf '56\t%s\t12\t7\t9\t6\t0\t6\n' "$MOCK_FLYWAY_SUCCESS"
     elif [[ "$sql" == *latest_per_ticker* ]]; then
       [[ "${MOCK_FAIL_PROJECTION:-0}" == 0 ]] || exit 97
       printf '%s\n' raw-financial-sentinel raw-provenance-sentinel raw-symbol-sentinel
@@ -222,6 +239,14 @@ mock_run() {
     MOCK_BACKEND_STATE="${MOCK_BACKEND_STATE:-running}" \
     MOCK_BACKEND_HEALTH="${MOCK_BACKEND_HEALTH:-healthy}" \
     MOCK_BACKEND_AI_POLICY_ENABLED="${MOCK_BACKEND_AI_POLICY_ENABLED:-true}" \
+    MOCK_BACKEND_SHEET_ENABLED="${MOCK_BACKEND_SHEET_ENABLED:-true}" \
+    MOCK_BACKEND_SHEET_OWNER_ID="${MOCK_BACKEND_SHEET_OWNER_ID:-AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE}" \
+    MOCK_BACKEND_MAX_EVIDENCE_AGE="${MOCK_BACKEND_MAX_EVIDENCE_AGE:-PT24H}" \
+    MOCK_BACKEND_MINIMUM_SOURCE_COUNT="${MOCK_BACKEND_MINIMUM_SOURCE_COUNT:-2}" \
+    MOCK_BACKEND_MAX_TRIGGER_PCT="${MOCK_BACKEND_MAX_TRIGGER_PCT:-0.25}" \
+    MOCK_THESIS_REVISION_SCHEMA="${MOCK_THESIS_REVISION_SCHEMA:-true}" \
+    MOCK_STORED_POLICY_ENABLED="${MOCK_STORED_POLICY_ENABLED:-true}" \
+    MOCK_FAIL_THESIS_REVISIONS="${MOCK_FAIL_THESIS_REVISIONS:-0}" \
     MOCK_READINESS_HTTP="${MOCK_READINESS_HTTP:-200}" \
     MOCK_READINESS_STATUS="${MOCK_READINESS_STATUS:-UP}" \
     MOCK_FLYWAY_SUCCESS="${MOCK_FLYWAY_SUCCESS:-true}" \
@@ -268,6 +293,35 @@ assert report["database"]["aiVerificationPolicy"] == {
     "aiPolicyRevisionCount": 3,
     "deploymentEnabled": True,
     "ownerScopeConfigured": True,
+    "effectiveOwnerPolicy": {
+        "storedOverridePresent": True,
+        "storedOverrideEnabled": True,
+        "enabled": True,
+        "source": "USER",
+        "sheetEnabled": True,
+        "ownerScopeMatches": True,
+        "configSources": {
+            "deploymentPolicyEnabled": "CONTAINER_ENV",
+            "sheetEnabled": "CONTAINER_ENV",
+            "ownerScope": "CONTAINER_ENV",
+            "thresholds": "DATABASE_USER_POLICY",
+        },
+        "maxEvidenceAgeSeconds": 86400,
+        "minimumSourceCount": 2,
+        "maxTriggerBelowPricePct": 0.25,
+    },
+}
+assert report["database"]["thesisRevisionDiagnostics"] == {
+    "available": True,
+    "thesesWithRevisionCount": 6,
+    "thesesWithoutRevisionCount": 0,
+    "revisionCount": 6,
+    "legacyBaselineRevisionCount": 6,
+    "currentThesesWithProposalRunIdCount": 0,
+    "currentThesesWithoutProposalRunIdCount": 6,
+    "latestSnapshotMatchCount": 6,
+    "latestSnapshotMismatchCount": 0,
+    "snapshotMatchStatus": "MATCH",
 }
 assert report["portfolioFreshness"] == {
     "querySuccess": True,
@@ -315,6 +369,20 @@ assert report["database"]["aiVerificationPolicy"] == {
     "aiPolicyRevisionCount": 0,
     "deploymentEnabled": True,
     "ownerScopeConfigured": True,
+    "effectiveOwnerPolicy": {
+        "storedOverridePresent": None,
+        "storedOverrideEnabled": None,
+        "enabled": None,
+        "source": "UNKNOWN",
+        "sheetEnabled": True,
+        "ownerScopeMatches": True,
+        "configSources": {
+            "deploymentPolicyEnabled": "CONTAINER_ENV", "sheetEnabled": "CONTAINER_ENV",
+            "ownerScope": "CONTAINER_ENV", "thresholds": "UNKNOWN",
+        },
+        "maxEvidenceAgeSeconds": None, "minimumSourceCount": None,
+        "maxTriggerBelowPricePct": None,
+    },
 }
 PY
 
@@ -353,6 +421,7 @@ from pathlib import Path
 
 report = json.loads(Path(sys.argv[1]).read_text())
 del report["database"]["aiVerificationPolicy"]
+del report["database"]["thesisRevisionDiagnostics"]
 Path(sys.argv[2]).write_text(json.dumps(report))
 PY
 python3 "$sanitizer" "$tmp/legacy-artifact.json" "$tmp/legacy-artifact-safe.json" ||
@@ -373,6 +442,32 @@ assert report["database"]["aiVerificationPolicy"] == {
     "aiPolicyRevisionCount": 0,
     "deploymentEnabled": None,
     "ownerScopeConfigured": False,
+    "effectiveOwnerPolicy": {
+        "storedOverridePresent": None,
+        "storedOverrideEnabled": None,
+        "enabled": None,
+        "source": "UNKNOWN",
+        "sheetEnabled": None,
+        "ownerScopeMatches": None,
+        "configSources": {
+            "deploymentPolicyEnabled": "UNKNOWN", "sheetEnabled": "UNKNOWN",
+            "ownerScope": "UNKNOWN", "thresholds": "UNKNOWN",
+        },
+        "maxEvidenceAgeSeconds": None, "minimumSourceCount": None,
+        "maxTriggerBelowPricePct": None,
+    },
+}
+assert report["database"]["thesisRevisionDiagnostics"] == {
+    "available": False,
+    "thesesWithRevisionCount": 0,
+    "thesesWithoutRevisionCount": 0,
+    "revisionCount": 0,
+    "legacyBaselineRevisionCount": 0,
+    "currentThesesWithProposalRunIdCount": 0,
+    "currentThesesWithoutProposalRunIdCount": 0,
+    "latestSnapshotMatchCount": 0,
+    "latestSnapshotMismatchCount": 0,
+    "snapshotMatchStatus": "UNKNOWN",
 }
 PY
 
@@ -516,7 +611,7 @@ from pathlib import Path
 script = Path(sys.argv[1]).read_text()
 tmp = Path(sys.argv[2])
 for name in ("metadata_sql", "projection_sql", "portfolio_sql", "ai_schema_sql",
-             "ai_verification_count_sql", "ai_policy_revision_count_sql"):
+             "ai_verification_count_sql", "ai_policy_revision_count_sql", "thesis_revision_sql"):
     match = re.search(rf"{name}=\$\(cat <<'SQL'\n(.*?)\nSQL\n\)", script, re.S)
     assert match, f"missing SQL block {name}"
     (tmp / f"{name}.sql").write_text(match.group(1) + "\n")
@@ -552,19 +647,56 @@ if docker info >/dev/null 2>&1; then
   absent_ai_schema="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
     -U trade -d trade -h /var/run/postgresql -f - <"$tmp/ai_schema_sql.sql")" ||
     fail "real PostgreSQL AI schema probe failed before optional tables existed"
-  [[ "$absent_ai_schema" == $'false\tfalse' ]] || fail "AI schema probe did not report both optional tables absent"
+  [[ "$absent_ai_schema" == $'false\tfalse\tfalse' ]] || fail "AI schema probe did not report optional tables absent"
   docker exec -i "$pg_container" psql -X -q -v ON_ERROR_STOP=1 -U trade -d trade >/dev/null <<SQL
 CREATE TABLE flyway_schema_history (installed_rank integer, version text, success boolean);
 CREATE TABLE analysis_input_snapshots (id integer, user_id uuid);
 CREATE TABLE investment_security_snapshots (id uuid, user_id uuid, ticker text, as_of timestamptz, payload jsonb);
 CREATE TABLE investment_price_snapshots (id integer, user_id uuid);
-CREATE TABLE investment_thesis_states (id integer, user_id uuid);
+CREATE TABLE investment_thesis_states (
+  user_id uuid, ticker text, core_thesis text, upside_driver text, expectations_gap text,
+  fundamental_invalidation text, revision_invalidation text, price_risk_trigger text,
+  price_risk_trigger_price numeric, invalidation_status text, expand_trigger text,
+  exit_or_discard_trigger text, classification text, updated_at timestamptz);
 CREATE TABLE investment_decision_ledger (id integer, user_id uuid);
+CREATE TABLE investment_thesis_revisions (
+  id uuid, user_id uuid, ticker text, revision bigint, actor_type text,
+  asserted_run_id text, thesis_snapshot jsonb);
 CREATE TABLE investment_thesis_ai_verification_events (
   verification_event_id uuid PRIMARY KEY, user_id uuid NOT NULL, outcome varchar(24) NOT NULL,
   source_urls jsonb NOT NULL, rationale text NOT NULL, counterevidence text NOT NULL);
 CREATE TABLE investment_thesis_ai_policy_revisions (
-  id uuid PRIMARY KEY, user_id uuid NOT NULL, policy_version text NOT NULL, enabled boolean NOT NULL);
+  id uuid PRIMARY KEY, user_id uuid NOT NULL, revision bigint NOT NULL,
+  policy_version text NOT NULL, enabled boolean NOT NULL, max_evidence_age_seconds integer NOT NULL,
+  minimum_source_count smallint NOT NULL, max_trigger_below_price_pct numeric NOT NULL);
+INSERT INTO investment_thesis_states VALUES
+  ('$pg_owner', 'AVT', 'raw-thesis-sentinel', 'upside', 'gap', 'fundamental', 'revision', 'trigger',
+   12.34, 'AI_PROPOSED', 'expand', 'exit', 'CLASS_A', now()),
+  ('$pg_owner', 'CSTM', 'current-cstm-sentinel', NULL, NULL, NULL, NULL, NULL,
+   NULL, 'UNVERIFIED', NULL, NULL, NULL, now()),
+  ('$pg_owner', 'LUNR', 'no-revision-sentinel', NULL, NULL, NULL, NULL, NULL,
+   NULL, 'AI_PROPOSED', NULL, NULL, NULL, now()),
+  ('99999999-2222-4333-8444-555555555555', 'AVT', 'other-owner-sentinel', NULL, NULL, NULL, NULL, NULL,
+   NULL, 'AI_PROPOSED', NULL, NULL, NULL, now());
+INSERT INTO investment_thesis_revisions VALUES
+  ('00000000-0000-4000-8000-000000000401', '$pg_owner', 'AVT', 1, 'LEGACY_BASELINE', NULL,
+   jsonb_build_object(
+     'ticker', 'AVT', 'coreThesis', 'raw-thesis-sentinel', 'upsideDriver', 'upside', 'expectationsGap', 'gap',
+     'fundamentalInvalidation', 'fundamental', 'revisionInvalidation', 'revision', 'priceRiskTrigger', 'trigger',
+     'priceRiskTriggerPrice', 12.34, 'invalidationStatus', 'AI_PROPOSED', 'expandTrigger', 'expand',
+     'exitOrDiscardTrigger', 'exit', 'classification', 'CLASS_A', 'updatedAt', now(),
+     'revisionId', '00000000-0000-4000-8000-000000000401', 'revision', 1,
+     'approvalActorType', 'LEGACY_BASELINE', 'policyVersion', NULL,
+     'verificationEventId', NULL, 'assertedRunId', NULL)),
+  ('00000000-0000-4000-8000-000000000402', '$pg_owner', 'CSTM', 1, 'CONNECTOR_MCP', 'proposal-run-assertion',
+   jsonb_build_object(
+     'ticker', 'CSTM', 'coreThesis', 'raw-thesis-sentinel-mismatch', 'upsideDriver', NULL, 'expectationsGap', NULL,
+     'fundamentalInvalidation', NULL, 'revisionInvalidation', NULL, 'priceRiskTrigger', NULL,
+     'priceRiskTriggerPrice', NULL, 'invalidationStatus', 'UNVERIFIED', 'expandTrigger', NULL,
+     'exitOrDiscardTrigger', NULL, 'classification', NULL, 'updatedAt', now(),
+     'revisionId', '00000000-0000-4000-8000-000000000402', 'revision', 1,
+     'approvalActorType', 'CONNECTOR_MCP', 'policyVersion', NULL,
+     'verificationEventId', NULL, 'assertedRunId', 'proposal-run-assertion'));
 CREATE TABLE investment_os_portfolio_snapshots (
   id uuid PRIMARY KEY, user_id uuid NOT NULL,
   attempt_status varchar(16) NOT NULL CHECK (attempt_status IN ('SUCCEEDED', 'PARTIAL', 'FAILED')),
@@ -609,10 +741,10 @@ INSERT INTO investment_thesis_ai_verification_events VALUES
   ('00000000-0000-4000-8000-000000000205', '$pg_owner', 'REJECTED', '["raw-ai-url-sentinel"]', 'raw-ai-rationale-sentinel', 'raw-ai-counterevidence-sentinel'),
   ('00000000-0000-4000-8000-000000000206', '99999999-2222-4333-8444-555555555555', 'AUTO_APPROVED', '["raw-other-ai-url-sentinel"]', 'raw-other-ai-rationale-sentinel', 'raw-other-ai-counterevidence-sentinel');
 INSERT INTO investment_thesis_ai_policy_revisions VALUES
-  ('00000000-0000-4000-8000-000000000301', '$pg_owner', 'raw-ai-policy-version-sentinel', true),
-  ('00000000-0000-4000-8000-000000000302', '$pg_owner', 'raw-ai-policy-version-sentinel', false),
-  ('00000000-0000-4000-8000-000000000303', '$pg_owner', 'raw-ai-policy-version-sentinel', true),
-  ('00000000-0000-4000-8000-000000000304', '99999999-2222-4333-8444-555555555555', 'raw-other-ai-policy-version-sentinel', true);
+  ('00000000-0000-4000-8000-000000000301', '$pg_owner', 1, 'raw-ai-policy-version-sentinel', true, 86400, 2, 0.25),
+  ('00000000-0000-4000-8000-000000000302', '$pg_owner', 2, 'raw-ai-policy-version-sentinel', false, 86400, 2, 0.25),
+  ('00000000-0000-4000-8000-000000000303', '$pg_owner', 3, 'raw-ai-policy-version-sentinel', true, 86400, 2, 0.25),
+  ('00000000-0000-4000-8000-000000000304', '99999999-2222-4333-8444-555555555555', 1, 'raw-other-ai-policy-version-sentinel', true, 86400, 2, 0.25);
 WITH payload AS (
   SELECT jsonb_build_object(
     'asOf', '2026-10-08T20:00:00Z',
@@ -659,27 +791,36 @@ SQL
   present_ai_schema="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
     -U trade -d trade -h /var/run/postgresql -f - <"$tmp/ai_schema_sql.sql")" ||
     fail "real PostgreSQL AI schema probe failed after optional tables existed"
-  [[ "$present_ai_schema" == $'true\ttrue' ]] || fail "AI schema probe did not report both optional tables present"
+  [[ "$present_ai_schema" == $'true\ttrue\ttrue' ]] || fail "AI schema probe did not report all optional tables present"
+  thesis_revision_counts="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
+    -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - \
+    <"$tmp/thesis_revision_sql.sql")" || fail "real PostgreSQL thesis revision query failed"
+  [[ "$thesis_revision_counts" == $'2\t1\t2\t1\t1\t1\t1\t2' ]] ||
+    fail "thesis revision counts, snapshot comparison, or run-ID presence were incorrect"
+  [[ "$thesis_revision_counts" != *raw-thesis-sentinel* && "$thesis_revision_counts" != *proposal-run-assertion* ]] ||
+    fail "thesis revision query leaked thesis content or run IDs"
   ai_event_counts="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
     -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - \
     <"$tmp/ai_verification_count_sql.sql")" || fail "real PostgreSQL AI verification count query failed"
   [[ "$ai_event_counts" == $'5\t2\t1\t2' ]] || fail "AI verification counts were not owner-scoped or outcome-correct"
-  ai_policy_count="$(docker exec -i "$pg_container" psql -X -q -t -A -w -v ON_ERROR_STOP=1 \
+  ai_policy_count="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
     -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - \
     <"$tmp/ai_policy_revision_count_sql.sql")" || fail "real PostgreSQL AI policy revision count query failed"
-  [[ "$ai_policy_count" == 3 ]] || fail "AI policy revision count was not owner-scoped"
+  [[ "$ai_policy_count" == $'3\ttrue\t86400\t2\t0.25' ||
+     "$ai_policy_count" == $'3\ttrue\t86400\t2\t0.250000' ]] ||
+    fail "AI policy revision count or latest thresholds were not owner-scoped"
   for sentinel in raw-ai-url-sentinel raw-ai-rationale-sentinel raw-ai-counterevidence-sentinel \
     raw-other-ai-url-sentinel raw-ai-policy-version-sentinel raw-other-ai-policy-version-sentinel; do
     [[ "$ai_event_counts$ai_policy_count" != *"$sentinel"* ]] || fail "AI count output leaked evidence or policy text"
   done
 
-  read_sql='BEGIN TRANSACTION READ ONLY; SELECT (SELECT count(*) FROM analysis_input_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_security_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_price_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_os_portfolio_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_thesis_ai_verification_events)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_thesis_ai_policy_revisions)::text; ROLLBACK;'
+  read_sql='BEGIN TRANSACTION READ ONLY; SELECT (SELECT count(*) FROM analysis_input_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_security_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_price_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_os_portfolio_snapshots)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_thesis_ai_verification_events)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_thesis_ai_policy_revisions)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_thesis_states)::text || '"'"'|'"'"' || (SELECT count(*) FROM investment_thesis_revisions)::text; ROLLBACK;'
   before="$(docker exec "$pg_container" psql -X -q -t -A -U trade -d trade -c "$read_sql")"
   metadata="$(docker exec -i "$pg_container" psql -X -q -t -A -w -F $'\t' -v ON_ERROR_STOP=1 \
     -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - <"$tmp/metadata_sql.sql")"
   IFS=$'\t' read -r version success input_count security_count price_count thesis_count decision_count projection_count <<<"$metadata"
   [[ "$version" == 56 && "$success" == true && "$input_count" == 2 && "$security_count" == 7 &&
-     "$price_count" == 3 && "$thesis_count" == 0 && "$decision_count" == 0 && "$projection_count" == 6 ]] ||
+     "$price_count" == 3 && "$thesis_count" == 3 && "$decision_count" == 0 && "$projection_count" == 6 ]] ||
     fail "real PostgreSQL metadata query returned unexpected scoped counts"
   projections="$(docker exec -i "$pg_container" psql -X -q -t -A -w -v ON_ERROR_STOP=1 \
     -v "owner_id=$pg_owner" -U trade -d trade -h /var/run/postgresql -f - <"$tmp/projection_sql.sql")"
