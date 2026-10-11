@@ -13,7 +13,7 @@ fail() {
   fail 'configured snapshot owner is unavailable'
 
 expected_sha="$(printf '%s' "$EXPECTED_SHA" | tr '[:upper:]' '[:lower:]')"
-owner_id="$INVESTMENT_OS_SHEET_USER_ID"
+owner_id="$(printf '%s' "$INVESTMENT_OS_SHEET_USER_ID" | tr '[:upper:]' '[:lower:]')"
 cd -- "$BACKEND_DEPLOY_PATH"
 
 compose() {
@@ -37,10 +37,93 @@ backend_state='unknown'
 backend_health='unknown'
 backend_id=''
 ai_policy_deployment_enabled='null'
+ai_policy_deployment_source='UNKNOWN'
+sheet_enabled='null'
+sheet_enabled_source='UNKNOWN'
+sheet_owner_matches='null'
+sheet_owner_source='UNKNOWN'
+deployment_max_evidence_age_seconds='null'
+deployment_minimum_source_count='null'
+deployment_max_trigger_below_price_pct='null'
+deployment_threshold_source='UNKNOWN'
+owner_policy_stored_override_present='null'
+owner_policy_stored_override_enabled='null'
+owner_policy_effective_enabled='null'
+owner_policy_source='UNKNOWN'
+owner_policy_max_evidence_age_seconds='null'
+owner_policy_minimum_source_count='null'
+owner_policy_max_trigger_below_price_pct='null'
+owner_policy_source_thresholds='UNKNOWN'
+thesis_revision_diagnostics_available='false'
+thesis_with_revision_count='0'
+thesis_without_revision_count='0'
+thesis_revision_count='0'
+legacy_baseline_revision_count='0'
+latest_thesis_snapshot_match_count='0'
+latest_thesis_snapshot_mismatch_count='0'
+current_theses_with_proposal_run_id_count='0'
+current_theses_without_proposal_run_id_count='0'
+current_thesis_snapshot_match_status='UNKNOWN'
+
+safe_bool() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" in
+    true|yes|on|1) printf 'true' ;;
+    false|no|off|0) printf 'false' ;;
+    *) return 1 ;;
+  esac
+}
+
+safe_duration_seconds() {
+  local value="$1" hours minutes seconds total
+  [[ "$value" =~ ^PT(([0-9]{1,6})H)?(([0-9]{1,6})M)?(([0-9]{1,6})S)?$ ]] || return 1
+  hours="${BASH_REMATCH[2]:-0}"
+  minutes="${BASH_REMATCH[4]:-0}"
+  seconds="${BASH_REMATCH[6]:-0}"
+  [[ -n "${BASH_REMATCH[2]:-}${BASH_REMATCH[4]:-}${BASH_REMATCH[6]:-}" ]] || return 1
+  total=$((10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds))
+  (( total >= 60 && total <= 604800 )) || return 1
+  printf '%s' "$total"
+}
+
+safe_source_count() {
+  [[ "$1" =~ ^([1-9]|10)$ ]] || return 1
+  printf '%s' "$1"
+}
+
+safe_trigger_pct() {
+  local fraction scaled
+  [[ "$1" =~ ^0([.]([0-9]{1,6}))?$ ]] || return 1
+  fraction="${BASH_REMATCH[2]:-}"
+  [[ -n "$fraction" ]] || fraction='0'
+  while (( ${#fraction} < 6 )); do fraction="${fraction}0"; done
+  scaled=$((10#$fraction))
+  (( scaled <= 500000 )) || return 1
+  printf '0.%06d' "$scaled"
+}
+
 if backend_id="$(single_container_id backend)"; then
-  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\t"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{join (slice (split . "=") 1) "="}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
-  IFS=$'\t' read -r candidate_tag candidate_image_id candidate_state candidate_health \
-    candidate_ai_policy_enabled <<<"$inspect"
+  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\n"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_USER_ID"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT"}}{{println .}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
+  inspect_header="${inspect%%$'\n'*}"
+  IFS=$'\t' read -r candidate_tag candidate_image_id candidate_state candidate_health <<<"$inspect_header"
+  inspect_env=''
+  if [[ "$inspect" == *$'\n'* ]]; then inspect_env="${inspect#*$'\n'}"; fi
+  candidate_ai_policy_enabled=''
+  candidate_sheet_enabled=''
+  candidate_sheet_owner_id=''
+  candidate_sheet_owner_seen='false'
+  candidate_max_evidence_age=''
+  candidate_minimum_source_count=''
+  candidate_max_trigger_pct=''
+  while IFS= read -r config_entry; do
+    case "$config_entry" in
+      INVESTMENT_THESIS_AI_POLICY_ENABLED=*) candidate_ai_policy_enabled="${config_entry#*=}" ;;
+      INVESTMENT_OS_SHEET_ENABLED=*) candidate_sheet_enabled="${config_entry#*=}" ;;
+      INVESTMENT_OS_SHEET_USER_ID=*) candidate_sheet_owner_id="${config_entry#*=}"; candidate_sheet_owner_seen='true' ;;
+      INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE=*) candidate_max_evidence_age="${config_entry#*=}" ;;
+      INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT=*) candidate_minimum_source_count="${config_entry#*=}" ;;
+      INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT=*) candidate_max_trigger_pct="${config_entry#*=}" ;;
+    esac
+  done <<<"$inspect_env"
   if [[ "${candidate_tag:-}" =~ ^trade-backend:[0-9a-f]{40}$ ]]; then backend_tag="$candidate_tag"; fi
   if [[ "${candidate_image_id:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; then backend_image_id="$candidate_image_id"; fi
   case "${candidate_state:-}" in
@@ -49,10 +132,32 @@ if backend_id="$(single_container_id backend)"; then
   case "${candidate_health:-}" in
     healthy|unhealthy|starting|none) backend_health="$candidate_health" ;;
   esac
-  case "$(printf '%s' "${candidate_ai_policy_enabled:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" in
-    true|yes|on|1) ai_policy_deployment_enabled='true' ;;
-    false|no|off|0) ai_policy_deployment_enabled='false' ;;
-  esac
+  if normalized="$(safe_bool "${candidate_ai_policy_enabled:-}")"; then
+    ai_policy_deployment_enabled="$normalized"
+    ai_policy_deployment_source='CONTAINER_ENV'
+  fi
+  if normalized="$(safe_bool "${candidate_sheet_enabled:-}")"; then
+    sheet_enabled="$normalized"
+    sheet_enabled_source='CONTAINER_ENV'
+  fi
+  if [[ -n "${candidate_sheet_owner_id:-}" && "$candidate_sheet_owner_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    if [[ "$(printf '%s' "$candidate_sheet_owner_id" | tr '[:upper:]' '[:lower:]')" == "$owner_id" ]]; then
+      sheet_owner_matches='true'
+    else
+      sheet_owner_matches='false'
+    fi
+    sheet_owner_source='CONTAINER_ENV'
+  elif [[ "$candidate_sheet_owner_seen" == true && -z "${candidate_sheet_owner_id:-}" ]]; then
+    sheet_owner_matches='false'
+    sheet_owner_source='CONTAINER_ENV'
+  fi
+  if normalized="$(safe_duration_seconds "${candidate_max_evidence_age:-}")"; then deployment_max_evidence_age_seconds="$normalized"; fi
+  if normalized="$(safe_source_count "${candidate_minimum_source_count:-}")"; then deployment_minimum_source_count="$normalized"; fi
+  if normalized="$(safe_trigger_pct "${candidate_max_trigger_pct:-}")"; then deployment_max_trigger_below_price_pct="$normalized"; fi
+  if [[ "$deployment_max_evidence_age_seconds" != null && "$deployment_minimum_source_count" != null &&
+        "$deployment_max_trigger_below_price_pct" != null ]]; then
+    deployment_threshold_source='CONTAINER_ENV'
+  fi
 fi
 
 readiness_http='000'
@@ -155,15 +260,90 @@ SQL
 
     ai_schema_sql=$(cat <<'SQL'
 BEGIN TRANSACTION READ ONLY;
-SELECT
+  SELECT
   CASE WHEN to_regclass('public.investment_thesis_ai_verification_events') IS NULL THEN 'false' ELSE 'true' END,
-  CASE WHEN to_regclass('public.investment_thesis_ai_policy_revisions') IS NULL THEN 'false' ELSE 'true' END;
+  CASE WHEN to_regclass('public.investment_thesis_ai_policy_revisions') IS NULL THEN 'false' ELSE 'true' END,
+  CASE WHEN to_regclass('public.investment_thesis_revisions') IS NULL THEN 'false' ELSE 'true' END;
 ROLLBACK;
 SQL
 )
     ai_schema_metadata="$(printf '%s\n' "$ai_schema_sql" | docker exec -i "$db_id" psql -X -q -t -A -w -F $'\t' \
       -v ON_ERROR_STOP=1 -U trade -d trade -h /var/run/postgresql -f - 2>/dev/null || true)"
-    IFS=$'\t' read -r candidate_ai_events_schema candidate_ai_policy_schema <<<"$ai_schema_metadata"
+    IFS=$'\t' read -r candidate_ai_events_schema candidate_ai_policy_schema candidate_thesis_revisions_schema <<<"$ai_schema_metadata"
+
+    if [[ "${candidate_thesis_revisions_schema:-}" == true ]]; then
+      thesis_revision_sql=$(cat <<'SQL'
+BEGIN TRANSACTION READ ONLY;
+WITH latest_revision AS (
+  SELECT DISTINCT ON (user_id, ticker)
+         user_id, ticker, id, actor_type, asserted_run_id, thesis_snapshot
+    FROM investment_thesis_revisions
+   WHERE user_id = :'owner_id'::uuid
+   ORDER BY user_id, ticker, revision DESC, id DESC
+), compared AS (
+  SELECT state.ticker, latest.id AS revision_id,
+         (latest.asserted_run_id IS NOT NULL AND length(btrim(latest.asserted_run_id)) > 0) AS proposal_run_id_present,
+         CASE WHEN latest.id IS NULL THEN NULL ELSE
+           latest.thesis_snapshot - 'revisionId' - 'revision' - 'approvalActorType' -
+             'policyVersion' - 'verificationEventId' - 'assertedRunId' - 'updatedAt' =
+           jsonb_build_object(
+             'ticker', state.ticker,
+             'coreThesis', state.core_thesis,
+             'upsideDriver', state.upside_driver,
+             'expectationsGap', state.expectations_gap,
+             'fundamentalInvalidation', state.fundamental_invalidation,
+             'revisionInvalidation', state.revision_invalidation,
+             'priceRiskTrigger', state.price_risk_trigger,
+             'priceRiskTriggerPrice', state.price_risk_trigger_price,
+             'invalidationStatus', state.invalidation_status,
+             'expandTrigger', state.expand_trigger,
+             'exitOrDiscardTrigger', state.exit_or_discard_trigger,
+             'classification', state.classification
+           )
+         END AS snapshot_matches
+    FROM investment_thesis_states state
+    LEFT JOIN latest_revision latest
+      ON latest.user_id = state.user_id AND latest.ticker = state.ticker
+   WHERE state.user_id = :'owner_id'::uuid
+)
+SELECT
+  count(*) FILTER (WHERE revision_id IS NOT NULL),
+  count(*) FILTER (WHERE revision_id IS NULL),
+  (SELECT count(*) FROM investment_thesis_revisions WHERE user_id = :'owner_id'::uuid),
+  (SELECT count(*) FROM investment_thesis_revisions
+    WHERE user_id = :'owner_id'::uuid AND actor_type = 'LEGACY_BASELINE'),
+  count(*) FILTER (WHERE snapshot_matches IS TRUE),
+  count(*) FILTER (WHERE snapshot_matches IS FALSE),
+  count(*) FILTER (WHERE proposal_run_id_present IS TRUE),
+  count(*) FILTER (WHERE revision_id IS NULL OR proposal_run_id_present IS FALSE)
+  FROM compared;
+ROLLBACK;
+SQL
+)
+      thesis_revision_row="$(printf '%s\n' "$thesis_revision_sql" | docker exec -i "$db_id" psql -X -q -t -A -w -F $'\t' \
+        -v ON_ERROR_STOP=1 -v "owner_id=$owner_id" -U trade -d trade -h /var/run/postgresql -f - 2>/dev/null || true)"
+      IFS=$'\t' read -r candidate_with_revision candidate_without_revision candidate_revision_total \
+        candidate_legacy_baseline candidate_snapshot_match candidate_snapshot_mismatch \
+        candidate_with_run_id candidate_without_run_id <<<"$thesis_revision_row"
+      if [[ "${candidate_with_revision:-}" =~ ^[0-9]+$ &&
+            "${candidate_without_revision:-}" =~ ^[0-9]+$ &&
+            "${candidate_revision_total:-}" =~ ^[0-9]+$ &&
+            "${candidate_legacy_baseline:-}" =~ ^[0-9]+$ &&
+            "${candidate_snapshot_match:-}" =~ ^[0-9]+$ &&
+            "${candidate_snapshot_mismatch:-}" =~ ^[0-9]+$ &&
+            "${candidate_with_run_id:-}" =~ ^[0-9]+$ &&
+            "${candidate_without_run_id:-}" =~ ^[0-9]+$ ]]; then
+        thesis_revision_diagnostics_available='true'
+        thesis_with_revision_count="$candidate_with_revision"
+        thesis_without_revision_count="$candidate_without_revision"
+        thesis_revision_count="$candidate_revision_total"
+        legacy_baseline_revision_count="$candidate_legacy_baseline"
+        latest_thesis_snapshot_match_count="$candidate_snapshot_match"
+        latest_thesis_snapshot_mismatch_count="$candidate_snapshot_mismatch"
+        current_theses_with_proposal_run_id_count="$candidate_with_run_id"
+        current_theses_without_proposal_run_id_count="$candidate_without_run_id"
+      fi
+    fi
 
     if [[ "${candidate_ai_events_schema:-}" == true ]]; then
       ai_verification_count_sql=$(cat <<'SQL'
@@ -196,17 +376,52 @@ SQL
     if [[ "${candidate_ai_policy_schema:-}" == true ]]; then
       ai_policy_revision_count_sql=$(cat <<'SQL'
 BEGIN TRANSACTION READ ONLY;
-SELECT count(*)
+SELECT count(*),
+       coalesce((SELECT enabled::text FROM investment_thesis_ai_policy_revisions
+                  WHERE user_id = :'owner_id'::uuid ORDER BY revision DESC, id DESC LIMIT 1), '#NULL#'),
+       coalesce((SELECT max_evidence_age_seconds::text FROM investment_thesis_ai_policy_revisions
+                  WHERE user_id = :'owner_id'::uuid ORDER BY revision DESC, id DESC LIMIT 1), '#NULL#'),
+       coalesce((SELECT minimum_source_count::text FROM investment_thesis_ai_policy_revisions
+                  WHERE user_id = :'owner_id'::uuid ORDER BY revision DESC, id DESC LIMIT 1), '#NULL#'),
+       coalesce((SELECT max_trigger_below_price_pct::text FROM investment_thesis_ai_policy_revisions
+                  WHERE user_id = :'owner_id'::uuid ORDER BY revision DESC, id DESC LIMIT 1), '#NULL#')
   FROM investment_thesis_ai_policy_revisions
  WHERE user_id = :'owner_id'::uuid;
 ROLLBACK;
 SQL
 )
-      ai_policy_revision_count_result="$(printf '%s\n' "$ai_policy_revision_count_sql" | docker exec -i "$db_id" psql -X -q -t -A -w \
+      ai_policy_revision_row="$(printf '%s\n' "$ai_policy_revision_count_sql" | docker exec -i "$db_id" psql -X -q -t -A -w -F $'\t' \
         -v ON_ERROR_STOP=1 -v "owner_id=$owner_id" -U trade -d trade -h /var/run/postgresql -f - 2>/dev/null || true)"
-      if [[ "$ai_policy_revision_count_result" =~ ^[0-9]+$ ]]; then
+      IFS=$'\t' read -r candidate_policy_count candidate_policy_enabled candidate_policy_age \
+        candidate_policy_source_count candidate_policy_trigger_pct <<<"$ai_policy_revision_row"
+      if [[ "${candidate_policy_count:-}" =~ ^[0-9]+$ &&
+            "${candidate_policy_enabled:-}" =~ ^(true|false|#NULL#)$ &&
+            "${candidate_policy_age:-}" =~ ^([0-9]+|#NULL#)$ &&
+            "${candidate_policy_source_count:-}" =~ ^([0-9]+|#NULL#)$ &&
+            "${candidate_policy_trigger_pct:-}" =~ ^([0-9]+([.][0-9]+)?|#NULL#)$ ]]; then
         ai_policy_revisions_available='true'
-        ai_policy_revision_count="$ai_policy_revision_count_result"
+        ai_policy_revision_count="$candidate_policy_count"
+        if (( candidate_policy_count > 0 )) &&
+           [[ "$candidate_policy_enabled" =~ ^(true|false)$ && "$candidate_policy_age" =~ ^[0-9]+$ ]] &&
+           candidate_policy_age_normalized="$(safe_duration_seconds "PT${candidate_policy_age}S")" &&
+           candidate_policy_source_count_normalized="$(safe_source_count "$candidate_policy_source_count")" &&
+           candidate_policy_trigger_pct_normalized="$(safe_trigger_pct "$candidate_policy_trigger_pct")"; then
+          owner_policy_stored_override_present='true'
+          owner_policy_stored_override_enabled="$candidate_policy_enabled"
+          owner_policy_effective_enabled="$candidate_policy_enabled"
+          owner_policy_source='USER'
+          owner_policy_max_evidence_age_seconds="$candidate_policy_age_normalized"
+          owner_policy_minimum_source_count="$candidate_policy_source_count_normalized"
+          owner_policy_max_trigger_below_price_pct="$candidate_policy_trigger_pct_normalized"
+          deployment_threshold_source='DATABASE_USER_POLICY'
+        elif (( candidate_policy_count == 0 )) &&
+             [[ "$candidate_policy_enabled" == '#NULL#' && "$candidate_policy_age" == '#NULL#' &&
+                "$candidate_policy_source_count" == '#NULL#' && "$candidate_policy_trigger_pct" == '#NULL#' ]]; then
+          owner_policy_stored_override_present='false'
+        else
+          ai_policy_revisions_available='false'
+          ai_policy_revision_count='0'
+        fi
       fi
     fi
 
@@ -498,6 +713,47 @@ SQL
   fi
 fi
 
+if [[ "$ai_policy_revisions_available" == true && "$ai_policy_revision_count" == 0 &&
+      "$owner_policy_stored_override_present" == null ]]; then
+  owner_policy_stored_override_present='false'
+fi
+if [[ "$ai_policy_revisions_available" == true && "$owner_policy_stored_override_present" == false &&
+      "$owner_policy_source" == UNKNOWN ]]; then
+  if [[ "$ai_policy_deployment_enabled" != null && "$sheet_enabled" != null && "$sheet_owner_matches" != null ]]; then
+    if [[ "$ai_policy_deployment_enabled" == true && "$sheet_enabled" == true && "$sheet_owner_matches" == true ]]; then
+      owner_policy_effective_enabled='true'
+      owner_policy_source='DEPLOYMENT'
+    else
+      owner_policy_effective_enabled='false'
+      owner_policy_source='DEFAULT_DISABLED'
+    fi
+  fi
+  owner_policy_max_evidence_age_seconds="$deployment_max_evidence_age_seconds"
+  owner_policy_minimum_source_count="$deployment_minimum_source_count"
+  owner_policy_max_trigger_below_price_pct="$deployment_max_trigger_below_price_pct"
+  if [[ "$deployment_threshold_source" == CONTAINER_ENV ]]; then
+    owner_policy_source_thresholds='CONTAINER_ENV'
+  else
+    owner_policy_source_thresholds='UNKNOWN'
+  fi
+fi
+if [[ "$owner_policy_stored_override_present" == true ]]; then
+  owner_policy_source_thresholds='DATABASE_USER_POLICY'
+fi
+if [[ "$thesis_revision_diagnostics_available" == true ]]; then
+  if (( thesis_count == 0 )); then
+    current_thesis_snapshot_match_status='NO_THESIS'
+  elif (( thesis_with_revision_count == 0 )); then
+    current_thesis_snapshot_match_status='NO_REVISION'
+  elif (( latest_thesis_snapshot_match_count > 0 && latest_thesis_snapshot_mismatch_count > 0 )); then
+    current_thesis_snapshot_match_status='MIXED'
+  elif (( latest_thesis_snapshot_mismatch_count > 0 )); then
+    current_thesis_snapshot_match_status='MISMATCH'
+  elif (( latest_thesis_snapshot_match_count == thesis_with_revision_count )); then
+    current_thesis_snapshot_match_status='MATCH'
+  fi
+fi
+
 expected_sha_matches='null'
 if [[ -n "$expected_sha" ]]; then
   if [[ "$backend_tag" == "trade-backend:$expected_sha" ]]; then
@@ -531,11 +787,27 @@ printf '"readiness":{"httpStatus":"%s","status":"%s"},"database":{"status":"%s",
   "$readiness_http" "$readiness_status" "$db_status" "$flyway_version_json" "$flyway_success"
 printf '"analysisInputSnapshotCount":%s,"securitySnapshotCount":%s,"priceSnapshotCount":%s,"thesisCount":%s,"decisionCount":%s,' \
   "$analysis_input_snapshot_count" "$security_snapshot_count" "$price_snapshot_count" "$thesis_count" "$decision_count"
-printf '"latestSecurityProjectionCount":%s,"latestSecurityProjectionSha256":"%s","aiVerificationPolicy":{"verificationEventsAvailable":%s,"verificationCount":%s,"approvedCount":%s,"blockedCount":%s,"rejectedCount":%s,"policyRevisionsAvailable":%s,"aiPolicyRevisionCount":%s,"deploymentEnabled":%s,"ownerScopeConfigured":%s}},' \
+printf '"latestSecurityProjectionCount":%s,"latestSecurityProjectionSha256":"%s","aiVerificationPolicy":{"verificationEventsAvailable":%s,"verificationCount":%s,"approvedCount":%s,"blockedCount":%s,"rejectedCount":%s,"policyRevisionsAvailable":%s,"aiPolicyRevisionCount":%s,"deploymentEnabled":%s,"ownerScopeConfigured":%s,' \
   "$latest_security_projection_count" "${latest_security_projection_sha256:-}" \
   "$ai_verification_events_available" "$ai_verification_count" "$ai_approved_count" \
   "$ai_blocked_count" "$ai_rejected_count" "$ai_policy_revisions_available" \
   "$ai_policy_revision_count" "$ai_policy_deployment_enabled" "$ai_policy_owner_scope_configured"
+printf '"effectiveOwnerPolicy":{"storedOverridePresent":%s,"storedOverrideEnabled":%s,"enabled":%s,"source":"%s",' \
+  "$owner_policy_stored_override_present" "$owner_policy_stored_override_enabled" \
+  "$owner_policy_effective_enabled" "$owner_policy_source"
+printf '"sheetEnabled":%s,"ownerScopeMatches":%s,"configSources":{"deploymentPolicyEnabled":"%s","sheetEnabled":"%s","ownerScope":"%s","thresholds":"%s"},' \
+  "$sheet_enabled" "$sheet_owner_matches" "$ai_policy_deployment_source" "$sheet_enabled_source" \
+  "$sheet_owner_source" "$owner_policy_source_thresholds"
+printf '"maxEvidenceAgeSeconds":%s,"minimumSourceCount":%s,"maxTriggerBelowPricePct":%s}},' \
+  "$owner_policy_max_evidence_age_seconds" "$owner_policy_minimum_source_count" \
+  "$owner_policy_max_trigger_below_price_pct"
+printf '"thesisRevisionDiagnostics":{"available":%s,"thesesWithRevisionCount":%s,"thesesWithoutRevisionCount":%s,"revisionCount":%s,"legacyBaselineRevisionCount":%s,' \
+  "$thesis_revision_diagnostics_available" "$thesis_with_revision_count" "$thesis_without_revision_count" \
+  "$thesis_revision_count" "$legacy_baseline_revision_count"
+printf '"currentThesesWithProposalRunIdCount":%s,"currentThesesWithoutProposalRunIdCount":%s,"latestSnapshotMatchCount":%s,"latestSnapshotMismatchCount":%s,"snapshotMatchStatus":"%s"}},' \
+  "$current_theses_with_proposal_run_id_count" "$current_theses_without_proposal_run_id_count" \
+  "$latest_thesis_snapshot_match_count" "$latest_thesis_snapshot_mismatch_count" \
+  "$current_thesis_snapshot_match_status"
 
 json_timestamp() {
   if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$ ]]; then

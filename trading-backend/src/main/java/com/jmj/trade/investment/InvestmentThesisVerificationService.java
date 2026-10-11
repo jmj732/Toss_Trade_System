@@ -223,7 +223,8 @@ public final class InvestmentThesisVerificationService {
         if (!Set.of("AI_PROPOSED", "UNVERIFIED", "INVALIDATION_UNDEFINED").contains(thesis.invalidationStatus()))
             return "THESIS_NOT_PROPOSABLE";
         if (!policy.enabled()) return "AI_POLICY_DISABLED";
-        if (proposalRunId != null && proposalRunId.equals(input.verificationRunId()))
+        if (proposalRunId == null || proposalRunId.isBlank()) return "PROPOSAL_RUN_ID_MISSING";
+        if (proposalRunId.trim().equals(input.verificationRunId()))
             return "PROPOSAL_AND_VERIFICATION_RUN_MATCH";
         if (input.sourceAsOf().isAfter(now) || input.sourceAsOf().isBefore(now.minusSeconds(policy.maxEvidenceAgeSeconds())))
             return "VERIFICATION_EVIDENCE_STALE";

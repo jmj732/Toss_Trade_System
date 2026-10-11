@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -45,6 +46,22 @@ def require_optional_status(value: Any, allowed: set[str]) -> str | None:
 def require_bool(value: Any) -> bool:
     if not isinstance(value, bool):
         raise ValueError("invalid boolean")
+    return value
+
+
+def require_optional_bool(value: Any) -> bool | None:
+    if value is not None and not isinstance(value, bool):
+        raise ValueError("invalid optional boolean")
+    return value
+
+
+def require_optional_number(value: Any, minimum: float, maximum: float) -> int | float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError("invalid optional number")
+    if not minimum <= value <= maximum:
+        raise ValueError("optional number outside allowed range")
     return value
 
 
@@ -157,6 +174,8 @@ def sanitize(raw: Any) -> dict[str, Any]:
     if not isinstance(database, dict) or frozenset(database) not in {
         frozenset(database_keys),
         frozenset(database_keys | {"aiVerificationPolicy"}),
+        frozenset(database_keys | {"thesisRevisionDiagnostics"}),
+        frozenset(database_keys | {"aiVerificationPolicy", "thesisRevisionDiagnostics"}),
     }:
         raise ValueError("invalid object shape")
     if database["status"] not in {"available", "unavailable"}:
@@ -192,20 +211,14 @@ def sanitize(raw: Any) -> dict[str, Any]:
         "deploymentEnabled": None,
         "ownerScopeConfigured": False,
     }
-    ai_policy = require_keys(
-        database.get("aiVerificationPolicy", ai_policy_defaults),
-        {
-            "verificationEventsAvailable",
-            "verificationCount",
-            "approvedCount",
-            "blockedCount",
-            "rejectedCount",
-            "policyRevisionsAvailable",
-            "aiPolicyRevisionCount",
-            "deploymentEnabled",
-            "ownerScopeConfigured",
-        },
-    )
+    ai_policy = database.get("aiVerificationPolicy", ai_policy_defaults)
+    ai_policy_legacy_keys = set(ai_policy_defaults)
+    ai_policy_extended_keys = ai_policy_legacy_keys | {"effectiveOwnerPolicy"}
+    if not isinstance(ai_policy, dict) or frozenset(ai_policy) not in {
+        frozenset(ai_policy_legacy_keys), frozenset(ai_policy_extended_keys)
+    }:
+        raise ValueError("invalid AI policy shape")
+    ai_policy = require_keys(ai_policy, set(ai_policy))
     event_schema_available = require_bool(ai_policy["verificationEventsAvailable"])
     policy_schema_available = require_bool(ai_policy["policyRevisionsAvailable"])
     event_counts = {
@@ -226,6 +239,86 @@ def sanitize(raw: Any) -> dict[str, Any]:
     if deployment_enabled is not None and not isinstance(deployment_enabled, bool):
         raise ValueError("invalid deployment enabled state")
     owner_scope_configured = require_bool(ai_policy["ownerScopeConfigured"])
+    effective_defaults = {
+        "storedOverridePresent": None,
+        "storedOverrideEnabled": None,
+        "enabled": None,
+        "source": "UNKNOWN",
+        "sheetEnabled": None,
+        "ownerScopeMatches": None,
+        "configSources": {
+            "deploymentPolicyEnabled": "UNKNOWN",
+            "sheetEnabled": "UNKNOWN",
+            "ownerScope": "UNKNOWN",
+            "thresholds": "UNKNOWN",
+        },
+        "maxEvidenceAgeSeconds": None,
+        "minimumSourceCount": None,
+        "maxTriggerBelowPricePct": None,
+    }
+    effective = ai_policy.get("effectiveOwnerPolicy", effective_defaults)
+    effective = require_keys(
+        effective,
+        {
+            "storedOverridePresent", "storedOverrideEnabled", "enabled", "source", "sheetEnabled",
+            "ownerScopeMatches", "configSources", "maxEvidenceAgeSeconds", "minimumSourceCount",
+            "maxTriggerBelowPricePct",
+        },
+    )
+    if effective["source"] not in {"USER", "DEPLOYMENT", "DEFAULT_DISABLED", "UNKNOWN"}:
+        raise ValueError("invalid effective policy source")
+    config_sources = require_keys(
+        effective["configSources"],
+        {"deploymentPolicyEnabled", "sheetEnabled", "ownerScope", "thresholds"},
+    )
+    if config_sources["deploymentPolicyEnabled"] not in {"CONTAINER_ENV", "UNKNOWN"}:
+        raise ValueError("invalid deployment config source")
+    if config_sources["sheetEnabled"] not in {"CONTAINER_ENV", "UNKNOWN"}:
+        raise ValueError("invalid sheet config source")
+    if config_sources["ownerScope"] not in {"CONTAINER_ENV", "UNKNOWN"}:
+        raise ValueError("invalid owner config source")
+    if config_sources["thresholds"] not in {"CONTAINER_ENV", "DATABASE_USER_POLICY", "UNKNOWN"}:
+        raise ValueError("invalid threshold config source")
+    override_present = require_optional_bool(effective["storedOverridePresent"])
+    override_enabled = require_optional_bool(effective["storedOverrideEnabled"])
+    effective_enabled = require_optional_bool(effective["enabled"])
+    sheet_enabled = require_optional_bool(effective["sheetEnabled"])
+    owner_scope_matches = require_optional_bool(effective["ownerScopeMatches"])
+    max_evidence_age = effective["maxEvidenceAgeSeconds"]
+    if max_evidence_age is not None and (
+        isinstance(max_evidence_age, bool) or not isinstance(max_evidence_age, int) or not 60 <= max_evidence_age <= 604800
+    ):
+        raise ValueError("invalid effective evidence age")
+    minimum_source_count = effective["minimumSourceCount"]
+    if minimum_source_count is not None and (
+        isinstance(minimum_source_count, bool) or not isinstance(minimum_source_count, int) or not 1 <= minimum_source_count <= 10
+    ):
+        raise ValueError("invalid effective source count")
+    max_trigger_pct = require_optional_number(effective["maxTriggerBelowPricePct"], 0.0, 0.5)
+    if override_present is True and override_enabled is None:
+        raise ValueError("stored policy override lacks enabled value")
+    if override_present is False and override_enabled is not None:
+        raise ValueError("absent stored policy override has enabled value")
+    if effective["source"] == "USER" and (override_present is not True or effective_enabled != override_enabled):
+        raise ValueError("inconsistent user policy resolution")
+    if effective["source"] == "DEPLOYMENT" and (
+        override_present is not False or effective_enabled is not True or sheet_enabled is not True or owner_scope_matches is not True
+    ):
+        raise ValueError("inconsistent deployment policy resolution")
+    if effective["source"] == "DEFAULT_DISABLED" and (override_present is not False or effective_enabled is not False):
+        raise ValueError("inconsistent disabled policy resolution")
+    sanitized_effective = {
+        "storedOverridePresent": override_present,
+        "storedOverrideEnabled": override_enabled,
+        "enabled": effective_enabled,
+        "source": effective["source"],
+        "sheetEnabled": sheet_enabled,
+        "ownerScopeMatches": owner_scope_matches,
+        "configSources": config_sources,
+        "maxEvidenceAgeSeconds": max_evidence_age,
+        "minimumSourceCount": minimum_source_count,
+        "maxTriggerBelowPricePct": max_trigger_pct,
+    }
     sanitized_ai_policy = {
         "verificationEventsAvailable": event_schema_available,
         **event_counts,
@@ -233,6 +326,51 @@ def sanitize(raw: Any) -> dict[str, Any]:
         "aiPolicyRevisionCount": policy_revision_count,
         "deploymentEnabled": deployment_enabled,
         "ownerScopeConfigured": owner_scope_configured,
+        "effectiveOwnerPolicy": sanitized_effective,
+    }
+
+    thesis_defaults = {
+        "available": False,
+        "thesesWithRevisionCount": 0,
+        "thesesWithoutRevisionCount": 0,
+        "revisionCount": 0,
+        "legacyBaselineRevisionCount": 0,
+        "currentThesesWithProposalRunIdCount": 0,
+        "currentThesesWithoutProposalRunIdCount": 0,
+        "latestSnapshotMatchCount": 0,
+        "latestSnapshotMismatchCount": 0,
+        "snapshotMatchStatus": "UNKNOWN",
+    }
+    thesis_diagnostics = require_keys(
+        database.get("thesisRevisionDiagnostics", thesis_defaults), set(thesis_defaults)
+    )
+    thesis_available = require_bool(thesis_diagnostics["available"])
+    thesis_counts = {
+        key: require_count(thesis_diagnostics[key])
+        for key in (
+            "thesesWithRevisionCount", "thesesWithoutRevisionCount", "revisionCount",
+            "legacyBaselineRevisionCount", "currentThesesWithProposalRunIdCount",
+            "currentThesesWithoutProposalRunIdCount", "latestSnapshotMatchCount", "latestSnapshotMismatchCount",
+        )
+    }
+    snapshot_status = thesis_diagnostics["snapshotMatchStatus"]
+    if snapshot_status not in {"UNKNOWN", "NO_THESIS", "NO_REVISION", "MATCH", "MISMATCH", "MIXED"}:
+        raise ValueError("invalid snapshot match status")
+    if thesis_available:
+        if thesis_counts["thesesWithRevisionCount"] + thesis_counts["thesesWithoutRevisionCount"] != database["thesisCount"]:
+            raise ValueError("inconsistent thesis revision counts")
+        if thesis_counts["currentThesesWithProposalRunIdCount"] + thesis_counts["currentThesesWithoutProposalRunIdCount"] != database["thesisCount"]:
+            raise ValueError("inconsistent proposal run ID counts")
+        if thesis_counts["legacyBaselineRevisionCount"] > thesis_counts["revisionCount"]:
+            raise ValueError("inconsistent legacy baseline count")
+        if thesis_counts["latestSnapshotMatchCount"] + thesis_counts["latestSnapshotMismatchCount"] > thesis_counts["thesesWithRevisionCount"]:
+            raise ValueError("inconsistent thesis snapshot counts")
+    elif any(thesis_counts.values()) or snapshot_status != "UNKNOWN":
+        raise ValueError("thesis diagnostics present while unavailable")
+    sanitized_thesis_diagnostics = {
+        "available": thesis_available,
+        **thesis_counts,
+        "snapshotMatchStatus": snapshot_status,
     }
 
     return {
@@ -251,8 +389,9 @@ def sanitize(raw: Any) -> dict[str, Any]:
             "status": readiness["status"],
         },
         "database": {
-            **{key: database[key] for key in sorted(database) if key != "aiVerificationPolicy"},
+            **{key: database[key] for key in sorted(database) if key not in {"aiVerificationPolicy", "thesisRevisionDiagnostics"}},
             "aiVerificationPolicy": sanitized_ai_policy,
+            "thesisRevisionDiagnostics": sanitized_thesis_diagnostics,
         },
         "portfolioFreshness": sanitize_portfolio_freshness(root["portfolioFreshness"]),
     }

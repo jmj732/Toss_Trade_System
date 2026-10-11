@@ -258,6 +258,39 @@ class InvestmentThesisVerificationIntegrationTest extends PostgresIntegrationTes
     }
 
     @Test
+    void sameProposalRunIsBlockedWhenProposalRunIdHasTrailingWhitespace() throws Exception {
+        var verifier = verifier();
+        var proposal = propose(USER, "proposal-run-trim-check ");
+        insertUsableQuote(USER);
+        verifier.updatePolicy(USER, new InvestmentThesisVerificationService.PolicyInput(true, null));
+
+        var result = verifier.verify(USER, API_KEY, input(UUID.randomUUID(), proposal.revisionId(),
+                "proposal-run-trim-check", "PASS", new BigDecimal("90")));
+
+        assertBlocked(result, "PROPOSAL_AND_VERIFICATION_RUN_MATCH");
+        assertThat(jdbc.queryForObject("SELECT invalidation_status FROM investment_thesis_states WHERE user_id = ? AND ticker = ?",
+                String.class, USER, TICKER)).isEqualTo("AI_PROPOSED");
+    }
+
+    @Test
+    void verificationRequiresPersistedProposalRunId() throws Exception {
+        var verifier = verifier();
+        var proposal = context.putThesisProposal(USER, TICKER, thesisInput("AI_PROPOSED"), null);
+        insertUsableQuote(USER);
+        verifier.updatePolicy(USER, new InvestmentThesisVerificationService.PolicyInput(true, null));
+
+        var result = verifier.verify(USER, API_KEY, input(UUID.randomUUID(), proposal.revisionId(),
+                "verification-run-without-proposal-run", "PASS", new BigDecimal("90")));
+
+        assertBlocked(result, "PROPOSAL_RUN_ID_MISSING");
+        assertThat(result.approvedThesis()).isNull();
+        assertThat(jdbc.queryForObject("SELECT invalidation_status FROM investment_thesis_states WHERE user_id = ? AND ticker = ?",
+                String.class, USER, TICKER)).isEqualTo("AI_PROPOSED");
+        assertThat(jdbc.queryForObject("SELECT asserted_run_id FROM investment_thesis_revisions WHERE id = ?",
+                String.class, proposal.revisionId())).isNull();
+    }
+
+    @Test
     void verificationEventAndProposalRevisionAreOwnerScoped() {
         var verifier = verifier();
         var userProposal = propose(USER, "user-proposal-run");
