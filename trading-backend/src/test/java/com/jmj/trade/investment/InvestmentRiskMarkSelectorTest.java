@@ -113,6 +113,22 @@ class InvestmentRiskMarkSelectorTest {
     }
 
     @Test
+    void quoteCapturedInsideCurrentClosedGapCanUseTheVerifiedRegularClose() {
+        var quote = input(DataStatus.PARTIAL, null, InvestmentRiskMarkSelector.CLOSED_INTERVAL_REASON,
+                bd("101"), CLOSED_INTERVAL_START.plusSeconds(60), "TOSS", CLOSE_SESSION_LABEL,
+                SESSION_DATE, SESSION_DATE, DataStatus.OK, NOW);
+        var evidence = withClosedIntervalEvidence(quote, CLOSED_INTERVAL_START, CLOSED_INTERVAL_END,
+                "TOSS", NOW.minusSeconds(30));
+
+        var selection = InvestmentRiskMarkSelector.select(evidence);
+
+        assertThat(selection.available()).isTrue();
+        assertThat(selection.value()).isEqualByComparingTo("100");
+        assertThat(selection.asOf()).isEqualTo(CLOSE_SESSION_LABEL);
+        assertThat(selection.reason()).isEqualTo("DECLARED_CLOSED_INTERVAL_REGULAR_CLOSE_ACCEPTED");
+    }
+
+    @Test
     void classifiedQuoteDoesNotUseClosureEvidenceOutsideItsBoundsOrWithoutFreshTossProvenance() {
         var quote = input(DataStatus.STALE, "AFTER_HOURS", null,
                 bd("101"), QUOTE_AS_OF, "TOSS", CLOSE_SESSION_LABEL, SESSION_DATE, SESSION_DATE,

@@ -79,9 +79,6 @@ final class InvestmentRiskMarkSelector {
             if (!input.now().isBefore(input.closedIntervalEndsAt())) {
                 return unavailable(DataStatus.STALE, "CLOSED_INTERVAL_EXPIRED");
             }
-            if (input.latestPriceAsOf().isAfter(input.closedIntervalStartsAt())) {
-                return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_QUOTE_AFTER_GAP_START");
-            }
         } else {
             // Older snapshots have no bounded current-gap proof. Preserve the prior verified outside-interval
             // path, which requires an unclassified quote and a provider-declared next session start.
