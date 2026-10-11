@@ -148,6 +148,35 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void confirmedGooglRemainsConditionalWhenAnotherHeldPositionHasNoInvalidationTrigger() throws Exception {
+        var now = OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC);
+        jdbc.update("DELETE FROM investment_thesis_states WHERE user_id = ? AND ticker = 'AAPL'", USER_ID);
+        jdbc.update("""
+                INSERT INTO investment_thesis_states (
+                    user_id, ticker, core_thesis, price_risk_trigger, price_risk_trigger_price,
+                    invalidation_status, classification, updated_at
+                ) VALUES (?, 'GOOGL', 'Growth thesis', 'Breaks below support', 80,
+                          'CONFIRMED', 'COMPOUNDER', ?)
+                """, USER_ID, now);
+
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"),
+                List.of(heldPosition("GOOGL"), heldPosition("MSFT")), Map.of()).context(USER_ID);
+        var googl = context.securities().stream().filter(security -> security.ticker().equals("GOOGL"))
+                .findFirst().orElseThrow();
+        var msft = context.securities().stream().filter(security -> security.ticker().equals("MSFT"))
+                .findFirst().orElseThrow();
+
+        assertThat(googl.risk().status()).isEqualTo(InvestmentDataCalculator.DataStatus.OK);
+        assertThat(googl.risk().plannedLossContribution()).isNotNull();
+        assertThat(googl.risk().thesisFailureStress()).isNull();
+        assertThat(googl.risk().softBudgetStatus()).isEqualTo("DATA_MISSING");
+        assertThat(googl.risk().sizingEligible()).isFalse();
+        assertThat(mapper.valueToTree(googl).path("sizingEligibility").asText()).isEqualTo("CONDITIONAL");
+        assertThat(msft.risk().status()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_CONFIGURED);
+        assertThat(msft.risk().plannedLossContribution()).isNull();
+    }
+
+    @Test
     void publishesThreeStateEligibilityWithoutReplacingLegacyBoolean() throws Exception {
         var security = context("OK", "OK").securities().getFirst();
         assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("YES");
@@ -327,6 +356,14 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     private InvestmentContextService service(
             String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf,
             BigDecimal softRiskBudget, Map<String, Object> priceOverrides) throws Exception {
+        return service(portfolioStatus, priceStatus, priceAsOf, consensusAsOf, softRiskBudget,
+                List.of(heldPosition("AAPL")), Map.of("AAPL", priceOverrides));
+    }
+
+    private InvestmentContextService service(
+            String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf,
+            BigDecimal softRiskBudget, List<PortfolioReadService.PositionView> positions,
+            Map<String, Map<String, Object>> priceOverridesByTicker) throws Exception {
         var now = OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC);
         var snapshotAsOf = OffsetDateTime.ofInstant(NOW.plusMillis(snapshotSequence++), ZoneOffset.UTC);
         var snapshot = new PortfolioReadService.PortfolioView(
@@ -338,9 +375,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
                 List.of(),
                 new PortfolioReadService.AccountView("BROKERAGE", "****", Map.of(), Map.of("USD", bd("1000")),
                         Map.of(), Map.of(), Map.of(), Map.of(), null, null, null, NOW),
-                List.of(new PortfolioReadService.PositionView("AAPL", "Apple", "US", bd("1"), "USD",
-                        bd("90"), bd("100"), bd("250"), bd("250"), bd("250"), bd("0"), bd("0"),
-                        bd("0"), bd("0"), bd("0"), bd("0"), bd("0"), bd("0"), bd("1"), NOW)),
+                positions,
                 Map.of());
         var portfolios = mock(PortfolioReadService.class);
         when(portfolios.read(USER_ID, CONNECTION_ID)).thenReturn(snapshot);
@@ -349,26 +384,35 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         var riskPolicies = mock(RiskPolicyService.class);
         when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
                 1, bd("10000"), bd("10000"), bd("100"), BigDecimal.ONE, softRiskBudget, true));
-        var price = new LinkedHashMap<String, Object>();
-        price.put("latestPrice", 100);
-        price.put("latestPriceAsOf", priceAsOf.toString());
-        price.put("session", "LIVE_REGULAR");
-        price.put("status", priceStatus);
-        price.put("source", "TOSS");
-        price.putAll(priceOverrides);
-        var payload = mapper.valueToTree(Map.of(
-                "asOf", NOW.toString(),
-                "price", price,
-                "consensus", Map.of("asOf", consensusAsOf.toString(), "status", "OK")));
-        jdbc.update("""
-                INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
-                VALUES (?, ?, 'AAPL', ?, CAST(? AS jsonb), ?)
-                """, UUID.randomUUID(), USER_ID, snapshotAsOf, mapper.writeValueAsString(payload), now);
+        for (var position : positions) {
+            var price = new LinkedHashMap<String, Object>();
+            price.put("latestPrice", 100);
+            price.put("latestPriceAsOf", priceAsOf.toString());
+            price.put("session", "LIVE_REGULAR");
+            price.put("status", priceStatus);
+            price.put("source", "TOSS");
+            price.putAll(priceOverridesByTicker.getOrDefault(position.symbol(), Map.of()));
+            var payload = mapper.valueToTree(Map.of(
+                    "asOf", NOW.toString(),
+                    "price", price,
+                    "consensus", Map.of("asOf", consensusAsOf.toString(), "status", "OK")));
+            jdbc.update("""
+                    INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
+                    VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?)
+                    """, UUID.randomUUID(), USER_ID, position.symbol(), snapshotAsOf,
+                    mapper.writeValueAsString(payload), now);
+        }
         var service = new InvestmentContextService(
                 jdbc, mapper, new DataSourceTransactionManager(jdbc.getDataSource()),
                 new StockDataProviderRegistry(List.of()), mock(ObjectProvider.class), portfolios, watchlist, riskPolicies,
                 Duration.ofMinutes(15), Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10));
         return service;
+    }
+
+    private static PortfolioReadService.PositionView heldPosition(String ticker) {
+        return new PortfolioReadService.PositionView(ticker, ticker, "US", bd("1"), "USD",
+                bd("90"), bd("100"), bd("250"), bd("250"), bd("250"), bd("0"), bd("0"),
+                bd("0"), bd("0"), bd("0"), bd("0"), bd("0"), bd("0"), bd("1"), NOW);
     }
 
     private InvestmentContextService.SecurityView securityWithPrice(Map<String, Object> price) throws Exception {

@@ -138,4 +138,33 @@ class InvestmentPriceSessionFactsTest {
         assertThat(InvestmentContextService.calendarNextBusinessDate(null, LocalDate.parse("2026-10-02")))
                 .isNull();
     }
+
+    @Test
+    void currentClosedGapRequiresCompleteDeclaredIntervalsAndNoOpenIntervalAtEvaluationTime() {
+        var previousDate = LocalDate.parse("2026-10-02");
+        var todayDate = LocalDate.parse("2026-10-03");
+        var nextDate = LocalDate.parse("2026-10-05");
+        var previousDay = friday().path("today");
+        var todayDay = saturday().path("today");
+        var nextDay = monday().path("today");
+        var closedAt = Instant.parse("2026-10-03T14:00:00Z");
+
+        assertThat(InvestmentContextService.currentClosedIntervalBounds(closedAt, previousDate, previousDay,
+                todayDate, todayDay, nextDate, nextDay)).isNotNull();
+
+        var openDay = mapper.readTree("""
+                {"date":"2026-10-03",
+                 "dayMarket":{"startTime":"2026-10-03T01:00:00Z","endTime":"2026-10-03T02:00:00Z"},
+                 "preMarket":null,"regularMarket":null,"afterMarket":null}
+                """);
+        var duringDeclaredOpen = Instant.parse("2026-10-03T01:30:00Z");
+        assertThat(InvestmentContextService.currentClosedIntervalBounds(duringDeclaredOpen, previousDate,
+                previousDay, todayDate, openDay, nextDate, nextDay)).isNull();
+
+        var missingIntervalField = mapper.readTree("""
+                {"date":"2026-10-03","dayMarket":null,"preMarket":null,"regularMarket":null}
+                """);
+        assertThat(InvestmentContextService.currentClosedIntervalBounds(closedAt, previousDate, previousDay,
+                todayDate, missingIntervalField, nextDate, nextDay)).isNull();
+    }
 }

@@ -16,6 +16,8 @@ class InvestmentRiskMarkSelectorTest {
     private static final Instant NEXT_INTERVAL = Instant.parse("2026-10-05T13:30:00Z");
     private static final Instant CLOSE_SESSION_LABEL = Instant.parse("2026-10-02T04:00:00Z");
     private static final LocalDate SESSION_DATE = LocalDate.parse("2026-10-02");
+    private static final Instant CLOSED_INTERVAL_START = Instant.parse("2026-10-03T00:08:00Z");
+    private static final Instant CLOSED_INTERVAL_END = Instant.parse("2026-10-05T13:30:00Z");
 
     @Test
     void prefersAnOkLatestQuoteAndPreservesItsObservationTimestamp() {
@@ -92,6 +94,42 @@ class InvestmentRiskMarkSelectorTest {
         assertThat(selection.available()).isFalse();
         assertThat(selection.status()).isEqualTo(DataStatus.STALE);
         assertThat(selection.reason()).isEqualTo("CLOSED_INTERVAL_CALENDAR_EVIDENCE_MISSING");
+    }
+
+    @Test
+    void classifiedAfterHoursQuoteUsesRegularCloseOnlyWithCurrentBoundedTossEvidence() {
+        var quote = input(DataStatus.STALE, "AFTER_HOURS", null,
+                bd("101"), QUOTE_AS_OF, "TOSS", CLOSE_SESSION_LABEL, SESSION_DATE, SESSION_DATE,
+                DataStatus.OK, NOW);
+        var evidence = withClosedIntervalEvidence(quote, CLOSED_INTERVAL_START, CLOSED_INTERVAL_END,
+                "TOSS", NOW.minusSeconds(30));
+
+        var selection = InvestmentRiskMarkSelector.select(evidence);
+
+        assertThat(selection.available()).isTrue();
+        assertThat(selection.value()).isEqualByComparingTo("100");
+        assertThat(selection.asOf()).isEqualTo(CLOSE_SESSION_LABEL);
+        assertThat(selection.reason()).isEqualTo("DECLARED_CLOSED_INTERVAL_REGULAR_CLOSE_ACCEPTED");
+    }
+
+    @Test
+    void classifiedQuoteDoesNotUseClosureEvidenceOutsideItsBoundsOrWithoutFreshTossProvenance() {
+        var quote = input(DataStatus.STALE, "AFTER_HOURS", null,
+                bd("101"), QUOTE_AS_OF, "TOSS", CLOSE_SESSION_LABEL, SESSION_DATE, SESSION_DATE,
+                DataStatus.OK, NOW);
+        var current = withClosedIntervalEvidence(quote, CLOSED_INTERVAL_START, CLOSED_INTERVAL_END,
+                "TOSS", NOW.minusSeconds(30));
+
+        assertThat(InvestmentRiskMarkSelector.select(withNow(current, CLOSED_INTERVAL_START.minusNanos(1)))
+                .available()).isFalse();
+        assertThat(InvestmentRiskMarkSelector.select(withNow(current, CLOSED_INTERVAL_END)).available()).isFalse();
+        assertThat(InvestmentRiskMarkSelector.select(withClosedIntervalEvidence(current, CLOSED_INTERVAL_START,
+                CLOSED_INTERVAL_END, "OTHER", NOW.minusSeconds(30))).available()).isFalse();
+        assertThat(InvestmentRiskMarkSelector.select(withClosedIntervalEvidence(current, CLOSED_INTERVAL_START,
+                CLOSED_INTERVAL_END, "TOSS", NOW.plusSeconds(1))).available()).isFalse();
+        assertThat(InvestmentRiskMarkSelector.select(current).available()).isTrue();
+        assertThat(InvestmentRiskMarkSelector.select(withClosedIntervalEvidence(quote, null, CLOSED_INTERVAL_END,
+                "TOSS", NOW.minusSeconds(30))).available()).isFalse();
     }
 
     @Test
@@ -173,7 +211,21 @@ class InvestmentRiskMarkSelectorTest {
                 input.latestPriceSource(), input.latestPriceSession(), input.latestPriceStatus(),
                 input.sessionReason(), input.nextDeclaredIntervalStartsAt(), input.regularClose(),
                 input.regularCloseAsOf(), input.regularCloseSource(), input.regularCloseSessionDate(),
-                input.lastCompletedSessionDate(), input.regularCloseStatus(), now);
+                input.lastCompletedSessionDate(), input.regularCloseStatus(), now,
+                input.closedIntervalStartsAt(), input.closedIntervalEndsAt(), input.closedIntervalCalendarSource(),
+                input.closedIntervalCalendarObservedAt());
+    }
+
+    private static InvestmentRiskMarkSelector.Input withClosedIntervalEvidence(
+            InvestmentRiskMarkSelector.Input input, Instant startsAt, Instant endsAt,
+            String source, Instant observedAt
+    ) {
+        return new InvestmentRiskMarkSelector.Input(input.latestPrice(), input.latestPriceAsOf(),
+                input.latestPriceSource(), input.latestPriceSession(), input.latestPriceStatus(),
+                input.sessionReason(), input.nextDeclaredIntervalStartsAt(), input.regularClose(),
+                input.regularCloseAsOf(), input.regularCloseSource(), input.regularCloseSessionDate(),
+                input.lastCompletedSessionDate(), input.regularCloseStatus(), input.now(), startsAt, endsAt,
+                source, observedAt);
     }
 
     private static InvestmentRiskMarkSelector.Input withNextInterval(

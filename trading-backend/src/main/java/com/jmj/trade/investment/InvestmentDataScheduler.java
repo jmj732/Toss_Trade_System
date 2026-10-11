@@ -29,6 +29,10 @@ final class InvestmentDataScheduler {
     private final AtomicBoolean initialCaptureExhausted = new AtomicBoolean();
     private final AtomicBoolean initialCaptureInProgress = new AtomicBoolean();
     private final AtomicInteger initialCaptureAttempts = new AtomicInteger();
+    private final AtomicBoolean calendarCaptureComplete = new AtomicBoolean();
+    private final AtomicBoolean calendarCaptureExhausted = new AtomicBoolean();
+    private final AtomicBoolean calendarCaptureInProgress = new AtomicBoolean();
+    private final AtomicInteger calendarCaptureAttempts = new AtomicInteger();
 
     InvestmentDataScheduler(
             JdbcTemplate jdbc,
@@ -122,6 +126,27 @@ final class InvestmentDataScheduler {
                 }
             } finally {
                 initialCaptureInProgress.set(false);
+            }
+        }
+        if (!calendarCaptureComplete.get() && !calendarCaptureExhausted.get()) {
+            if (!calendarCaptureInProgress.compareAndSet(false, true)) return;
+            try {
+                if (investment.needsCalendarEvidenceBootstrap()) {
+                    var attempt = calendarCaptureAttempts.incrementAndGet();
+                    var captured = capture("calendar_evidence_bootstrap", true);
+                    if (!captured || investment.needsCalendarEvidenceBootstrap()) {
+                        if (attempt >= INITIAL_CAPTURE_ATTEMPT_LIMIT) {
+                            calendarCaptureExhausted.set(true);
+                            LOG.atWarn().addKeyValue("operation", "investment_data_calendar_bootstrap")
+                                    .addKeyValue("attempts", attempt)
+                                    .log("calendar evidence retry limit reached; scheduled captures remain active");
+                        }
+                        return;
+                    }
+                }
+                calendarCaptureComplete.set(true);
+            } finally {
+                calendarCaptureInProgress.set(false);
             }
         }
         var now = clock.instant().atZone(zone);

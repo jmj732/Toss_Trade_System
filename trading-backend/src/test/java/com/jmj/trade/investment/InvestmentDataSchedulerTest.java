@@ -101,6 +101,40 @@ class InvestmentDataSchedulerTest {
     }
 
     @Test
+    void legacyCalendarEvidenceBootstrapUsesQuoteOnlyCaptureAndStopsAfterTheMarkerAppears() {
+        var investment = mock(InvestmentContextService.class);
+        when(investment.needsInitialCapture()).thenReturn(false);
+        when(investment.needsCalendarEvidenceBootstrap()).thenReturn(true, false);
+        var scheduler = scheduler(investment);
+
+        scheduler.intraday();
+        scheduler.intraday();
+
+        verify(investment, times(2)).needsCalendarEvidenceBootstrap();
+        verify(investment).captureAllQuoteUpdates();
+        verify(investment, never()).captureAll();
+    }
+
+    @Test
+    void failedCalendarEvidenceCaptureRetriesAtMostThreeTimes() {
+        var investment = mock(InvestmentContextService.class);
+        when(investment.needsInitialCapture()).thenReturn(false);
+        when(investment.needsCalendarEvidenceBootstrap()).thenReturn(true, true, true);
+        doThrow(new IllegalStateException("provider unavailable"))
+                .when(investment).captureAllQuoteUpdates();
+        var scheduler = scheduler(investment);
+
+        scheduler.intraday();
+        scheduler.intraday();
+        scheduler.intraday();
+        scheduler.intraday();
+
+        verify(investment, times(3)).needsCalendarEvidenceBootstrap();
+        verify(investment, times(3)).captureAllQuoteUpdates();
+        verify(investment, never()).captureAll();
+    }
+
+    @Test
     void canonicalConsensusCaptureRunsOnWeekdaysAndWeekends() throws NoSuchMethodException {
         var weekday = InvestmentDataScheduler.class.getDeclaredMethod("afterClose")
                 .getAnnotation(Scheduled.class);

@@ -70,6 +70,9 @@ public final class InvestmentContextService {
     private static final List<String> PRICE_SESSIONS = List.of(
             "REGULAR_CLOSE", "LIVE_REGULAR", "AFTER_HOURS", "PREMARKET");
     private static final String TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS = "TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS";
+    private static final int CLOSED_INTERVAL_EVIDENCE_VERSION = 1;
+    private static final List<String> TOSS_CALENDAR_INTERVAL_FIELDS =
+            List.of("dayMarket", "preMarket", "regularMarket", "afterMarket");
     /** Stored by the sheet sync when every snapshot timestamp lies in one declared closed-market gap. */
     public static final String PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS =
             "PORTFOLIO_CAPTURED_OUTSIDE_DECLARED_INTERVALS";
@@ -605,28 +608,35 @@ public final class InvestmentContextService {
                 text(price.get("session")), text(price.get("sessionReason")),
                 instant(price.get("nextDeclaredIntervalStartsAt")), close,
                 instant(price.get("regularCloseAsOf")), closeSource,
-                localDate(text(price.get("lastCompletedSessionDate"))));
+                localDate(text(price.get("lastCompletedSessionDate"))),
+                instant(price.get("closedIntervalStartsAt")), instant(price.get("closedIntervalEndsAt")),
+                text(price.get("closedIntervalCalendarSource")),
+                instant(price.get("closedIntervalCalendarObservedAt")));
     }
 
     record PriceFacts(String status, Instant asOf, BigDecimal latestPrice, String regularCloseStatus,
                       LocalDate regularCloseSessionDate, String source, String session, String sessionReason,
                       Instant nextDeclaredIntervalStartsAt, BigDecimal regularClose, Instant regularCloseAsOf,
-                      String regularCloseSource, LocalDate lastCompletedSessionDate) {
+                      String regularCloseSource, LocalDate lastCompletedSessionDate,
+                      Instant closedIntervalStartsAt, Instant closedIntervalEndsAt,
+                      String closedIntervalCalendarSource, Instant closedIntervalCalendarObservedAt) {
         PriceFacts(String status, Instant asOf, BigDecimal latestPrice) {
             this(status, asOf, latestPrice, null, null, null, null, null, null,
-                    null, null, null, null);
+                    null, null, null, null, null, null, null, null);
         }
         PriceFacts(String status, Instant asOf, BigDecimal latestPrice, String regularCloseStatus,
                    LocalDate regularCloseSessionDate) {
             this(status, asOf, latestPrice, regularCloseStatus, regularCloseSessionDate,
-                    null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null);
         }
 
         InvestmentRiskMarkSelector.Selection riskMark(Instant now) {
             return InvestmentRiskMarkSelector.select(new InvestmentRiskMarkSelector.Input(
                     latestPrice, asOf, source, session, dataStatus(status), sessionReason,
                     nextDeclaredIntervalStartsAt, regularClose, regularCloseAsOf, regularCloseSource,
-                    regularCloseSessionDate, lastCompletedSessionDate, dataStatus(regularCloseStatus), now));
+                    regularCloseSessionDate, lastCompletedSessionDate, dataStatus(regularCloseStatus), now,
+                    closedIntervalStartsAt, closedIntervalEndsAt, closedIntervalCalendarSource,
+                    closedIntervalCalendarObservedAt));
         }
     }
 
@@ -766,7 +776,7 @@ public final class InvestmentContextService {
             boolean quoteCanonicalMissing = false;
             var quotedSymbols = new LinkedHashSet<String>();
             var tossQuotes = tossQuotes(userId, List.copyOf(symbols));
-            var calendars = new HashMap<LocalDate, JsonNode>();
+            var calendars = new HashMap<LocalDate, TossCalendarCapture>();
             for (var symbol : symbols) {
                 var input = assembler.assemble(symbol, Map.of(), selectedFields);
                 if (tossQuotes != null) {
@@ -874,6 +884,22 @@ public final class InvestmentContextService {
         return false;
     }
 
+    boolean needsCalendarEvidenceBootstrap() {
+        for (var userId : captureUsers()) {
+            for (var symbol : captureSymbols(userId)) {
+                var versions = jdbc.query("""
+                        SELECT payload #>> '{price,closedIntervalEvidenceVersion}'
+                          FROM investment_security_snapshots
+                         WHERE user_id = ? AND ticker = ?
+                         ORDER BY as_of DESC, id DESC LIMIT 1
+                        """, (resultSet, rowNum) -> resultSet.getString(1), userId, symbol);
+                var version = versions.isEmpty() ? null : versions.getFirst();
+                if (!Integer.toString(CLOSED_INTERVAL_EVIDENCE_VERSION).equals(version)) return true;
+            }
+        }
+        return false;
+    }
+
     private int captureAll(Set<String> selectedFields) {
         var users = captureUsers();
         var count = 0;
@@ -915,7 +941,7 @@ public final class InvestmentContextService {
     }
 
     private boolean captureTacticalOverlay(UUID userId, TossQuoteSource quotes,
-                                           Map<LocalDate, JsonNode> calendars) {
+                                           Map<LocalDate, TossCalendarCapture> calendars) {
         var attemptedAt = clock.instant();
         boolean benchmarkMissing = quotes == null;
         if (!benchmarkMissing) {
@@ -1003,7 +1029,7 @@ public final class InvestmentContextService {
             UUID userId,
             StockAnalysisInput input,
             TossQuoteSource source,
-            Map<LocalDate, JsonNode> calendars
+            Map<LocalDate, TossCalendarCapture> calendars
     ) {
         var quote = source.quotes().get(input.symbol().toUpperCase(Locale.ROOT));
         if (quote == null) return input;
@@ -1040,7 +1066,7 @@ public final class InvestmentContextService {
                 asOf, collectedAt, List.of()));
         var marketDate = asOf.atZone(NEW_YORK).toLocalDate();
         var calendar = tossCalendarCached(userId, source.connectionId(), marketDate, calendars);
-        var sessionResult = tossSessionResult(asOf, marketDate, calendar);
+        var sessionResult = tossSessionResult(asOf, marketDate, calendar == null ? null : calendar.payload());
         if (sessionResult.session() == null) {
             observations.add(tossMissing("price.session", sessionResult.missingReason(), collectedAt));
         } else {
@@ -1055,7 +1081,7 @@ public final class InvestmentContextService {
             UUID userId,
             StockAnalysisInput input,
             TossQuoteSource source,
-            Map<LocalDate, JsonNode> calendars
+            Map<LocalDate, TossCalendarCapture> calendars
     ) {
         var observations = new ArrayList<>(input.observations());
         var collectedAt = input.collectedAt();
@@ -1125,7 +1151,8 @@ public final class InvestmentContextService {
                 }
                 if (date.equals(marketDate)) {
                     var calendar = tossCalendarCached(userId, source.connectionId(), date, calendars);
-                    var finality = tossCandleFinalityReason(date, calendar, collectedAt);
+                    var finality = tossCandleFinalityReason(date,
+                            calendar == null ? null : calendar.payload(), collectedAt);
                     if (finality != null) {
                         rejected.add(finality);
                         continue;
@@ -1183,8 +1210,8 @@ public final class InvestmentContextService {
                 row.put("sourceConflict", sourceConflict);
     }
 
-    private JsonNode tossCalendarCached(
-            UUID userId, UUID connectionId, LocalDate date, Map<LocalDate, JsonNode> calendars
+    private TossCalendarCapture tossCalendarCached(
+            UUID userId, UUID connectionId, LocalDate date, Map<LocalDate, TossCalendarCapture> calendars
     ) {
         if (!calendars.containsKey(date)) calendars.put(date, tossCalendar(userId, connectionId, date));
         return calendars.get(date);
@@ -1225,12 +1252,19 @@ public final class InvestmentContextService {
                 && left.currency().equalsIgnoreCase(right.currency());
     }
 
-    private JsonNode tossCalendar(UUID userId, UUID connectionId, LocalDate date) {
+    private TossCalendarCapture tossCalendar(UUID userId, UUID connectionId, LocalDate date) {
         try {
             var response = brokerSurface.marketCalendar(userId, connectionId, "US", date);
-            return response == null || response.unavailable() || response.data() == null
-                    || !"US".equals(response.data().market())
-                    ? null : response.data().payload();
+            if (response == null || response.unavailable() || response.data() == null
+                    || !"US".equals(response.data().market()) || response.provenance() == null) return null;
+            var provenance = response.provenance().stream()
+                    .filter(value -> "TOSS".equals(value.provider())
+                            && value.endpoint() != null
+                            && value.endpoint().startsWith("/api/v1/market-calendar/US"))
+                    .findFirst().orElse(null);
+            return new TossCalendarCapture(response.data().payload(),
+                    provenance == null ? null : provenance.provider(),
+                    provenance == null ? null : provenance.observedAt());
         } catch (RuntimeException ignored) {
             return null;
         }
@@ -1306,12 +1340,19 @@ public final class InvestmentContextService {
     private record TossSessionResult(String session, String missingReason) {
     }
 
+    private record TossCalendarCapture(JsonNode payload, String source, Instant observedAt) {
+    }
+
+    private record ClosedIntervalFacts(Instant startsAt, Instant endsAt, String source, Instant observedAt) {
+    }
+
     /** Last completed New York regular session and the instant at which a newer session completes. */
     record RegularSessionFacts(LocalDate lastCompletedSessionDate, Instant regularCloseValidUntil) {
     }
 
     private record PriceSessionContext(
-            RegularSessionFacts regular, String sessionReason, Instant nextDeclaredIntervalStartsAt) {
+            RegularSessionFacts regular, String sessionReason, Instant nextDeclaredIntervalStartsAt,
+            ClosedIntervalFacts closedInterval) {
     }
 
     /** A provider-declared regular interval; {@link #NONE} means the calendar declares no regular session. */
@@ -1324,7 +1365,7 @@ public final class InvestmentContextService {
      * broker. Facts come only from the official Toss calendar; anything not verifiable stays null.
      */
     private PriceSessionContext priceSessionContext(
-            UUID userId, UUID connectionId, StockAnalysisInput input, Map<LocalDate, JsonNode> calendars
+            UUID userId, UUID connectionId, StockAnalysisInput input, Map<LocalDate, TossCalendarCapture> calendars
     ) {
         String sessionReason = null;
         Instant quoteAsOf = null;
@@ -1342,7 +1383,8 @@ public final class InvestmentContextService {
         if (quoteAsOf == null) return null;
         var collectedAt = input.collectedAt();
         var today = collectedAt.atZone(NEW_YORK).toLocalDate();
-        var calendar = tossCalendarCached(userId, connectionId, today, calendars);
+        var currentCapture = tossCalendarCached(userId, connectionId, today, calendars);
+        var calendar = currentCapture == null ? null : currentCapture.payload();
         var regular = regularSessionFacts(collectedAt, calendar, null);
         if (regular != null && regular.regularCloseValidUntil() == null) {
             regular = regularSessionFacts(collectedAt, calendar,
@@ -1351,20 +1393,114 @@ public final class InvestmentContextService {
         Instant nextDeclared = null;
         if (TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS.equals(sessionReason)) {
             var quoteDate = quoteAsOf.atZone(NEW_YORK).toLocalDate();
-            var quoteCalendar = tossCalendarCached(userId, connectionId, quoteDate, calendars);
+            var quoteCalendarCapture = tossCalendarCached(userId, connectionId, quoteDate, calendars);
+            var quoteCalendar = quoteCalendarCapture == null ? null : quoteCalendarCapture.payload();
             nextDeclared = nextDeclaredIntervalStart(quoteAsOf, quoteCalendar, null);
             if (nextDeclared == null) {
                 nextDeclared = nextDeclaredIntervalStart(quoteAsOf, quoteCalendar,
                         nextBusinessDayCalendar(userId, connectionId, quoteCalendar, quoteDate, calendars));
             }
         }
-        return new PriceSessionContext(regular, sessionReason, nextDeclared);
+        var closedInterval = currentClosedIntervalFacts(userId, connectionId, today,
+                currentCapture, calendars);
+        return new PriceSessionContext(regular, sessionReason, nextDeclared, closedInterval);
+    }
+
+    private ClosedIntervalFacts currentClosedIntervalFacts(
+            UUID userId, UUID connectionId, LocalDate collectedDate,
+            TossCalendarCapture current, Map<LocalDate, TossCalendarCapture> calendars
+    ) {
+        if (current == null || current.payload() == null) return null;
+        var currentPayload = current.payload();
+        var previousDate = calendarDayDate(currentPayload, "previousBusinessDay");
+        var nextDate = calendarDayDate(currentPayload, "nextBusinessDay");
+        var currentDay = calendarDay(currentPayload, "today", collectedDate);
+        if (currentDay == null || previousDate == null || !previousDate.isBefore(collectedDate)
+                || nextDate == null || !nextDate.isAfter(collectedDate)) return null;
+
+        var previous = tossCalendarCached(userId, connectionId, previousDate, calendars);
+        var next = tossCalendarCached(userId, connectionId, nextDate, calendars);
+        // Calendar responses finish after the analysis input's collectedAt. Judge both provider provenance and
+        // the current gap at one capture-completion instant so legitimate response metadata is not rejected as
+        // future while a gap that ended during the requests is never accepted.
+        var evaluatedAt = clock.instant();
+        var today = evaluatedAt.atZone(NEW_YORK).toLocalDate();
+        if (!today.equals(collectedDate)
+                || !usableCalendarProvenance(current, evaluatedAt)
+                || !usableCalendarProvenance(previous, evaluatedAt)
+                || !usableCalendarProvenance(next, evaluatedAt)) return null;
+        var previousDay = calendarDay(previous.payload(), "today", previousDate);
+        var nextDay = calendarDay(next.payload(), "today", nextDate);
+        var bounds = currentClosedIntervalBounds(evaluatedAt, previousDate, previousDay,
+                today, currentDay, nextDate, nextDay);
+        if (bounds == null) return null;
+        var observedAt = List.of(current.observedAt(), previous.observedAt(), next.observedAt()).stream()
+                .max(Instant::compareTo).orElse(null);
+        return observedAt == null ? null : new ClosedIntervalFacts(bounds.start(), bounds.end(), "TOSS", observedAt);
+    }
+
+    private static boolean usableCalendarProvenance(TossCalendarCapture calendar, Instant now) {
+        return calendar != null && calendar.payload() != null && "TOSS".equals(calendar.source())
+                && calendar.observedAt() != null && !calendar.observedAt().isAfter(now);
+    }
+
+    /** Derives only the currently bounded gap between explicit Toss intervals; missing fields are not null sessions. */
+    static ClosedIntervalBounds currentClosedIntervalBounds(
+            Instant now, LocalDate previousDate, JsonNode previousDay,
+            LocalDate today, JsonNode todayDay, LocalDate nextDate, JsonNode nextDay
+    ) {
+        if (now == null || previousDate == null || today == null || nextDate == null
+                || !previousDate.isBefore(today) || !nextDate.isAfter(today)) return null;
+        var intervals = new ArrayList<DeclaredInterval>();
+        var previousIntervals = declaredCalendarIntervals(previousDate, previousDay);
+        var todayIntervals = declaredCalendarIntervals(today, todayDay);
+        var nextIntervals = declaredCalendarIntervals(nextDate, nextDay);
+        if (previousIntervals == null || todayIntervals == null || nextIntervals == null) return null;
+        intervals.addAll(previousIntervals);
+        intervals.addAll(todayIntervals);
+        intervals.addAll(nextIntervals);
+        if (intervals.isEmpty()) return null;
+        intervals.sort(Comparator.comparing(DeclaredInterval::start));
+        for (int index = 1; index < intervals.size(); index++) {
+            if (intervals.get(index - 1).end().isAfter(intervals.get(index).start())) return null;
+        }
+        if (intervals.stream().anyMatch(interval -> !now.isBefore(interval.start())
+                && now.isBefore(interval.end()))) return null;
+        var previousEnd = intervals.stream().map(DeclaredInterval::end)
+                .filter(end -> !end.isAfter(now)).max(Instant::compareTo).orElse(null);
+        var nextStart = intervals.stream().map(DeclaredInterval::start)
+                .filter(start -> start.isAfter(now)).min(Instant::compareTo).orElse(null);
+        return previousEnd == null || nextStart == null || !previousEnd.isBefore(nextStart)
+                ? null : new ClosedIntervalBounds(previousEnd, nextStart);
+    }
+
+    private static List<DeclaredInterval> declaredCalendarIntervals(LocalDate date, JsonNode day) {
+        if (day == null || !day.isObject() || !date.toString().equals(day.path("date").asText(null))) return null;
+        var intervals = new ArrayList<DeclaredInterval>();
+        for (var field : TOSS_CALENDAR_INTERVAL_FIELDS) {
+            if (!day.has(field)) return null;
+            var interval = day.get(field);
+            if (interval.isNull()) continue;
+            if (!interval.isObject()) return null;
+            var start = tossCalendarBound(interval, "startTime", "open", "openTime", "start");
+            var end = tossCalendarBound(interval, "endTime", "close", "closeTime", "end");
+            if (start == null || end == null || !start.isBefore(end)) return null;
+            if (!"dayMarket".equals(field)
+                    && (!date.equals(start.atZone(NEW_YORK).toLocalDate())
+                    || !date.equals(end.minusNanos(1).atZone(NEW_YORK).toLocalDate()))) return null;
+            intervals.add(new DeclaredInterval(start, end));
+        }
+        return intervals;
+    }
+
+    record ClosedIntervalBounds(Instant start, Instant end) {
     }
 
     private JsonNode nextBusinessDayCalendar(UUID userId, UUID connectionId, JsonNode calendar, LocalDate date,
-                                             Map<LocalDate, JsonNode> calendars) {
+                                             Map<LocalDate, TossCalendarCapture> calendars) {
         var next = calendarNextBusinessDate(calendar, date);
-        return next == null ? null : tossCalendarCached(userId, connectionId, next, calendars);
+        var capture = next == null ? null : tossCalendarCached(userId, connectionId, next, calendars);
+        return capture == null ? null : capture.payload();
     }
 
     /**
@@ -2776,6 +2912,12 @@ public final class InvestmentContextService {
     private ObjectNode priceView(InvestmentDataCalculator.PriceAssessment price, PriceSessionContext context,
                                  Instant collectedAt) {
         ObjectNode view = objectMapper.valueToTree(price);
+        // The bootstrap marker means a quote-only capture completed for this symbol. A failed/no-quote capture
+        // must remain eligible for bounded retries even though its partial snapshot can still be persisted.
+        if (context != null && "TOSS".equals(price.source())
+                && price.latestPrice() != null && price.latestPrice().signum() > 0) {
+            view.put("closedIntervalEvidenceVersion", CLOSED_INTERVAL_EVIDENCE_VERSION);
+        }
         var regular = context == null ? null : context.regular();
         view.put("regularCloseSessionDate", price.regularCloseAsOf() == null ? null
                 : price.regularCloseAsOf().atZone(NEW_YORK).toLocalDate().toString());
@@ -2786,6 +2928,13 @@ public final class InvestmentContextService {
         view.put("regularCloseValidUntil", regular == null || regular.regularCloseValidUntil() == null
                 ? null : regular.regularCloseValidUntil().toString());
         refreshRegularCloseStatus(view, collectedAt);
+        var closedInterval = context == null ? null : context.closedInterval();
+        if (closedInterval != null) {
+            view.put("closedIntervalStartsAt", closedInterval.startsAt().toString());
+            view.put("closedIntervalEndsAt", closedInterval.endsAt().toString());
+            view.put("closedIntervalCalendarSource", closedInterval.source());
+            view.put("closedIntervalCalendarObservedAt", closedInterval.observedAt().toString());
+        }
         if (price.session() == null && "TOSS".equals(price.source()) && context != null
                 && context.sessionReason() != null) {
             view.put("sessionReason", context.sessionReason());

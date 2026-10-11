@@ -60,21 +60,44 @@ final class InvestmentRiskMarkSelector {
         if (input.latestPriceAsOf().isAfter(input.now())) {
             return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_QUOTE_TIMESTAMP_IN_FUTURE");
         }
-        if (!CLOSED_INTERVAL_REASON.equals(input.sessionReason())
-                || input.nextDeclaredIntervalStartsAt() == null) {
-            return unavailable(quoteStatus, "CLOSED_INTERVAL_CALENDAR_EVIDENCE_MISSING");
-        }
         if (!"TOSS".equals(input.latestPriceSource())) {
             return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_QUOTE_SOURCE_UNVERIFIED");
         }
-        if (input.latestPriceSession() != null) {
-            return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_SESSION_INCONSISTENT");
-        }
-        if (!input.nextDeclaredIntervalStartsAt().isAfter(input.latestPriceAsOf())) {
-            return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_TIMESTAMPS_INCOHERENT");
-        }
-        if (!input.now().isBefore(input.nextDeclaredIntervalStartsAt())) {
-            return unavailable(DataStatus.STALE, "CLOSED_INTERVAL_EXPIRED");
+        if (hasClosedIntervalEvidence(input)) {
+            if (!"TOSS".equals(input.closedIntervalCalendarSource())
+                    || input.closedIntervalCalendarObservedAt() == null
+                    || input.closedIntervalCalendarObservedAt().isAfter(input.now())) {
+                return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_CALENDAR_PROVENANCE_UNVERIFIED");
+            }
+            if (input.closedIntervalStartsAt() == null || input.closedIntervalEndsAt() == null
+                    || !input.closedIntervalStartsAt().isBefore(input.closedIntervalEndsAt())) {
+                return unavailable(quoteStatus, "CLOSED_INTERVAL_CALENDAR_EVIDENCE_MISSING");
+            }
+            if (input.now().isBefore(input.closedIntervalStartsAt())) {
+                return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_NOT_STARTED");
+            }
+            if (!input.now().isBefore(input.closedIntervalEndsAt())) {
+                return unavailable(DataStatus.STALE, "CLOSED_INTERVAL_EXPIRED");
+            }
+            if (input.latestPriceAsOf().isAfter(input.closedIntervalStartsAt())) {
+                return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_QUOTE_AFTER_GAP_START");
+            }
+        } else {
+            // Older snapshots have no bounded current-gap proof. Preserve the prior verified outside-interval
+            // path, which requires an unclassified quote and a provider-declared next session start.
+            if (!CLOSED_INTERVAL_REASON.equals(input.sessionReason())
+                    || input.nextDeclaredIntervalStartsAt() == null) {
+                return unavailable(quoteStatus, "CLOSED_INTERVAL_CALENDAR_EVIDENCE_MISSING");
+            }
+            if (input.latestPriceSession() != null) {
+                return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_SESSION_INCONSISTENT");
+            }
+            if (!input.nextDeclaredIntervalStartsAt().isAfter(input.latestPriceAsOf())) {
+                return unavailable(DataStatus.UNVERIFIED, "CLOSED_INTERVAL_TIMESTAMPS_INCOHERENT");
+            }
+            if (!input.now().isBefore(input.nextDeclaredIntervalStartsAt())) {
+                return unavailable(DataStatus.STALE, "CLOSED_INTERVAL_EXPIRED");
+            }
         }
         if (!positive(input.regularClose()) || input.regularCloseAsOf() == null) {
             return unavailable(DataStatus.DATA_MISSING, "VERIFIED_REGULAR_CLOSE_INCOMPLETE");
@@ -107,6 +130,11 @@ final class InvestmentRiskMarkSelector {
         return value != null && value.signum() > 0;
     }
 
+    private static boolean hasClosedIntervalEvidence(Input input) {
+        return input.closedIntervalStartsAt() != null || input.closedIntervalEndsAt() != null
+                || input.closedIntervalCalendarSource() != null || input.closedIntervalCalendarObservedAt() != null;
+    }
+
     private static boolean blank(String value) {
         return value == null || value.isBlank();
     }
@@ -129,8 +157,22 @@ final class InvestmentRiskMarkSelector {
             LocalDate regularCloseSessionDate,
             LocalDate lastCompletedSessionDate,
             DataStatus regularCloseStatus,
-            Instant now
+            Instant now,
+            Instant closedIntervalStartsAt,
+            Instant closedIntervalEndsAt,
+            String closedIntervalCalendarSource,
+            Instant closedIntervalCalendarObservedAt
     ) {
+        Input(BigDecimal latestPrice, Instant latestPriceAsOf, String latestPriceSource, String latestPriceSession,
+              DataStatus latestPriceStatus, String sessionReason, Instant nextDeclaredIntervalStartsAt,
+              BigDecimal regularClose, Instant regularCloseAsOf, String regularCloseSource,
+              LocalDate regularCloseSessionDate, LocalDate lastCompletedSessionDate,
+              DataStatus regularCloseStatus, Instant now) {
+            this(latestPrice, latestPriceAsOf, latestPriceSource, latestPriceSession, latestPriceStatus,
+                    sessionReason, nextDeclaredIntervalStartsAt, regularClose, regularCloseAsOf, regularCloseSource,
+                    regularCloseSessionDate, lastCompletedSessionDate, regularCloseStatus, now,
+                    null, null, null, null);
+        }
     }
 
     record Selection(
