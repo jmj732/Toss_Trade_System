@@ -278,6 +278,7 @@ class MonitoringCoordinator {
 
     private static MonitoringEvaluationContract.WatchlistLevels contractLevels(
             MonitoringWatchlistService.WatchlistLevels levels) {
+        if (levels == null || !levels.configured()) return null;
         return new MonitoringEvaluationContract.WatchlistLevels(
                 levels.prepare(), levels.confirm(), levels.pullback(), levels.invalidate());
     }

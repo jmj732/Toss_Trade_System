@@ -118,6 +118,32 @@ class InvestmentThesisVerificationIntegrationTest extends PostgresIntegrationTes
     }
 
     @Test
+    void linkedReceiptLookupIsOwnerTickerScopedAndUnaffectedByLaterBlockedEvent() throws Exception {
+        var verifier = verifier();
+        var proposal = propose(USER, "linked-receipt-proposal");
+        insertUsableQuote(USER);
+        verifier.updatePolicy(USER, new InvestmentThesisVerificationService.PolicyInput(true, null));
+        var approvedEventId = UUID.randomUUID();
+        var approved = verifier.verify(USER, API_KEY, input(approvedEventId, proposal.revisionId(),
+                "linked-receipt-approval", "PASS", new BigDecimal("90")));
+        var laterBlocked = verifierAt(NOW.plusSeconds(1)).verify(USER, API_KEY, input(UUID.randomUUID(), proposal.revisionId(),
+                "later-stale-attempt", "PASS", new BigDecimal("90")));
+
+        var linked = verifier.verificationReceipt(USER, TICKER, approvedEventId);
+        var latest = verifier.verificationContext(USER, TICKER).latestVerification();
+
+        assertThat(approved.outcome()).isEqualTo("AUTO_APPROVED");
+        assertThat(laterBlocked.outcome()).isEqualTo("BLOCKED");
+        assertThat(latest.outcome()).isEqualTo("BLOCKED");
+        assertThat(linked).isNotNull();
+        assertThat(linked.verificationEventId()).isEqualTo(approvedEventId);
+        assertThat(linked.outcome()).isEqualTo("AUTO_APPROVED");
+        assertThat(linked.approvedRevisionId()).isEqualTo(approved.approvedThesis().revisionId());
+        assertThat(verifier.verificationReceipt(OTHER_USER, TICKER, approvedEventId)).isNull();
+        assertThat(verifier.verificationReceipt(USER, "MSFT", approvedEventId)).isNull();
+    }
+
+    @Test
     void deploymentPolicyIsSheetOwnerScopedAndStoredPolicyOverridesWithRevisionCas() throws Exception {
         var verifier = verifier();
         var proposal = propose(USER, "policy-scope-proposal");
@@ -348,8 +374,16 @@ class InvestmentThesisVerificationIntegrationTest extends PostgresIntegrationTes
     }
 
     private InvestmentThesisVerificationService verifier(boolean deploymentPolicyEnabled) {
+        return verifier(Clock.fixed(NOW, ZoneOffset.UTC), deploymentPolicyEnabled);
+    }
+
+    private InvestmentThesisVerificationService verifierAt(Instant instant) {
+        return verifier(Clock.fixed(instant, ZoneOffset.UTC), true);
+    }
+
+    private InvestmentThesisVerificationService verifier(Clock clock, boolean deploymentPolicyEnabled) {
         return new InvestmentThesisVerificationService(jdbc, transactionManager, context, mapper,
-                Clock.fixed(NOW, ZoneOffset.UTC), deploymentPolicyEnabled, true, USER.toString(),
+                clock, deploymentPolicyEnabled, true, USER.toString(),
                 "v1", Duration.ofHours(24), 2, new BigDecimal("0.25"));
     }
 

@@ -137,6 +137,20 @@ public final class InvestmentThesisVerificationService {
                 latestVerification(userId, ticker), List.copyOf(candidateTriggers));
     }
 
+    /** Returns the persisted receipt linked to the current thesis, scoped to its owner and ticker. */
+    public VerificationReceipt verificationReceipt(UUID userId, String rawTicker, UUID eventId) {
+        requireUser(userId);
+        var ticker = ticker(rawTicker);
+        if (eventId == null) return null;
+        var event = findEvent(eventId);
+        if (event == null || !userId.equals(event.userId()) || !ticker.equals(event.result().ticker())) return null;
+        var result = event.result();
+        var approved = result.approvedThesis();
+        return new VerificationReceipt(result.verificationEventId(), result.thesisRevisionId(), result.outcome(),
+                result.reasonCode(), result.policyVersion(), approved == null ? null : approved.revisionId(),
+                approved == null ? null : approved.revision());
+    }
+
     public VerificationResult verify(UUID authenticatedUserId, UUID authenticatedApiKeyId, VerificationInput rawInput) {
         requireUser(authenticatedUserId);
         var input = normalize(rawInput);
@@ -466,4 +480,8 @@ public final class InvestmentThesisVerificationService {
                                      String outcome, String reasonCode, String verdict, String policyVersion,
                                      UUID authenticatedActorUserId, UUID authenticatedActorKeyId, Instant createdAt,
                                      InvestmentContextService.ThesisView approvedThesis) {}
+
+    public record VerificationReceipt(UUID verificationEventId, UUID proposalRevisionId, String outcome,
+                                      String reasonCode, String policyVersion, UUID approvedRevisionId,
+                                      Long approvedRevision) {}
 }

@@ -6,6 +6,9 @@ import com.jmj.trade.connector.ConnectorMcpController;
 import com.jmj.trade.connector.ConnectorMcpProtocol;
 import com.jmj.trade.connector.ConnectorService;
 import com.jmj.trade.investment.InvestmentContextService;
+import com.jmj.trade.investment.InvestmentOnboardingService;
+import com.jmj.trade.investment.InvestmentRiskPreflightService;
+import com.jmj.trade.order.McpOrderExecutionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.jackson.autoconfigure.JacksonAutoConfiguration;
@@ -123,6 +126,69 @@ class InvestmentContextMcpSecurityIntegrationTest {
             verify(contextService).context(USER);
             verify(contextService, never()).context(OTHER_USER);
             verifyNoInteractions(connectorService);
+        });
+    }
+
+    @Test
+    void authenticatedReadAndTradeScopesExposeOnlyTheirOnboardingTools() throws Exception {
+        var keys = mock(ConnectorApiKeyService.class);
+        var onboarding = mock(InvestmentOnboardingService.class);
+        var preflight = mock(InvestmentRiskPreflightService.class);
+        var connector = mock(ConnectorService.class);
+        var orders = mock(McpOrderExecutionService.class);
+        var mapper = new ObjectMapper();
+        var protocol = new ConnectorMcpProtocol(connector, orders, null, null, null,
+                onboarding, preflight, mapper);
+        var readKey = new ConnectorApiKeyService.AuthenticatedKey(
+                UUID.fromString("01990000-0000-7000-8000-000000000031"), USER, CONNECTION,
+                "ckey_onboarding_read", null, false, ConnectorApiKeyService.READ_SCOPE);
+        var tradeKey = new ConnectorApiKeyService.AuthenticatedKey(
+                UUID.fromString("01990000-0000-7000-8000-000000000032"), USER, CONNECTION,
+                "ckey_onboarding_trade", null, false, ConnectorApiKeyService.TRADE_SCOPE);
+        when(keys.findActive("ckey_onboarding_read")).thenReturn(Optional.of(readKey));
+        when(keys.findActive("ckey_onboarding_trade")).thenReturn(Optional.of(tradeKey));
+        when(keys.markUsed(readKey.id())).thenReturn(true);
+        when(keys.markUsed(tradeKey.id())).thenReturn(true);
+        TestBeans.configure(keys, protocol);
+
+        contextRunner.withUserConfiguration(TestBeans.class).run(context -> {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup(context)
+                    .apply(SecurityMockMvcConfigurers.springSecurity())
+                    .build();
+            try {
+                var readToolsJson = mvc.perform(post("/api/v1/connector/mcp")
+                                .header("Authorization", "Bearer ckey_onboarding_read")
+                                .contentType("application/json")
+                                .content("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
+                        .andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString();
+                var readTools = mapper.readTree(readToolsJson).path("result").path("tools");
+                assertThat(readTools.toString()).contains("get_investment_onboarding_readiness",
+                        "preflight_investment_risk").doesNotContain("register_investment_candidate");
+
+                var denied = mvc.perform(post("/api/v1/connector/mcp")
+                                .header("Authorization", "Bearer ckey_onboarding_read")
+                                .contentType("application/json")
+                                .content("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                                        + "\"params\":{\"name\":\"register_investment_candidate\","
+                                        + "\"arguments\":{\"ticker\":\"AAPL\"}}}"))
+                        .andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString();
+                assertThat(mapper.readTree(denied).path("result").path("structuredContent")
+                        .path("errorCode").asText()).isEqualTo("TRADE_SCOPE_REQUIRED");
+
+                var tradeToolsJson = mvc.perform(post("/api/v1/connector/mcp")
+                                .header("Authorization", "Bearer ckey_onboarding_trade")
+                                .contentType("application/json")
+                                .content("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}"))
+                        .andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString();
+                assertThat(mapper.readTree(tradeToolsJson).path("result").path("tools").toString())
+                        .contains("register_investment_candidate");
+            } catch (Exception exception) {
+                throw new AssertionError(exception);
+            }
+            verifyNoInteractions(onboarding, preflight, connector, orders);
         });
     }
 
