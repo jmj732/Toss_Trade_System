@@ -1,9 +1,11 @@
 package com.jmj.trade.connector;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -11,6 +13,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectReader;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
@@ -27,6 +33,8 @@ public final class ConnectorMcpController {
     private static final String MESSAGE_PATH = "/api/v1/connector/mcp/messages";
 
     private final ConnectorMcpProtocol protocol;
+    private final ObjectReader requestReader;
+    private final ObjectMapper objectMapper;
     private final String publicDashboardUrl;
     private final ConcurrentMap<String, Session> sessions = new ConcurrentHashMap<>();
 
@@ -35,7 +43,20 @@ public final class ConnectorMcpController {
             @org.springframework.beans.factory.annotation.Value("${public.dashboard-url:http://localhost:3000}")
             String publicDashboardUrl
     ) {
+        this(protocol, publicDashboardUrl, new ObjectMapper());
+    }
+
+    @Autowired
+    public ConnectorMcpController(
+            ConnectorMcpProtocol protocol,
+            @org.springframework.beans.factory.annotation.Value("${public.dashboard-url:http://localhost:3000}")
+            String publicDashboardUrl,
+            ObjectMapper objectMapper
+    ) {
         this.protocol = protocol;
+        this.objectMapper = objectMapper;
+        this.requestReader = objectMapper.reader(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS,
+                DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         this.publicDashboardUrl = trimTrailingSlash(publicDashboardUrl);
     }
 
@@ -46,9 +67,10 @@ public final class ConnectorMcpController {
      */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<ObjectNode> mcp(
-            @RequestBody ObjectNode request,
+            @RequestBody byte[] requestBody,
             Authentication authentication
     ) {
+        var request = parseRequest(requestBody);
         var key = key(authentication);
         var response = handle(request, key);
         if (response == null) return ResponseEntity.accepted().build();
@@ -80,9 +102,10 @@ public final class ConnectorMcpController {
     @PostMapping(value = "/messages", consumes = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<Void> message(
             @RequestParam String sessionId,
-            @RequestBody ObjectNode request,
+            @RequestBody byte[] requestBody,
             Authentication authentication
     ) {
+        var request = parseRequest(requestBody);
         var session = sessions.get(sessionId);
         if (session == null) return ResponseEntity.status(410).build();
 
@@ -108,6 +131,22 @@ public final class ConnectorMcpController {
         return key;
     }
 
+    @ExceptionHandler(MalformedMcpRequest.class)
+    ResponseEntity<ObjectNode> malformedRequest() {
+        return ResponseEntity.badRequest()
+                .body(objectMapper.createObjectNode().put("errorCode", "MALFORMED_MCP_REQUEST"));
+    }
+
+    private ObjectNode parseRequest(byte[] requestBody) {
+        try {
+            var request = requestReader.readTree(requestBody);
+            if (request instanceof ObjectNode object) return object;
+        } catch (JacksonException exception) {
+            throw new MalformedMcpRequest();
+        }
+        throw new MalformedMcpRequest();
+    }
+
     private ObjectNode handle(ObjectNode request, ConnectorApiKeyService.AuthenticatedKey key) {
         return key.canTrade()
                 ? protocol.handle(request, key.userId(), key.connectionId(), key.id(), true)
@@ -118,6 +157,10 @@ public final class ConnectorMcpController {
         boolean belongsTo(ConnectorApiKeyService.AuthenticatedKey key) {
             return userId.equals(key.userId()) && connectionId.equals(key.connectionId());
         }
+    }
+
+    private static final class MalformedMcpRequest extends RuntimeException {
+        private static final long serialVersionUID = 1L;
     }
 
     private static String trimTrailingSlash(String value) {

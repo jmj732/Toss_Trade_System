@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -64,6 +65,254 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
                     invalidation_status, classification, updated_at
                 ) VALUES (?, 'AAPL', 'Growth thesis', 'Breaks below support', 80, 'CONFIRMED', 'COMPOUNDER', ?)
                 """, USER_ID, now);
+        insertUserConfirmedRevision("AAPL", bd("80"));
+    }
+
+    @Test
+    void preflightRecalculatesHeldPurchaseRiskAtServerMarkWithoutChangingPortfolioEquity() throws Exception {
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"));
+        var before = context.context(USER_ID);
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+
+        assertThat(result.buyEligible()).as("blockers=%s cash=%s", result.blockers(), result.cash()).isTrue();
+        assertThat(result.blockers()).isEmpty();
+        assertThat(result.currentRisk().get("AAPL").portfolioWeight()).isEqualByComparingTo("0.25");
+        assertThat(result.proFormaRisk().get("AAPL").portfolioWeight()).isEqualByComparingTo("0.35");
+        assertThat(result.proFormaRisk().get("AAPL").plannedLossContribution()).isEqualByComparingTo("0.07");
+        assertThat(result.proFormaRisk().get("AAPL").thesisFailureStress()).isEqualByComparingTo("0.07");
+        assertThat(result.cash().availableBefore()).isEqualByComparingTo("750");
+        assertThat(result.cash().purchaseCost()).isEqualByComparingTo("100");
+        assertThat(result.cash().availableAfter()).isEqualByComparingTo("650");
+        assertThat(result.proFormaRisk().get("AAPL").riskMark().value()).isEqualByComparingTo("100");
+        assertThat(context.context(USER_ID)).isEqualTo(before);
+    }
+
+    @Test
+    void preflightAllowsNewRegisteredTickerWhenOnlyProFormaWeightMakesItEligible() throws Exception {
+        insertConfirmedThesis("GOOGL");
+        insertCurrentPrice("GOOGL");
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"));
+
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("GOOGL", bd("1")));
+
+        assertThat(result.currentRisk().get("GOOGL").portfolioWeight()).isNull();
+        assertThat(result.currentRisk().get("GOOGL").eligibilityReasons()).contains("POSITION_WEIGHT_MISSING");
+        assertThat(result.proFormaRisk().get("GOOGL").portfolioWeight()).isEqualByComparingTo("0.10");
+        assertThat(result.proFormaRisk().get("GOOGL").sizingEligible()).isTrue();
+        assertThat(result.buyEligible()).as("blockers=%s cash=%s", result.blockers(), result.cash()).isTrue();
+    }
+
+    @Test
+    void preflightKeepsMissingHeldInvalidationRiskMissingAndBlocksNewBuy() throws Exception {
+        insertConfirmedThesis("GOOGL");
+        insertCurrentPrice("GOOGL");
+        jdbc.update("""
+                INSERT INTO investment_thesis_states (
+                    user_id, ticker, core_thesis, invalidation_status, classification, updated_at
+                ) VALUES (?, 'MSFT', 'Missing trigger test', 'CONFIRMED', 'COMPOUNDER', ?)
+                """, USER_ID, OffsetDateTime.now(ZoneOffset.UTC));
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"),
+                List.of(heldPosition("AAPL"), heldPosition("MSFT")), Map.of());
+
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("GOOGL", bd("1")));
+
+        assertThat(result.currentRisk().get("MSFT").plannedLossContribution()).isNull();
+        assertThat(result.currentRisk().get("MSFT").eligibilityReasons())
+                .contains("INVALIDATION_PRICE_NOT_CONFIGURED");
+        assertThat(result.currentRisk().get("MSFT").thesisFailureStress()).isNull();
+        assertThat(result.buyEligible()).isFalse();
+        assertThat(result.blockers()).contains("HELD_POSITION_RISK_INCOMPLETE");
+    }
+
+    @Test
+    void preflightBlocksInsufficientCashAndInvalidQuantity() throws Exception {
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"));
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("8")));
+
+        assertThat(result.buyEligible()).isFalse();
+        assertThat(result.blockers()).contains("INSUFFICIENT_CASH");
+        assertThat(result.cash().availableAfter()).isEqualByComparingTo("-50");
+        assertThatThrownBy(() -> new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", BigDecimal.ZERO)))
+                .isInstanceOf(InvestmentException.class);
+        assertThatThrownBy(() -> new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", new BigDecimal("1E+1000000000"))))
+                .isInstanceOf(InvestmentException.class);
+        assertThatThrownBy(() -> new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", new BigDecimal("1E-1000000000"))))
+                .isInstanceOf(InvestmentException.class);
+    }
+
+    @Test
+    void preflightBlocksStaleAndPartialBrokerPortfolios() throws Exception {
+        for (var status : List.of("STALE", "PARTIAL")) {
+            var context = service(status, "OK", Instant.now(), Instant.now(), bd("0.10"));
+
+            var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                    new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+
+            assertThat(result.buyEligible()).isFalse();
+            assertThat(result.blockers()).contains("PORTFOLIO_RISK_UNAVAILABLE");
+            assertThat(result.portfolio().status()).isEqualTo("BLOCKED");
+        }
+    }
+
+    @Test
+    void preflightBlocksWhenProFormaLossCrossesSoftBudgetButCurrentRiskPasses() throws Exception {
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.06"));
+
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+
+        assertThat(result.currentRisk().get("AAPL").softBudgetStatus()).isEqualTo("WITHIN_SOFT_BUDGET");
+        assertThat(result.proFormaRisk().get("AAPL").thesisFailureStress()).isEqualByComparingTo("0.07");
+        assertThat(result.proFormaRisk().get("AAPL").softBudgetStatus()).isEqualTo("OVER_SOFT_BUDGET");
+        assertThat(result.blockers()).contains("PROFORMA_SOFT_BUDGET_EXCEEDED");
+        assertThat(result.buyEligible()).isFalse();
+    }
+
+    @Test
+    void preflightChecksConcentrationOnProFormaWeights() throws Exception {
+        var context = service("OK", "OK", Instant.now(), Instant.now(),
+                new RiskPolicyService.RiskPolicySnapshot(1, bd("10000"), bd("10000"), bd("100"),
+                        bd("0.30"), bd("0.10"), true), List.of(heldPosition("AAPL")), Map.of());
+
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+
+        assertThat(result.currentRisk().get("AAPL").portfolioWeight()).isEqualByComparingTo("0.25");
+        assertThat(result.proFormaRisk().get("AAPL").portfolioWeight()).isEqualByComparingTo("0.35");
+        assertThat(result.policy().concentrationWithinLimit()).isFalse();
+        assertThat(result.blockers()).contains("MAX_CONCENTRATION_EXCEEDED");
+        assertThat(result.buyEligible()).isFalse();
+    }
+
+    @Test
+    void preflightAppliesMaxQuantityAndMaxOrderAmountPolicy() throws Exception {
+        var context = service("OK", "OK", Instant.now(), Instant.now(),
+                new RiskPolicyService.RiskPolicySnapshot(1, bd("50"), bd("50"), bd("0.5"),
+                        BigDecimal.ONE, bd("0.10"), true), List.of(heldPosition("AAPL")), Map.of());
+
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+
+        assertThat(result.blockers()).contains("MAX_QUANTITY_EXCEEDED", "MAX_ORDER_AMOUNT_EXCEEDED");
+        assertThat(result.policy().orderAmountWithinLimit()).isFalse();
+        assertThat(result.buyEligible()).isFalse();
+    }
+
+    @Test
+    void preflightRejectsStaleRiskMarkAndAcceptsVerifiedRegularCloseFallback() throws Exception {
+        var staleContext = service("OK", "STALE", Instant.now().minus(Duration.ofHours(2)), Instant.now(),
+                bd("0.10"));
+        var stale = new InvestmentRiskPreflightService(staleContext, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+        assertThat(stale.blockers()).contains("RISK_MARK_UNAVAILABLE");
+        assertThat(stale.buyEligible()).isFalse();
+
+        var price = closedGapPrice(true);
+        var regularCloseContext = service("OK", "STALE", Instant.parse((String) price.get("latestPriceAsOf")),
+                Instant.now(), bd("0.10"), price);
+        var regularClose = new InvestmentRiskPreflightService(regularCloseContext, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+        assertThat(regularClose.proFormaRisk().get("AAPL").riskMark().basis())
+                .isEqualTo(InvestmentRiskMarkSelector.REGULAR_CLOSE_BASIS);
+        assertThat(regularClose.buyEligible())
+                .as("blockers=%s cash=%s", regularClose.blockers(), regularClose.cash()).isTrue();
+    }
+
+    @Test
+    void preflightRequiresExplicitCurrencyForUnheldTicker() throws Exception {
+        insertConfirmedThesis("GOOGL");
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        var payload = mapper.createObjectNode();
+        payload.put("asOf", now.toString());
+        payload.set("price", mapper.valueToTree(Map.of(
+                "latestPrice", 100, "latestPriceAsOf", now.toString(),
+                "session", "LIVE_REGULAR", "status", "OK", "source", "TOSS")));
+        jdbc.update("""
+                INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
+                VALUES (?, ?, 'GOOGL', ?, CAST(? AS jsonb), ?)
+                """, UUID.randomUUID(), USER_ID, now, mapper.writeValueAsString(payload), now);
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"));
+
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("GOOGL", bd("1")));
+
+        assertThat(result.blockers()).contains("CURRENCY_MISSING");
+        assertThat(result.buyEligible()).isFalse();
+    }
+
+    @Test
+    void preflightRequiresAiReceiptToMatchTheCurrentApprovedRevision() throws Exception {
+        var proposalRevisionId = jdbc.queryForObject("""
+                SELECT id FROM investment_thesis_revisions
+                 WHERE user_id = ? AND ticker = 'AAPL' AND revision = 1
+                """, UUID.class, USER_ID);
+        var eventId = UUID.randomUUID();
+        var approvedRevisionId = UUID.randomUUID();
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO investment_thesis_ai_verification_events (
+                    verification_event_id, user_id, ticker, proposal_revision_id, verification_run_id,
+                    provider, model, verdict, source_as_of, source_urls, rationale, counterevidence,
+                    selected_trigger_price, outcome, reason_code, policy_version, policy_snapshot,
+                    evaluation_snapshot, authenticated_actor_user_id, body_hash, created_at
+                ) VALUES (?, ?, 'AAPL', ?, 'verify-run', 'test-provider', 'test-model', 'PASS', ?,
+                          '[]'::jsonb, 'supported', 'reviewed', 80, 'AUTO_APPROVED', 'AUTO_APPROVED',
+                          'test-v1', '{}'::jsonb, '{}'::jsonb, ?, ?, ?)
+                """, eventId, USER_ID, proposalRevisionId, now, USER_ID, "0".repeat(64), now);
+        jdbc.update("""
+                INSERT INTO investment_thesis_revisions (
+                    id, user_id, ticker, revision, previous_status, new_status, previous_trigger_price,
+                    new_trigger_price, thesis_snapshot, actor_type, actor_user_id, reason, recorded_at,
+                    source_as_of, policy_version, verification_event_id
+                ) VALUES (?, ?, 'AAPL', 2, 'CONFIRMED', 'CONFIRMED', 80, 80, '{}'::jsonb,
+                          'AI_POLICY', ?, 'AUTO_APPROVED', ?, ?, 'test-v1', ?)
+                """, approvedRevisionId, USER_ID, USER_ID, now, now, eventId);
+
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"));
+        var verification = mock(InvestmentThesisVerificationService.class);
+        var preflight = new InvestmentRiskPreflightService(context, jdbc, verification,
+                new DataSourceTransactionManager(dataSource));
+        when(verification.verificationReceipt(USER_ID, "AAPL", eventId)).thenReturn(null);
+
+        var missingReceipt = preflight.preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+        assertThat(missingReceipt.thesis().receiptRequired()).isTrue();
+        assertThat(missingReceipt.thesis().receiptMatchesCurrentRevision()).isFalse();
+        assertThat(missingReceipt.blockers()).contains("AI_APPROVAL_RECEIPT_MISSING_OR_MISMATCHED");
+
+        when(verification.verificationReceipt(USER_ID, "AAPL", eventId)).thenReturn(
+                new InvestmentThesisVerificationService.VerificationReceipt(eventId, proposalRevisionId,
+                        "AUTO_APPROVED", "AUTO_APPROVED", "test-v1", UUID.randomUUID(), 2L));
+        var mismatchedReceipt = preflight.preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+        assertThat(mismatchedReceipt.thesis().receiptMatchesCurrentRevision()).isFalse();
+        assertThat(mismatchedReceipt.blockers()).contains("AI_APPROVAL_RECEIPT_MISSING_OR_MISMATCHED");
+
+        when(verification.verificationReceipt(USER_ID, "AAPL", eventId)).thenReturn(
+                new InvestmentThesisVerificationService.VerificationReceipt(eventId, proposalRevisionId,
+                        "AUTO_APPROVED", "AUTO_APPROVED", "test-v1", approvedRevisionId, 2L));
+        var matchingReceipt = preflight.preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
+        assertThat(matchingReceipt.thesis().receiptMatchesCurrentRevision()).isTrue();
+        assertThat(matchingReceipt.blockers()).doesNotContain("AI_APPROVAL_RECEIPT_MISSING_OR_MISMATCHED");
+    }
+
+    @Test
+    void preflightReturnsBlockedViewForUnknownTickerAndEmptyPortfolio() throws Exception {
+        var context = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"), List.of(), Map.of());
+
+        var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
+                new InvestmentRiskPreflightService.PreflightInput("ZZZZ", bd("1")));
+
+        assertThat(result.buyEligible()).isFalse();
+        assertThat(result.blockers()).contains("THESIS_MISSING");
     }
 
     @AfterEach
@@ -364,6 +613,16 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
             String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf,
             BigDecimal softRiskBudget, List<PortfolioReadService.PositionView> positions,
             Map<String, Map<String, Object>> priceOverridesByTicker) throws Exception {
+        return service(portfolioStatus, priceStatus, priceAsOf, consensusAsOf,
+                new RiskPolicyService.RiskPolicySnapshot(1, bd("10000"), bd("10000"), bd("100"),
+                        BigDecimal.ONE, softRiskBudget, true), positions, priceOverridesByTicker);
+    }
+
+    private InvestmentContextService service(
+            String portfolioStatus, String priceStatus, Instant priceAsOf, Instant consensusAsOf,
+            RiskPolicyService.RiskPolicySnapshot riskPolicy,
+            List<PortfolioReadService.PositionView> positions,
+            Map<String, Map<String, Object>> priceOverridesByTicker) throws Exception {
         var now = OffsetDateTime.ofInstant(NOW, ZoneOffset.UTC);
         var snapshotAsOf = OffsetDateTime.ofInstant(NOW.plusMillis(snapshotSequence++), ZoneOffset.UTC);
         var snapshot = new PortfolioReadService.PortfolioView(
@@ -378,12 +637,19 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
                 positions,
                 Map.of());
         var portfolios = mock(PortfolioReadService.class);
+        var reportedCash = bd("1000").subtract(positions.stream()
+                .map(PortfolioReadService.PositionView::marketValueAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
+        snapshot = new PortfolioReadService.PortfolioView(snapshot.syncRunId(), snapshot.completedAt(),
+                snapshot.stale(), snapshot.staleReason(), snapshot.partial(), snapshot.missingSections(),
+                snapshot.unknownFields(), snapshot.account(), snapshot.positions(),
+                Map.of("USD", new PortfolioReadService.BuyingPowerView(reportedCash, Instant.now().minusSeconds(1))));
         when(portfolios.read(USER_ID, CONNECTION_ID)).thenReturn(snapshot);
+        when(portfolios.snapshotMaxAge()).thenReturn(Duration.ofMinutes(15));
         var watchlist = mock(MonitoringWatchlistService.class);
         when(watchlist.list(USER_ID)).thenReturn(List.of());
         var riskPolicies = mock(RiskPolicyService.class);
-        when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
-                1, bd("10000"), bd("10000"), bd("100"), BigDecimal.ONE, softRiskBudget, true));
+        when(riskPolicies.current(USER_ID)).thenReturn(riskPolicy);
         for (var position : positions) {
             var price = new LinkedHashMap<String, Object>();
             price.put("latestPrice", 100);
@@ -413,6 +679,44 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         return new PortfolioReadService.PositionView(ticker, ticker, "US", bd("1"), "USD",
                 bd("90"), bd("100"), bd("250"), bd("250"), bd("250"), bd("0"), bd("0"),
                 bd("0"), bd("0"), bd("0"), bd("0"), bd("0"), bd("0"), bd("1"), NOW);
+    }
+
+    private void insertConfirmedThesis(String ticker) {
+        jdbc.update("""
+                INSERT INTO investment_thesis_states (
+                    user_id, ticker, core_thesis, price_risk_trigger, price_risk_trigger_price,
+                    invalidation_status, classification, updated_at
+                ) VALUES (?, ?, 'Growth thesis', 'Breaks below support', 80, 'CONFIRMED', 'COMPOUNDER', ?)
+                """, USER_ID, ticker, OffsetDateTime.now(ZoneOffset.UTC));
+        insertUserConfirmedRevision(ticker, bd("80"));
+    }
+
+    private void insertUserConfirmedRevision(String ticker, BigDecimal triggerPrice) {
+        jdbc.update("""
+                INSERT INTO investment_thesis_revisions (
+                    id, user_id, ticker, revision, previous_status, new_status, previous_trigger_price,
+                    new_trigger_price, thesis_snapshot, actor_type, actor_user_id, reason, recorded_at
+                ) VALUES (?, ?, ?, 1, 'NOT_REVIEWED', 'CONFIRMED', NULL, ?, '{}'::jsonb,
+                          'USER_SESSION', ?, 'USER_CONFIRMED', ?)
+                """, UUID.randomUUID(), USER_ID, ticker, triggerPrice, USER_ID,
+                OffsetDateTime.now(ZoneOffset.UTC));
+    }
+
+    private void insertCurrentPrice(String ticker) throws Exception {
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        var payload = mapper.createObjectNode();
+        payload.put("asOf", now.toString());
+        payload.set("price", mapper.valueToTree(Map.of(
+                "latestPrice", 100,
+                "latestPriceAsOf", now.toString(),
+                "session", "LIVE_REGULAR",
+                "status", "OK",
+                "source", "TOSS",
+                "currency", "USD")));
+        jdbc.update("""
+                INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
+                VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?)
+                """, UUID.randomUUID(), USER_ID, ticker, now, mapper.writeValueAsString(payload), now);
     }
 
     private InvestmentContextService.SecurityView securityWithPrice(Map<String, Object> price) throws Exception {

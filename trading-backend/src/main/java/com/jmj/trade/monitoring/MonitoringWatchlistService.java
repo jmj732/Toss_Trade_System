@@ -58,7 +58,7 @@ public class MonitoringWatchlistService {
     WatchlistEntry put(UUID userId, String symbol, WatchlistLevels levels) {
         requireUser(userId);
         var normalizedSymbol = symbol(symbol);
-        if (levels == null) {
+        if (levels == null || !levels.configured()) {
             throw new MonitoringException(MonitoringException.Code.INVALID_INPUT);
         }
         var normalizedLevels = levels;
@@ -83,6 +83,55 @@ public class MonitoringWatchlistService {
         states.observe(userId, "WATCHLIST", normalizedSymbol, result.status(),
                 result.evidence(), "CONFIGURATION", null, result.observedAt());
         return result;
+    }
+
+    /** Registers a symbol for existing scheduled data collection without inventing monitoring price levels. */
+    @Transactional
+    public RegistrationResult registerIfAbsent(UUID userId, String symbol) {
+        requireUser(userId);
+        var normalizedSymbol = symbol(symbol);
+        var now = now();
+        var levels = new WatchlistLevels(null, null, null, null);
+        var evidence = Map.<String, Object>of(
+                "action", "REGISTER_ONBOARDING",
+                "source", "USER_CONFIGURATION",
+                "symbol", normalizedSymbol,
+                "asOf", now.toInstant().toString());
+        var inserted = jdbc.query("""
+                INSERT INTO monitoring_watchlist (id, user_id, symbol, status, levels, evidence,
+                                                 observed_at, created_at, updated_at)
+                VALUES (?, ?, ?, 'WATCH', CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?)
+                ON CONFLICT (user_id, symbol) DO NOTHING
+                RETURNING id, symbol, status, levels::text, evidence::text,
+                          observed_at, created_at, updated_at
+                """, (resultSet, rowNum) -> entry(
+                resultSet.getObject("id", UUID.class), resultSet.getString("symbol"),
+                resultSet.getString("status"), resultSet.getString("levels"),
+                resultSet.getString("evidence"), resultSet.getObject("observed_at", OffsetDateTime.class),
+                resultSet.getObject("created_at", OffsetDateTime.class),
+                resultSet.getObject("updated_at", OffsetDateTime.class)),
+                UUID.randomUUID(), userId, normalizedSymbol, encode(levels), encode(evidence), now, now, now);
+        if (inserted.isEmpty()) {
+            var existing = find(userId, normalizedSymbol).orElseThrow(() ->
+                    new IllegalStateException("watchlist registration disappeared after conflict"));
+            return new RegistrationResult(existing, false);
+        }
+        var result = inserted.getFirst();
+        states.observe(userId, "WATCHLIST", normalizedSymbol, result.status(), evidence,
+                "ONBOARDING", result.id().toString(), result.observedAt());
+        return new RegistrationResult(result, true);
+    }
+
+    private Optional<WatchlistEntry> find(UUID userId, String symbol) {
+        return jdbc.query("""
+                SELECT id, symbol, status, levels::text, evidence::text, observed_at, created_at, updated_at
+                  FROM monitoring_watchlist WHERE user_id = ? AND symbol = ?
+                """, (resultSet, rowNum) -> entry(
+                resultSet.getObject("id", UUID.class), resultSet.getString("symbol"),
+                resultSet.getString("status"), resultSet.getString("levels"),
+                resultSet.getString("evidence"), resultSet.getObject("observed_at", OffsetDateTime.class),
+                resultSet.getObject("created_at", OffsetDateTime.class),
+                resultSet.getObject("updated_at", OffsetDateTime.class)), userId, symbol).stream().findFirst();
     }
 
     @Transactional
@@ -253,13 +302,19 @@ public class MonitoringWatchlistService {
 
     public record WatchlistLevels(Range prepare, Range confirm, Range pullback, Range invalidate) {
         public WatchlistLevels {
-            if (prepare == null || confirm == null || pullback == null || invalidate == null) {
-                throw new MonitoringException(MonitoringException.Code.INVALID_INPUT);
+            if (!(prepare == null && confirm == null && pullback == null && invalidate == null)) {
+                if (prepare == null || confirm == null || pullback == null || invalidate == null) {
+                    throw new MonitoringException(MonitoringException.Code.INVALID_INPUT);
+                }
+                validateRange(prepare);
+                validateRange(confirm);
+                validateRange(pullback);
+                validateRange(invalidate);
             }
-            validateRange(prepare);
-            validateRange(confirm);
-            validateRange(pullback);
-            validateRange(invalidate);
+        }
+
+        boolean configured() {
+            return prepare != null && confirm != null && pullback != null && invalidate != null;
         }
     }
 
@@ -276,6 +331,9 @@ public class MonitoringWatchlistService {
             Instant createdAt,
             Instant updatedAt
     ) {
+    }
+
+    public record RegistrationResult(WatchlistEntry entry, boolean created) {
     }
 
     public record PositionContextInput(

@@ -29,6 +29,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentCaptor.forClass;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class MonitoringCoordinatorTest {
 
@@ -112,5 +114,48 @@ class MonitoringCoordinatorTest {
 
         verify(thesisTriggers).detect(USER_ID, portfolio);
         verify(persister, never()).persist(any(), any(), any());
+    }
+
+    @Test
+    void onboardingWatchlistWithoutLevelsDoesNotSendImaginaryRangesToEvaluator() throws Exception {
+        var jdbc = mock(JdbcTemplate.class);
+        var objectMapper = mock(ObjectMapper.class);
+        var fred = mock(MonitoringFredSeriesReader.class);
+        var events = mock(MonitoringEventReader.class);
+        var marketSeries = mock(MonitoringMarketSeriesStore.class);
+        var portfolios = mock(MonitoringPortfolioReader.class);
+        var watchlist = mock(MonitoringWatchlistService.class);
+        var evaluator = mock(MonitoringEvaluator.class);
+        var persister = mock(MonitoringEvaluationPersister.class);
+        var thesisTriggers = mock(MonitoringThesisTriggerDetector.class);
+        var portfolio = new MonitoringEvaluationContract.PortfolioInput(Instant.now(), List.of(),
+                new MonitoringEvaluationContract.RiskPolicyInput(new BigDecimal("0.25"), null, null));
+        var entry = new MonitoringWatchlistService.WatchlistEntry(UUID.randomUUID(), "NEWT", "WATCH",
+                new MonitoringWatchlistService.WatchlistLevels(null, null, null, null),
+                java.util.Map.of(), Instant.now(), Instant.now(), Instant.now());
+
+        doReturn(List.of(USER_ID)).when(jdbc).query(contains("SELECT user_id FROM broker_connections"),
+                any(RowMapper.class));
+        doReturn(List.of()).when(jdbc).query(contains("SELECT id FROM broker_connections"),
+                any(RowMapper.class), eq(USER_ID));
+        when(fred.load(USER_ID)).thenReturn(List.of());
+        when(marketSeries.loadRatios(USER_ID)).thenReturn(List.of());
+        when(portfolios.read(eq(USER_ID), any(Instant.class), eq(null))).thenReturn(portfolio);
+        when(watchlist.list(USER_ID)).thenReturn(List.of(entry));
+        when(events.load(eq(USER_ID), any(), any(Instant.class)))
+                .thenReturn(new MonitoringEvaluationContract.EventBatch(List.of(), List.of(), List.of()));
+        when(objectMapper.writeValueAsBytes(any())).thenReturn(new byte[]{7});
+        when(evaluator.evaluate(any())).thenReturn(mock(JsonNode.class));
+        when(jdbc.query(contains("SELECT request_hash"), any(RowMapper.class), eq(USER_ID))).thenReturn(List.of());
+
+        var coordinator = new MonitoringCoordinator(jdbc, objectMapper, mock(ObjectProvider.class),
+                mock(ObjectProvider.class), fred, events, marketSeries, portfolios, watchlist, evaluator,
+                persister, thesisTriggers, Duration.ofMinutes(10));
+        coordinator.runCycle();
+
+        var request = forClass(MonitoringEvaluationContract.Request.class);
+        verify(evaluator).evaluate(request.capture());
+        assertThat(request.getValue().watchlist()).singleElement().satisfies(input ->
+                assertThat(input.levels()).isNull());
     }
 }

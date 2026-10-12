@@ -560,6 +560,155 @@ public final class InvestmentContextService {
             Map<String, ThesisView> theses, Map<String, JsonNode> analysis) {
     }
 
+    /** Same-snapshot inputs for the read-only buy preflight. The cash figure is reported cash capacity, not order approval. */
+    record RiskPreflightData(
+            PortfolioView portfolio,
+            Map<String, RiskContributionView> currentRisk,
+            Map<String, RiskContributionView> proFormaRisk,
+            ThesisView thesis,
+            Set<String> heldTickers,
+            String currency,
+            Map<String, BigDecimal> cashByCurrency,
+            String cashSource,
+            RiskPolicyService.RiskPolicySnapshot riskPolicy
+    ) {}
+
+    RiskPreflightData riskPreflightData(UUID userId, String rawTicker, BigDecimal quantity) {
+        requireUser(userId);
+        var ticker = ticker(rawTicker);
+        var inputs = riskInputs(userId);
+        var symbols = new LinkedHashSet<>(inputs.symbols());
+        var analysis = new LinkedHashMap<>(inputs.analysis());
+        var theses = new LinkedHashMap<>(inputs.theses());
+        if (symbols.add(ticker)) analysis.put(ticker, latestSecuritySnapshot(userId, ticker));
+        var thesis = theses.getOrDefault(ticker, thesisIfPresent(userId, ticker));
+        if (thesis != null) theses.put(ticker, thesis);
+
+        var portfolio = inputs.portfolio();
+        var currentRisk = riskContributions(userId, symbols, inputs.positions(), inputs.weights(), portfolio,
+                theses, analysis);
+        var existing = inputs.positions().get(ticker);
+        var priceNode = node(analysis.get(ticker), "price");
+        var explicitCurrency = clean(text(priceNode.get("currency")));
+        var currency = existing == null
+                ? (explicitCurrency == null ? null : explicitCurrency.toUpperCase(Locale.ROOT))
+                : existing.currency();
+        if (existing != null && explicitCurrency != null
+                && (existing.currency() == null || !existing.currency().equalsIgnoreCase(explicitCurrency))) {
+            currency = null;
+        }
+        final var validatedCurrency = currency;
+
+        var held = portfolio.positions().stream().map(PositionView::ticker)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        var mark = currentRisk.get(ticker) == null ? null : currentRisk.get(ticker).riskMark();
+        Map<String, RiskContributionView> proFormaRisk = Map.of();
+        if (validatedCurrency != null && mark != null && mark.status() == DataStatus.OK && mark.value() != null
+                && mark.value().signum() > 0 && quantity != null && quantity.signum() > 0) {
+            var totalEquity = portfolio.totalMarketValueByCurrency().get(validatedCurrency);
+            var sameCurrencyPositions = portfolio.positions().stream()
+                    .allMatch(position -> validatedCurrency.equalsIgnoreCase(position.currency()));
+            var totalCurrencies = portfolio.totalMarketValueByCurrency().entrySet().stream()
+                    .allMatch(entry -> validatedCurrency.equalsIgnoreCase(entry.getKey())
+                            || entry.getValue() != null && entry.getValue().signum() == 0);
+            if (portfolio.riskNumbersAvailable() && totalEquity != null && totalEquity.signum() > 0
+                    && sameCurrencyPositions && totalCurrencies) {
+                var purchaseCost = quantity.multiply(mark.value());
+                var updatedPositions = new LinkedHashMap<String, PositionView>();
+                for (var position : portfolio.positions()) {
+                    if (!position.ticker().equals(ticker)) {
+                        updatedPositions.put(position.ticker(), position);
+                        continue;
+                    }
+                    var updatedQuantity = position.quantity() == null ? null : position.quantity().add(quantity);
+                    var updatedValue = position.marketValue() == null ? null : position.marketValue().add(purchaseCost);
+                    updatedPositions.put(ticker, new PositionView(ticker, position.name(), updatedQuantity,
+                            position.currency(), updatedValue, null, mark.value(), mark.asOf(),
+                            position.accountsIncluded(), position.sourceCoverage(), position.quantityAsOf(),
+                            position.priceAsOf(), position.manualAsOf()));
+                }
+                if (existing == null) {
+                    updatedPositions.put(ticker, new PositionView(ticker, ticker, quantity, validatedCurrency,
+                            purchaseCost, null, mark.value(), mark.asOf()));
+                }
+                var weightedPositions = updatedPositions.values().stream().map(position -> {
+                    var weight = position.marketValue() == null ? null
+                            : position.marketValue().divide(totalEquity, MathContext.DECIMAL128);
+                    return new PositionView(position.ticker(), position.name(), position.quantity(), position.currency(),
+                            position.marketValue(), weight, position.lastPrice(), position.asOf(),
+                            position.accountsIncluded(), position.sourceCoverage(), position.quantityAsOf(),
+                            position.priceAsOf(), position.manualAsOf());
+                }).toList();
+                var proFormaPortfolio = new PortfolioView(portfolio.asOf(), weightedPositions,
+                        portfolio.totalMarketValueByCurrency(), portfolio.stale(), portfolio.missingFields(),
+                        portfolio.status(), portfolio.source(), portfolio.account1AsOf(), portfolio.manualAsOf(),
+                        portfolio.manualReadAt(), portfolio.manualStatus(), portfolio.snapshotStatus(),
+                        portfolio.manualStale(), portfolio.riskNumbersAvailable());
+                var proFormaPositionsByTicker = new LinkedHashMap<String, PositionView>();
+                weightedPositions.forEach(position -> proFormaPositionsByTicker.put(position.ticker(), position));
+                var proFormaSymbols = new LinkedHashSet<>(symbols);
+                proFormaSymbols.add(ticker);
+                proFormaRisk = riskContributions(userId, proFormaSymbols, proFormaPositionsByTicker,
+                        portfolioWeights(proFormaPortfolio), proFormaPortfolio, theses, analysis);
+            }
+        }
+        var cash = preflightCash(userId);
+        return new RiskPreflightData(portfolio, currentRisk, proFormaRisk, thesis, Set.copyOf(held), validatedCurrency,
+                cash.amounts(), cash.source(), riskPolicies.current(userId));
+    }
+
+    private PreflightCash preflightCash(UUID userId) {
+        if (configuredSheetOwner(userId)) {
+            var payload = latestAcceptedSheetPayload(userId);
+            var metrics = sheetTable(node(payload, "metrics"));
+            for (var row : metrics.rows()) {
+                if ("COMBINED".equalsIgnoreCase(sheetCell(metrics, row, "Scope"))) {
+                    var usdCash = sheetDecimal(sheetCell(metrics, row, "Cash USD"));
+                    return usdCash == null ? new PreflightCash(Map.of(), "SHEET_REPORTED_CASH_UNAVAILABLE")
+                            : new PreflightCash(Map.of("USD", usdCash), "SHEET_REPORTED_CASH");
+                }
+            }
+            return new PreflightCash(Map.of(), "SHEET_REPORTED_CASH_UNAVAILABLE");
+        }
+        var connectionIds = jdbc.query("""
+                SELECT id FROM broker_connections
+                 WHERE user_id = ? AND status = 'ACTIVE' AND deleted_at IS NULL
+                 ORDER BY id
+                """, (resultSet, rowNum) -> resultSet.getObject(1, UUID.class), userId);
+        if (connectionIds.isEmpty()) return new PreflightCash(Map.of(), "BROKER_BUYING_POWER_UNAVAILABLE");
+        var completeByCurrency = new LinkedHashSet<>(List.of("USD", "KRW"));
+        var totals = new LinkedHashMap<String, BigDecimal>();
+        for (var connectionId : connectionIds) {
+            final PortfolioReadService.PortfolioView snapshot;
+            try {
+                snapshot = portfolios.read(userId, connectionId);
+            } catch (RuntimeException exception) {
+                return new PreflightCash(Map.of(), "BROKER_BUYING_POWER_UNAVAILABLE");
+            }
+            if (snapshot.stale() || snapshot.partial()) {
+                return new PreflightCash(Map.of(), "BROKER_BUYING_POWER_UNAVAILABLE");
+            }
+            var buyingPower = snapshot.buyingPower() == null ? Map.<String, PortfolioReadService.BuyingPowerView>of()
+                    : snapshot.buyingPower();
+            var snapshotMaxAge = portfolios.snapshotMaxAge();
+            for (var currency : List.copyOf(completeByCurrency)) {
+                var value = buyingPower.get(currency);
+                if (value == null || value.cashBuyingPower() == null || value.observedAt() == null
+                        || value.observedAt().isAfter(clock.instant())
+                        || snapshotMaxAge != null
+                        && value.observedAt().isBefore(clock.instant().minus(snapshotMaxAge))) {
+                    completeByCurrency.remove(currency);
+                } else {
+                    totals.merge(currency, value.cashBuyingPower(), BigDecimal::add);
+                }
+            }
+        }
+        totals.keySet().retainAll(completeByCurrency);
+        return new PreflightCash(Map.copyOf(totals), "BROKER_REPORTED_BUYING_POWER");
+    }
+
+    private record PreflightCash(Map<String, BigDecimal> amounts, String source) {}
+
     /**
      * What-if risk for {@code ticker} if its thesis were CONFIRMED at {@code triggerPrice}. Read-only: swaps an
      * in-memory thesis copy into the same inputs context() uses and reuses riskContributions (same soft budget and

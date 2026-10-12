@@ -102,6 +102,19 @@ class MonitoringStateSchemaIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void unconfiguredLevelsAreOnlyValidForOnboardingAndPartialLevelsRemainInvalid() {
+        var range = new MonitoringWatchlistService.Range(new BigDecimal("295"), new BigDecimal("302"));
+        var unconfigured = new MonitoringWatchlistService.WatchlistLevels(null, null, null, null);
+
+        assertThatThrownBy(() -> watchlist.put(USER_ID, "ONTO", unconfigured))
+                .isInstanceOf(MonitoringException.class);
+        assertThatThrownBy(() -> new MonitoringWatchlistService.WatchlistLevels(
+                range, null, range, range)).isInstanceOf(MonitoringException.class);
+        assertThatThrownBy(() -> new MonitoringWatchlistService.WatchlistLevels(
+                null, null, range, range)).isInstanceOf(MonitoringException.class);
+    }
+
+    @Test
     void staleRatioProviderObservationIsUnknownDuringOpenSession() {
         var now = OffsetDateTime.now(ZoneOffset.UTC);
         jdbc.update("""

@@ -2,9 +2,11 @@ package com.jmj.trade.connector;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
-import com.jmj.trade.order.McpOrderExecutionService;
-import com.jmj.trade.order.LiveOrderActivationException;
 import com.jmj.trade.broker.BrokerException;
+import com.jmj.trade.investment.InvestmentOnboardingService;
+import com.jmj.trade.investment.InvestmentRiskPreflightService;
+import com.jmj.trade.order.LiveOrderActivationException;
+import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
@@ -40,6 +42,8 @@ public final class ConnectorMcpProtocol {
     private final InvestmentContextService investmentContextService;
     private final InvestmentReviewService investmentReviewService;
     private final InvestmentThesisVerificationService thesisVerificationService;
+    private final InvestmentOnboardingService investmentOnboardingService;
+    private final InvestmentRiskPreflightService investmentRiskPreflightService;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
@@ -53,9 +57,13 @@ public final class ConnectorMcpProtocol {
                          ObjectProvider<InvestmentContextService> investmentContextService,
                          ObjectProvider<InvestmentReviewService> investmentReviewService,
                          ObjectProvider<InvestmentThesisVerificationService> thesisVerificationService,
+                         ObjectProvider<InvestmentOnboardingService> investmentOnboardingService,
+                         ObjectProvider<InvestmentRiskPreflightService> investmentRiskPreflightService,
                          ObjectMapper objectMapper) {
         this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(),
-                investmentReviewService.getIfAvailable(), thesisVerificationService.getIfAvailable(), objectMapper);
+                investmentReviewService.getIfAvailable(), thesisVerificationService.getIfAvailable(),
+                investmentOnboardingService.getIfAvailable(), investmentRiskPreflightService.getIfAvailable(),
+                objectMapper);
     }
 
     public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
@@ -79,11 +87,24 @@ public final class ConnectorMcpProtocol {
                                 InvestmentReviewService investmentReviewService,
                                 InvestmentThesisVerificationService thesisVerificationService,
                                 ObjectMapper objectMapper) {
+        this(service, tradeService, investmentContextService, investmentReviewService,
+                thesisVerificationService, null, null, objectMapper);
+    }
+
+    public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                                InvestmentContextService investmentContextService,
+                                InvestmentReviewService investmentReviewService,
+                                InvestmentThesisVerificationService thesisVerificationService,
+                                InvestmentOnboardingService investmentOnboardingService,
+                                InvestmentRiskPreflightService investmentRiskPreflightService,
+                                ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
         this.investmentContextService = investmentContextService;
         this.investmentReviewService = investmentReviewService;
         this.thesisVerificationService = thesisVerificationService;
+        this.investmentOnboardingService = investmentOnboardingService;
+        this.investmentRiskPreflightService = investmentRiskPreflightService;
         this.objectMapper = objectMapper;
     }
 
@@ -186,6 +207,16 @@ public final class ConnectorMcpProtocol {
                     "Read the authenticated user's current thesis revision, verification policy, trusted price view, and latest verification event for one ticker. This tool does not call providers or write data.",
                     verificationContextSchema(), verificationContextOutputSchema()));
         }
+        if (investmentOnboardingService != null) {
+            tools.add(tool("get_investment_onboarding_readiness", "Get investment onboarding readiness",
+                    "Read the authenticated user's stored onboarding readiness for one ticker, including source statuses and times, thesis receipt and eligibility, risk mark, candidate fields, and blockers. Does not refresh providers, start collection, approve an investment, or place an order.",
+                    requiredTickerSchema(), investmentOnboardingOutputSchema()));
+        }
+        if (investmentRiskPreflightService != null) {
+            tools.add(tool("preflight_investment_risk", "Preflight investment risk",
+                    "Compute current and proposed-quantity risk gates for one ticker using server-selected risk inputs. Accepts no execution price, does not approve an investment, and does not prepare or submit an order.",
+                    riskPreflightSchema(), riskPreflightOutputSchema()));
+        }
         if (canTrade) {
             if (investmentContextService != null) {
                 tools.add(tool("put_investment_thesis", "Save investment thesis",
@@ -207,6 +238,12 @@ public final class ConnectorMcpProtocol {
                 tools.add(tool("append_investment_review", "Append investment review note",
                         "Append a caller-authored review/audit note to PostgreSQL for Context and Sheet mirroring. A review note records only that something was reviewed and what was observed; it does not create an investment decision, change a thesis, or prepare or submit an order. Raw values such as rawAction (e.g. REVIEW) and rawPriceSession are stored verbatim; priceSession is derived only from an exact supported value and is otherwise null. Uses recordKey for idempotent retries; a different record with the same recordKey conflicts. Requires existing connector write scope; available even when order execution is disabled.",
                         investmentReviewSchema(), objectSchema(), false, false, true,
+                        ConnectorApiKeyService.TRADE_SCOPE));
+            }
+            if (investmentOnboardingService != null) {
+                tools.add(tool("register_investment_candidate", "Register investment candidate",
+                        "Idempotently add one ticker to the authenticated user's existing monitoring watchlist for later normal scheduled collection. Does not call a provider, start alpha research, or place an order. Requires connector:trade.",
+                        requiredTickerSchema(), registrationOutputSchema(), false, false, true,
                         ConnectorApiKeyService.TRADE_SCOPE));
             }
             tools.add(tool(
@@ -249,6 +286,12 @@ public final class ConnectorMcpProtocol {
                 case "get_investment_context" -> investmentContext(request, userId, arguments);
                 case "get_investment_thesis_verification_context" ->
                         investmentThesisVerificationContext(request, userId, arguments);
+                case "get_investment_onboarding_readiness" ->
+                        investmentOnboardingReadiness(request, userId, arguments);
+                case "preflight_investment_risk" -> preflightInvestmentRisk(request, userId, arguments);
+                case "register_investment_candidate" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : registerInvestmentCandidate(request, userId, arguments);
                 case "verify_investment_thesis" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : verifyInvestmentThesis(request, userId, authenticatedApiKeyId, arguments);
@@ -553,6 +596,119 @@ public final class ConnectorMcpProtocol {
             return toolError(request, "INTERNAL_ERROR", "Thesis verification context could not be read",
                     false, false);
         }
+    }
+
+    private ObjectNode investmentOnboardingReadiness(ObjectNode request, UUID userId, JsonNode arguments) {
+        final String ticker;
+        try {
+            ticker = requiredInvestmentTicker(arguments, Set.of("ticker"));
+        } catch (IllegalArgumentException exception) {
+            return invalidInvestmentArguments(request);
+        }
+        if (investmentOnboardingService == null) return investmentContextUnavailable(request);
+        try {
+            return toolResult(request, investmentOnboardingService.readiness(userId, ticker));
+        } catch (DataAccessException exception) {
+            return investmentContextUnavailable(request);
+        } catch (InvestmentException exception) {
+            return investmentException(request, exception);
+        } catch (RuntimeException exception) {
+            logInvestmentToolFailure("get_investment_onboarding_readiness", exception);
+            return toolError(request, "INTERNAL_ERROR", "Investment onboarding readiness could not be read",
+                    false, false);
+        }
+    }
+
+    private ObjectNode preflightInvestmentRisk(ObjectNode request, UUID userId, JsonNode arguments) {
+        final String ticker;
+        final java.math.BigDecimal quantity;
+        try {
+            ticker = requiredInvestmentTicker(arguments, Set.of("ticker", "quantity"));
+            var quantityNode = arguments.get("quantity");
+            if (quantityNode == null || !quantityNode.isNumber()) throw new IllegalArgumentException();
+            quantity = quantityNode.decimalValue();
+            if (!isValidPreflightQuantity(quantity)) throw new IllegalArgumentException();
+        } catch (IllegalArgumentException exception) {
+            return invalidInvestmentArguments(request);
+        }
+        if (investmentRiskPreflightService == null) return investmentContextUnavailable(request);
+        try {
+            var input = new InvestmentRiskPreflightService.PreflightInput(ticker, quantity);
+            return toolResult(request, investmentRiskPreflightService.preflight(userId, input));
+        } catch (DataAccessException exception) {
+            return investmentContextUnavailable(request);
+        } catch (InvestmentException exception) {
+            return investmentException(request, exception);
+        } catch (RuntimeException exception) {
+            logInvestmentToolFailure("preflight_investment_risk", exception);
+            return toolError(request, "INTERNAL_ERROR", "Investment risk preflight could not be computed",
+                    false, false);
+        }
+    }
+
+    private ObjectNode registerInvestmentCandidate(ObjectNode request, UUID userId, JsonNode arguments) {
+        final String ticker;
+        try {
+            ticker = requiredInvestmentTicker(arguments, Set.of("ticker"));
+        } catch (IllegalArgumentException exception) {
+            return invalidInvestmentArguments(request);
+        }
+        if (investmentOnboardingService == null) return investmentContextUnavailable(request);
+        try {
+            return toolResult(request, investmentOnboardingService.register(userId, ticker));
+        } catch (DataAccessException exception) {
+            return investmentContextUnavailable(request);
+        } catch (InvestmentException exception) {
+            return investmentException(request, exception);
+        } catch (RuntimeException exception) {
+            logInvestmentToolFailure("register_investment_candidate", exception);
+            return toolError(request, "INTERNAL_ERROR", "Investment candidate registration failed",
+                    false, false);
+        }
+    }
+
+    private static String requiredInvestmentTicker(JsonNode arguments, Set<String> allowedFields) {
+        if (arguments == null || !arguments.isObject()) throw new IllegalArgumentException();
+        for (var field : arguments.propertyNames()) {
+            if (!allowedFields.contains(field)) throw new IllegalArgumentException();
+        }
+        var tickerNode = arguments.get("ticker");
+        if (tickerNode == null || !tickerNode.isTextual()) throw new IllegalArgumentException();
+        var ticker = tickerNode.asText();
+        if (!CONTEXT_TICKER.matcher(ticker).matches()) throw new IllegalArgumentException();
+        return ticker.toUpperCase(Locale.ROOT);
+    }
+
+    private static boolean isValidPreflightQuantity(java.math.BigDecimal quantity) {
+        if (quantity.signum() <= 0) return false;
+        var scale = quantity.scale();
+        return scale <= 10 && scale >= -18
+                && (long) quantity.precision() - scale <= 18
+                && quantity.precision() <= 28;
+    }
+
+    private ObjectNode invalidInvestmentArguments(ObjectNode request) {
+        return toolError(request, "INVALID_ARGUMENT", "Investment tool arguments are invalid", false, false);
+    }
+
+    private ObjectNode investmentException(ObjectNode request, InvestmentException exception) {
+        return switch (exception.code()) {
+            case INVALID_INPUT -> invalidInvestmentArguments(request);
+            case INVALID_USER -> toolError(request, "AUTHENTICATED_USER_INVALID",
+                    "Authenticated user is unavailable", false, true);
+            case NOT_FOUND -> toolError(request, "INVESTMENT_STATE_NOT_FOUND",
+                    "Required investment state was not found", false, false);
+            case CONFLICT -> toolError(request, "INVESTMENT_STATE_CONFLICT",
+                    "Investment state changed; retry with current state", false, false);
+        };
+    }
+
+    private static void logInvestmentToolFailure(String tool, RuntimeException exception) {
+        LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                .addKeyValue("tool", tool)
+                .addKeyValue("outcome", "failure")
+                .addKeyValue("error_type", exception.getClass().getSimpleName())
+                .log("Investment MCP tool failed");
     }
 
     private ObjectNode verificationContextUnavailable(ObjectNode request) {
@@ -860,6 +1016,281 @@ public final class ConnectorMcpProtocol {
         schema.set("properties", properties);
         schema.put("additionalProperties", false);
         return schema;
+    }
+
+    private ObjectNode requiredTickerSchema() {
+        var schema = investmentContextSchema();
+        schema.putArray("required").add("ticker");
+        return schema;
+    }
+
+    private ObjectNode riskPreflightSchema() {
+        var schema = requiredTickerSchema();
+        var properties = (ObjectNode) schema.path("properties");
+        properties.set("quantity", objectMapper.createObjectNode().put("type", "number")
+                .put("exclusiveMinimum", 0)
+                .put("description", "Positive JSON decimal; scale -18..10, at most 18 integer digits and 28 significant digits."));
+        schema.putArray("required").add("ticker").add("quantity");
+        return schema;
+    }
+
+    private ObjectNode investmentOnboardingOutputSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", stringSchema());
+        properties.set("registered", booleanSchema());
+        properties.set("status", stringSchema());
+        properties.set("snapshotAsOf", nullableDateTimeSchema());
+        properties.set("dataStatuses", mapSchema(stringSchema()));
+        properties.set("dataAsOf", mapSchema(dateTimeSchema()));
+        properties.set("collection", nullableSchema(pipelineSummarySchema()));
+        properties.set("thesis", nullableSchema(thesisSummarySchema()));
+        properties.set("riskMark", nullableSchema(riskMarkSummarySchema()));
+        properties.set("candidates", arrayOf(candidateSchema()));
+        properties.set("blockers", arrayOf(stringSchema()));
+        var success = closedObject(properties, "ticker", "registered", "status", "snapshotAsOf",
+                "dataStatuses", "dataAsOf", "collection", "thesis", "riskMark", "candidates", "blockers");
+        return outputSchema(success, "INVALID_ARGUMENT", "AUTHENTICATED_USER_INVALID",
+                "INVESTMENT_STATE_NOT_FOUND", "INVESTMENT_STATE_CONFLICT",
+                "INVESTMENT_CONTEXT_UNAVAILABLE", "INTERNAL_ERROR");
+    }
+
+    private ObjectNode registrationOutputSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", stringSchema());
+        properties.set("registered", booleanSchema());
+        properties.set("alreadyRegistered", booleanSchema());
+        properties.set("status", stringSchema());
+        var success = closedObject(properties, "ticker", "registered", "alreadyRegistered", "status");
+        return outputSchema(success, "TRADE_SCOPE_REQUIRED", "INVALID_ARGUMENT", "AUTHENTICATED_USER_INVALID",
+                "INVESTMENT_STATE_NOT_FOUND", "INVESTMENT_STATE_CONFLICT",
+                "INVESTMENT_CONTEXT_UNAVAILABLE", "INTERNAL_ERROR");
+    }
+
+    private ObjectNode pipelineSummarySchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("lastAttemptAt", nullableDateTimeSchema());
+        properties.set("lastSuccessAt", nullableDateTimeSchema());
+        return closedObject(properties, "status", "lastAttemptAt", "lastSuccessAt");
+    }
+
+    private ObjectNode thesisSummarySchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("present", booleanSchema());
+        properties.set("revision", nullableIntegerSchema());
+        properties.set("invalidationStatus", nullableStringSchema());
+        properties.set("receiptStatus", stringSchema());
+        properties.set("verificationOutcome", nullableStringSchema());
+        properties.set("verificationReason", nullableStringSchema());
+        properties.set("receiptMatchesCurrentRevision", booleanSchema());
+        properties.set("triggerConfigured", booleanSchema());
+        properties.set("sizingEligible", booleanSchema());
+        properties.set("eligibilityReasons", arrayOf(stringSchema()));
+        return closedObject(properties, "present", "revision", "invalidationStatus", "receiptStatus",
+                "verificationOutcome", "verificationReason", "receiptMatchesCurrentRevision",
+                "triggerConfigured", "sizingEligible", "eligibilityReasons");
+    }
+
+    private ObjectNode riskMarkSummarySchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("value", nullableNumberSchema());
+        properties.set("asOf", nullableDateTimeSchema());
+        properties.set("source", nullableStringSchema());
+        properties.set("basis", nullableStringSchema());
+        properties.set("asOfBasis", nullableStringSchema());
+        properties.set("status", stringSchema());
+        properties.set("reason", nullableStringSchema());
+        return closedObject(properties, "value", "asOf", "source", "basis", "asOfBasis", "status", "reason");
+    }
+
+    private ObjectNode candidateSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("source", stringSchema());
+        properties.set("status", stringSchema());
+        properties.set("reason", nullableStringSchema());
+        properties.set("trigger", nullableNumberSchema());
+        properties.set("sourceAsOf", nullableDateTimeSchema());
+        properties.set("inputs", objectMapper.createObjectNode().put("type", "object")
+                .put("additionalProperties", true));
+        return closedObject(properties, "source", "status", "reason", "trigger", "sourceAsOf", "inputs");
+    }
+
+    private ObjectNode riskPreflightOutputSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", stringSchema());
+        properties.set("quantity", numberSchema());
+        properties.set("buyEligible", booleanSchema());
+        properties.set("blockers", arrayOf(stringSchema()));
+        properties.set("thesis", nullableSchema(thesisReceiptSchema()));
+        properties.set("portfolio", nullableSchema(portfolioGateSchema()));
+        properties.set("policy", nullableSchema(policyGateSchema()));
+        properties.set("cash", nullableSchema(cashGateSchema()));
+        properties.set("currentRisk", mapSchema(riskContributionSchema()));
+        properties.set("proFormaRisk", mapSchema(riskContributionSchema()));
+        var success = closedObject(properties, "ticker", "quantity", "buyEligible", "blockers", "thesis",
+                "portfolio", "policy", "cash", "currentRisk", "proFormaRisk");
+        return outputSchema(success, "INVALID_ARGUMENT", "AUTHENTICATED_USER_INVALID",
+                "INVESTMENT_STATE_NOT_FOUND", "INVESTMENT_STATE_CONFLICT",
+                "INVESTMENT_CONTEXT_UNAVAILABLE", "INTERNAL_ERROR");
+    }
+
+    private ObjectNode thesisReceiptSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("invalidationStatus", nullableStringSchema());
+        properties.set("revision", nullableIntegerSchema());
+        properties.set("revisionId", nullableUuidSchema());
+        properties.set("actorType", nullableStringSchema());
+        properties.set("reason", nullableStringSchema());
+        properties.set("policyVersion", nullableStringSchema());
+        properties.set("verificationEventId", nullableUuidSchema());
+        properties.set("outcome", nullableStringSchema());
+        properties.set("reasonCode", nullableStringSchema());
+        properties.set("receiptRequired", booleanSchema());
+        properties.set("receiptMatchesCurrentRevision", booleanSchema());
+        return closedObject(properties, "invalidationStatus", "revision", "revisionId", "actorType", "reason",
+                "policyVersion", "verificationEventId", "outcome", "reasonCode", "receiptRequired",
+                "receiptMatchesCurrentRevision");
+    }
+
+    private ObjectNode portfolioGateSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("riskNumbersAvailable", booleanSchema());
+        properties.set("manualFresh", booleanSchema());
+        properties.set("manualStatus", nullableStringSchema());
+        properties.set("manualAsOf", nullableDateSchema());
+        return closedObject(properties, "status", "riskNumbersAvailable", "manualFresh", "manualStatus",
+                "manualAsOf");
+    }
+
+    private ObjectNode policyGateSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("quantityWithinLimit", booleanSchema());
+        properties.set("orderAmountWithinLimit", booleanSchema());
+        properties.set("concentrationWithinLimit", booleanSchema());
+        properties.set("maxQuantity", nullableNumberSchema());
+        properties.set("maxOrderAmount", nullableNumberSchema());
+        properties.set("maxConcentration", nullableNumberSchema());
+        properties.set("softRiskBudget", nullableNumberSchema());
+        return closedObject(properties, "status", "quantityWithinLimit", "orderAmountWithinLimit",
+                "concentrationWithinLimit", "maxQuantity", "maxOrderAmount", "maxConcentration",
+                "softRiskBudget");
+    }
+
+    private ObjectNode cashGateSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("currency", nullableStringSchema());
+        properties.set("availableBefore", nullableNumberSchema());
+        properties.set("purchaseCost", nullableNumberSchema());
+        properties.set("availableAfter", nullableNumberSchema());
+        properties.set("source", nullableStringSchema());
+        return closedObject(properties, "status", "currency", "availableBefore", "purchaseCost",
+                "availableAfter", "source");
+    }
+
+    private ObjectNode riskContributionSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("portfolioWeight", nullableNumberSchema());
+        properties.set("invalidationDownside", nullableNumberSchema());
+        properties.set("plannedLossContribution", nullableNumberSchema());
+        properties.set("status", stringSchema());
+        properties.set("thesisFailureStress", nullableNumberSchema());
+        properties.set("thesisFailureStressStatus", stringSchema());
+        properties.set("top2CorrelatedStress", nullableNumberSchema());
+        properties.set("top2CorrelatedAssets", nullableStringSchema());
+        properties.set("top2Correlation", nullableNumberSchema());
+        properties.set("top2CorrelatedStatus", stringSchema());
+        properties.set("sizingEligible", booleanSchema());
+        properties.set("softBudgetStatus", stringSchema());
+        properties.set("eligibilityReasons", arrayOf(stringSchema()));
+        properties.set("riskMark", nullableSchema(riskMarkViewSchema()));
+        return closedObject(properties, "portfolioWeight", "invalidationDownside", "plannedLossContribution",
+                "status", "thesisFailureStress", "thesisFailureStressStatus", "top2CorrelatedStress",
+                "top2CorrelatedAssets", "top2Correlation", "top2CorrelatedStatus", "sizingEligible",
+                "softBudgetStatus", "eligibilityReasons", "riskMark");
+    }
+
+    private ObjectNode riskMarkViewSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("value", nullableNumberSchema());
+        properties.set("asOf", nullableDateTimeSchema());
+        properties.set("source", nullableStringSchema());
+        properties.set("basis", nullableStringSchema());
+        properties.set("asOfBasis", nullableStringSchema());
+        properties.set("status", stringSchema());
+        properties.set("reason", nullableStringSchema());
+        return closedObject(properties, "value", "asOf", "source", "basis", "asOfBasis", "status", "reason");
+    }
+
+    private ObjectNode outputSchema(ObjectNode success, String... errorCodes) {
+        var output = objectMapper.createObjectNode().put("type", "object");
+        output.putArray("anyOf").add(success).add(verificationErrorSchema(errorCodes));
+        return output;
+    }
+
+    private ObjectNode closedObject(ObjectNode properties, String... required) {
+        var schema = objectMapper.createObjectNode().put("type", "object");
+        schema.set("properties", properties);
+        schema.putArray("required");
+        for (var field : required) schema.withArray("required").add(field);
+        schema.put("additionalProperties", false);
+        return schema;
+    }
+
+    private ObjectNode mapSchema(JsonNode valueSchema) {
+        return objectMapper.createObjectNode().put("type", "object").set("additionalProperties", valueSchema);
+    }
+
+    private ObjectNode arrayOf(JsonNode itemSchema) {
+        return objectMapper.createObjectNode().put("type", "array").set("items", itemSchema);
+    }
+
+    private ObjectNode nullableSchema(JsonNode valueSchema) {
+        var schema = objectMapper.createObjectNode();
+        schema.putArray("anyOf").add(valueSchema).add(objectMapper.createObjectNode().put("type", "null"));
+        return schema;
+    }
+
+    private ObjectNode nullableStringSchema() {
+        return nullableString(stringSchema(), null);
+    }
+
+    private ObjectNode nullableNumberSchema() {
+        return nullableSchema(numberSchema());
+    }
+
+    private ObjectNode nullableIntegerSchema() {
+        return nullableSchema(objectMapper.createObjectNode().put("type", "integer"));
+    }
+
+    private ObjectNode nullableUuidSchema() {
+        return nullableSchema(uuidSchema());
+    }
+
+    private ObjectNode nullableDateTimeSchema() {
+        return nullableSchema(dateTimeSchema());
+    }
+
+    private ObjectNode nullableDateSchema() {
+        return nullableSchema(objectMapper.createObjectNode().put("type", "string").put("format", "date"));
+    }
+
+    private ObjectNode dateTimeSchema() {
+        return objectMapper.createObjectNode().put("type", "string").put("format", "date-time");
+    }
+
+    private ObjectNode stringSchema() {
+        return objectMapper.createObjectNode().put("type", "string");
+    }
+
+    private ObjectNode numberSchema() {
+        return objectMapper.createObjectNode().put("type", "number");
+    }
+
+    private ObjectNode booleanSchema() {
+        return objectMapper.createObjectNode().put("type", "boolean");
     }
 
     private ObjectNode thesisVerificationSchema() {
