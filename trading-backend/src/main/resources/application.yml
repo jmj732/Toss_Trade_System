@@ -81,6 +81,7 @@ investment:
       enabled: ${INVESTMENT_DATA_SCHEDULER_ENABLED:false}
     time-zone: ${INVESTMENT_DATA_TIME_ZONE:America/New_York}
     after-close-cron: ${INVESTMENT_DATA_AFTER_CLOSE_CRON:0 15 16 * * MON-FRI}
+    closed-interval-evidence-cron: ${INVESTMENT_DATA_CLOSED_INTERVAL_EVIDENCE_CRON:0 15 20 * * MON-FRI}
     weekend-capture-cron: ${INVESTMENT_DATA_WEEKEND_CAPTURE_CRON:0 15 16 * * SAT,SUN}
     pre-market-cron: ${INVESTMENT_DATA_PRE_MARKET_CRON:0 0 8 * * MON-FRI}
     intraday-interval: ${INVESTMENT_DATA_INTRADAY_INTERVAL:PT5M}
