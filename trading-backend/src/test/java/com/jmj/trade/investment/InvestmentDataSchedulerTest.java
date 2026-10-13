@@ -149,6 +149,22 @@ class InvestmentDataSchedulerTest {
         assertThat(weekend.zone()).isEqualTo(weekday.zone());
     }
 
+    @Test
+    void closedIntervalEvidenceIsCapturedAfterDeclaredEveningSessionsUsingQuoteOnlyData()
+            throws NoSuchMethodException {
+        var schedule = InvestmentDataScheduler.class.getDeclaredMethod("afterClosedInterval")
+                .getAnnotation(Scheduled.class);
+        assertThat(schedule.cron()).isEqualTo(
+                "${investment.data.closed-interval-evidence-cron:0 15 20 * * MON-FRI}");
+        assertThat(schedule.zone()).isEqualTo("${investment.data.time-zone:America/New_York}");
+
+        var investment = mock(InvestmentContextService.class);
+        scheduler(investment).afterClosedInterval();
+
+        verify(investment).captureAllQuoteUpdates();
+        verify(investment, never()).captureAll();
+    }
+
     private static InvestmentDataScheduler scheduler(InvestmentContextService investment) {
         return scheduler(investment, BEFORE_MARKET);
     }

@@ -69,6 +69,12 @@ final class InvestmentDataScheduler {
         capture("weekend_after_close", false);
     }
 
+    @Scheduled(cron = "${investment.data.closed-interval-evidence-cron:0 15 20 * * MON-FRI}",
+            zone = "${investment.data.time-zone:America/New_York}")
+    void afterClosedInterval() {
+        capture("closed_interval_evidence", true);
+    }
+
     @Scheduled(cron = "${investment.data.pre-market-cron:0 0 8 * * MON-FRI}",
             zone = "${investment.data.time-zone:America/New_York}")
     void beforeMarket() {
