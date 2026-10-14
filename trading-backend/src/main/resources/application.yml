@@ -84,6 +84,7 @@ investment:
     closed-interval-evidence-cron: ${INVESTMENT_DATA_CLOSED_INTERVAL_EVIDENCE_CRON:0 15 20 * * MON-FRI}
     weekend-capture-cron: ${INVESTMENT_DATA_WEEKEND_CAPTURE_CRON:0 15 16 * * SAT,SUN}
     pre-market-cron: ${INVESTMENT_DATA_PRE_MARKET_CRON:0 0 8 * * MON-FRI}
+    pre-market-capture-cron: ${INVESTMENT_DATA_PRE_MARKET_CAPTURE_CRON:0 0 4-9 * * MON-FRI}
     intraday-interval: ${INVESTMENT_DATA_INTRADAY_INTERVAL:PT5M}
     initial-delay: ${INVESTMENT_DATA_INITIAL_DELAY:PT1M}
     price-stale-after: ${INVESTMENT_PRICE_STALE_AFTER:PT15M}
