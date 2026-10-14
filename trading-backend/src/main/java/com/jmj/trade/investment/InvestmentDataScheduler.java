@@ -79,7 +79,12 @@ final class InvestmentDataScheduler {
             zone = "${investment.data.time-zone:America/New_York}")
     void beforeMarket() {
         refreshPortfolios();
-        capture("pre_market", true);
+    }
+
+    @Scheduled(cron = "${investment.data.pre-market-capture-cron:0 0 4-9 * * MON-FRI}",
+            zone = "${investment.data.time-zone:America/New_York}")
+    void preMarketQuoteCapture() {
+        capture("pre_market_hourly", true);
     }
 
     private void refreshPortfolios() {

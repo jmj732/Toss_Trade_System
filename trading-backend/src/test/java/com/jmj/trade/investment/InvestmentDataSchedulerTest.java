@@ -6,9 +6,11 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 
+import java.lang.reflect.Method;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.Arrays;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doReturn;
@@ -162,6 +164,48 @@ class InvestmentDataSchedulerTest {
         scheduler(investment).afterClosedInterval();
 
         verify(investment).captureAllQuoteUpdates();
+        verify(investment, never()).captureAll();
+    }
+
+    @Test
+    void preMarketQuoteCaptureRunsHourlyWithoutRefreshingTheBrokerPortfolio() throws Exception {
+        var cron = "${investment.data.pre-market-capture-cron:0 0 4-9 * * MON-FRI}";
+        Method capture = Arrays.stream(InvestmentDataScheduler.class.getDeclaredMethods())
+                .filter(method -> method.isAnnotationPresent(Scheduled.class))
+                .filter(method -> cron.equals(method.getAnnotation(Scheduled.class).cron()))
+                .findFirst()
+                .orElse(null);
+        assertThat(capture).as("hourly quote-only pre-market capture schedule").isNotNull();
+
+        var investment = mock(InvestmentContextService.class);
+        var accountSync = mock(ObjectProvider.class);
+        var scheduler = new InvestmentDataScheduler(mock(JdbcTemplate.class), investment,
+                accountSync, "America/New_York", BEFORE_MARKET);
+        capture.invoke(scheduler);
+
+        verify(investment).captureAllQuoteUpdates();
+        verify(investment, never()).captureAll();
+        verify(accountSync, never()).getIfAvailable();
+    }
+
+    @Test
+    void eightAmPreMarketRefreshKeepsPortfolioSyncSeparateFromHourlyQuoteCapture()
+            throws NoSuchMethodException {
+        var schedule = InvestmentDataScheduler.class.getDeclaredMethod("beforeMarket")
+                .getAnnotation(Scheduled.class);
+        assertThat(schedule.cron()).isEqualTo(
+                "${investment.data.pre-market-cron:0 0 8 * * MON-FRI}");
+        assertThat(schedule.zone()).isEqualTo("${investment.data.time-zone:America/New_York}");
+
+        var investment = mock(InvestmentContextService.class);
+        var accountSync = mock(ObjectProvider.class);
+        var scheduler = new InvestmentDataScheduler(mock(JdbcTemplate.class), investment,
+                accountSync, "America/New_York", BEFORE_MARKET);
+
+        scheduler.beforeMarket();
+
+        verify(accountSync).getIfAvailable();
+        verify(investment, never()).captureAllQuoteUpdates();
         verify(investment, never()).captureAll();
     }
 
