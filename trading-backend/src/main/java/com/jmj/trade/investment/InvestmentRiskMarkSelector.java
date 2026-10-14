@@ -49,6 +49,9 @@ final class InvestmentRiskMarkSelector {
         if (blank(input.latestPriceSource())) {
             return unavailable(DataStatus.UNVERIFIED, "LATEST_QUOTE_SOURCE_MISSING");
         }
+        if ("REGULAR_CLOSE".equals(input.latestPriceSession())) {
+            return selectVerifiedRegularClose(input, "VERIFIED_REGULAR_CLOSE_ACCEPTED");
+        }
         return new Selection(input.latestPrice(), input.latestPriceAsOf(), input.latestPriceSource(),
                 LATEST_QUOTE_BASIS, OBSERVATION_TIMESTAMP_BASIS, DataStatus.OK, "LATEST_QUOTE_ACCEPTED");
     }
@@ -96,6 +99,14 @@ final class InvestmentRiskMarkSelector {
                 return unavailable(DataStatus.STALE, "CLOSED_INTERVAL_EXPIRED");
             }
         }
+        if (input.regularCloseSessionDate() != null
+                && input.regularCloseSessionDate().isAfter(input.latestPriceAsOf().atZone(NEW_YORK).toLocalDate())) {
+            return unavailable(DataStatus.UNVERIFIED, "VERIFIED_REGULAR_CLOSE_SESSION_INCOHERENT");
+        }
+        return selectVerifiedRegularClose(input, "DECLARED_CLOSED_INTERVAL_REGULAR_CLOSE_ACCEPTED");
+    }
+
+    private static Selection selectVerifiedRegularClose(Input input, String acceptedReason) {
         if (!positive(input.regularClose()) || input.regularCloseAsOf() == null) {
             return unavailable(DataStatus.DATA_MISSING, "VERIFIED_REGULAR_CLOSE_INCOMPLETE");
         }
@@ -114,13 +125,11 @@ final class InvestmentRiskMarkSelector {
                 || !input.regularCloseSessionDate().equals(input.lastCompletedSessionDate())) {
             return unavailable(DataStatus.UNVERIFIED, "VERIFIED_REGULAR_CLOSE_SESSION_UNVERIFIED");
         }
-        if (!input.regularCloseAsOf().atZone(NEW_YORK).toLocalDate().equals(input.regularCloseSessionDate())
-                || input.regularCloseSessionDate().isAfter(input.latestPriceAsOf().atZone(NEW_YORK).toLocalDate())) {
+        if (!input.regularCloseAsOf().atZone(NEW_YORK).toLocalDate().equals(input.regularCloseSessionDate())) {
             return unavailable(DataStatus.UNVERIFIED, "VERIFIED_REGULAR_CLOSE_SESSION_INCOHERENT");
         }
         return new Selection(input.regularClose(), input.regularCloseAsOf(), input.regularCloseSource(),
-                REGULAR_CLOSE_BASIS, PROVIDER_SESSION_LABEL_BASIS, DataStatus.OK,
-                "DECLARED_CLOSED_INTERVAL_REGULAR_CLOSE_ACCEPTED");
+                REGULAR_CLOSE_BASIS, PROVIDER_SESSION_LABEL_BASIS, DataStatus.OK, acceptedReason);
     }
 
     private static boolean positive(BigDecimal value) {

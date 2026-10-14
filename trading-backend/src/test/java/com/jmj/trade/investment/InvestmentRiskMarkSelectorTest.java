@@ -31,6 +31,40 @@ class InvestmentRiskMarkSelectorTest {
     }
 
     @Test
+    void rejectsOkRegularCloseQuoteWhenItsRegularCloseIsUnverified() {
+        var now = Instant.parse("2026-10-14T02:49:41Z");
+        var quoteAsOf = now.minusSeconds(22 * 60 * 60 + 48 * 60);
+        var input = new InvestmentRiskMarkSelector.Input(
+                bd("101"), quoteAsOf, "TOSS", "REGULAR_CLOSE", DataStatus.OK,
+                null, null, bd("100"), quoteAsOf, "TOSS", LocalDate.parse("2026-10-13"),
+                LocalDate.parse("2026-10-14"), DataStatus.UNVERIFIED, now);
+
+        var selection = InvestmentRiskMarkSelector.select(input);
+
+        assertThat(selection.available()).isFalse();
+        assertThat(selection.status()).isEqualTo(DataStatus.UNVERIFIED);
+        assertThat(selection.reason()).isEqualTo("VERIFIED_REGULAR_CLOSE_STATUS_NOT_OK");
+    }
+
+    @Test
+    void usesVerifiedCanonicalCloseInsteadOfRegularCloseQuote() {
+        var now = Instant.parse("2026-10-14T02:49:41Z");
+        var closeAsOf = Instant.parse("2026-10-13T04:00:00Z");
+        var input = new InvestmentRiskMarkSelector.Input(
+                bd("101"), closeAsOf, "TOSS", "REGULAR_CLOSE", DataStatus.OK,
+                null, null, bd("100"), closeAsOf, "TOSS", LocalDate.parse("2026-10-13"),
+                LocalDate.parse("2026-10-13"), DataStatus.OK, now);
+
+        var selection = InvestmentRiskMarkSelector.select(input);
+
+        assertThat(selection.available()).isTrue();
+        assertThat(selection.value()).isEqualByComparingTo("100");
+        assertThat(selection.basis()).isEqualTo(InvestmentRiskMarkSelector.REGULAR_CLOSE_BASIS);
+        assertThat(selection.asOfBasis()).isEqualTo(InvestmentRiskMarkSelector.PROVIDER_SESSION_LABEL_BASIS);
+        assertThat(selection.reason()).isEqualTo("VERIFIED_REGULAR_CLOSE_ACCEPTED");
+    }
+
+    @Test
     void selectsTheVerifiedCloseOnlyInsideTheDeclaredGapAndKeepsItsProviderSessionLabel() {
         var selection = InvestmentRiskMarkSelector.select(input(DataStatus.PARTIAL, null,
                 InvestmentRiskMarkSelector.CLOSED_INTERVAL_REASON, bd("101"), QUOTE_AS_OF, "TOSS",
