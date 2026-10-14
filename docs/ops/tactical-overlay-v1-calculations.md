@@ -93,6 +93,7 @@ Overlay routes under `/investment` use the authenticated session principal:
 | Add an anchor | `PUT /investment/securities/{ticker}/avwap-anchors` | `anchorId`, `date`, `anchorType`, `source`, `sourceAsOf` |
 | Define a theme | `PUT /investment/tactical-overlay/themes` | `themeId`, `name`, `effectiveDate`, `source`, `sourceAsOf` |
 | Add a theme member | `PUT /investment/tactical-overlay/themes/{themeId}/members/{ticker}` | `effectiveDate`, `source`, `sourceAsOf` |
+| Upsert theme and one member through MCP | `upsert_investment_theme` (`connector:trade`) | `themeId`, `name`, `ticker`, `effectiveDate`; Spring assigns `USER_INPUT` and `sourceAsOf`, then refreshes the derived snapshots once. Identical retries reuse saved IDs. |
 | Add a position or decision entry | `PUT /investment/securities/{ticker}/performance-entries` | `key`, `entryDate`, `entryPrice`, `initialRiskPrice`, `source`, `sourceAsOf`; optional `decisionId`, `quantity`, `entrySetup`, `overlayEffect`, `exits` |
 
 For example, an anchor body is:

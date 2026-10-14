@@ -871,6 +871,12 @@ public final class InvestmentContextService {
         return tacticalService().putTheme(userId, input);
     }
 
+    public TacticalOverlayService.ThemeUpsertResult upsertTacticalTheme(
+            UUID userId, TacticalOverlayService.ThemeUpsertInput input) {
+        requireUser(userId);
+        return tacticalService().upsertTheme(userId, input);
+    }
+
     public UUID deleteTacticalTheme(UUID userId, String themeId, Instant sourceAsOf) {
         requireUser(userId);
         return tacticalService().deleteTheme(userId, themeId, sourceAsOf);

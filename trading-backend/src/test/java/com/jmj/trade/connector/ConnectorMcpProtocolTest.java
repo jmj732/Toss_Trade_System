@@ -34,6 +34,82 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
     @Test
+    void exposesThemeUpsertOnlyWithTradeScopeAndRequiresCatalogAndMembershipFields() throws Exception {
+        var investment = mock(InvestmentContextService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, investment, null, new ObjectMapper());
+
+        var readOnly = protocol.handle(request("read-theme-tools", "tools/list", "{}"), USER, CONNECTION);
+        assertThat(java.util.stream.StreamSupport.stream(readOnly.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText()))
+                .doesNotContain("upsert_investment_theme");
+
+        var writable = protocol.handle(request("write-theme-tools", "tools/list", "{}"),
+                USER, CONNECTION, true);
+        var tool = java.util.stream.StreamSupport.stream(writable.path("result").path("tools").spliterator(), false)
+                .filter(item -> "upsert_investment_theme".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(tool.path("annotations").path("readOnlyHint").asBoolean()).isFalse();
+        assertThat(tool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
+        assertThat(tool.path("annotations").path("idempotentHint").asBoolean()).isTrue();
+        assertThat(tool.path("securitySchemes").get(0).path("scopes").get(0).asText())
+                .isEqualTo(ConnectorApiKeyService.TRADE_SCOPE);
+        assertThat(tool.path("inputSchema").path("additionalProperties").asBoolean()).isFalse();
+        assertThat(tool.path("inputSchema").path("required").toString())
+                .contains("themeId", "name", "ticker", "effectiveDate");
+    }
+
+    @Test
+    void themeUpsertUsesAuthenticatedUserAndReturnsPersistedInputProvenance() throws Exception {
+        var mapper = new ObjectMapper();
+        var investment = mock(InvestmentContextService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, investment, null, mapper);
+        var themeInputId = UUID.fromString("018f0000-0000-7000-8000-000000000031");
+        var mappingInputId = UUID.fromString("018f0000-0000-7000-8000-000000000032");
+        var sourceAsOf = Instant.parse("2026-10-14T12:00:00Z");
+        var expected = new com.jmj.trade.investment.tactical.TacticalOverlayService.ThemeUpsertResult(
+                "SPACE_INFRASTRUCTURE", "Space Infrastructure", "LUNR", java.time.LocalDate.parse("2026-10-13"),
+                themeInputId, sourceAsOf, "USER_INPUT", mappingInputId, sourceAsOf, "USER_INPUT", true);
+        when(investment.upsertTacticalTheme(eq(USER), any())).thenReturn(expected);
+        var arguments = mapper.createObjectNode()
+                .put("themeId", "SPACE_INFRASTRUCTURE")
+                .put("name", "Space Infrastructure")
+                .put("ticker", "lunr")
+                .put("effectiveDate", "2026-10-13");
+
+        var response = protocol.handle(toolCall("theme-upsert", "upsert_investment_theme",
+                mapper.writeValueAsString(arguments)), USER, CONNECTION, true);
+
+        var result = response.path("result");
+        assertThat(result.path("isError").asBoolean()).isFalse();
+        assertThat(result.path("structuredContent").path("themeInputId").asText()).isEqualTo(themeInputId.toString());
+        assertThat(result.path("structuredContent").path("mappingInputId").asText()).isEqualTo(mappingInputId.toString());
+        assertThat(result.path("structuredContent").path("themeSource").asText()).isEqualTo("USER_INPUT");
+        verify(investment).upsertTacticalTheme(eq(USER), argThat(input ->
+                input.themeId().equals("SPACE_INFRASTRUCTURE")
+                        && input.name().equals("Space Infrastructure")
+                        && input.ticker().equals("LUNR")
+                        && input.effectiveDate().equals(java.time.LocalDate.parse("2026-10-13"))));
+    }
+
+    @Test
+    void themeUpsertRejectsInvalidArgumentsAndReadOnlyCallsWithoutWriting() throws Exception {
+        var investment = mock(InvestmentContextService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, investment, null, new ObjectMapper());
+        var invalid = protocol.handle(toolCall("invalid-theme", "upsert_investment_theme",
+                "{\"themeId\":\"BAD ID\",\"name\":\"Bad\",\"ticker\":\"AVT\",\"effectiveDate\":\"2026-10-13\"}"),
+                USER, CONNECTION, true);
+        assertThat(invalid.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+
+        var denied = protocol.handle(toolCall("read-theme-write", "upsert_investment_theme",
+                "{\"themeId\":\"SPACE_INFRASTRUCTURE\",\"name\":\"Space Infrastructure\",\"ticker\":\"LUNR\",\"effectiveDate\":\"2026-10-13\"}"),
+                USER, CONNECTION);
+        assertThat(denied.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("TRADE_SCOPE_REQUIRED");
+        verifyNoInteractions(investment);
+    }
+
+    @Test
     void exposesStrictThesisVerificationToolOnlyWithTradeScope() throws Exception {
         var investment = mock(InvestmentContextService.class);
         var verification = mock(InvestmentThesisVerificationService.class);
