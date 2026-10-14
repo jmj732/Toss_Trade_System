@@ -375,6 +375,29 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void unverifiedRegularCloseCannotEnableSizingThroughTheLatestQuotePath() throws Exception {
+        var now = Instant.now();
+        var quoteAsOf = now.minus(Duration.ofHours(22).plusMinutes(48));
+        var sessionDate = quoteAsOf.atZone(NEW_YORK).toLocalDate();
+        var price = Map.<String, Object>of(
+                "session", "REGULAR_CLOSE",
+                "regularClose", 100,
+                "regularCloseAsOf", quoteAsOf.toString(),
+                "regularCloseSessionDate", sessionDate.toString(),
+                "regularCloseValidUntil", now.plus(Duration.ofHours(1)).toString());
+        var security = service("OK", "OK", quoteAsOf, now, bd("0.10"), price)
+                .context(USER_ID).securities().getFirst();
+
+        assertThat(security.price().path("status").asText()).isEqualTo("OK");
+        assertThat(security.price().path("regularCloseStatus").asText()).isEqualTo("UNVERIFIED");
+        assertThat(security.risk().riskMark().status()).isEqualTo(InvestmentDataCalculator.DataStatus.UNVERIFIED);
+        assertThat(security.risk().riskMark().reason()).isEqualTo("VERIFIED_REGULAR_CLOSE_STATUS_NOT_OK");
+        assertThat(security.risk().sizingEligible()).isFalse();
+        assertThat(security.risk().eligibilityReasons())
+                .contains("PRICE_UNVERIFIED", "RISK_BUDGET_UNEVALUATED");
+    }
+
+    @Test
     void stalePersistedConsensusMarksReadinessStaleWhenContextIsRead() throws Exception {
         var security = context("OK", "OK", Instant.now(),
                 Instant.now().minus(Duration.ofDays(20))).securities().getFirst();
