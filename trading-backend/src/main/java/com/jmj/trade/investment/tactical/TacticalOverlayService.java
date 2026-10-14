@@ -315,6 +315,68 @@ public class TacticalOverlayService {
     }
 
     @Transactional
+    public ThemeUpsertResult upsertTheme(UUID userId, ThemeUpsertInput request) {
+        requireUser(userId);
+        if (request == null) invalid();
+        var themeId = request.themeId() == null ? null : request.themeId().trim().toUpperCase(Locale.ROOT);
+        requireKey(themeId, "themeId");
+        var ticker = ticker(request.ticker());
+        var name = request.name() == null ? null : request.name().trim();
+        if (name == null || name.isBlank() || name.length() > 120 || request.effectiveDate() == null) invalid();
+        var sourceAsOf = clock.instant();
+
+        var themeRows = inputRows(userId, "THEME");
+        var existingTheme = themeRowsAt(themeRows, request.effectiveDate()).stream()
+                .filter(row -> themeId.equals(row.entityKey()))
+                .filter(row -> name.equals(text(row.payload().path("name"))))
+                .findFirst().orElse(null);
+        var themeInputId = existingTheme == null
+                ? appendInput(userId, "THEME", themeId, null, null, request.effectiveDate(), "USER_INPUT",
+                        sourceAsOf, true, object(Map.of("themeId", themeId, "name", name,
+                                "effectiveDate", request.effectiveDate().toString())))
+                : existingTheme.id();
+        var storedTheme = existingTheme == null
+                ? latestInput(userId, "THEME", themeId) : existingTheme;
+        var changed = existingTheme == null;
+
+        var mappingRows = inputRows(userId, "THEME_MAPPING");
+        var mappingEntityKey = mappingKey(themeId, ticker, request.effectiveDate());
+        var existingMembership = latestInput(userId, "THEME_MAPPING", mappingEntityKey);
+        var allThemeRows = inputRows(userId, "THEME");
+        for (var interval : membershipIntervals(allThemeRows, mappingRows)) {
+            if (ticker.equals(interval.ticker()) && !themeId.equals(interval.themeId())
+                    && interval.contains(request.effectiveDate())) {
+                var closeKey = mappingKey(interval.themeId(), ticker, request.effectiveDate());
+                appendInput(userId, "THEME_MAPPING", closeKey, ticker, null, request.effectiveDate(),
+                        "USER_INPUT", sourceAsOf, false,
+                        object(Map.of("themeId", interval.themeId(), "ticker", ticker,
+                                "effectiveDate", request.effectiveDate().toString())));
+                changed = true;
+            }
+        }
+        UUID mappingInputId;
+        InputRow storedMapping;
+        if (existingMembership != null && existingMembership.active()) {
+            mappingInputId = existingMembership.id();
+            storedMapping = existingMembership;
+        } else {
+            var payload = object(Map.of("themeId", themeId, "ticker", ticker,
+                    "effectiveDate", request.effectiveDate().toString()));
+            mappingInputId = appendInput(userId, "THEME_MAPPING", mappingEntityKey, ticker, null,
+                    request.effectiveDate(), "USER_INPUT", sourceAsOf, true, payload);
+            storedMapping = latestInput(userId, "THEME_MAPPING", mappingEntityKey);
+            changed = true;
+        }
+
+        if (changed) refresh(userId);
+        return new ThemeUpsertResult(themeId, name, ticker, request.effectiveDate(), themeInputId,
+                storedTheme == null ? sourceAsOf : storedTheme.sourceAsOf(),
+                storedTheme == null ? "USER_INPUT" : storedTheme.source(), mappingInputId,
+                storedMapping == null ? sourceAsOf : storedMapping.sourceAsOf(),
+                storedMapping == null ? "USER_INPUT" : storedMapping.source(), changed);
+    }
+
+    @Transactional
     public UUID deleteThemeMapping(UUID userId, String themeId, String symbol, LocalDate effectiveDate,
                                    Instant sourceAsOf) {
         requireUser(userId);
@@ -1372,6 +1434,11 @@ public class TacticalOverlayService {
     public record ThemeInput(String themeId, String name, LocalDate effectiveDate, String source, Instant sourceAsOf) { }
     public record ThemeMappingInput(String themeId, String ticker, LocalDate effectiveDate,
                                     String source, Instant sourceAsOf) { }
+    public record ThemeUpsertInput(String themeId, String name, String ticker, LocalDate effectiveDate) { }
+    public record ThemeUpsertResult(String themeId, String name, String ticker, LocalDate effectiveDate,
+                                    UUID themeInputId, Instant themeSourceAsOf, String themeSource,
+                                    UUID mappingInputId, Instant mappingSourceAsOf, String mappingSource,
+                                    boolean changed) { }
     public record ExitInput(LocalDate date, BigDecimal price, BigDecimal quantity) { }
     public record PerformanceInput(String key, UUID decisionId, LocalDate entryDate, BigDecimal entryPrice,
                                   BigDecimal initialRiskPrice, BigDecimal quantity, String entrySetup,

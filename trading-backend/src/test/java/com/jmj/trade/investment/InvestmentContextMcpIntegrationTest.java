@@ -235,6 +235,62 @@ class InvestmentContextMcpIntegrationTest extends PostgresIntegrationTest {
         verifyNoInteractions(portfolios);
     }
 
+    @Test
+    void mcpThemeUpsertPersistsEffectiveMappingAndContextAggregateIdempotently() throws Exception {
+        var properties = TacticalOverlayProperties.defaults();
+        var overlay = new TacticalOverlayService(jdbc, mapper, new TacticalOverlayCalculator(properties),
+                properties, new TacticalOverlayAggregationCalculator(), "AVT");
+        var effectiveDate = LocalDate.parse("2026-10-13");
+        var sourceAsOf = effectiveDate.atTime(16, 0).atZone(NEW_YORK).toInstant();
+        overlay.recordTossBars(USER_ID, "AVT", mapper.valueToTree(List.of(barRow(
+                effectiveDate, "100", sourceAsOf))), Instant.now(), null);
+        var portfolios = mock(PortfolioReadService.class);
+        var watchlist = mock(MonitoringWatchlistService.class);
+        when(watchlist.list(USER_ID)).thenReturn(List.of());
+        var risks = mock(RiskPolicyService.class);
+        when(risks.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
+                0, bd("10000000"), bd("10000"), bd("100"), bd("0.25"), false));
+        @SuppressWarnings("unchecked")
+        ObjectProvider<BrokerSurfaceService> surfaceProvider = mock(ObjectProvider.class);
+        when(surfaceProvider.getIfAvailable()).thenReturn(null);
+        var contextService = new InvestmentContextService(jdbc, mapper, transactions,
+                new StockDataProviderRegistry(List.of()), surfaceProvider, portfolios,
+                watchlist, risks, Duration.ofMinutes(15), Duration.ofDays(7),
+                Duration.ofDays(210), Duration.ofDays(10));
+        contextService.setTacticalOverlayService(overlay);
+        var protocol = new ConnectorMcpProtocol(mock(ConnectorService.class), null, contextService, mapper);
+        var connectorMvc = standaloneSetup(new ConnectorMcpController(
+                protocol, "https://dashboard.example")).build();
+        var arguments = mapper.createObjectNode().put("themeId", "AI_CLOUD_PLATFORM")
+                .put("name", "AI Cloud Platform").put("ticker", "AVT")
+                .put("effectiveDate", effectiveDate.toString());
+
+        var written = callMcp(connectorMvc, "upsert_investment_theme", arguments, tradeAuthentication())
+                .path("structuredContent");
+        var replay = callMcp(connectorMvc, "upsert_investment_theme", arguments, tradeAuthentication())
+                .path("structuredContent");
+        var context = callMcp(connectorMvc, "get_investment_context", mapper.createObjectNode(), tradeAuthentication())
+                .path("structuredContent");
+
+        assertThat(written.path("changed").asBoolean()).isTrue();
+        assertThat(replay.path("changed").asBoolean()).isFalse();
+        assertThat(replay.path("themeInputId").asText()).isEqualTo(written.path("themeInputId").asText());
+        assertThat(replay.path("mappingInputId").asText()).isEqualTo(written.path("mappingInputId").asText());
+        assertThat(context.path("securities").get(0).path("tacticalOverlay").path("themeId").asText())
+                .isEqualTo("AI_CLOUD_PLATFORM");
+        var themeMetrics = context.path("tacticalOverlay").path("themes");
+        assertThat(themeMetrics.isArray()).isTrue();
+        assertThat(themeMetrics.get(0).path("entityKey").asText()).isEqualTo("AI_CLOUD_PLATFORM");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_tactical_overlay_inputs
+                 WHERE user_id = ? AND input_type IN ('THEME', 'THEME_MAPPING')
+                """, Integer.class, USER_ID)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_tactical_overlay_snapshots
+                 WHERE user_id = ? AND snapshot_type = 'THEME' AND entity_key = 'AI_CLOUD_PLATFORM'
+                """, Integer.class, USER_ID)).isGreaterThanOrEqualTo(1);
+    }
+
     private ObjectNode mcpCall(String name, ObjectNode arguments) {
         var request = mapper.createObjectNode().put("jsonrpc", "2.0").put("id", name);
         request.put("method", "tools/call");

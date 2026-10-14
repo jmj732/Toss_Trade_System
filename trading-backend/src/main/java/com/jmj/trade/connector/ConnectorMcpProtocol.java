@@ -22,6 +22,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.net.URI;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -36,6 +37,7 @@ public final class ConnectorMcpProtocol {
 
     static final String PROTOCOL_VERSION = "2024-11-05";
     private static final Pattern CONTEXT_TICKER = Pattern.compile("[A-Za-z0-9._-]{1,32}");
+    private static final Pattern THEME_ID = Pattern.compile("[A-Za-z0-9._:-]{1,116}");
 
     private final ConnectorService service;
     private final McpOrderExecutionService tradeService;
@@ -219,6 +221,10 @@ public final class ConnectorMcpProtocol {
         }
         if (canTrade) {
             if (investmentContextService != null) {
+                tools.add(tool("upsert_investment_theme", "Upsert investment theme mapping",
+                        "Store or update one user-supplied theme and ticker mapping in the existing append-only PostgreSQL tactical inputs, then refresh the derived Tactical V1 snapshots. The server records USER_INPUT provenance and its own source timestamp. Does not create investment judgments or place orders. Requires connector:trade.",
+                        investmentThemeUpsertSchema(), investmentThemeUpsertOutputSchema(), false, false, true,
+                        ConnectorApiKeyService.TRADE_SCOPE));
                 tools.add(tool("put_investment_thesis", "Save investment thesis",
                         "Store an externally authored proposal in PostgreSQL for Context and Sheet mirroring. Cannot set CONFIRMED or overwrite a confirmed thesis. Supply expectedUpdatedAt when updating an existing proposal; omit it only for creation. Never invent evidence or risk prices. Does not submit orders. Requires existing connector write scope.",
                         investmentThesisSchema(), objectSchema(), false, false, false,
@@ -292,6 +298,9 @@ public final class ConnectorMcpProtocol {
                 case "register_investment_candidate" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : registerInvestmentCandidate(request, userId, arguments);
+                case "upsert_investment_theme" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : upsertInvestmentTheme(request, userId, arguments);
                 case "verify_investment_thesis" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : verifyInvestmentThesis(request, userId, authenticatedApiKeyId, arguments);
@@ -667,6 +676,49 @@ public final class ConnectorMcpProtocol {
         }
     }
 
+    private ObjectNode upsertInvestmentTheme(ObjectNode request, UUID userId, JsonNode arguments) {
+        final com.jmj.trade.investment.tactical.TacticalOverlayService.ThemeUpsertInput input;
+        try {
+            input = investmentThemeUpsertInput(arguments);
+        } catch (IllegalArgumentException exception) {
+            return invalidInvestmentArguments(request);
+        }
+        if (investmentContextService == null) return investmentContextUnavailable(request);
+        try {
+            return toolResult(request, investmentContextService.upsertTacticalTheme(userId, input));
+        } catch (DataAccessException exception) {
+            return investmentContextUnavailable(request);
+        } catch (InvestmentException exception) {
+            return investmentException(request, exception);
+        } catch (RuntimeException exception) {
+            logInvestmentToolFailure("upsert_investment_theme", exception);
+            return toolError(request, "INTERNAL_ERROR", "Investment theme upsert failed", false, false);
+        }
+    }
+
+    private static com.jmj.trade.investment.tactical.TacticalOverlayService.ThemeUpsertInput
+    investmentThemeUpsertInput(JsonNode arguments) {
+        var fields = Set.of("themeId", "name", "ticker", "effectiveDate");
+        if (arguments == null || !arguments.isObject() || arguments.size() != fields.size()) {
+            throw new IllegalArgumentException("All theme upsert fields are required");
+        }
+        for (var field : arguments.propertyNames()) {
+            if (!fields.contains(field)) throw new IllegalArgumentException("Unsupported theme upsert field");
+        }
+        var themeId = boundedText(arguments, "themeId", 116).trim();
+        if (!THEME_ID.matcher(themeId).matches()) throw new IllegalArgumentException("Invalid themeId");
+        var name = boundedText(arguments, "name", 120).trim();
+        var ticker = requiredInvestmentTicker(arguments, fields);
+        final LocalDate effectiveDate;
+        try {
+            effectiveDate = LocalDate.parse(requiredText(arguments, "effectiveDate"));
+        } catch (DateTimeParseException exception) {
+            throw new IllegalArgumentException("effectiveDate must be an ISO-8601 date");
+        }
+        return new com.jmj.trade.investment.tactical.TacticalOverlayService.ThemeUpsertInput(
+                themeId, name, ticker, effectiveDate);
+    }
+
     private static String requiredInvestmentTicker(JsonNode arguments, Set<String> allowedFields) {
         if (arguments == null || !arguments.isObject()) throw new IllegalArgumentException();
         for (var field : arguments.propertyNames()) {
@@ -1022,6 +1074,39 @@ public final class ConnectorMcpProtocol {
         var schema = investmentContextSchema();
         schema.putArray("required").add("ticker");
         return schema;
+    }
+
+    private ObjectNode investmentThemeUpsertSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("themeId", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 116).put("pattern", "^[A-Za-z0-9._:-]{1,116}$"));
+        properties.set("name", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 120));
+        properties.set("ticker", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 32).put("pattern", "^[A-Za-z0-9._-]{1,32}$"));
+        properties.set("effectiveDate", objectMapper.createObjectNode().put("type", "string")
+                .put("format", "date").put("pattern", "^\\d{4}-\\d{2}-\\d{2}$"));
+        return closedObject(properties, "themeId", "name", "ticker", "effectiveDate");
+    }
+
+    private ObjectNode investmentThemeUpsertOutputSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("themeId", stringSchema());
+        properties.set("name", stringSchema());
+        properties.set("ticker", stringSchema());
+        properties.set("effectiveDate", objectMapper.createObjectNode().put("type", "string").put("format", "date"));
+        properties.set("themeInputId", objectMapper.createObjectNode().put("type", "string").put("format", "uuid"));
+        properties.set("themeSourceAsOf", nullableDateTimeSchema());
+        properties.set("themeSource", stringSchema());
+        properties.set("mappingInputId", objectMapper.createObjectNode().put("type", "string").put("format", "uuid"));
+        properties.set("mappingSourceAsOf", nullableDateTimeSchema());
+        properties.set("mappingSource", stringSchema());
+        properties.set("changed", booleanSchema());
+        var success = closedObject(properties, "themeId", "name", "ticker", "effectiveDate", "themeInputId",
+                "themeSourceAsOf", "themeSource", "mappingInputId", "mappingSourceAsOf", "mappingSource", "changed");
+        return outputSchema(success, "TRADE_SCOPE_REQUIRED", "INVALID_ARGUMENT", "AUTHENTICATED_USER_INVALID",
+                "INVESTMENT_STATE_NOT_FOUND", "INVESTMENT_STATE_CONFLICT",
+                "INVESTMENT_CONTEXT_UNAVAILABLE", "INTERNAL_ERROR");
     }
 
     private ObjectNode riskPreflightSchema() {

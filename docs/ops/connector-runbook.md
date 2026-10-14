@@ -47,7 +47,9 @@ user. No connector key needs to be copied into ChatGPT.
 The requested OAuth scope determines the MCP tools:
 
 - `connector:read`: `get_portfolio`, `get_orders`, `get_recent_fills`, `get_order`, and `get_investment_context`.
-- `connector:trade`: the five read tools plus `put_investment_thesis`, `append_investment_decision`, `append_investment_review`, `prepare_order`, `submit_order`, and `cancel_order`. Thesis proposals, decision records, and review notes reuse this existing write scope; no new scope is introduced.
+- `connector:trade`: the five read tools plus `upsert_investment_theme`, `put_investment_thesis`, `append_investment_decision`, `append_investment_review`, `prepare_order`, `submit_order`, and `cancel_order`. Theme inputs, thesis proposals, decision records, and review notes reuse this existing write scope; no new scope is introduced.
+
+`upsert_investment_theme` saves one supplied `themeId`/`name`/`ticker`/`effectiveDate` tuple to the existing append-only Tactical V1 inputs. Spring assigns `USER_INPUT` source and source timestamp, appends catalog/membership changes atomically, and refreshes derived snapshots once. An identical replay returns the stored IDs without another row. Read the result back with `get_investment_context`; no Sheet write is part of the MCP call. It does not alter thesis, risk policy, or orders.
 
 `append_investment_review` records a review/audit note only (for example a `REVIEW` label, a portfolio-level note, or an unknown session label kept verbatim); it does not create a decision or order. It needs a ChatGPT **Tools Refresh** after deployment. See the [review record contract](investment-context-mcp-contract.md#review-records-v58).
 

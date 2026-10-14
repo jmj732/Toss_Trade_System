@@ -207,6 +207,39 @@ class TacticalOverlayServiceIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void themeUpsertPersistsCatalogAndMembersIdempotentlyAndRecomputesAggregate() {
+        recordTrackedHistory();
+        var effectiveDate = dates.getLast();
+        var lunrInput = new TacticalOverlayService.ThemeUpsertInput(
+                "SPACE_INFRASTRUCTURE", "Space Infrastructure", "lunr", effectiveDate);
+
+        var lunr = service.upsertTheme(userId, lunrInput);
+        var inputCountAfterFirstWrite = inputCount(userId);
+        var replay = service.upsertTheme(userId, lunrInput);
+
+        assertThat(lunr.changed()).isTrue();
+        assertThat(replay.changed()).isFalse();
+        assertThat(replay.themeInputId()).isEqualTo(lunr.themeInputId());
+        assertThat(replay.mappingInputId()).isEqualTo(lunr.mappingInputId());
+        assertThat(inputCount(userId)).isEqualTo(inputCountAfterFirstWrite);
+
+        var rdw = service.upsertTheme(userId, new TacticalOverlayService.ThemeUpsertInput(
+                "SPACE_INFRASTRUCTURE", "Space Infrastructure", "RDW", effectiveDate));
+        assertThat(rdw.changed()).isTrue();
+        assertThat(rdw.themeInputId()).isEqualTo(lunr.themeInputId());
+        assertThat(rdw.mappingInputId()).isNotEqualTo(lunr.mappingInputId());
+
+        var context = service.context(userId, SYMBOLS);
+        assertThat(context.securities().get("LUNR").themeId()).isEqualTo("SPACE_INFRASTRUCTURE");
+        assertThat(context.securities().get("RDW").themeId()).isEqualTo("SPACE_INFRASTRUCTURE");
+        var theme = aggregate(context.portfolio().themes(), "SPACE_INFRASTRUCTURE");
+        assertThat(theme.path("expectedMembers").asInt()).isEqualTo(2);
+        assertThat(theme.path("asOf").asText()).isEqualTo(effectiveDate.toString());
+        assertThat(theme.path("inputRefs").toString()).contains(lunr.themeInputId().toString(),
+                lunr.mappingInputId().toString(), rdw.mappingInputId().toString());
+    }
+
+    @Test
     void effectiveDatedThemeInputsAnchorsAndDecisionPerformanceRecomputeAndTombstone() throws Exception {
         var refsByTicker = recordTrackedHistory();
         insertDecision("AVT", UUID.fromString("6e252d81-816e-4fd8-bdc9-739856015103"));
