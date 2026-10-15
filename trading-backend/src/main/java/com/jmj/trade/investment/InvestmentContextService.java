@@ -840,13 +840,16 @@ public final class InvestmentContextService {
         for (var trigger : triggers) {
             if (!tickers.contains(trigger.getKey())) continue;
             var priceNode = node(latestSecuritySnapshot(userId, trigger.getKey()), "price");
-            var price = decimal(priceNode.get("latestPrice"));
-            var priceAsOf = instant(priceNode.get("latestPriceAsOf"));
-            var status = dataStatus(text(priceNode.get("status")));
+            var facts = priceFactsFromNode(priceNode);
+            var price = facts.latestPrice();
+            var priceAsOf = facts.asOf();
+            var status = dataStatus(facts.status());
             var trusted = status == DataStatus.OK && priceAsOf != null && price != null && price.signum() > 0;
             result.add(new ConfirmedTriggerObservation(trigger.getKey(), trigger.getValue(),
                     trusted ? DataStatus.OK : status == DataStatus.OK ? DataStatus.DATA_MISSING : status,
-                    trusted ? price : null, trusted ? priceAsOf : null, text(priceNode.get("session"))));
+                    trusted ? price : null, trusted ? priceAsOf : null, facts.session(),
+                    dataStatus(facts.regularCloseStatus()), facts.regularClose(), facts.regularCloseAsOf(),
+                    facts.regularCloseSource(), facts.regularCloseSessionDate(), facts.lastCompletedSessionDate()));
         }
         return List.copyOf(result);
     }
@@ -1495,13 +1498,19 @@ public final class InvestmentContextService {
     private record ClosedIntervalFacts(Instant startsAt, Instant endsAt, String source, Instant observedAt) {
     }
 
+    private record ClosedIntervalEvidence(ClosedIntervalFacts facts, String status, String reason) {
+        private static ClosedIntervalEvidence unavailable(String reason) {
+            return new ClosedIntervalEvidence(null, "UNAVAILABLE", reason);
+        }
+    }
+
     /** Last completed New York regular session and the instant at which a newer session completes. */
     record RegularSessionFacts(LocalDate lastCompletedSessionDate, Instant regularCloseValidUntil) {
     }
 
     private record PriceSessionContext(
             RegularSessionFacts regular, String sessionReason, Instant nextDeclaredIntervalStartsAt,
-            ClosedIntervalFacts closedInterval) {
+            ClosedIntervalEvidence closedIntervalEvidence) {
     }
 
     /** A provider-declared regular interval; {@link #NONE} means the calendar declares no regular session. */
@@ -1550,22 +1559,26 @@ public final class InvestmentContextService {
                         nextBusinessDayCalendar(userId, connectionId, quoteCalendar, quoteDate, calendars));
             }
         }
-        var closedInterval = currentClosedIntervalFacts(userId, connectionId, today,
+        var closedIntervalEvidence = currentClosedIntervalEvidence(userId, connectionId, today,
                 currentCapture, calendars);
-        return new PriceSessionContext(regular, sessionReason, nextDeclared, closedInterval);
+        return new PriceSessionContext(regular, sessionReason, nextDeclared, closedIntervalEvidence);
     }
 
-    private ClosedIntervalFacts currentClosedIntervalFacts(
+    private ClosedIntervalEvidence currentClosedIntervalEvidence(
             UUID userId, UUID connectionId, LocalDate collectedDate,
             TossCalendarCapture current, Map<LocalDate, TossCalendarCapture> calendars
     ) {
-        if (current == null || current.payload() == null) return null;
+        if (current == null || current.payload() == null) {
+            return ClosedIntervalEvidence.unavailable("CURRENT_TOSS_CALENDAR_MISSING");
+        }
         var currentPayload = current.payload();
         var previousDate = calendarDayDate(currentPayload, "previousBusinessDay");
         var nextDate = calendarDayDate(currentPayload, "nextBusinessDay");
         var currentDay = calendarDay(currentPayload, "today", collectedDate);
         if (currentDay == null || previousDate == null || !previousDate.isBefore(collectedDate)
-                || nextDate == null || !nextDate.isAfter(collectedDate)) return null;
+                || nextDate == null || !nextDate.isAfter(collectedDate)) {
+            return ClosedIntervalEvidence.unavailable("CALENDAR_BUSINESS_DAY_CHAIN_INVALID");
+        }
 
         var previous = tossCalendarCached(userId, connectionId, previousDate, calendars);
         var next = tossCalendarCached(userId, connectionId, nextDate, calendars);
@@ -1574,18 +1587,30 @@ public final class InvestmentContextService {
         // future while a gap that ended during the requests is never accepted.
         var evaluatedAt = clock.instant();
         var today = evaluatedAt.atZone(NEW_YORK).toLocalDate();
-        if (!today.equals(collectedDate)
-                || !usableCalendarProvenance(current, evaluatedAt)
-                || !usableCalendarProvenance(previous, evaluatedAt)
-                || !usableCalendarProvenance(next, evaluatedAt)) return null;
+        if (!today.equals(collectedDate)) {
+            return ClosedIntervalEvidence.unavailable("CALENDAR_CAPTURE_DATE_CHANGED");
+        }
+        if (!usableCalendarProvenance(current, evaluatedAt)) {
+            return ClosedIntervalEvidence.unavailable("CURRENT_TOSS_CALENDAR_PROVENANCE_UNVERIFIED");
+        }
+        if (!usableCalendarProvenance(previous, evaluatedAt)) {
+            return ClosedIntervalEvidence.unavailable("PREVIOUS_TOSS_CALENDAR_PROVENANCE_UNVERIFIED");
+        }
+        if (!usableCalendarProvenance(next, evaluatedAt)) {
+            return ClosedIntervalEvidence.unavailable("NEXT_TOSS_CALENDAR_PROVENANCE_UNVERIFIED");
+        }
         var previousDay = calendarDay(previous.payload(), "today", previousDate);
         var nextDay = calendarDay(next.payload(), "today", nextDate);
-        var bounds = currentClosedIntervalBounds(evaluatedAt, previousDate, previousDay,
+        var assessment = currentClosedIntervalAssessment(evaluatedAt, previousDate, previousDay,
                 today, currentDay, nextDate, nextDay);
-        if (bounds == null) return null;
+        if (assessment.bounds() == null) {
+            return ClosedIntervalEvidence.unavailable(assessment.reason());
+        }
         var observedAt = List.of(current.observedAt(), previous.observedAt(), next.observedAt()).stream()
                 .max(Instant::compareTo).orElse(null);
-        return observedAt == null ? null : new ClosedIntervalFacts(bounds.start(), bounds.end(), "TOSS", observedAt);
+        if (observedAt == null) return ClosedIntervalEvidence.unavailable("CALENDAR_OBSERVATION_MISSING");
+        return new ClosedIntervalEvidence(new ClosedIntervalFacts(assessment.bounds().start(),
+                assessment.bounds().end(), "TOSS", observedAt), "VERIFIED", null);
     }
 
     private static boolean usableCalendarProvenance(TossCalendarCapture calendar, Instant now) {
@@ -1598,48 +1623,84 @@ public final class InvestmentContextService {
             Instant now, LocalDate previousDate, JsonNode previousDay,
             LocalDate today, JsonNode todayDay, LocalDate nextDate, JsonNode nextDay
     ) {
+        return currentClosedIntervalAssessment(now, previousDate, previousDay, today, todayDay,
+                nextDate, nextDay).bounds();
+    }
+
+    static ClosedIntervalBoundsAssessment currentClosedIntervalAssessment(
+            Instant now, LocalDate previousDate, JsonNode previousDay,
+            LocalDate today, JsonNode todayDay, LocalDate nextDate, JsonNode nextDay
+    ) {
         if (now == null || previousDate == null || today == null || nextDate == null
-                || !previousDate.isBefore(today) || !nextDate.isAfter(today)) return null;
+                || !previousDate.isBefore(today) || !nextDate.isAfter(today)) {
+            return ClosedIntervalBoundsAssessment.unavailable("CALENDAR_BUSINESS_DAY_CHAIN_INVALID");
+        }
         var intervals = new ArrayList<DeclaredInterval>();
         var previousIntervals = declaredCalendarIntervals(previousDate, previousDay);
         var todayIntervals = declaredCalendarIntervals(today, todayDay);
         var nextIntervals = declaredCalendarIntervals(nextDate, nextDay);
-        if (previousIntervals == null || todayIntervals == null || nextIntervals == null) return null;
-        intervals.addAll(previousIntervals);
-        intervals.addAll(todayIntervals);
-        intervals.addAll(nextIntervals);
-        if (intervals.isEmpty()) return null;
+        for (var result : List.of(previousIntervals, todayIntervals, nextIntervals)) {
+            if (result.reason() != null) return ClosedIntervalBoundsAssessment.unavailable(result.reason());
+            intervals.addAll(result.intervals());
+        }
+        if (intervals.isEmpty()) {
+            return ClosedIntervalBoundsAssessment.unavailable("CALENDAR_INTERVALS_EMPTY");
+        }
         intervals.sort(Comparator.comparing(DeclaredInterval::start));
         for (int index = 1; index < intervals.size(); index++) {
-            if (intervals.get(index - 1).end().isAfter(intervals.get(index).start())) return null;
+            if (intervals.get(index - 1).end().isAfter(intervals.get(index).start())) {
+                return ClosedIntervalBoundsAssessment.unavailable("CALENDAR_INTERVALS_OVERLAP");
+            }
         }
         if (intervals.stream().anyMatch(interval -> !now.isBefore(interval.start())
-                && now.isBefore(interval.end()))) return null;
+                && now.isBefore(interval.end()))) {
+            return ClosedIntervalBoundsAssessment.unavailable("CALENDAR_INTERVAL_OPEN_AT_CAPTURE");
+        }
         var previousEnd = intervals.stream().map(DeclaredInterval::end)
                 .filter(end -> !end.isAfter(now)).max(Instant::compareTo).orElse(null);
         var nextStart = intervals.stream().map(DeclaredInterval::start)
                 .filter(start -> start.isAfter(now)).min(Instant::compareTo).orElse(null);
-        return previousEnd == null || nextStart == null || !previousEnd.isBefore(nextStart)
-                ? null : new ClosedIntervalBounds(previousEnd, nextStart);
+        if (previousEnd == null || nextStart == null || !previousEnd.isBefore(nextStart)) {
+            return ClosedIntervalBoundsAssessment.unavailable("CLOSED_INTERVAL_NOT_BOUNDED");
+        }
+        return new ClosedIntervalBoundsAssessment(new ClosedIntervalBounds(previousEnd, nextStart), "VERIFIED", null);
     }
 
-    private static List<DeclaredInterval> declaredCalendarIntervals(LocalDate date, JsonNode day) {
-        if (day == null || !day.isObject() || !date.toString().equals(day.path("date").asText(null))) return null;
+    private static DeclaredIntervals declaredCalendarIntervals(LocalDate date, JsonNode day) {
+        if (day == null || !day.isObject() || !date.toString().equals(day.path("date").asText(null))) {
+            return DeclaredIntervals.unavailable("CALENDAR_DAY_MISSING_OR_DATE_MISMATCH");
+        }
         var intervals = new ArrayList<DeclaredInterval>();
         for (var field : TOSS_CALENDAR_INTERVAL_FIELDS) {
-            if (!day.has(field)) return null;
+            if (!day.has(field)) return DeclaredIntervals.unavailable("CALENDAR_INTERVAL_FIELD_MISSING");
             var interval = day.get(field);
             if (interval.isNull()) continue;
-            if (!interval.isObject()) return null;
+            if (!interval.isObject()) return DeclaredIntervals.unavailable("CALENDAR_INTERVAL_INVALID");
             var start = tossCalendarBound(interval, "startTime", "open", "openTime", "start");
             var end = tossCalendarBound(interval, "endTime", "close", "closeTime", "end");
-            if (start == null || end == null || !start.isBefore(end)) return null;
+            if (start == null || end == null || !start.isBefore(end)) {
+                return DeclaredIntervals.unavailable("CALENDAR_INTERVAL_INVALID");
+            }
             if (!"dayMarket".equals(field)
                     && (!date.equals(start.atZone(NEW_YORK).toLocalDate())
-                    || !date.equals(end.minusNanos(1).atZone(NEW_YORK).toLocalDate()))) return null;
+                    || !date.equals(end.minusNanos(1).atZone(NEW_YORK).toLocalDate()))) {
+                return DeclaredIntervals.unavailable("CALENDAR_INTERVAL_INVALID");
+            }
             intervals.add(new DeclaredInterval(start, end));
         }
-        return intervals;
+        return new DeclaredIntervals(List.copyOf(intervals), null);
+    }
+
+    record ClosedIntervalBoundsAssessment(ClosedIntervalBounds bounds, String status, String reason) {
+        private static ClosedIntervalBoundsAssessment unavailable(String reason) {
+            return new ClosedIntervalBoundsAssessment(null, "UNAVAILABLE", reason);
+        }
+    }
+
+    private record DeclaredIntervals(List<DeclaredInterval> intervals, String reason) {
+        private static DeclaredIntervals unavailable(String reason) {
+            return new DeclaredIntervals(List.of(), reason);
+        }
     }
 
     record ClosedIntervalBounds(Instant start, Instant end) {
@@ -3066,6 +3127,11 @@ public final class InvestmentContextService {
         if (context != null && "TOSS".equals(price.source())
                 && price.latestPrice() != null && price.latestPrice().signum() > 0) {
             view.put("closedIntervalEvidenceVersion", CLOSED_INTERVAL_EVIDENCE_VERSION);
+            var evidence = context.closedIntervalEvidence();
+            if (evidence != null) {
+                view.put("closedIntervalEvidenceStatus", evidence.status());
+                view.put("closedIntervalEvidenceReason", evidence.reason());
+            }
         }
         var regular = context == null ? null : context.regular();
         view.put("regularCloseSessionDate", price.regularCloseAsOf() == null ? null
@@ -3077,7 +3143,8 @@ public final class InvestmentContextService {
         view.put("regularCloseValidUntil", regular == null || regular.regularCloseValidUntil() == null
                 ? null : regular.regularCloseValidUntil().toString());
         refreshRegularCloseStatus(view, collectedAt);
-        var closedInterval = context == null ? null : context.closedInterval();
+        var closedIntervalEvidence = context == null ? null : context.closedIntervalEvidence();
+        var closedInterval = closedIntervalEvidence == null ? null : closedIntervalEvidence.facts();
         if (closedInterval != null) {
             view.put("closedIntervalStartsAt", closedInterval.startsAt().toString());
             view.put("closedIntervalEndsAt", closedInterval.endsAt().toString());
@@ -4614,10 +4681,12 @@ public final class InvestmentContextService {
         }
     }
 
-    /** A CONFIRMED trigger and its trusted price; {@code latestPrice} is null unless {@code priceStatus} is OK. */
+    /** A CONFIRMED trigger, its trusted latest quote, and the separately judged canonical regular close. */
     public record ConfirmedTriggerObservation(
             String ticker, BigDecimal triggerPrice, DataStatus priceStatus,
-            BigDecimal latestPrice, Instant latestPriceAsOf, String priceSession
+            BigDecimal latestPrice, Instant latestPriceAsOf, String priceSession,
+            DataStatus regularCloseStatus, BigDecimal regularClose, Instant regularCloseAsOf,
+            String regularCloseSource, LocalDate regularCloseSessionDate, LocalDate lastCompletedSessionDate
     ) {
     }
 
