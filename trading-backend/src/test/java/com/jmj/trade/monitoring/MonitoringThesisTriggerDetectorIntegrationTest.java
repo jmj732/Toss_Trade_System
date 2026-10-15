@@ -18,7 +18,9 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -112,6 +114,44 @@ class MonitoringThesisTriggerDetectorIntegrationTest extends PostgresIntegration
     }
 
     @Test
+    void verifiedLastCompletedCloseCanTriggerReviewWhenPremarketQuoteIsStale() throws Exception {
+        var sessionDate = LocalDate.now(ZoneId.of("America/New_York")).minusDays(1);
+        seedPriceWithRegularClose("150.00", Instant.now().minus(Duration.ofMinutes(30)), "PREMARKET",
+                "97.13", sessionDate, sessionDate, "TOSS", Instant.now().plus(Duration.ofDays(1)));
+        var thesisBefore = thesisRow();
+        var revisionsBefore = revisions();
+
+        detector.detect(USER_ID, held(TICKER));
+
+        var alerts = alerts();
+        assertThat(alerts).hasSize(1);
+        var payload = mapper.readTree(alerts.getFirst());
+        assertThat(payload.path("level").asText()).isEqualTo("BREACH");
+        assertThat(payload.path("priceBasis").asText()).isEqualTo("REGULAR_CLOSE");
+        assertThat(payload.path("sessionDate").asText()).isEqualTo(sessionDate.toString());
+        assertThat(payload.path("thesisStatusChanged").asBoolean(true)).isFalse();
+        assertThat(payload.path("orderAction").asText()).isEqualTo("NONE");
+        assertThat(alerts.getFirst()).doesNotContain("97.13").doesNotContain("150.00").doesNotContain("\"100");
+        assertThat(thesisRow()).isEqualTo(thesisBefore);
+        assertThat(revisions()).isEqualTo(revisionsBefore);
+        for (var table : ORDER_TABLES) {
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + table, Integer.class)).as(table).isZero();
+        }
+    }
+
+    @Test
+    void regularCloseForDifferentSessionCannotTriggerReview() throws Exception {
+        var closeDate = LocalDate.now(ZoneId.of("America/New_York")).minusDays(2);
+        var lastCompletedSession = closeDate.plusDays(1);
+        seedPriceWithRegularClose("150.00", Instant.now().minus(Duration.ofMinutes(30)), "PREMARKET",
+                "97.13", closeDate, lastCompletedSession, "TOSS", Instant.now().plus(Duration.ofDays(1)));
+
+        detector.detect(USER_ID, held(TICKER));
+
+        assertThat(alerts()).isEmpty();
+    }
+
+    @Test
     void nearBandAlertsOnceAndEscalationToBreachAlertsSeparately() throws Exception {
         seedPrice("102.00", Instant.now().minusSeconds(120), "LIVE_REGULAR", "OK");
         detector.detect(USER_ID, held(TICKER));
@@ -190,6 +230,30 @@ class MonitoringThesisTriggerDetectorIntegrationTest extends PostgresIntegration
         var payload = Map.of("asOf", asOf.toString(),
                 "price", Map.of("latestPrice", new BigDecimal(price), "latestPriceAsOf", asOf.toString(),
                         "session", session, "status", status));
+        var storedAt = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)
+                VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?)
+                """, UUID.randomUUID(), USER_ID, TICKER, storedAt, mapper.writeValueAsString(payload), storedAt);
+    }
+
+    private void seedPriceWithRegularClose(
+            String latestPrice, Instant latestAsOf, String session, String regularClose,
+            LocalDate closeDate, LocalDate lastCompletedSessionDate, String closeSource, Instant closeValidUntil
+    ) throws Exception {
+        var closeAsOf = closeDate.atStartOfDay(ZoneId.of("America/New_York")).toInstant();
+        var price = mapper.createObjectNode()
+                .put("latestPrice", new BigDecimal(latestPrice))
+                .put("latestPriceAsOf", latestAsOf.toString())
+                .put("session", session)
+                .put("status", "OK")
+                .put("regularClose", new BigDecimal(regularClose))
+                .put("regularCloseAsOf", closeAsOf.toString())
+                .put("regularCloseSessionDate", closeDate.toString())
+                .put("regularCloseSource", closeSource)
+                .put("regularCloseValidUntil", closeValidUntil.toString())
+                .put("lastCompletedSessionDate", lastCompletedSessionDate.toString());
+        var payload = mapper.createObjectNode().put("asOf", latestAsOf.toString()).set("price", price);
         var storedAt = OffsetDateTime.now(ZoneOffset.UTC);
         jdbc.update("""
                 INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at)

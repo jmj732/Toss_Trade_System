@@ -167,4 +167,24 @@ class InvestmentPriceSessionFactsTest {
         assertThat(InvestmentContextService.currentClosedIntervalBounds(closedAt, previousDate, previousDay,
                 todayDate, missingIntervalField, nextDate, nextDay)).isNull();
     }
+
+    @Test
+    void closedGapAssessmentExplainsMissingCalendarIntervalFields() {
+        var previousDate = LocalDate.parse("2026-10-02");
+        var todayDate = LocalDate.parse("2026-10-03");
+        var nextDate = LocalDate.parse("2026-10-05");
+        var previousDay = friday().path("today");
+        var nextDay = monday().path("today");
+        var closedAt = Instant.parse("2026-10-03T14:00:00Z");
+        var missingIntervalField = mapper.readTree("""
+                {"date":"2026-10-03","dayMarket":null,"preMarket":null,"regularMarket":null}
+                """);
+
+        var assessment = InvestmentContextService.currentClosedIntervalAssessment(closedAt, previousDate,
+                previousDay, todayDate, missingIntervalField, nextDate, nextDay);
+
+        assertThat(assessment.status()).isEqualTo("UNAVAILABLE");
+        assertThat(assessment.reason()).isEqualTo("CALENDAR_INTERVAL_FIELD_MISSING");
+        assertThat(assessment.bounds()).isNull();
+    }
 }

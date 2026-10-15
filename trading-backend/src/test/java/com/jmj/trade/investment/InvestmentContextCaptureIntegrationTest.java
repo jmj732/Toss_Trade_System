@@ -1336,6 +1336,8 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         var price = snapshot.path("price");
         assertThat(price.path("session").asText()).as(price.toPrettyString()).isEqualTo("AFTER_HOURS");
         assertThat(price.path("closedIntervalEvidenceVersion").asInt()).isEqualTo(1);
+        assertThat(price.path("closedIntervalEvidenceStatus").asText()).isEqualTo("VERIFIED");
+        assertThat(price.path("closedIntervalEvidenceReason").isNull()).isTrue();
         assertThat(Instant.parse(price.path("closedIntervalStartsAt").asText()))
                 .isEqualTo(previous.atTime(20, 0).atZone(newYork).toInstant());
         assertThat(Instant.parse(price.path("closedIntervalEndsAt").asText()))
@@ -1345,6 +1347,67 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 nextCalendarObservedAt.get()).stream().max(Instant::compareTo).orElseThrow();
         assertThat(observedAt).isAfter(Instant.parse(snapshot.path("asOf").asText()));
         assertThat(Instant.parse(price.path("closedIntervalCalendarObservedAt").asText())).isEqualTo(observedAt);
+    }
+
+    @Test
+    void captureExplainsWhyClosedIntervalEvidenceWasUnavailable() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var newYork = java.time.ZoneId.of("America/New_York");
+        var now = Instant.now();
+        var today = now.atZone(newYork).toLocalDate();
+        var previous = today.minusDays(1);
+        var next = today.plusDays(1);
+        var quoteAsOf = previous.atTime(19, 30).atZone(newYork).toInstant();
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(BrokerSurfaceResponse.available(List.of(
+                new BrokerSurfaceResponse.PriceView("AAPL", new BigDecimal("100"), null, null,
+                        "USD", now, quoteAsOf))));
+
+        var previousDay = mapper.readTree("""
+                {"date":"%s","dayMarket":null,"preMarket":null,
+                 "regularMarket":{"startTime":"%s","endTime":"%s"},
+                 "afterMarket":{"startTime":"%s","endTime":"%s"}}
+                """.formatted(previous,
+                previous.atTime(9, 30).atZone(newYork).toOffsetDateTime(),
+                previous.atTime(16, 0).atZone(newYork).toOffsetDateTime(),
+                previous.atTime(16, 0).atZone(newYork).toOffsetDateTime(),
+                previous.atTime(20, 0).atZone(newYork).toOffsetDateTime()));
+        var currentDay = mapper.readTree("""
+                {"date":"%s","dayMarket":null,"preMarket":null,"regularMarket":null}
+                """.formatted(today));
+        var nextDay = mapper.readTree("""
+                {"date":"%s","dayMarket":null,
+                 "preMarket":{"startTime":"%s","endTime":"%s"},
+                 "regularMarket":{"startTime":"%s","endTime":"%s"},"afterMarket":null}
+                """.formatted(next,
+                next.atTime(4, 0).atZone(newYork).toOffsetDateTime(),
+                next.atTime(9, 30).atZone(newYork).toOffsetDateTime(),
+                next.atTime(9, 30).atZone(newYork).toOffsetDateTime(),
+                next.atTime(16, 0).atZone(newYork).toOffsetDateTime()));
+        var currentCalendar = mapper.createObjectNode().set("previousBusinessDay", previousDay);
+        currentCalendar.set("today", currentDay);
+        currentCalendar.set("nextBusinessDay", nextDay);
+        when(surface.marketCalendar(USER_ID, connectionId, "US", previous))
+                .thenReturn(observedCalendarResponse(mapper.createObjectNode().set("today", previousDay),
+                        new AtomicReference<>()));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", today))
+                .thenReturn(observedCalendarResponse(currentCalendar, new AtomicReference<>()));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", next))
+                .thenReturn(observedCalendarResponse(mapper.createObjectNode().set("today", nextDay),
+                        new AtomicReference<>()));
+
+        service(new StockDataProviderRegistry(List.of()), surface).capture(USER_ID);
+
+        var snapshot = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID));
+        var price = snapshot.path("price");
+        assertThat(price.path("closedIntervalEvidenceVersion").asInt()).isEqualTo(1);
+        assertThat(price.path("closedIntervalEvidenceStatus").asText()).isEqualTo("UNAVAILABLE");
+        assertThat(price.path("closedIntervalEvidenceReason").asText())
+                .isEqualTo("CALENDAR_INTERVAL_FIELD_MISSING");
+        assertThat(price.has("closedIntervalStartsAt")).isFalse();
     }
 
     @Test
