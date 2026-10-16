@@ -96,6 +96,33 @@ class InvestmentPriceSessionFactsTest {
     }
 
     @Test
+    void previouslyVerifiedCalendarWindowIsRetainedOnlyForTheSameUnexpiredClose() throws Exception {
+        var closeAsOf = Instant.parse("2026-10-15T04:00:00Z");
+        var capturedAt = Instant.parse("2026-10-16T02:00:00Z");
+        var validUntil = Instant.parse("2026-10-16T20:00:00Z");
+        var close = new java.math.BigDecimal("100");
+        var price = new InvestmentDataCalculator.PriceAssessment(close, closeAsOf, close, closeAsOf,
+                "REGULAR_CLOSE", "TOSS", null, InvestmentDataCalculator.DataStatus.OK);
+        var previous = mapper.readTree("""
+                {"regularClose":100,"regularCloseAsOf":"2026-10-15T04:00:00Z",
+                 "regularCloseSource":"TOSS","regularCloseSessionDate":"2026-10-15",
+                 "regularCloseStatus":"OK","lastCompletedSessionDate":"2026-10-15",
+                 "regularCloseValidUntil":"2026-10-16T20:00:00Z"}
+                """);
+
+        var retained = InvestmentContextService.retainVerifiedRegularSessionFacts(price, null, previous, capturedAt);
+
+        assertThat(retained.lastCompletedSessionDate()).isEqualTo(LocalDate.parse("2026-10-15"));
+        assertThat(retained.regularCloseValidUntil()).isEqualTo(validUntil);
+        assertThat(InvestmentContextService.retainVerifiedRegularSessionFacts(price, null, previous, validUntil))
+                .isNull();
+        var changedClose = new InvestmentDataCalculator.PriceAssessment(new java.math.BigDecimal("101"), closeAsOf,
+                close, closeAsOf, "REGULAR_CLOSE", "TOSS", null, InvestmentDataCalculator.DataStatus.OK);
+        assertThat(InvestmentContextService.retainVerifiedRegularSessionFacts(
+                changedClose, null, previous, capturedAt)).isNull();
+    }
+
+    @Test
     void unavailableMismatchedOrUndeclaredCalendarsAreUnverifiedInsteadOfGuessed() {
         var friday = Instant.parse("2026-10-02T14:00:00Z");
         assertThat(InvestmentContextService.regularSessionFacts(friday, null, monday())).isNull();

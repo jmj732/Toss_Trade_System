@@ -1516,7 +1516,7 @@ public final class InvestmentContextService {
 
     private record PriceSessionContext(
             RegularSessionFacts regular, String sessionReason, Instant nextDeclaredIntervalStartsAt,
-            ClosedIntervalEvidence closedIntervalEvidence) {
+            ClosedIntervalEvidence closedIntervalEvidence, boolean tossQuoteAvailable) {
     }
 
     /** A provider-declared regular interval; {@link #NONE} means the calendar declares no regular session. */
@@ -1543,8 +1543,8 @@ public final class InvestmentContextService {
                 quoteAsOf = observation.asOf();
             }
         }
-        // A rejected Toss quote (currency, timestamp) is never classified with the US calendar; facts stay absent.
-        if (quoteAsOf == null) return null;
+        // Quote classification needs a valid Toss observation, but regular-close validity is a separate calendar
+        // fact and must still be captured when a ticker's latest quote is missing or rejected.
         var collectedAt = input.collectedAt();
         var today = collectedAt.atZone(NEW_YORK).toLocalDate();
         var currentCapture = tossCalendarCached(userId, connectionId, today, calendars);
@@ -1553,6 +1553,10 @@ public final class InvestmentContextService {
         if (regular != null && regular.regularCloseValidUntil() == null) {
             regular = regularSessionFacts(collectedAt, calendar,
                     nextBusinessDayCalendar(userId, connectionId, calendar, today, calendars));
+        }
+        if (quoteAsOf == null) {
+            return new PriceSessionContext(regular, null, null,
+                    ClosedIntervalEvidence.unavailable("TOSS_QUOTE_UNAVAILABLE"), false);
         }
         Instant nextDeclared = null;
         if (TOSS_QUOTE_OUTSIDE_DECLARED_INTERVALS.equals(sessionReason)) {
@@ -1567,7 +1571,7 @@ public final class InvestmentContextService {
         }
         var closedIntervalEvidence = currentClosedIntervalEvidence(userId, connectionId, today,
                 currentCapture, calendars);
-        return new PriceSessionContext(regular, sessionReason, nextDeclared, closedIntervalEvidence);
+        return new PriceSessionContext(regular, sessionReason, nextDeclared, closedIntervalEvidence, true);
     }
 
     private ClosedIntervalEvidence currentClosedIntervalEvidence(
@@ -2234,9 +2238,10 @@ public final class InvestmentContextService {
         var valuation = valuation(userId, input.symbol(), price, fundamental, consensus, securityThesis);
         var readiness = readiness(price, technical, fundamental, consensus, revision, valuation, input);
         var asOf = latestAsOf(price, technical, fundamental, consensus, input.collectedAt());
+        var previousSnapshot = latestSecuritySnapshot(userId, input.symbol());
         var snapshot = new LinkedHashMap<String, Object>();
         snapshot.put("asOf", asOf);
-        snapshot.put("price", priceView(price, sessionContext, input.collectedAt()));
+        snapshot.put("price", priceView(price, sessionContext, input.collectedAt(), node(previousSnapshot, "price")));
         snapshot.put("technical", technical.view());
         snapshot.put("fundamentals", fundamental.view());
         snapshot.put("consensus", consensus.view());
@@ -3109,28 +3114,74 @@ public final class InvestmentContextService {
             closeDate = closeAsOf.atZone(NEW_YORK).toLocalDate();
             price.put("regularCloseSessionDate", closeDate.toString());
         }
-        var status = regularCloseStatus(decimal(price.get("regularClose")), closeDate,
-                localDate(text(price.get("lastCompletedSessionDate"))));
-        if (status == DataStatus.OK) {
-            var validUntil = instant(price.get("regularCloseValidUntil"));
-            if (validUntil == null) status = DataStatus.UNVERIFIED;
-            else if (!now.isBefore(validUntil)) status = DataStatus.STALE;
-        }
-        price.put("regularCloseStatus", status.name());
+        var assessment = assessRegularClose(decimal(price.get("regularClose")), closeDate,
+                localDate(text(price.get("lastCompletedSessionDate"))),
+                instant(price.get("regularCloseValidUntil")), now);
+        price.put("regularCloseStatus", assessment.status().name());
+        price.put("regularCloseStatusReason", assessment.reason());
     }
 
-    private static DataStatus regularCloseStatus(BigDecimal close, LocalDate closeDate, LocalDate lastCompleted) {
-        if (close == null || close.signum() <= 0 || closeDate == null) return DataStatus.DATA_MISSING;
-        if (lastCompleted == null || closeDate.isAfter(lastCompleted)) return DataStatus.UNVERIFIED;
-        return closeDate.isBefore(lastCompleted) ? DataStatus.STALE : DataStatus.OK;
+    private static RegularCloseAssessment assessRegularClose(
+            BigDecimal close, LocalDate closeDate, LocalDate lastCompleted, Instant validUntil, Instant now
+    ) {
+        if (close == null || close.signum() <= 0 || closeDate == null) {
+            return new RegularCloseAssessment(DataStatus.DATA_MISSING, "REGULAR_CLOSE_VALUE_OR_DATE_MISSING");
+        }
+        if (lastCompleted == null) {
+            return new RegularCloseAssessment(DataStatus.UNVERIFIED, "LAST_COMPLETED_SESSION_DATE_MISSING");
+        }
+        if (closeDate.isAfter(lastCompleted)) {
+            return new RegularCloseAssessment(DataStatus.UNVERIFIED, "CLOSE_SESSION_AFTER_LAST_COMPLETED_SESSION");
+        }
+        if (closeDate.isBefore(lastCompleted)) {
+            return new RegularCloseAssessment(DataStatus.STALE, "CLOSE_SESSION_BEFORE_LAST_COMPLETED_SESSION");
+        }
+        if (validUntil == null) {
+            return new RegularCloseAssessment(DataStatus.UNVERIFIED, "REGULAR_CLOSE_VALIDITY_WINDOW_MISSING");
+        }
+        if (now == null || !now.isBefore(validUntil)) {
+            return new RegularCloseAssessment(DataStatus.STALE, "REGULAR_CLOSE_VALIDITY_WINDOW_EXPIRED");
+        }
+        return new RegularCloseAssessment(DataStatus.OK, "REGULAR_CLOSE_VERIFIED");
+    }
+
+    private record RegularCloseAssessment(DataStatus status, String reason) {
+    }
+
+    static RegularSessionFacts retainVerifiedRegularSessionFacts(
+            InvestmentDataCalculator.PriceAssessment price, RegularSessionFacts current, JsonNode previousPrice,
+            Instant capturedAt
+    ) {
+        if (price == null || price.regularClose() == null || price.regularCloseAsOf() == null
+                || previousPrice == null || previousPrice.isNull()) return current;
+        var closeDate = price.regularCloseAsOf().atZone(NEW_YORK).toLocalDate();
+        if (current != null && current.lastCompletedSessionDate() != null
+                && !closeDate.equals(current.lastCompletedSessionDate())) return current;
+
+        var previousCloseAsOf = instant(previousPrice.get("regularCloseAsOf"));
+        var previousValidUntil = instant(previousPrice.get("regularCloseValidUntil"));
+        var previousSessionDate = localDate(text(previousPrice.get("regularCloseSessionDate")));
+        var previousLastCompleted = localDate(text(previousPrice.get("lastCompletedSessionDate")));
+        var previousClose = decimal(previousPrice.get("regularClose"));
+        if (!"TOSS".equals(text(previousPrice.get("regularCloseSource")))
+                || !"OK".equals(text(previousPrice.get("regularCloseStatus")))
+                || previousClose == null || previousClose.compareTo(price.regularClose()) != 0
+                || !price.regularCloseAsOf().equals(previousCloseAsOf)
+                || !closeDate.equals(previousSessionDate) || !closeDate.equals(previousLastCompleted)
+                || previousValidUntil == null || capturedAt == null || !capturedAt.isBefore(previousValidUntil)) {
+            return current;
+        }
+        var validUntil = current == null || current.regularCloseValidUntil() == null
+                ? previousValidUntil : current.regularCloseValidUntil();
+        return new RegularSessionFacts(closeDate, validUntil);
     }
 
     private ObjectNode priceView(InvestmentDataCalculator.PriceAssessment price, PriceSessionContext context,
-                                 Instant collectedAt) {
+                                 Instant collectedAt, JsonNode previousPrice) {
         ObjectNode view = objectMapper.valueToTree(price);
         // The bootstrap marker means a quote-only capture completed for this symbol. A failed/no-quote capture
         // must remain eligible for bounded retries even though its partial snapshot can still be persisted.
-        if (context != null && "TOSS".equals(price.source())
+        if (context != null && context.tossQuoteAvailable() && "TOSS".equals(price.source())
                 && price.latestPrice() != null && price.latestPrice().signum() > 0) {
             view.put("closedIntervalEvidenceVersion", CLOSED_INTERVAL_EVIDENCE_VERSION);
             var evidence = context.closedIntervalEvidence();
@@ -3139,7 +3190,8 @@ public final class InvestmentContextService {
                 view.put("closedIntervalEvidenceReason", evidence.reason());
             }
         }
-        var regular = context == null ? null : context.regular();
+        var regular = retainVerifiedRegularSessionFacts(price, context == null ? null : context.regular(),
+                previousPrice, collectedAt);
         view.put("regularCloseSessionDate", price.regularCloseAsOf() == null ? null
                 : price.regularCloseAsOf().atZone(NEW_YORK).toLocalDate().toString());
         view.put("regularCloseSource", price.regularClose() != null && price.regularClose().signum() > 0

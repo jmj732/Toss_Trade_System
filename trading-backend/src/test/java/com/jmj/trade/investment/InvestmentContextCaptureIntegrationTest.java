@@ -779,7 +779,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                  WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
                 """, String.class, USER_ID);
         assertThat(input).contains("TOSS_TIMESTAMP_MISSING");
-        verify(surface, org.mockito.Mockito.never()).marketCalendar(
+        verify(surface, org.mockito.Mockito.atLeastOnce()).marketCalendar(
                 org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq(connectionId),
                 org.mockito.ArgumentMatchers.eq("US"), org.mockito.ArgumentMatchers.any());
     }
@@ -798,7 +798,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 SELECT count(*) FROM investment_price_snapshots
                  WHERE user_id = ? AND ticker = 'AAPL' AND source = 'TOSS'
                 """, Integer.class, USER_ID)).isZero();
-        verify(surface, org.mockito.Mockito.never()).marketCalendar(
+        verify(surface, org.mockito.Mockito.atLeastOnce()).marketCalendar(
                 org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq(connectionId),
                 org.mockito.ArgumentMatchers.eq("US"), org.mockito.ArgumentMatchers.any());
     }
@@ -822,7 +822,7 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                  WHERE user_id = ? ORDER BY created_at DESC LIMIT 1
                 """, String.class, USER_ID);
         assertThat(input).contains("TOSS_TIMESTAMP_FUTURE");
-        verify(surface, org.mockito.Mockito.never()).marketCalendar(
+        verify(surface, org.mockito.Mockito.atLeastOnce()).marketCalendar(
                 org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq(connectionId),
                 org.mockito.ArgumentMatchers.eq("US"), org.mockito.ArgumentMatchers.any());
     }
@@ -1276,6 +1276,60 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
         assertThat(price.path("status").asText()).isEqualTo("PARTIAL");
         assertThat(price.path("sessionReason").asText()).isEqualTo("TOSS_SESSION_UNVERIFIED");
         assertThat(price.has("nextDeclaredIntervalStartsAt")).isFalse();
+    }
+
+    @Test
+    void missingTossQuoteDoesNotEraseVerifiedRegularCloseCalendarFacts() throws Exception {
+        var connectionId = insertActiveTossConnection();
+        var zone = java.time.ZoneId.of("America/New_York");
+        var now = Instant.now();
+        var today = now.atZone(zone).toLocalDate();
+        var previous = today.minusDays(1);
+        var next = today.plusDays(1);
+        var nextStart = next.atTime(9, 30).atZone(zone).toOffsetDateTime();
+        var nextEnd = next.atTime(16, 0).atZone(zone).toOffsetDateTime();
+        var closeAsOf = previous.atStartOfDay(zone).toInstant();
+        var toss = providerWithValues(List.of(
+                decimal("price.regularClose", "100", closeAsOf),
+                observedText("price.session", "REGULAR_CLOSE", closeAsOf)), StockDataProviderId.TOSS);
+        var surface = mock(BrokerSurfaceService.class);
+        when(surface.prices(USER_ID, connectionId, "AAPL")).thenReturn(
+                BrokerSurfaceResponse.available(List.of()), BrokerSurfaceResponse.available(List.of()));
+        var currentCalendar = mapper.readTree("""
+                {"today":{"date":"%s","regularMarket":null},
+                 "previousBusinessDay":{"date":"%s"},"nextBusinessDay":{"date":"%s"}}
+                """.formatted(today, previous, next));
+        var nextCalendar = mapper.readTree("""
+                {"today":{"date":"%s","regularMarket":{"startTime":"%s","endTime":"%s"}}}
+                """.formatted(next, nextStart, nextEnd));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", today))
+                .thenReturn(BrokerSurfaceResponse.available(
+                        new BrokerSurfaceResponse.MarketCalendarView("US", currentCalendar)))
+                .thenReturn(BrokerSurfaceResponse.unavailable("UPSTREAM_UNAVAILABLE"));
+        when(surface.marketCalendar(USER_ID, connectionId, "US", next))
+                .thenReturn(BrokerSurfaceResponse.available(
+                        new BrokerSurfaceResponse.MarketCalendarView("US", nextCalendar)));
+        var investment = service(new StockDataProviderRegistry(List.of(toss)), surface);
+
+        investment.capture(USER_ID);
+        var first = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID)).path("price");
+        assertThat(first.path("regularCloseStatus").asText()).isEqualTo("OK");
+        assertThat(first.path("regularCloseStatusReason").asText()).isEqualTo("REGULAR_CLOSE_VERIFIED");
+        var validUntil = first.path("regularCloseValidUntil").asText();
+
+        investment.capture(USER_ID);
+        var second = mapper.readTree(jdbc.queryForObject("""
+                SELECT payload::text FROM investment_security_snapshots
+                 WHERE user_id = ? AND ticker = 'AAPL' ORDER BY created_at DESC LIMIT 1
+                """, String.class, USER_ID)).path("price");
+
+        assertThat(second.path("regularCloseStatus").asText()).isEqualTo("OK");
+        assertThat(second.path("regularCloseStatusReason").asText()).isEqualTo("REGULAR_CLOSE_VERIFIED");
+        assertThat(second.path("regularCloseValidUntil").asText()).isEqualTo(validUntil);
+        assertThat(second.has("closedIntervalEvidenceVersion")).isFalse();
     }
 
     @Test
