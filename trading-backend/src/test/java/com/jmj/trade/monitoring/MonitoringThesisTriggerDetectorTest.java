@@ -43,4 +43,27 @@ class MonitoringThesisTriggerDetectorTest {
 
         assertThat(MonitoringThesisTriggerDetector.trustedAlertPrice(observation)).isNull();
     }
+
+    @Test
+    void regularCloseSessionDateUsesNewYorkCalendarAcrossDaylightSavingTime() {
+        var beforeDst = closeObservation(LocalDate.parse("2026-03-06"));
+        var afterDst = closeObservation(LocalDate.parse("2026-03-09"));
+
+        var before = MonitoringThesisTriggerDetector.trustedAlertPrice(beforeDst);
+        var after = MonitoringThesisTriggerDetector.trustedAlertPrice(afterDst);
+
+        assertThat(before).isNotNull();
+        assertThat(before.asOf()).isEqualTo(Instant.parse("2026-03-06T05:00:00Z"));
+        assertThat(before.sessionDate()).isEqualTo(LocalDate.parse("2026-03-06"));
+        assertThat(after).isNotNull();
+        assertThat(after.asOf()).isEqualTo(Instant.parse("2026-03-09T04:00:00Z"));
+        assertThat(after.sessionDate()).isEqualTo(LocalDate.parse("2026-03-09"));
+    }
+
+    private static ConfirmedTriggerObservation closeObservation(LocalDate sessionDate) {
+        return new ConfirmedTriggerObservation(
+                "LUNR", new BigDecimal("11.1883"), DataStatus.STALE,
+                null, null, "AFTER_HOURS", DataStatus.OK, new BigDecimal("11.02"),
+                sessionDate.atStartOfDay(NEW_YORK).toInstant(), "TOSS", sessionDate, sessionDate);
+    }
 }

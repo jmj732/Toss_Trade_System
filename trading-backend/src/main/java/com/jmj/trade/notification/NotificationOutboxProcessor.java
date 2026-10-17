@@ -190,9 +190,25 @@ final class NotificationOutboxProcessor {
     private Rendered renderMonitoringAlert(JsonNode payload) {
         var scope = text(payload, "scope");
         if ("THESIS_REVIEW".equals(scope)) {
-            // Review prompt only: ticker, level and trigger-relative distance; no raw price or trigger values.
             var ticker = text(payload, "subjectKey");
             var level = text(payload, "level");
+            if (payload.hasNonNull("eventId")) {
+                var message = text(payload, "message");
+                var details = new StringBuilder(message)
+                        .append("\n대상: ").append(ticker)
+                        .append("\n이벤트 ID: ").append(text(payload, "eventId"))
+                        .append("\n사건 ID: ").append(text(payload, "incidentId"))
+                        .append("\n전환: ").append(text(payload, "transition"))
+                        .append("\n상태: ").append(text(payload, "eventType"))
+                        .append("\n가격 근거: ").append(text(payload, "priceBasis"))
+                        .append(" / ").append(text(payload, "priceSession"))
+                        .append(" / ").append(text(payload, "priceSource"))
+                        .append("\n관측 시각: ").append(text(payload, "observedAt"));
+                if (payload.hasNonNull("distancePct"))
+                    details.append("\n기준 대비: ").append(text(payload, "distancePct")).append('%');
+                return new Rendered("[THESIS REVIEW] %s %s".formatted(ticker, level), details.toString());
+            }
+            // Preserve notifications already written by the pre-event alert path.
             return new Rendered("[THESIS REVIEW] %s %s".formatted(ticker, level),
                     "투자 논리 재검토 필요 — 자동 무효화·주문 없음\n대상: %s\n수준: %s\n무효화 기준 대비: %s%%".formatted(
                             ticker, level, text(payload, "distancePct")));

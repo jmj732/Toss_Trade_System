@@ -276,6 +276,33 @@ class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresI
     }
 
     @Test
+    void rendersPersistedRiskEventIdentityAndSourceWithoutRawPrices() {
+        var eventId = UUID.randomUUID();
+        var id = insertRawOutboxEvent("MONITORING_ALERT", UUID.randomUUID(), """
+                {"scope":"THESIS_REVIEW","alertType":"REVIEW","subjectKey":"LUNR","level":"BREACH",
+                 "eventId":"%s","incidentId":"%s","eventType":"PRICE_RISK_BREACH",
+                 "transition":"NORMAL_TO_PRICE_RISK_BREACH","severity":"CRITICAL",
+                 "priceBasis":"REGULAR_CLOSE","priceSession":"REGULAR_CLOSE","priceSource":"TOSS",
+                 "sessionDate":"2026-10-16","observedAt":"2026-10-16T20:00:00Z",
+                 "observedPrice":10.90,"triggerPrice":11.1883,"distancePct":"-2.58",
+                 "thesisStatusChanged":false,"orderAction":"NONE"}
+                """.formatted(eventId, UUID.randomUUID()));
+
+        assertThat(processor.process(10).processed()).isEqualTo(1);
+
+        var stored = jdbc.queryForMap(
+                "SELECT title, body FROM notifications WHERE outbox_event_id = ?", id);
+        assertThat(stored.get("title")).isEqualTo("[THESIS REVIEW] LUNR BREACH");
+        assertThat(stored.get("body").toString()).contains(eventId.toString())
+                .contains("NORMAL_TO_PRICE_RISK_BREACH")
+                .contains("REGULAR_CLOSE")
+                .contains("2026-10-16T20:00:00Z")
+                .contains("-2.58%")
+                .doesNotContain("10.9")
+                .doesNotContain("11.1883");
+    }
+
+    @Test
     void telegramDeliversOnlyMonitoringAlertsForTheConfiguredUser() {
         var allowedId = insertRawOutboxEvent(USER_ID, "MONITORING_ALERT", UUID.randomUUID(), """
                 {"scope":"MARKET","subjectKey":"MARKET","previousState":"NORMAL",
@@ -349,6 +376,55 @@ class NotificationOutboxProcessorIntegrationTest extends com.jmj.trade.PostgresI
         assertThat(sentAttempt.get("sent_at")).isNotNull();
         assertThat(sender.messages).hasSize(1);
         assertThat(sender.messages.get(0)).contains("ONTO");
+    }
+
+    @Test
+    void telegramFailureAndRetryKeepThePersistedRiskEventIdentityAndDoNotCreateAnotherEvent() {
+        var eventId = UUID.randomUUID();
+        var now = OffsetDateTime.now(ZoneOffset.UTC);
+        jdbc.update("""
+                INSERT INTO monitoring_state_history (
+                    id, user_id, scope, subject_key, previous_state, new_state, source_type,
+                    source_event_id, evidence, observed_at, created_at
+                ) VALUES (?, ?, 'THESIS_REVIEW', 'LUNR', 'NEAR', 'PRICE_RISK_BREACH',
+                    'CONFIRMED_THESIS_PRICE_TRIGGER', ?, CAST(? AS jsonb), ?, ?)
+                """, eventId, USER_ID, "risk-event:" + eventId,
+                """
+                {"eventId":"%s","ticker":"LUNR","thesisRevisionId":null}
+                """.formatted(eventId), now, now);
+        var outboxId = insertRawOutboxEvent(USER_ID, "MONITORING_ALERT", eventId, """
+                {"scope":"THESIS_REVIEW","alertType":"REVIEW","subjectKey":"LUNR","level":"BREACH",
+                 "eventId":"%s","eventType":"PRICE_RISK_BREACH","transition":"NEAR_TO_BREACH",
+                 "priceBasis":"REGULAR_CLOSE","priceSession":"REGULAR_CLOSE","priceSource":"TOSS",
+                 "observedAt":"%s","observedPrice":10.9,"triggerPrice":11.18,
+                 "thesisStatusChanged":false,"orderAction":"NONE"}
+                """.formatted(eventId, now.toInstant()));
+        var settings = new TelegramDeliverySettings(true, "test-token", "test-chat", USER_ID);
+        var relay = new NotificationOutboxProcessor(jdbc, transactionManager, new tools.jackson.databind.ObjectMapper(),
+                new com.jmj.trade.inbox.InboxLedger(jdbc), settings);
+        assertThat(relay.process(10).processed()).isEqualTo(1);
+        var sender = new RecordingTelegramSender();
+        sender.failuresRemaining = 1;
+        var delivery = new TelegramNotificationDeliveryProcessor(jdbc, transactionManager, settings, sender);
+
+        assertThat(delivery.process(10)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM monitoring_state_history WHERE id = ?",
+                Long.class, eventId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT source_id FROM notification_outbox_events WHERE id = ?",
+                UUID.class, outboxId)).isEqualTo(eventId);
+        assertThat(jdbc.queryForObject("SELECT status FROM telegram_notification_deliveries WHERE outbox_event_id = ?",
+                String.class, outboxId)).isEqualTo("PENDING");
+
+        jdbc.update("UPDATE telegram_notification_deliveries SET next_attempt_at = ? WHERE outbox_event_id = ?",
+                OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(1), outboxId);
+        assertThat(delivery.process(10)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM monitoring_state_history WHERE id = ?",
+                Long.class, eventId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM notification_outbox_events WHERE source_id = ?",
+                Long.class, eventId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM telegram_notification_deliveries WHERE outbox_event_id = ?",
+                Integer.class, outboxId)).isEqualTo(2);
+        assertThat(sender.messages).hasSize(1).allSatisfy(message -> assertThat(message).contains(eventId.toString()));
     }
 
     private static String titleFor(List<Map<String, Object>> rows, String type) {

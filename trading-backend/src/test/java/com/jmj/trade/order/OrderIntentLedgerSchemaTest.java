@@ -37,7 +37,7 @@ class OrderIntentLedgerSchemaTest extends PostgresIntegrationTest {
 
     @Test
     void flywayCreatesOrderLedgerSchema() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("61");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("62");
     }
 
     @Test
