@@ -14,6 +14,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -92,6 +93,94 @@ class MonitoringStateStore {
         return null;
     }
 
+    /** Persists one approved-thesis price-risk state transition; repeated observations only refresh the snapshot. */
+    @Transactional
+    StateTransition observeThesisRisk(
+            UUID userId,
+            String ticker,
+            String desiredState,
+            Map<String, Object> observation,
+            Instant observedAt
+    ) {
+        if (userId == null || ticker == null || ticker.isBlank() || desiredState == null
+                || observation == null || observedAt == null) {
+            throw new MonitoringException(MonitoringException.Code.INVALID_INPUT);
+        }
+        var target = desiredState.trim().toUpperCase();
+        if (!Set.of("NORMAL", "NEAR", "INTRADAY_BREACH", "PRICE_RISK_BREACH").contains(target)) {
+            throw new MonitoringException(MonitoringException.Code.INVALID_INPUT);
+        }
+        observedAt = observedAt.truncatedTo(ChronoUnit.MICROS);
+        var now = now();
+        jdbc.update("""
+                INSERT INTO monitoring_current_states (user_id, scope, subject_key, state,
+                    evidence, observed_at, updated_at)
+                VALUES (?, 'THESIS_REVIEW', ?, 'NORMAL', '{}'::jsonb, ?, ?)
+                ON CONFLICT (user_id, scope, subject_key) DO NOTHING
+                """, userId, ticker, offset(observedAt), now);
+        var current = jdbc.query("""
+                SELECT state, evidence::text AS evidence, observed_at
+                  FROM monitoring_current_states
+                 WHERE user_id = ? AND scope = 'THESIS_REVIEW' AND subject_key = ?
+                 FOR UPDATE
+                """, (resultSet, rowNum) -> new RiskCurrentState(
+                resultSet.getString("state"), resultSet.getString("evidence"),
+                resultSet.getObject("observed_at", OffsetDateTime.class).toInstant()),
+                userId, ticker).stream().findFirst().orElseThrow();
+        if (observedAt.isBefore(current.observedAt())) return null;
+
+        var previous = "UNKNOWN".equals(current.state()) ? "NORMAL" : current.state();
+        if ("NORMAL".equals(target)) {
+            if (isActiveRiskState(previous)) target = "RECOVERED";
+            else {
+                upsertCurrent(userId, "THESIS_REVIEW", ticker, previous,
+                        encode(withLatestObservation(current.evidence(), observation)), observedAt, now);
+                return null;
+            }
+        } else if (target.equals(previous)) {
+            upsertCurrent(userId, "THESIS_REVIEW", ticker, previous,
+                    encode(withLatestObservation(current.evidence(), observation)), observedAt, now);
+            return null;
+        }
+
+        var incidentId = isActiveRiskState(previous) ? incidentId(current.evidence()) : null;
+        if (incidentId == null) incidentId = UUID.randomUUID();
+        var transitionName = transitionName(previous, target);
+        var eventId = UUID.randomUUID();
+        var dedupKey = String.join("|", userId.toString(), ticker, incidentId.toString(), transitionName,
+                observedAt.toString());
+        var event = new LinkedHashMap<String, Object>(observation);
+        event.put("eventId", eventId.toString());
+        event.put("incidentId", incidentId.toString());
+        event.put("ticker", ticker);
+        event.put("ruleId", "CONFIRMED_THESIS_PRICE_TRIGGER");
+        event.put("eventType", target);
+        event.put("transition", transitionName);
+        event.put("severity", severity(target));
+        event.put("previousState", previous);
+        event.put("currentState", target);
+        event.put("observedAt", observedAt.toString());
+        event.put("occurredAt", observedAt.toString());
+        event.put("resolvedAt", "RECOVERED".equals(target) ? observedAt.toString() : null);
+        event.put("persistedAt", now.toInstant().toString());
+        event.put("dedupKey", dedupKey);
+        event.put("latestObservation", new LinkedHashMap<>(observation));
+        var json = encode(event);
+        var inserted = jdbc.update("""
+                INSERT INTO monitoring_state_history (id, user_id, scope, subject_key,
+                    previous_state, new_state, source_type, source_event_id, evidence,
+                    observed_at, created_at)
+                VALUES (?, ?, 'THESIS_REVIEW', ?, ?, ?, 'CONFIRMED_THESIS_PRICE_TRIGGER', ?,
+                    CAST(? AS jsonb), ?, ?)
+                ON CONFLICT DO NOTHING
+                """, eventId, userId, ticker, previous, target, dedupKey, json,
+                offset(observedAt), now);
+        if (inserted != 1) return null;
+        upsertCurrent(userId, "THESIS_REVIEW", ticker, target, json, observedAt, now);
+        return new StateTransition(eventId, userId, "THESIS_REVIEW", ticker, previous, target,
+                Collections.unmodifiableMap(event), observedAt);
+    }
+
     @Transactional
     void remove(UUID userId, String scope, String subjectKey, Instant observedAt) {
         var now = now();
@@ -160,6 +249,56 @@ class MonitoringStateStore {
         }
     }
 
+    private Map<String, Object> withLatestObservation(String evidenceJson, Map<String, Object> observation) {
+        var result = new LinkedHashMap<String, Object>();
+        try {
+            var node = objectMapper.readTree(evidenceJson);
+            node.properties().forEach(field -> result.put(field.getKey(), field.getValue()));
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("monitoring evidence deserialization failed", exception);
+        }
+        result.put("latestObservation", new LinkedHashMap<>(observation));
+        return result;
+    }
+
+    private UUID incidentId(String evidenceJson) {
+        try {
+            var value = objectMapper.readTree(evidenceJson).path("incidentId").asText(null);
+            return value == null ? null : UUID.fromString(value);
+        } catch (JacksonException | IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private static boolean isActiveRiskState(String state) {
+        return Set.of("NEAR", "INTRADAY_BREACH", "PRICE_RISK_BREACH").contains(state);
+    }
+
+    private static String transitionName(String previous, String target) {
+        if ("RECOVERED".equals(target)) {
+            return (previous.endsWith("BREACH") ? "BREACH" : previous) + "_TO_RECOVERED";
+        }
+        if ("RECOVERED".equals(previous)) {
+            return isActiveRiskState(target) && !"NEAR".equals(target)
+                    ? "RECOVERED_TO_BREACH" : "RECOVERED_TO_NEAR";
+        }
+        if ("NORMAL".equals(previous)) return "NORMAL_TO_" + target;
+        if ("NEAR".equals(previous) && isActiveRiskState(target)) return "NEAR_TO_BREACH";
+        if (isActiveRiskState(previous) && isActiveRiskState(target)) {
+            return previous + "_TO_" + target;
+        }
+        return previous + "_TO_" + target;
+    }
+
+    private static String severity(String state) {
+        return switch (state) {
+            case "NEAR" -> "WARNING";
+            case "INTRADAY_BREACH", "PRICE_RISK_BREACH" -> "CRITICAL";
+            case "RECOVERED" -> "INFO";
+            default -> "UNKNOWN";
+        };
+    }
+
     private String encode(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -186,6 +325,9 @@ class MonitoringStateStore {
     }
 
     private record CurrentState(String state, Instant observedAt) {
+    }
+
+    private record RiskCurrentState(String state, String evidence, Instant observedAt) {
     }
 
     record StateTransition(

@@ -11,6 +11,7 @@ import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
+import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
@@ -46,6 +47,7 @@ public final class ConnectorMcpProtocol {
     private final InvestmentThesisVerificationService thesisVerificationService;
     private final InvestmentOnboardingService investmentOnboardingService;
     private final InvestmentRiskPreflightService investmentRiskPreflightService;
+    private final InvestmentRiskEventService investmentRiskEventService;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
@@ -61,10 +63,12 @@ public final class ConnectorMcpProtocol {
                          ObjectProvider<InvestmentThesisVerificationService> thesisVerificationService,
                          ObjectProvider<InvestmentOnboardingService> investmentOnboardingService,
                          ObjectProvider<InvestmentRiskPreflightService> investmentRiskPreflightService,
+                         ObjectProvider<InvestmentRiskEventService> investmentRiskEventService,
                          ObjectMapper objectMapper) {
         this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(),
                 investmentReviewService.getIfAvailable(), thesisVerificationService.getIfAvailable(),
                 investmentOnboardingService.getIfAvailable(), investmentRiskPreflightService.getIfAvailable(),
+                investmentRiskEventService.getIfAvailable(),
                 objectMapper);
     }
 
@@ -100,6 +104,18 @@ public final class ConnectorMcpProtocol {
                                 InvestmentOnboardingService investmentOnboardingService,
                                 InvestmentRiskPreflightService investmentRiskPreflightService,
                                 ObjectMapper objectMapper) {
+        this(service, tradeService, investmentContextService, investmentReviewService, thesisVerificationService,
+                investmentOnboardingService, investmentRiskPreflightService, null, objectMapper);
+    }
+
+    public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                                InvestmentContextService investmentContextService,
+                                InvestmentReviewService investmentReviewService,
+                                InvestmentThesisVerificationService thesisVerificationService,
+                                InvestmentOnboardingService investmentOnboardingService,
+                                InvestmentRiskPreflightService investmentRiskPreflightService,
+                                InvestmentRiskEventService investmentRiskEventService,
+                                ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
         this.investmentContextService = investmentContextService;
@@ -107,6 +123,7 @@ public final class ConnectorMcpProtocol {
         this.thesisVerificationService = thesisVerificationService;
         this.investmentOnboardingService = investmentOnboardingService;
         this.investmentRiskPreflightService = investmentRiskPreflightService;
+        this.investmentRiskEventService = investmentRiskEventService;
         this.objectMapper = objectMapper;
     }
 
@@ -204,6 +221,11 @@ public final class ConnectorMcpProtocol {
                 "Get investment context",
                 "Read the authenticated user's persisted investment context, including portfolio, security data, risk, thesis, decisions, review notes (reviewLog), and tactical overlays. This tool does not call providers or write data. Optionally filter only the securities array by ticker.",
                 investmentContextSchema(), investmentContextOutputSchema()));
+        if (investmentRiskEventService != null) {
+            tools.add(tool("get_investment_risk_events", "Get investment risk events",
+                    "Read persisted thesis price-risk state transitions for the authenticated user. Does not call providers, refresh data, alter thesis or risk policy, or place orders.",
+                    investmentRiskEventsSchema(), investmentRiskEventsOutputSchema()));
+        }
         if (thesisVerificationService != null) {
             tools.add(tool("get_investment_thesis_verification_context", "Get thesis verification context",
                     "Read the authenticated user's current thesis revision, verification policy, trusted price view, and latest verification event for one ticker. This tool does not call providers or write data.",
@@ -290,6 +312,7 @@ public final class ConnectorMcpProtocol {
                         optionalText(arguments, "brokerOrderId", null),
                         optionalText(arguments, "clientOrderId", null)));
                 case "get_investment_context" -> investmentContext(request, userId, arguments);
+                case "get_investment_risk_events" -> getInvestmentRiskEvents(request, userId, arguments);
                 case "get_investment_thesis_verification_context" ->
                         investmentThesisVerificationContext(request, userId, arguments);
                 case "get_investment_onboarding_readiness" ->
@@ -432,6 +455,74 @@ public final class ConnectorMcpProtocol {
         }
     }
 
+    private ObjectNode getInvestmentRiskEvents(ObjectNode request, UUID userId, JsonNode arguments) {
+        if (investmentRiskEventService == null) return riskEventsUnavailable(request);
+        try {
+            if (arguments == null || !arguments.isObject())
+                throw new IllegalArgumentException("arguments must be an object");
+            var allowed = java.util.Set.of("ticker", "since", "includeUnresolved", "limit", "cursor");
+            for (var field : arguments.propertyNames()) {
+                if (!allowed.contains(field)) throw new IllegalArgumentException("unsupported argument");
+            }
+            String ticker = null;
+            if (arguments.has("ticker")) {
+                if (!arguments.path("ticker").isTextual()) throw new IllegalArgumentException("invalid ticker");
+                var rawTicker = arguments.path("ticker").asText();
+                if (!rawTicker.equals(rawTicker.trim())) throw new IllegalArgumentException("invalid ticker");
+                ticker = rawTicker.toUpperCase(Locale.ROOT);
+                if (!CONTEXT_TICKER.matcher(ticker).matches()) throw new IllegalArgumentException("invalid ticker");
+            }
+            Instant since = null;
+            if (arguments.has("since")) {
+                if (!arguments.path("since").isTextual()) throw new IllegalArgumentException("invalid since");
+                since = Instant.parse(arguments.path("since").asText());
+            }
+            Boolean includeUnresolved = null;
+            if (arguments.has("includeUnresolved")) {
+                if (!arguments.path("includeUnresolved").isBoolean())
+                    throw new IllegalArgumentException("invalid includeUnresolved");
+                includeUnresolved = arguments.path("includeUnresolved").booleanValue();
+            }
+            Integer limit = null;
+            if (arguments.has("limit")) {
+                if (!arguments.path("limit").isIntegralNumber() || !arguments.path("limit").canConvertToInt())
+                    throw new IllegalArgumentException("invalid limit");
+                limit = arguments.path("limit").intValue();
+                if (limit < 1 || limit > 100) throw new IllegalArgumentException("limit must be between 1 and 100");
+            }
+            String cursor = null;
+            if (arguments.has("cursor")) {
+                if (!arguments.path("cursor").isTextual() || arguments.path("cursor").asText().length() > 512)
+                    throw new IllegalArgumentException("invalid cursor");
+                cursor = arguments.path("cursor").asText();
+            }
+            var query = new InvestmentRiskEventService.RiskEventsQuery(
+                    ticker, since, includeUnresolved, limit, cursor);
+            return toolResult(request, investmentRiskEventService.read(userId, query));
+        } catch (IllegalArgumentException | java.time.DateTimeException exception) {
+            return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
+        } catch (DataAccessException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_risk_events")
+                    .addKeyValue("outcome", "unavailable")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Investment risk event read unavailable");
+            return riskEventsUnavailable(request);
+        } catch (RuntimeException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_risk_events")
+                    .addKeyValue("outcome", "failure")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Investment risk event read failed");
+            return riskEventsUnavailable(request);
+        }
+    }
+
+    private ObjectNode riskEventsUnavailable(ObjectNode request) {
+        return toolError(request, "INVESTMENT_RISK_EVENTS_UNAVAILABLE",
+                "Investment risk events could not be read", true, false);
+    }
+
     private ObjectNode putInvestmentThesis(ObjectNode request, UUID userId, JsonNode arguments) {
         if (investmentContextService == null) return investmentContextUnavailable(request);
         if (!arguments.isObject() || arguments.size() < 2 || arguments.size() > 4
@@ -479,8 +570,9 @@ public final class ConnectorMcpProtocol {
     private ObjectNode appendInvestmentDecision(ObjectNode request, UUID userId, JsonNode arguments) {
         if (investmentContextService == null) return investmentContextUnavailable(request);
         var fields = java.util.Set.of("decisionId", "asOf", "asset", "action", "referencePrice",
-                "priceSession", "horizon", "alphaThesis", "invalidation", "nextReviewTrigger", "confidence");
-        if (arguments == null || !arguments.isObject() || arguments.size() != fields.size())
+                "priceSession", "horizon", "alphaThesis", "invalidation", "nextReviewTrigger", "confidence",
+                "riskEventIds");
+        if (arguments == null || !arguments.isObject() || arguments.size() < 11 || arguments.size() > 12)
             return toolError(request, "INVALID_ARGUMENT", "All supported decision fields are required", false, false);
         for (var field : arguments.propertyNames()) {
             if (!fields.contains(field))
@@ -498,6 +590,21 @@ public final class ConnectorMcpProtocol {
                 || !java.util.Set.of("REGULAR_CLOSE", "LIVE_REGULAR", "AFTER_HOURS", "PREMARKET")
                     .contains(arguments.path("priceSession").asText()))
             return toolError(request, "INVALID_ARGUMENT", "Decision action or priceSession is unsupported", false, false);
+        if (arguments.has("riskEventIds")) {
+            var riskEventIds = arguments.path("riskEventIds");
+            if (!riskEventIds.isArray() || riskEventIds.size() > 20)
+                return toolError(request, "INVALID_ARGUMENT", "riskEventIds must be an array of at most 20 UUIDs", false, false);
+            var seen = new HashSet<String>();
+            for (var eventId : riskEventIds) {
+                if (!eventId.isTextual() || !seen.add(eventId.asText()))
+                    return toolError(request, "INVALID_ARGUMENT", "riskEventIds must contain unique UUIDs", false, false);
+                try {
+                    UUID.fromString(eventId.asText());
+                } catch (IllegalArgumentException exception) {
+                    return toolError(request, "INVALID_ARGUMENT", "riskEventIds must contain unique UUIDs", false, false);
+                }
+            }
+        }
         try {
             var input = objectMapper.treeToValue(arguments, InvestmentContextService.DecisionInput.class);
             return toolResult(request, investmentContextService.recordDecision(userId, input));
@@ -1070,6 +1177,103 @@ public final class ConnectorMcpProtocol {
         return schema;
     }
 
+    private ObjectNode investmentRiskEventsSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 32).put("pattern", "^[A-Za-z0-9._-]{1,32}$"));
+        properties.set("since", objectMapper.createObjectNode().put("type", "string").put("format", "date-time"));
+        properties.set("includeUnresolved", objectMapper.createObjectNode().put("type", "boolean"));
+        properties.set("limit", objectMapper.createObjectNode().put("type", "integer")
+                .put("minimum", 1).put("maximum", 100).put("default", 50));
+        properties.set("cursor", objectMapper.createObjectNode().put("type", "string").put("maxLength", 512));
+        var schema = objectMapper.createObjectNode().put("type", "object").put("additionalProperties", false);
+        schema.set("properties", properties);
+        return schema;
+    }
+
+    private ObjectNode investmentRiskEventsOutputSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("events", arrayOf(eventSchema()));
+        properties.set("latestEventsByTicker", mapSchema(eventSchema()));
+        properties.set("unresolvedEvents", arrayOf(eventSchema()));
+        properties.set("nextCursor", nullableStringSchema());
+        properties.set("hasMore", booleanSchema());
+        properties.set("asOf", dateTimeSchema());
+        properties.set("status", enumSchema("OK", "PARTIAL"));
+        properties.set("source", stringSchema());
+        properties.set("missingFields", arrayOf(stringSchema()));
+        var success = closedObject(properties, "events", "latestEventsByTicker", "unresolvedEvents", "nextCursor",
+                "hasMore", "asOf", "status", "source", "missingFields");
+        return outputSchema(success, "INVALID_ARGUMENT", "INVESTMENT_RISK_EVENTS_UNAVAILABLE");
+    }
+
+    private ObjectNode eventSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("eventId", objectMapper.createObjectNode().put("type", "string").put("format", "uuid"));
+        properties.set("incidentId", nullableStringSchema());
+        properties.set("ticker", stringSchema());
+        properties.set("ruleId", nullableStringSchema());
+        properties.set("eventType", nullableStringSchema());
+        properties.set("transition", nullableStringSchema());
+        properties.set("severity", nullableStringSchema());
+        properties.set("observedAt", dateTimeSchema());
+        properties.set("sourceAsOf", nullableDateTimeSchema());
+        properties.set("priceSource", nullableStringSchema());
+        properties.set("priceSession", nullableStringSchema());
+        properties.set("priceBasis", nullableStringSchema());
+        properties.set("observedPrice", nullableNumberSchema());
+        properties.set("triggerPrice", nullableNumberSchema());
+        properties.set("regularCloseSessionDate", nullableDateSchema());
+        properties.set("riskMarkStatus", nullableStringSchema());
+        properties.set("riskMarkReason", nullableStringSchema());
+        properties.set("thesisRevisionId", nullableStringSchema());
+        properties.set("thesisRevision", nullableIntegerSchema());
+        properties.set("invalidationStatus", nullableStringSchema());
+        properties.set("reasonCode", nullableStringSchema());
+        properties.set("sessionDate", nullableDateSchema());
+        properties.set("previousState", nullableStringSchema());
+        properties.set("currentState", stringSchema());
+        properties.set("occurredAt", nullableDateTimeSchema());
+        properties.set("resolvedAt", nullableDateTimeSchema());
+        properties.set("persistedAt", dateTimeSchema());
+        properties.set("dedupKey", nullableStringSchema());
+        properties.set("latestObservation", objectMapper.createObjectNode().put("type", "object"));
+        properties.set("relatedDecisions", arrayOf(decisionLinkSchema()));
+        properties.set("relatedDecisionsTruncated", booleanSchema());
+        properties.set("decisionLinkStatus", enumSchema("LINKED", "PRIOR_DECISION_UNAVAILABLE"));
+        properties.set("missingFields", arrayOf(stringSchema()));
+        return closedObject(properties, "eventId", "incidentId", "ticker", "ruleId", "eventType", "transition",
+                "severity", "observedAt", "sourceAsOf", "priceSource", "priceSession", "priceBasis",
+                "observedPrice", "triggerPrice", "regularCloseSessionDate", "riskMarkStatus", "riskMarkReason",
+                "thesisRevisionId", "thesisRevision", "invalidationStatus", "reasonCode", "sessionDate",
+                "previousState", "currentState", "occurredAt", "resolvedAt", "persistedAt", "dedupKey",
+                "latestObservation", "relatedDecisions", "relatedDecisionsTruncated",
+                "decisionLinkStatus", "missingFields");
+    }
+
+    private ObjectNode decisionLinkSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("decisionId", objectMapper.createObjectNode().put("type", "string").put("format", "uuid"));
+        properties.set("decisionAsOf", dateTimeSchema());
+        properties.set("ticker", stringSchema());
+        properties.set("action", stringSchema());
+        properties.set("priceSession", nullableStringSchema());
+        properties.set("horizon", stringSchema());
+        properties.set("rationale", stringSchema());
+        properties.set("rationaleTruncated", booleanSchema());
+        properties.set("invalidation", stringSchema());
+        properties.set("invalidationTruncated", booleanSchema());
+        properties.set("nextReviewTrigger", stringSchema());
+        properties.set("nextReviewTriggerTruncated", booleanSchema());
+        properties.set("confidence", nullableNumberSchema());
+        properties.set("thesisRevisionId", nullableStringSchema());
+        properties.set("linkedAt", dateTimeSchema());
+        return closedObject(properties, "decisionId", "decisionAsOf", "ticker", "action", "priceSession",
+                "horizon", "rationale", "rationaleTruncated", "invalidation", "invalidationTruncated",
+                "nextReviewTrigger", "nextReviewTriggerTruncated", "confidence",
+                "thesisRevisionId", "linkedAt");
+    }
+
     private ObjectNode requiredTickerSchema() {
         var schema = investmentContextSchema();
         schema.putArray("required").add("ticker");
@@ -1554,6 +1758,9 @@ public final class ConnectorMcpProtocol {
         fields.set("nextReviewTrigger", objectMapper.createObjectNode().put("type", "string").put("minLength", 1));
         fields.set("confidence", objectMapper.createObjectNode().put("type", "number")
                 .put("minimum", 0).put("maximum", 1));
+        fields.set("riskEventIds", objectMapper.createObjectNode().put("type", "array")
+                .put("maxItems", 20).put("uniqueItems", true)
+                .set("items", objectMapper.createObjectNode().put("type", "string").put("format", "uuid")));
         schema.putArray("required").add("decisionId").add("asOf").add("asset").add("action")
                 .add("referencePrice").add("priceSession").add("horizon").add("alphaThesis")
                 .add("invalidation").add("nextReviewTrigger").add("confidence");

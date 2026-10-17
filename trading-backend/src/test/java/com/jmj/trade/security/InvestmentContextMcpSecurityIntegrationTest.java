@@ -8,6 +8,7 @@ import com.jmj.trade.connector.ConnectorService;
 import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentOnboardingService;
 import com.jmj.trade.investment.InvestmentRiskPreflightService;
+import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import com.jmj.trade.order.McpOrderExecutionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -34,6 +35,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -126,6 +130,59 @@ class InvestmentContextMcpSecurityIntegrationTest {
             verify(contextService).context(USER);
             verify(contextService, never()).context(OTHER_USER);
             verifyNoInteractions(connectorService);
+        });
+    }
+
+    @Test
+    void readKeyCallsRiskEventToolOnlyForItsAuthenticatedUser() throws Exception {
+        var keys = mock(ConnectorApiKeyService.class);
+        var riskEvents = mock(InvestmentRiskEventService.class);
+        var connectorService = mock(ConnectorService.class);
+        var mapper = new ObjectMapper();
+        var protocol = new ConnectorMcpProtocol(connectorService, null, null, null, null,
+                null, null, riskEvents, mapper);
+        var key = new ConnectorApiKeyService.AuthenticatedKey(
+                UUID.randomUUID(), USER, CONNECTION, "ckey_risk_events_read", null, false,
+                ConnectorApiKeyService.READ_SCOPE);
+        when(keys.findActive("ckey_risk_events_read")).thenReturn(Optional.of(key));
+        when(keys.markUsed(key.id())).thenReturn(true);
+        when(riskEvents.read(eq(USER), any()))
+                .thenReturn(new InvestmentRiskEventService.RiskEventsResult(
+                        List.of(), java.util.Map.of(), List.of(), null, false,
+                        java.time.Instant.parse("2026-10-18T00:00:00Z"), "OK", "SPRING_POSTGRESQL", List.of()));
+        TestBeans.configure(keys, protocol);
+
+        contextRunner.withUserConfiguration(TestBeans.class).run(context -> {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup(context)
+                    .apply(SecurityMockMvcConfigurers.springSecurity())
+                    .build();
+            try {
+                var toolsResponse = mvc.perform(post("/api/v1/connector/mcp")
+                                .header("Authorization", "Bearer ckey_risk_events_read")
+                                .contentType("application/json")
+                                .content("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
+                        .andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString();
+                assertThat(mapper.readTree(toolsResponse).path("result").path("tools").toString())
+                        .contains("get_investment_risk_events")
+                        .doesNotContain("prepare_order", "submit_order", "cancel_order");
+
+                var response = mvc.perform(post("/api/v1/connector/mcp")
+                                .header("Authorization", "Bearer ckey_risk_events_read")
+                                .contentType("application/json")
+                                .content("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\","
+                                        + "\"params\":{\"name\":\"get_investment_risk_events\","
+                                        + "\"arguments\":{\"ticker\":\"LUNR\"}}}"))
+                        .andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString();
+                assertThat(mapper.readTree(response).path("result").path("structuredContent")
+                        .path("events").isEmpty()).isTrue();
+            } catch (Exception exception) {
+                throw new AssertionError(exception);
+            }
+            verify(riskEvents).read(eq(USER), argThat(query -> "LUNR".equals(query.ticker())));
+            verify(riskEvents, never()).read(eq(OTHER_USER), any());
+            org.mockito.Mockito.verifyNoInteractions(connectorService);
         });
     }
 

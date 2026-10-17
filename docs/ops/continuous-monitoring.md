@@ -144,14 +144,24 @@ curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
 
 ### 알림과 중복 제거
 
-- 기존 `notification_outbox_events`에 `MONITORING_ALERT`로 기록하므로 알림 센터와 Telegram 전달 경로를 그대로 탄다. payload는 `scope=THESIS_REVIEW`, `alertType=REVIEW`, 종목, 수준, 트리거 대비 거리 %(`distancePct`, 부호 포함 소수 2자리), 가격 기준(`priceBasis=LIVE_REGULAR|REGULAR_CLOSE`), 가격의 뉴욕 세션 날짜, `thesisStatusChanged=false`, `orderAction=NONE`만 담는다. **가격·트리거 원값은 payload와 메시지에 넣지 않는다.**
-- 메시지: 제목 `[THESIS REVIEW] {종목} {수준}`, 본문 `투자 논리 재검토 필요 — 자동 무효화·주문 없음` / 대상 / 수준 / 무효화 기준 대비 거리 %.
-- 중복 제거: `사용자 + 종목 + 트리거 + 수준 + 가격의 뉴욕 세션 날짜`로 결정적 `source_id`(UUID v3)를 만들고 outbox의 기존 `ON CONFLICT (event_type, source_id) DO NOTHING`에 맡긴다. 같은 세션에서 반복 주기는 알림을 다시 만들지 않는다. 같은 날 `NEAR` 다음 `BREACH`는 수준이 달라 각각 한 번씩 알린다. 사용자가 트리거를 바꾸면 새 키가 된다. 정규장 종가가 주말 동안 `OK`로 남아도 세션 날짜가 같으므로 다시 알리지 않는다. 마이그레이션은 추가하지 않는다(`event_type`에는 CHECK 제약이 없다).
+- 각 실제 상태 전환은 기존 `monitoring_state_history`에 `scope=THESIS_REVIEW`로 append되고, `monitoring_current_states`에는 현재 상태와 마지막 관측값이 유지된다. V62는 기존 저장소를 재사용해 허용 scope와 조회 인덱스를 추가하고, explicit decision link 테이블을 추가한다. 별도 위험 이벤트 테이블이나 Scheduler는 만들지 않는다.
+- `eventId`는 불변 `monitoring_state_history.id`, `incidentId`는 동일한 NEAR/BREACH/RECOVERED 흐름의 식별자다. `observedAt`은 Spring이 해당 증거를 평가해 전환을 기록한 시각이고 `sourceAsOf`는 provider 관측 시각/거래일 라벨이다. 거래일 라벨을 이벤트 순서의 시각으로 사용하지 않는다. 전환 행과 `MONITORING_ALERT` outbox 행은 같은 PostgreSQL 트랜잭션에서 저장된다. Telegram 전달은 기존 durable queue에서 별도 처리한다. 전송 실패는 이벤트나 outbox 행을 제거하지 않는다. 기존 Telegram 전달의 네트워크 수락 후 프로세스 중단 창에서는 메시지가 재전송될 수 있으나 새 위험 이벤트는 생성되지 않는다.
+- 저장되는 전환은 `NORMAL → NEAR`, `NEAR → INTRADAY_BREACH|PRICE_RISK_BREACH`, 활성 위험 상태 사이의 변경, `BREACH → RECOVERED`, `RECOVERED → 새 NEAR/BREACH` 등 실제 상태 변경이다. 각 전환은 별도 `eventId`를 갖는다. ACTIVE 상태에서 같은 상태를 반복 평가하면 현재 snapshot의 `latestObservation`만 갱신하며 이력/알림은 만들지 않는다. 회복은 신뢰 가격이 기존 NEAR 구간 밖으로 올라왔을 때만 기록한다. 회복 뒤 다시 위험 구간에 들어오면 새 `incidentId`가 시작된다.
+- 종가 근거는 `PRICE_RISK_BREACH`, 장중 정규장 quote는 `INTRADAY_BREACH`로 구분한다. 이벤트에는 관측/원천 시각, 가격 source/session/basis, 관측가·트리거, regular close session date, risk-mark 상태·사유, thesis revision, invalidation status 및 reason code를 보존한다. 확인할 수 없는 값은 null로 남는다.
+- Telegram 제목은 `[THESIS REVIEW] {ticker} {BREACH|NEAR|RECOVERED}`다. 새 전환 알림에는 `eventId`, `incidentId`, transition, 가격 기준·세션·source, 관측 시각, 부호가 있는 `distancePct`가 포함된다. 원시 관측가·위험가격은 사용자 범위가 적용된 PostgreSQL 이벤트와 MCP 응답에만 보존하고 Telegram outbox payload·메시지에는 넣지 않는다. 이전 형식의 큐 payload도 기존 렌더러로 처리한다.
 
 ### 자동 무효화·주문 없음
 
 - 이 탐지는 thesis 상태나 트리거를 바꾸지 않고 `investment_thesis_states`·`investment_thesis_revisions`에 쓰지 않는다. 주문을 생성·제출·취소하지 않는다.
 - **가격 하락만으로 thesis를 무효화하지 않는다.** 알림은 사용자가 thesis를 다시 검토하라는 요청이다. 상태 변경은 사용자 승인 경로(`PUT /investment/securities/{ticker}/thesis` 또는 Telegram 2단계 최종 승인)로만 한다.
+- `invalidationStatus=CONFIRMED`는 무효화 규칙이 승인됐다는 뜻이며, Fundamental thesis가 실제로 무효화됐다는 뜻이 아니다. 이 모니터는 `FUNDAMENTAL_INVALIDATION`을 생성하지 않는다. SEC/IR 근거로 판단한 fundamental 사건은 AI/user review workflow의 명시 입력으로만 저장한다.
+
+### MCP 이력 조회와 Decision 연결
+
+- `get_investment_risk_events`는 `connector:read`로 호출하는 read-only MCP 도구다. 인자는 선택 `ticker`, `since` (ISO-8601 instant), `includeUnresolved` (기본 true), `limit` (기본 50, 최대 100), opaque `cursor`다. PostgreSQL의 사용자별 `THESIS_REVIEW` 이력을 페이지네이션하며 Provider/API refresh는 하지 않는다.
+- `unresolvedEvents`는 마지막으로 관측된 `NEAR`/BREACH 상태가 신뢰 가능한 가격으로 아직 `RECOVERED` 되지 않았다는 뜻이다. 보유 여부나 Thesis 승인 상태가 바뀌었다는 사실만으로 과거 위험 이력을 회복 처리하지 않는다. 현재 감시 대상이 아닌 종목의 마지막 위험 상태도 과거 관측으로 노출될 수 있으므로 현재 보유 판단에는 최신 Portfolio/Thesis 상태를 함께 확인한다.
+- 결과는 `events`, 조회 페이지 기준 `latestEventsByTicker`, 현재 활성 상태인 `unresolvedEvents`, `nextCursor`, `hasMore`, `asOf`, `status`, `source=SPRING_POSTGRESQL`, `missingFields`를 반환한다. 실제 빈 결과는 `status=OK`의 빈 배열이고, DB/MCP 오류는 `INVESTMENT_RISK_EVENTS_UNAVAILABLE`로 반환한다. null, 시각, source, status, reason은 보정하지 않는다. 기존 `get_investment_context` 응답 크기와 스키마는 바꾸지 않는다.
+- `append_investment_decision`은 선택 인자 `riskEventIds` (최대 20개의 UUID)를 받는다. 호출자가 event ID를 명시하면 Spring은 인증된 user, ticker, 저장된 thesis revision을 확인하고 append-only `investment_risk_event_decision_links`에 연결한다. 서로 다른 ticker/user의 event는 거절한다. 같은 decision ID 재시도는 event ID 집합까지 동일할 때만 idempotent다. 연결된 decision은 이벤트 조회에서 최신 5건까지 `relatedDecisions`로 보이고, 더 있으면 `relatedDecisionsTruncated=true`다. 긴 자유 텍스트는 필드별 500자로 제한하고 truncation flag를 반환한다. 연결 정보가 없는 이벤트는 `decisionLinkStatus=PRIOR_DECISION_UNAVAILABLE`다. 과거 Decision Ledger 행이나 event를 자동 추정/백필하지 않는다.
 
 ### 데이터 일관성 점검 결과(구조 분석, 데이터 이전 없음)
 

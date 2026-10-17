@@ -10,6 +10,7 @@ import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
+import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -33,6 +34,80 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
+    @Test
+    void exposesRiskEventReadToolUnderReadScopeWithStableFiltersAndSchema() throws Exception {
+        var risks = mock(InvestmentRiskEventService.class);
+        var mapper = new ObjectMapper();
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, null,
+                null, null, risks, mapper);
+
+        var listed = protocol.handle(request("risk-event-tools", "tools/list", "{}"), USER, CONNECTION);
+        var tool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
+                .filter(item -> "get_investment_risk_events".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(tool.path("annotations").path("readOnlyHint").asBoolean()).isTrue();
+        assertThat(tool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
+        assertThat(tool.path("securitySchemes").get(0).path("scopes").get(0).asText())
+                .isEqualTo(ConnectorApiKeyService.READ_SCOPE);
+        assertThat(tool.path("inputSchema").path("additionalProperties").asBoolean()).isFalse();
+        assertThat(tool.path("inputSchema").path("properties").path("limit").path("maximum").asInt())
+                .isEqualTo(100);
+        assertThat(tool.path("outputSchema").toString()).contains("sourceAsOf", "riskMarkStatus", "missingFields");
+    }
+
+    @Test
+    void riskEventReadPassesAuthenticatedFiltersAndDistinguishesDatabaseFailureFromEmpty() throws Exception {
+        var risks = mock(InvestmentRiskEventService.class);
+        var mapper = new ObjectMapper();
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, null,
+                null, null, risks, mapper);
+        var asOf = Instant.parse("2026-10-18T00:00:00Z");
+        var empty = new InvestmentRiskEventService.RiskEventsResult(List.of(), Map.of(), List.of(), null,
+                false, asOf, "OK", "SPRING_POSTGRESQL", List.of());
+        when(risks.read(eq(USER), any())).thenReturn(empty);
+        var response = protocol.handle(toolCall("risk-read", "get_investment_risk_events",
+                "{\"ticker\":\"lunr\",\"since\":\"2026-10-17T00:00:00Z\","
+                        + "\"includeUnresolved\":false,\"limit\":20}"), USER, CONNECTION);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(response.path("result").path("structuredContent").path("events").isEmpty()).isTrue();
+        verify(risks).read(eq(USER), argThat(query -> "LUNR".equals(query.ticker())
+                && Instant.parse("2026-10-17T00:00:00Z").equals(query.since())
+                && Boolean.FALSE.equals(query.includeUnresolved()) && Integer.valueOf(20).equals(query.limit())));
+
+        var invalid = protocol.handle(toolCall("risk-invalid", "get_investment_risk_events",
+                "{\"ticker\":\"LUNR*\"}"), USER, CONNECTION);
+        assertThat(invalid.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+
+        var whitespaceTicker = protocol.handle(toolCall("risk-invalid-whitespace", "get_investment_risk_events",
+                "{\"ticker\":\" LUNR \"}"), USER, CONNECTION);
+        assertThat(whitespaceTicker.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+
+        var invalidSince = protocol.handle(toolCall("risk-invalid-since", "get_investment_risk_events",
+                "{\"since\":\"not-an-instant\"}"), USER, CONNECTION);
+        assertThat(invalidSince.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+
+        var invalidLimit = protocol.handle(toolCall("risk-invalid-limit", "get_investment_risk_events",
+                "{\"limit\":101}"), USER, CONNECTION);
+        assertThat(invalidLimit.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+
+        var invalidCursor = protocol.handle(toolCall("risk-invalid-cursor", "get_investment_risk_events",
+                "{\"cursor\":\"" + "x".repeat(513) + "\"}"), USER, CONNECTION);
+        assertThat(invalidCursor.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+
+        when(risks.read(eq(USER), any())).thenThrow(new DataAccessResourceFailureException("db unavailable"));
+        var unavailable = protocol.handle(toolCall("risk-unavailable", "get_investment_risk_events", "{}"),
+                USER, CONNECTION);
+        assertThat(unavailable.path("result").path("isError").asBoolean()).isTrue();
+        assertThat(unavailable.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVESTMENT_RISK_EVENTS_UNAVAILABLE");
+    }
+
     @Test
     void exposesThemeUpsertOnlyWithTradeScopeAndRequiresCatalogAndMembershipFields() throws Exception {
         var investment = mock(InvestmentContextService.class);
@@ -360,6 +435,7 @@ class ConnectorMcpProtocolTest {
                         "horizon", "alphaThesis", "invalidation", "nextReviewTrigger", "confidence");
 
         var decisionId = UUID.fromString("018f0000-0000-7000-8000-000000000003");
+        var riskEventId = UUID.fromString("018f0000-0000-7000-8000-000000000099");
         var asOf = Instant.parse("2026-10-08T15:04:05Z");
         var riskCheck = mapper.readTree("{\"status\":\"NOT_CONFIGURED\"}");
         var saved = new InvestmentContextService.DecisionView(decisionId, asOf, "AVT", "HOLD",
@@ -373,7 +449,8 @@ class ConnectorMcpProtocolTest {
                         + "\"action\":\"HOLD\",\"referencePrice\":123.45,"
                         + "\"priceSession\":\"REGULAR_CLOSE\",\"horizon\":\"swing-5d\","
                         + "\"alphaThesis\":\"caller thesis\",\"invalidation\":\"caller invalidation\","
-                        + "\"nextReviewTrigger\":\"review after next close\",\"confidence\":0.75}"),
+                        + "\"nextReviewTrigger\":\"review after next close\",\"confidence\":0.75,"
+                        + "\"riskEventIds\":[\"" + riskEventId + "\"]}"),
                 USER, CONNECTION, true);
 
         assertThat(response.path("result").path("isError").asBoolean()).isFalse();
@@ -390,7 +467,8 @@ class ConnectorMcpProtocolTest {
                         && "caller thesis".equals(input.alphaThesis())
                         && "caller invalidation".equals(input.invalidation())
                         && "review after next close".equals(input.nextReviewTrigger())
-                        && input.confidence().compareTo(new BigDecimal("0.75")) == 0));
+                        && input.confidence().compareTo(new BigDecimal("0.75")) == 0
+                        && input.riskEventIds().equals(List.of(riskEventId))));
         verifyNoInteractions(service);
     }
 

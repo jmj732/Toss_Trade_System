@@ -2,18 +2,13 @@ package com.jmj.trade.monitoring;
 
 import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentDataCalculator.DataStatus;
-import com.jmj.trade.notification.NotificationEventType;
-import com.jmj.trade.notification.NotificationOutboxWriter;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.UUID;
@@ -27,27 +22,25 @@ import java.util.UUID;
  * triggers (AI_PROPOSED/UNVERIFIED/INVALIDATION_UNDEFINED) are never considered: the canonical
  * {@code investment_thesis_states} read only returns CONFIRMED triggers.
  *
- * <p>Dedup: one alert per user + ticker + trigger + level + New York session date of the price, via the
- * deterministic outbox {@code source_id} and the existing {@code ON CONFLICT (event_type, source_id) DO NOTHING}.
+ * <p>Each real state transition is persisted in the monitoring history and emitted to the existing notification
+ * outbox in one transaction. Repeated evaluations of the same state update only the current observation; they do
+ * not create another history event or Telegram notification.
  */
 @Service
 class MonitoringThesisTriggerDetector {
 
     static final String SCOPE = "THESIS_REVIEW";
-    static final String REVIEW_MESSAGE = "투자 논리 재검토 필요 — 자동 무효화·주문 없음";
     /** NEAR: trigger &lt; price &le; trigger × 1.03 (within 3% above the trigger). BREACH: price &le; trigger. */
     static final BigDecimal NEAR_BAND_MULTIPLIER = new BigDecimal("1.03");
     private static final String LIVE_REGULAR = "LIVE_REGULAR";
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
-    private static final BigDecimal HUNDRED = new BigDecimal("100");
-
     private final InvestmentContextService investmentContext;
-    private final NotificationOutboxWriter notifications;
+    private final InvestmentRiskEventService riskEvents;
 
     MonitoringThesisTriggerDetector(InvestmentContextService investmentContext,
-                                    NotificationOutboxWriter notifications) {
+                                    InvestmentRiskEventService riskEvents) {
         this.investmentContext = Objects.requireNonNull(investmentContext, "investmentContext");
-        this.notifications = Objects.requireNonNull(notifications, "notifications");
+        this.riskEvents = Objects.requireNonNull(riskEvents, "riskEvents");
     }
 
     /**
@@ -65,27 +58,36 @@ class MonitoringThesisTriggerDetector {
             }
         }
         if (held.isEmpty()) return;
+        var evaluatedAt = Instant.now();
         for (var observation : investmentContext.confirmedTriggerObservations(userId, held)) {
             var trigger = observation.triggerPrice();
             var price = trustedAlertPrice(observation);
             if (price == null || trigger == null || trigger.signum() <= 0) continue;
-            var level = level(price.value(), trigger);
-            if (level == null) continue;
-            var sessionDate = LocalDate.ofInstant(price.asOf(), NEW_YORK);
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("scope", SCOPE);
-            payload.put("alertType", "REVIEW");
-            payload.put("subjectKey", observation.ticker());
-            payload.put("level", level);
-            payload.put("distancePct", distancePct(price.value(), trigger));
-            payload.put("priceBasis", price.basis());
-            payload.put("sessionDate", sessionDate.toString());
-            payload.put("thesisStatusChanged", false);
-            payload.put("orderAction", "NONE");
-            payload.put("message", REVIEW_MESSAGE);
-            notifications.emit(userId, NotificationEventType.MONITORING_ALERT,
-                    sourceId(userId, observation.ticker(), trigger, level, sessionDate), payload,
-                    price.asOf());
+            var targetState = targetState(price, trigger);
+            var reasonCode = switch (targetState) {
+                case "NEAR" -> "APPROVED_TRIGGER_NEAR";
+                case "INTRADAY_BREACH" -> "APPROVED_TRIGGER_INTRADAY_BREACHED";
+                case "PRICE_RISK_BREACH" -> "APPROVED_TRIGGER_CLOSE_BREACHED";
+                default -> "PRICE_CLEARED_NEAR_BAND";
+            };
+            var evidence = new java.util.LinkedHashMap<String, Object>();
+            evidence.put("sourceAsOf", price.asOf().toString());
+            evidence.put("priceSource", price.source());
+            evidence.put("priceSession", price.session());
+            evidence.put("priceBasis", price.basis());
+            evidence.put("observedPrice", price.value());
+            evidence.put("triggerPrice", trigger);
+            evidence.put("regularCloseSessionDate", observation.regularCloseSessionDate());
+            evidence.put("riskMarkStatus", observation.riskMarkStatus() == null
+                    ? null : observation.riskMarkStatus().name());
+            evidence.put("riskMarkReason", observation.riskMarkReason());
+            evidence.put("thesisRevisionId", observation.thesisRevisionId() == null
+                    ? null : observation.thesisRevisionId().toString());
+            evidence.put("thesisRevision", observation.thesisRevision());
+            evidence.put("invalidationStatus", observation.invalidationStatus());
+            evidence.put("reasonCode", reasonCode);
+            evidence.put("sessionDate", LocalDate.ofInstant(price.asOf(), NEW_YORK).toString());
+            riskEvents.recordObservation(userId, observation.ticker(), targetState, evidence, evaluatedAt);
         }
     }
 
@@ -98,7 +100,9 @@ class MonitoringThesisTriggerDetector {
         if (observation.priceStatus() == DataStatus.OK && observation.latestPrice() != null
                 && observation.latestPrice().signum() > 0 && observation.latestPriceAsOf() != null
                 && LIVE_REGULAR.equals(observation.priceSession())) {
-            return new AlertPrice(observation.latestPrice(), observation.latestPriceAsOf(), LIVE_REGULAR);
+            return new AlertPrice(observation.latestPrice(), observation.latestPriceAsOf(), LIVE_REGULAR,
+                    observation.priceSource(), LIVE_REGULAR,
+                    LocalDate.ofInstant(observation.latestPriceAsOf(), NEW_YORK));
         }
         var closeAsOf = observation.regularCloseAsOf();
         var closeDate = observation.regularCloseSessionDate();
@@ -110,27 +114,19 @@ class MonitoringThesisTriggerDetector {
         if (!closeDate.equals(closeLabel.toLocalDate()) || !LocalTime.MIDNIGHT.equals(closeLabel.toLocalTime())) {
             return null;
         }
-        return new AlertPrice(observation.regularClose(), closeAsOf, "REGULAR_CLOSE");
+        return new AlertPrice(observation.regularClose(), closeAsOf, "REGULAR_CLOSE",
+                observation.regularCloseSource(), "REGULAR_CLOSE", closeDate);
     }
 
-    record AlertPrice(BigDecimal value, Instant asOf, String basis) {
+    record AlertPrice(BigDecimal value, Instant asOf, String basis, String source,
+                      String session, LocalDate sessionDate) {
     }
 
-    static String level(BigDecimal price, BigDecimal trigger) {
-        if (price.compareTo(trigger) <= 0) return "BREACH";
-        if (price.compareTo(trigger.multiply(NEAR_BAND_MULTIPLIER)) <= 0) return "NEAR";
-        return null;
-    }
-
-    /** Signed distance of the price from the trigger, as a percentage of the trigger, 2 decimals. */
-    static String distancePct(BigDecimal price, BigDecimal trigger) {
-        var value = price.subtract(trigger).multiply(HUNDRED).divide(trigger, 2, RoundingMode.HALF_UP);
-        return (value.signum() > 0 ? "+" : "") + value.toPlainString();
-    }
-
-    private static UUID sourceId(UUID userId, String ticker, BigDecimal trigger, String level, LocalDate sessionDate) {
-        var key = String.join("|", "THESIS_TRIGGER_REVIEW", userId.toString(), ticker,
-                trigger.stripTrailingZeros().toPlainString(), level, sessionDate.toString());
-        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
+    static String targetState(AlertPrice price, BigDecimal trigger) {
+        if (price.value().compareTo(trigger) <= 0) {
+            return LIVE_REGULAR.equals(price.basis()) ? "INTRADAY_BREACH" : "PRICE_RISK_BREACH";
+        }
+        if (price.value().compareTo(trigger.multiply(NEAR_BAND_MULTIPLIER)) <= 0) return "NEAR";
+        return "NORMAL";
     }
 }

@@ -831,25 +831,38 @@ public final class InvestmentContextService {
         requireUser(userId);
         if (tickers == null || tickers.isEmpty()) return List.of();
         var triggers = jdbc.query("""
-                SELECT ticker, price_risk_trigger_price FROM investment_thesis_states
-                 WHERE user_id = ? AND invalidation_status = 'CONFIRMED'
-                   AND price_risk_trigger_price IS NOT NULL AND price_risk_trigger_price > 0
-                 ORDER BY ticker
-                """, (resultSet, rowNum) -> Map.entry(resultSet.getString(1), resultSet.getBigDecimal(2)), userId);
+                SELECT state.ticker, state.price_risk_trigger_price, state.invalidation_status,
+                       revision.id AS revision_id, revision.revision
+                  FROM investment_thesis_states state
+                  LEFT JOIN LATERAL (
+                      SELECT id, revision FROM investment_thesis_revisions
+                       WHERE user_id = state.user_id AND ticker = state.ticker
+                       ORDER BY revision DESC LIMIT 1
+                  ) revision ON TRUE
+                 WHERE state.user_id = ? AND state.invalidation_status = 'CONFIRMED'
+                   AND state.price_risk_trigger_price IS NOT NULL AND state.price_risk_trigger_price > 0
+                 ORDER BY state.ticker
+                """, (resultSet, rowNum) -> new ConfirmedTriggerFacts(
+                resultSet.getString("ticker"), resultSet.getBigDecimal("price_risk_trigger_price"),
+                resultSet.getString("invalidation_status"), resultSet.getObject("revision_id", UUID.class),
+                (Long) resultSet.getObject("revision")), userId);
         var result = new ArrayList<ConfirmedTriggerObservation>();
         for (var trigger : triggers) {
-            if (!tickers.contains(trigger.getKey())) continue;
-            var priceNode = node(latestSecuritySnapshot(userId, trigger.getKey()), "price");
+            if (!tickers.contains(trigger.ticker())) continue;
+            var priceNode = node(latestSecuritySnapshot(userId, trigger.ticker()), "price");
             var facts = priceFactsFromNode(priceNode);
             var price = facts.latestPrice();
             var priceAsOf = facts.asOf();
             var status = dataStatus(facts.status());
             var trusted = status == DataStatus.OK && priceAsOf != null && price != null && price.signum() > 0;
-            result.add(new ConfirmedTriggerObservation(trigger.getKey(), trigger.getValue(),
+            var riskMark = facts.riskMark(clock.instant());
+            result.add(new ConfirmedTriggerObservation(trigger.ticker(), trigger.triggerPrice(),
                     trusted ? DataStatus.OK : status == DataStatus.OK ? DataStatus.DATA_MISSING : status,
                     trusted ? price : null, trusted ? priceAsOf : null, facts.session(),
                     dataStatus(facts.regularCloseStatus()), facts.regularClose(), facts.regularCloseAsOf(),
-                    facts.regularCloseSource(), facts.regularCloseSessionDate(), facts.lastCompletedSessionDate()));
+                    facts.regularCloseSource(), facts.regularCloseSessionDate(), facts.lastCompletedSessionDate(),
+                    trigger.invalidationStatus(), trigger.revisionId(), trigger.revision(), facts.source(),
+                    riskMark.status(), riskMark.reason()));
         }
         return List.copyOf(result);
     }
@@ -2133,6 +2146,10 @@ public final class InvestmentContextService {
     public DecisionView recordDecision(UUID userId, DecisionInput input) {
         requireUser(userId);
         var decision = normalizeDecision(input);
+        return transaction.execute(status -> recordDecisionInTransaction(userId, decision));
+    }
+
+    private DecisionView recordDecisionInTransaction(UUID userId, DecisionInput decision) {
         var context = context(userId);
         var security = context.securities().stream().filter(item -> item.ticker().equals(decision.asset()))
                 .findFirst().orElse(null);
@@ -2157,11 +2174,14 @@ public final class InvestmentContextService {
                       FROM investment_decision_ledger
                      WHERE decision_id = ? AND user_id = ?
                     """, decisionRow(), decision.decisionId(), userId).stream().findFirst().orElse(null);
-            if (existing == null || !sameDecision(existing, decision)) {
+            if (existing == null || !sameDecision(existing, decision)
+                    || !new java.util.HashSet<>(linkedRiskEventIds(userId, decision.decisionId()))
+                    .equals(new java.util.HashSet<>(decision.riskEventIds()))) {
                 throw new InvestmentException(InvestmentException.Code.CONFLICT);
             }
             return existing;
         }
+        linkRiskEvents(userId, decision);
         return jdbc.query("""
                 SELECT decision_id, as_of, asset, action, reference_price, price_session,
                        horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
@@ -2170,6 +2190,36 @@ public final class InvestmentContextService {
                  WHERE decision_id = ? AND user_id = ?
                 """, decisionRow(), decision.decisionId(), userId).getFirst();
     }
+
+    private void linkRiskEvents(UUID userId, DecisionInput decision) {
+        for (var eventId : decision.riskEventIds()) {
+            var event = jdbc.query("""
+                    SELECT subject_key, NULLIF(evidence->>'thesisRevisionId', '')::uuid AS thesis_revision_id
+                      FROM monitoring_state_history
+                     WHERE id = ? AND user_id = ? AND scope = 'THESIS_REVIEW'
+                    """, (rs, rowNum) -> new RiskEventDecisionLinkTarget(
+                    rs.getString("subject_key"), (UUID) rs.getObject("thesis_revision_id")), eventId, userId)
+                    .stream().findFirst().orElse(null);
+            if (event == null || !decision.asset().equals(event.ticker()) || event.thesisRevisionId() == null) {
+                throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+            }
+            jdbc.update("""
+                    INSERT INTO investment_risk_event_decision_links (
+                        id, user_id, ticker, event_id, decision_id, thesis_revision_id, linked_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, UUID.randomUUID(), userId, decision.asset(), eventId, decision.decisionId(),
+                    event.thesisRevisionId(), timestamp(clock.instant()));
+        }
+    }
+
+    private List<UUID> linkedRiskEventIds(UUID userId, UUID decisionId) {
+        return jdbc.query("""
+                SELECT event_id FROM investment_risk_event_decision_links
+                 WHERE user_id = ? AND decision_id = ? ORDER BY event_id
+                """, (rs, rowNum) -> rs.getObject("event_id", UUID.class), userId, decisionId);
+    }
+
+    private record RiskEventDecisionLinkTarget(String ticker, UUID thesisRevisionId) {}
 
     private boolean persistCapture(UUID userId, StockAnalysisInput input) {
         return persistCapture(userId, input, true);
@@ -4350,10 +4400,16 @@ public final class InvestmentContextService {
         if (referencePrice.signum() <= 0 || referencePrice.precision() - referencePrice.scale() > 16) {
             throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         }
+        var riskEventIds = input.riskEventIds() == null ? List.<UUID>of() : input.riskEventIds().stream()
+                .filter(Objects::nonNull).distinct().sorted().toList();
+        if (riskEventIds.size() > 20 || input.riskEventIds() != null
+                && riskEventIds.size() != input.riskEventIds().size()) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
         return new DecisionInput(input.decisionId(), input.asOf().truncatedTo(ChronoUnit.MICROS),
                 ticker(input.asset()), action, referencePrice, session, input.horizon().trim(),
                 input.alphaThesis().trim(), input.invalidation().trim(), input.nextReviewTrigger().trim(),
-                input.confidence().setScale(6, RoundingMode.HALF_UP));
+                input.confidence().setScale(6, RoundingMode.HALF_UP), riskEventIds);
     }
 
     private void validateDecision(DecisionInput input) {
@@ -4739,13 +4795,30 @@ public final class InvestmentContextService {
         }
     }
 
-    /** A CONFIRMED trigger, its trusted latest quote, and the separately judged canonical regular close. */
+    private record ConfirmedTriggerFacts(String ticker, BigDecimal triggerPrice, String invalidationStatus,
+                                         UUID revisionId, Long revision) {
+    }
+
+    /** A CONFIRMED trigger, its trusted quote, separately judged close, thesis revision and selector status. */
     public record ConfirmedTriggerObservation(
             String ticker, BigDecimal triggerPrice, DataStatus priceStatus,
             BigDecimal latestPrice, Instant latestPriceAsOf, String priceSession,
             DataStatus regularCloseStatus, BigDecimal regularClose, Instant regularCloseAsOf,
-            String regularCloseSource, LocalDate regularCloseSessionDate, LocalDate lastCompletedSessionDate
+            String regularCloseSource, LocalDate regularCloseSessionDate, LocalDate lastCompletedSessionDate,
+            String invalidationStatus, UUID thesisRevisionId, Long thesisRevision,
+            String priceSource, DataStatus riskMarkStatus, String riskMarkReason
     ) {
+        public ConfirmedTriggerObservation(
+                String ticker, BigDecimal triggerPrice, DataStatus priceStatus,
+                BigDecimal latestPrice, Instant latestPriceAsOf, String priceSession,
+                DataStatus regularCloseStatus, BigDecimal regularClose, Instant regularCloseAsOf,
+                String regularCloseSource, LocalDate regularCloseSessionDate, LocalDate lastCompletedSessionDate
+        ) {
+            this(ticker, triggerPrice, priceStatus, latestPrice, latestPriceAsOf, priceSession,
+                    regularCloseStatus, regularClose, regularCloseAsOf, regularCloseSource,
+                    regularCloseSessionDate, lastCompletedSessionDate, "CONFIRMED", null, null,
+                    null, DataStatus.DATA_MISSING, "THESIS_REVISION_OR_PRICE_SOURCE_UNAVAILABLE");
+        }
     }
 
     public record ThesisRevisionView(
@@ -4767,8 +4840,19 @@ public final class InvestmentContextService {
     public record DecisionInput(
             UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
             String priceSession, String horizon, String alphaThesis, String invalidation,
-            String nextReviewTrigger, BigDecimal confidence
+            String nextReviewTrigger, BigDecimal confidence, List<UUID> riskEventIds
     ) {
+        public DecisionInput(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
+                             String priceSession, String horizon, String alphaThesis, String invalidation,
+                             String nextReviewTrigger, BigDecimal confidence) {
+            this(decisionId, asOf, asset, action, referencePrice, priceSession, horizon, alphaThesis,
+                    invalidation, nextReviewTrigger, confidence, List.of());
+        }
+
+        public DecisionInput {
+            riskEventIds = riskEventIds == null ? List.of()
+                    : java.util.Collections.unmodifiableList(new ArrayList<>(riskEventIds));
+        }
     }
 
     public record DecisionView(

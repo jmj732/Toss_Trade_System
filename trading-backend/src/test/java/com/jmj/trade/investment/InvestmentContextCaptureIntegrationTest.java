@@ -236,6 +236,65 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                 decision(decisionId, decisionAsOf.plusNanos(666), "123.466789124", "0.87654341")))
                 .isInstanceOf(InvestmentException.class)
                 .hasMessage("CONFLICT");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM investment_risk_event_decision_links",
+                Integer.class)).isZero();
+    }
+
+    @Test
+    void decisionCanExplicitlyLinkRiskEventAndRevisionWithoutBackfill() {
+        var revisionId = UUID.randomUUID();
+        var eventId = UUID.randomUUID();
+        var observedAt = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(5);
+        jdbc.update("""
+                INSERT INTO investment_thesis_revisions (
+                    id, user_id, ticker, revision, previous_status, new_status, previous_trigger_price,
+                    new_trigger_price, thesis_snapshot, actor_type, actor_user_id, recorded_at
+                ) VALUES (?, ?, 'AAPL', 1, NULL, 'CONFIRMED', NULL, 100, '{}'::jsonb, 'USER_SESSION', ?, ?)
+                """, revisionId, USER_ID, USER_ID, observedAt);
+        jdbc.update("""
+                INSERT INTO monitoring_state_history (
+                    id, user_id, scope, subject_key, previous_state, new_state, source_type,
+                    source_event_id, evidence, observed_at, created_at
+                ) VALUES (?, ?, 'THESIS_REVIEW', 'AAPL', 'NORMAL', 'PRICE_RISK_BREACH',
+                    'CONFIRMED_THESIS_PRICE_TRIGGER', ?, CAST(? AS jsonb), ?, ?)
+                """, eventId, USER_ID, "risk-event:" + eventId,
+                """
+                {"eventId":"%s","ticker":"AAPL","thesisRevisionId":"%s"}
+                """.formatted(eventId, revisionId), observedAt, observedAt);
+        var watchlist = mock(MonitoringWatchlistService.class);
+        when(watchlist.list(USER_ID)).thenReturn(List.of());
+        var riskPolicies = mock(RiskPolicyService.class);
+        when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
+                0, new BigDecimal("10000000"), new BigDecimal("10000"),
+                new BigDecimal("100"), new BigDecimal("0.25"), false));
+        var investment = new InvestmentContextService(jdbc, mapper, transactions,
+                new StockDataProviderRegistry(List.of()), mock(ObjectProvider.class), mock(PortfolioReadService.class),
+                watchlist, riskPolicies, Duration.ofMinutes(15), Duration.ofDays(7),
+                Duration.ofDays(210), Duration.ofDays(10));
+        var decisionId = UUID.randomUUID();
+        var input = new InvestmentContextService.DecisionInput(decisionId, Instant.now().minusSeconds(30),
+                "AAPL", "HOLD", new BigDecimal("100"), "REGULAR_CLOSE", "1Y", "caller rationale",
+                "caller invalidation", "review after filing", new BigDecimal("0.8"), List.of(eventId));
+
+        investment.recordDecision(USER_ID, input);
+        investment.recordDecision(USER_ID, input);
+
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_risk_event_decision_links
+                 WHERE user_id = ? AND event_id = ? AND decision_id = ? AND thesis_revision_id = ?
+                """, Integer.class, USER_ID, eventId, decisionId, revisionId)).isEqualTo(1);
+        assertThatThrownBy(() -> investment.recordDecision(USER_ID,
+                new InvestmentContextService.DecisionInput(decisionId, input.asOf(), input.asset(), input.action(),
+                        input.referencePrice(), input.priceSession(), input.horizon(), input.alphaThesis(),
+                        input.invalidation(), input.nextReviewTrigger(), input.confidence(), List.of())))
+                .isInstanceOf(InvestmentException.class)
+                .hasMessage("CONFLICT");
+        assertThatThrownBy(() -> investment.recordDecision(USER_ID,
+                new InvestmentContextService.DecisionInput(UUID.randomUUID(), input.asOf(), "MSFT", input.action(),
+                        input.referencePrice(), input.priceSession(), input.horizon(), input.alphaThesis(),
+                        input.invalidation(), input.nextReviewTrigger(), input.confidence(), List.of(eventId))))
+                .isInstanceOf(InvestmentException.class)
+                .hasMessage("INVALID_INPUT");
     }
 
     @Test
