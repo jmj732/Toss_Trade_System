@@ -5,6 +5,8 @@
 
 > 설계 원본은 [`DESIGN.md`](DESIGN.md), 에이전트 작업 지침은 실행 환경의 `AGENTS.md` 를 따른다.
 
+시스템 구성과 데이터·계산·위험·MCP·운영 문서의 종합 내비게이션은 [시스템 핸드북](docs/system/README.md)을 참고한다. 기존 [Investment OS 데이터 안내](#investment-os-데이터-안내)는 계속 이 README에서 제공한다.
+
 ## 아키텍처
 
 ```
