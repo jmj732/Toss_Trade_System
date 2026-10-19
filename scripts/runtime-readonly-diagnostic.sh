@@ -114,6 +114,27 @@ runtime_pids_current='null'
 runtime_pids_limit='null'
 healthcheck_exit_codes=''
 healthcheck_count=0
+thread_counts_available='false'
+thread_acceptor_count='null'
+thread_poller_count='null'
+thread_exec_count='null'
+thread_total_count='null'
+wchan_counts_available='false'
+wchan_futex_wait_count='null'
+wchan_ep_poll_count='null'
+wchan_inet_csk_accept_count='null'
+wchan_pipe_write_count='null'
+wchan_other_count='null'
+port_8080_available='false'
+port_8080_listener_count='null'
+port_8080_rx_queue='null'
+fd_diagnostics_available='false'
+fd_count='null'
+max_open_files_soft='null'
+max_open_files_hard='null'
+jcmd_available='null'
+jstack_available='null'
+java_tools_available='false'
 exceptions_available='false'
 exception_counts='0 0 0 0 0'
 
@@ -213,7 +234,7 @@ probe_json() {
 }
 
 if backend_id="$(single_container_id backend)"; then
-  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\n"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_USER_ID"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT"}}{{println .}}{{end}}{{end}}{{printf "runtime\t%t\t%d\t%s\t%d\n" .State.OOMKilled .RestartCount .State.StartedAt .HostConfig.PidsLimit}}{{if .State.Health}}{{range .State.Health.Log}}{{printf "healthcheck\t%d\n" .ExitCode}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
+  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\n"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_USER_ID"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT"}}{{println .}}{{end}}{{end}}{{printf "runtime\t%t\t%d\t%s\t%v\n" .State.OOMKilled .RestartCount .State.StartedAt .HostConfig.PidsLimit}}{{if .State.Health}}{{range .State.Health.Log}}{{printf "healthcheck\t%d\n" .ExitCode}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
   inspect_header="${inspect%%$'\n'*}"
   IFS=$'\t' read -r candidate_tag candidate_image_id candidate_state candidate_health <<<"$inspect_header"
   inspect_env=''
@@ -293,15 +314,142 @@ if backend_id="$(single_container_id backend)"; then
 fi
 
 if [[ -n "$backend_id" ]]; then
-  cgroup_values="$(timeout 3s docker exec "$backend_id" sh -c 'for key in memory.current memory.max pids.current pids.max; do file="/sys/fs/cgroup/$key"; if [ -r "$file" ]; then printf "%s\t" "$key"; cat "$file"; fi; done' 2>/dev/null || true)"
-  while IFS=$'\t' read -r key value; do
+  runtime_values="$(timeout 3s docker exec "$backend_id" sh -c '
+    for key in memory.current memory.max pids.current pids.max; do
+      file="/sys/fs/cgroup/$key"
+      if [ -r "$file" ]; then printf "%s\t" "$key"; cat "$file"; fi
+    done
+
+    if [ -d /proc/1/task ]; then
+      acceptor=0; poller=0; exec_count=0; total=0
+      for comm_file in /proc/1/task/[0-9]*/comm; do
+        [ -r "$comm_file" ] || continue
+        IFS= read -r comm <"$comm_file" || continue
+        total=$((total + 1))
+        case "$comm" in
+          http-nio-8080-A*) acceptor=$((acceptor + 1)) ;;
+          http-nio-8080-P*) poller=$((poller + 1)) ;;
+          http-nio-8080-e*) exec_count=$((exec_count + 1)) ;;
+        esac
+      done
+      printf "threads\ttrue\t%d\t%d\t%d\t%d\n" "$acceptor" "$poller" "$exec_count" "$total"
+      futex=0; epoll=0; accept_wait=0; pipe_write=0; other=0
+      for wchan_file in /proc/1/task/[0-9]*/wchan; do
+        [ -r "$wchan_file" ] || continue
+        wchan=""
+        IFS= read -r wchan <"$wchan_file" || true
+        [ -n "$wchan" ] || wchan="?"
+        case "$wchan" in
+          *futex*) futex=$((futex + 1)) ;;
+          *ep_poll*|*epoll_wait*|*do_epoll_wait*) epoll=$((epoll + 1)) ;;
+          inet_csk_accept*) accept_wait=$((accept_wait + 1)) ;;
+          *pipe_write*|*do_pipe_write*) pipe_write=$((pipe_write + 1)) ;;
+          *) other=$((other + 1)) ;;
+        esac
+      done
+      printf "wchan\ttrue\t%d\t%d\t%d\t%d\t%d\n" "$futex" "$epoll" "$accept_wait" "$pipe_write" "$other"
+    else
+      printf "threads\tfalse\t0\t0\t0\t0\n"
+      printf "wchan\tfalse\t0\t0\t0\t0\t0\n"
+    fi
+
+    if [ -r /proc/net/tcp ]; then
+      tcp_files=/proc/net/tcp
+      if [ -r /proc/net/tcp6 ]; then tcp_files="$tcp_files /proc/net/tcp6"; fi
+      awk '\''
+        function hexval(value, i, digit, number) {
+          value = toupper(value); number = 0
+          for (i = 1; i <= length(value); i++) {
+            digit = index("0123456789ABCDEF", substr(value, i, 1)) - 1
+            if (digit < 0) return 0
+            number = number * 16 + digit
+          }
+          return number
+        }
+        $4 == "0A" {
+          local_fields = split($2, local, ":")
+          if (toupper(local[local_fields]) == "1F90") {
+            split($5, queue, ":")
+            listeners++
+            rx_queue += hexval(queue[2])
+          }
+        }
+        END { printf "listener\ttrue\t%d\t%.0f\n", listeners, rx_queue }
+      '\'' $tcp_files 2>/dev/null
+    else
+      printf "listener\tfalse\t0\t0\n"
+    fi
+
+    if [ -d /proc/1/fd ] && [ -r /proc/1/limits ]; then
+      fd_count=0
+      for fd_file in /proc/1/fd/[0-9]*; do
+        [ -L "$fd_file" ] || continue
+        fd_count=$((fd_count + 1))
+      done
+      limits="$(awk '\''$1 == "Max" && $2 == "open" && $3 == "files" {
+        soft = ($4 ~ /^[0-9]+$/) ? $4 : "null"
+        hard = ($5 ~ /^[0-9]+$/) ? $5 : "null"
+        print soft "\t" hard
+        found = 1
+      } END { if (!found) print "null\tnull" }'\'' /proc/1/limits 2>/dev/null)"
+      IFS="$(printf "\\t")" read -r soft_limit hard_limit <<EOF
+$limits
+EOF
+      case "$soft_limit" in ''|*[!0-9]*) soft_limit="null" ;; esac
+      case "$hard_limit" in ''|*[!0-9]*) hard_limit="null" ;; esac
+      printf "fd\ttrue\t%d\t%s\t%s\n" "$fd_count" "$soft_limit" "$hard_limit"
+    else
+      printf "fd\tfalse\t0\tnull\tnull\n"
+    fi
+
+    if command -v jcmd >/dev/null 2>&1; then jcmd=true; else jcmd=false; fi
+    if command -v jstack >/dev/null 2>&1; then jstack=true; else jstack=false; fi
+    printf "javaTools\ttrue\t%s\t%s\n" "$jcmd" "$jstack"
+  ' 2>/dev/null || true)"
+  while IFS=$'\t' read -r key value first second third fourth fifth; do
     case "$key" in
       memory.current) if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then runtime_memory_current="$value"; fi ;;
       memory.max) if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then runtime_memory_limit="$value"; fi ;;
       pids.current) if [[ "$value" =~ ^[0-9]{1,9}$ ]]; then runtime_pids_current="$value"; fi ;;
       pids.max) if [[ "$value" =~ ^[0-9]{1,9}$ ]]; then runtime_pids_limit="$value"; fi ;;
+      threads)
+        if [[ "$value" == true && "$first" =~ ^[0-9]{1,6}$ && "$second" =~ ^[0-9]{1,6}$ &&
+              "$third" =~ ^[0-9]{1,6}$ && "$fourth" =~ ^[0-9]{1,6}$ ]]; then
+          thread_counts_available='true'
+          thread_acceptor_count="$first"; thread_poller_count="$second"
+          thread_exec_count="$third"; thread_total_count="$fourth"
+        fi
+        ;;
+      wchan)
+        if [[ "$value" == true && "$first" =~ ^[0-9]{1,6}$ && "$second" =~ ^[0-9]{1,6}$ &&
+              "$third" =~ ^[0-9]{1,6}$ && "$fourth" =~ ^[0-9]{1,6}$ && "$fifth" =~ ^[0-9]{1,6}$ ]]; then
+          wchan_counts_available='true'
+          wchan_futex_wait_count="$first"; wchan_ep_poll_count="$second"
+          wchan_inet_csk_accept_count="$third"; wchan_pipe_write_count="$fourth"
+          wchan_other_count="$fifth"
+        fi
+        ;;
+      listener)
+        if [[ "$value" == true && "$first" =~ ^[0-9]{1,4}$ && "$second" =~ ^[0-9]{1,9}$ ]]; then
+          port_8080_available='true'; port_8080_listener_count="$first"; port_8080_rx_queue="$second"
+        fi
+        ;;
+      fd)
+        if [[ "$value" == true && "$first" =~ ^[0-9]{1,7}$ ]]; then
+          fd_diagnostics_available='true'; fd_count="$first"
+          if [[ "$second" =~ ^[0-9]{1,15}$ ]]; then max_open_files_soft="$second"; fi
+          if [[ "$third" =~ ^[0-9]{1,15}$ ]]; then max_open_files_hard="$third"; fi
+        fi
+        ;;
+      javaTools)
+        if [[ "$value" == true && ( "$first" == true || "$first" == false ) &&
+              ( "$second" == true || "$second" == false ) ]]; then
+          java_tools_available='true'
+          jcmd_available="$first"; jstack_available="$second"
+        fi
+        ;;
     esac
-  done <<<"$cgroup_values"
+  done <<<"$runtime_values"
   if logs_summary="$(timeout 5s docker logs --since 30m --tail 2000 "$backend_id" 2>&1 | awk '
     /NullPointerException/ { null_pointer++ }
     /OutOfMemoryError/ { out_of_memory++ }
@@ -945,9 +1093,20 @@ printf ',"expectedShaMatchesImageTag":%s,"backend":{"imageTag":"%s","imageId":"%
   "$expected_sha_matches" "$backend_tag" "$backend_image_id" "$backend_state" "$backend_health"
 printf '"readiness":{"httpStatus":"%s","status":"%s"},' "$readiness_http" "$readiness_status"
 read -r null_pointer_count oom_count pool_timeout_count socket_timeout_count rejected_execution_count <<<"$exception_counts"
-printf '"httpDiagnostics":{"backendRuntime":{"available":%s,"oomKilled":%s,"restartCount":%s,"startedAt":%s,"memoryUsageBytes":%s,"memoryLimitBytes":%s,"pidsCurrent":%s,"pidsLimit":%s,"healthcheckExitCodes":[%s]},' \
+printf '"httpDiagnostics":{"backendRuntime":{"available":%s,"oomKilled":%s,"restartCount":%s,"startedAt":%s,"memoryUsageBytes":%s,"memoryLimitBytes":%s,"pidsCurrent":%s,"pidsLimit":%s,"healthcheckExitCodes":[%s],' \
   "$runtime_available" "$runtime_oom_killed" "$runtime_restart_count" "$runtime_started_at" \
   "$runtime_memory_current" "$runtime_memory_limit" "$runtime_pids_current" "$runtime_pids_limit" "$healthcheck_exit_codes"
+printf '"tomcatThreads":{"available":%s,"acceptor":%s,"poller":%s,"exec":%s,"total":%s},' \
+  "$thread_counts_available" "$thread_acceptor_count" "$thread_poller_count" "$thread_exec_count" "$thread_total_count"
+printf '"threadWaitChannels":{"available":%s,"futexWait":%s,"epPoll":%s,"inetCskAccept":%s,"pipeWrite":%s,"other":%s},' \
+  "$wchan_counts_available" "$wchan_futex_wait_count" "$wchan_ep_poll_count" \
+  "$wchan_inet_csk_accept_count" "$wchan_pipe_write_count" "$wchan_other_count"
+printf '"port8080":{"available":%s,"listenerCount":%s,"rxQueue":%s},' \
+  "$port_8080_available" "$port_8080_listener_count" "$port_8080_rx_queue"
+printf '"fileDescriptors":{"available":%s,"count":%s,"maxOpenFilesSoft":%s,"maxOpenFilesHard":%s},' \
+  "$fd_diagnostics_available" "$fd_count" "$max_open_files_soft" "$max_open_files_hard"
+printf '"javaTools":{"available":%s,"jcmdAvailable":%s,"jstackAvailable":%s}},' \
+  "$java_tools_available" "$jcmd_available" "$jstack_available"
 printf '"probes":{"host":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s},"container":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s}},' \
   "$host_liveness" "$host_readiness" "$host_mcp" "$container_liveness" "$container_readiness" "$container_mcp"
 printf '"recentExceptions":{"available":%s,"counts":{"nullPointerException":%s,"outOfMemoryError":%s,"poolTimeout":%s,"socketTimeout":%s,"rejectedExecution":%s}}},' \

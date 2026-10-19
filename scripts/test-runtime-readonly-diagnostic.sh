@@ -151,6 +151,8 @@ case "${1:-}" in
     if [[ "${2:-}" != -i ]]; then
       if [[ "${3:-}" == sh && "${4:-}" == -c ]]; then
         printf 'memory.current\t10485760\nmemory.max\t805306368\npids.current\t6\npids.max\t0\n'
+        printf 'threads\ttrue\t1\t1\t12\t24\nwchan\ttrue\t2\t5\t1\t3\t13\n'
+        printf 'listener\ttrue\t1\t4\nfd\ttrue\t42\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\n'
         exit 0
       fi
       if [[ "${@: -1}" == http://127.0.0.1:8080/* ]]; then
@@ -425,6 +427,23 @@ assert diagnostics["backendRuntime"] == {
     "pidsCurrent": 6,
     "pidsLimit": 0,
     "healthcheckExitCodes": [1, 1, 0],
+    "tomcatThreads": {"available": True, "acceptor": 1, "poller": 1, "exec": 12, "total": 24},
+    "threadWaitChannels": {
+        "available": True,
+        "futexWait": 2,
+        "epPoll": 5,
+        "inetCskAccept": 1,
+        "pipeWrite": 3,
+        "other": 13,
+    },
+    "port8080": {"available": True, "listenerCount": 1, "rxQueue": 4},
+    "fileDescriptors": {
+        "available": True,
+        "count": 42,
+        "maxOpenFilesSoft": 1048576,
+        "maxOpenFilesHard": 1048576,
+    },
+    "javaTools": {"available": True, "jcmdAvailable": False, "jstackAvailable": False},
 }
 for source in ("host", "container"):
     probes = diagnostics["probes"][source]
@@ -626,6 +645,7 @@ from pathlib import Path
 
 report = json.loads(Path(sys.argv[1]).read_text())
 report["httpDiagnostics"]["backendRuntime"]["exceptionMessage"] = "raw-http-exception-secret"
+report["httpDiagnostics"]["backendRuntime"]["threadWaitChannels"]["threadName"] = "raw-thread-secret"
 Path(sys.argv[2]).write_text(json.dumps(report))
 PY
 if python3 "$sanitizer" "$tmp/http-diagnostics-untrusted.json" "$tmp/http-diagnostics-untrusted-safe.json"; then
@@ -633,7 +653,7 @@ if python3 "$sanitizer" "$tmp/http-diagnostics-untrusted.json" "$tmp/http-diagno
 fi
 grep -q 'UNTRUSTED_REMOTE_OUTPUT' "$tmp/http-diagnostics-untrusted-safe.json" ||
   fail "sanitizer did not reject untrusted HTTP diagnostic shape"
-if grep -q 'raw-http-exception-secret' "$tmp/http-diagnostics-untrusted-safe.json"; then
+if grep -Eq 'raw-http-exception-secret|raw-thread-secret' "$tmp/http-diagnostics-untrusted-safe.json"; then
   fail "sanitizer leaked an HTTP exception field"
 fi
 

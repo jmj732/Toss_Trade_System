@@ -120,7 +120,8 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         diagnostics["backendRuntime"],
         {
             "available", "oomKilled", "restartCount", "startedAt", "memoryUsageBytes",
-            "memoryLimitBytes", "pidsCurrent", "pidsLimit", "healthcheckExitCodes",
+            "memoryLimitBytes", "pidsCurrent", "pidsLimit", "healthcheckExitCodes", "tomcatThreads",
+            "threadWaitChannels", "port8080", "fileDescriptors", "javaTools",
         },
     )
     runtime_available = require_bool(runtime["available"])
@@ -149,6 +150,77 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         or started_at is not None or healthcheck_codes
     ):
         raise ValueError("runtime fields present while unavailable")
+
+    threads = require_keys(runtime["tomcatThreads"], {"available", "acceptor", "poller", "exec", "total"})
+    threads_available = require_bool(threads["available"])
+    thread_counts = {
+        key: None if threads[key] is None else require_count(threads[key])
+        for key in ("acceptor", "poller", "exec", "total")
+    }
+    if any(value is not None and value > 100_000 for value in thread_counts.values()):
+        raise ValueError("thread count outside allowed range")
+    if threads_available:
+        if any(value is None for value in thread_counts.values()):
+            raise ValueError("available thread counts are incomplete")
+        if any(thread_counts[key] > thread_counts["total"] for key in ("acceptor", "poller", "exec")):
+            raise ValueError("thread category exceeds total")
+    elif any(value is not None for value in thread_counts.values()):
+        raise ValueError("thread counts present while unavailable")
+
+    wchan = require_keys(
+        runtime["threadWaitChannels"],
+        {"available", "futexWait", "epPoll", "inetCskAccept", "pipeWrite", "other"},
+    )
+    wchan_available = require_bool(wchan["available"])
+    wchan_counts = {
+        key: None if wchan[key] is None else require_count(wchan[key])
+        for key in ("futexWait", "epPoll", "inetCskAccept", "pipeWrite", "other")
+    }
+    if any(value is not None and value > 100_000 for value in wchan_counts.values()):
+        raise ValueError("wait-channel count outside allowed range")
+    if wchan_available:
+        if any(value is None for value in wchan_counts.values()):
+            raise ValueError("available wait-channel counts are incomplete")
+    elif any(value is not None for value in wchan_counts.values()):
+        raise ValueError("wait-channel counts present while unavailable")
+
+    listener = require_keys(runtime["port8080"], {"available", "listenerCount", "rxQueue"})
+    listener_available = require_bool(listener["available"])
+    listener_count = None if listener["listenerCount"] is None else require_count(listener["listenerCount"])
+    listener_rx_queue = None if listener["rxQueue"] is None else require_count(listener["rxQueue"])
+    if listener_count is not None and listener_count > 100:
+        raise ValueError("listener count outside allowed range")
+    if listener_rx_queue is not None and listener_rx_queue > 2**31 - 1:
+        raise ValueError("listener queue outside allowed range")
+    if listener_available and (listener_count is None or listener_rx_queue is None):
+        raise ValueError("available listener data is incomplete")
+    if not listener_available and (listener_count is not None or listener_rx_queue is not None):
+        raise ValueError("listener data present while unavailable")
+
+    file_descriptors = require_keys(
+        runtime["fileDescriptors"], {"available", "count", "maxOpenFilesSoft", "maxOpenFilesHard"}
+    )
+    fd_available = require_bool(file_descriptors["available"])
+    fd_count = None if file_descriptors["count"] is None else require_count(file_descriptors["count"])
+    max_open_soft = None if file_descriptors["maxOpenFilesSoft"] is None else require_count(file_descriptors["maxOpenFilesSoft"])
+    max_open_hard = None if file_descriptors["maxOpenFilesHard"] is None else require_count(file_descriptors["maxOpenFilesHard"])
+    if fd_count is not None and fd_count > 10_000_000:
+        raise ValueError("file descriptor count outside allowed range")
+    if any(value is not None and value > 2**63 - 1 for value in (max_open_soft, max_open_hard)):
+        raise ValueError("file descriptor limit outside allowed range")
+    if fd_available and fd_count is None:
+        raise ValueError("available file descriptor count is missing")
+    if not fd_available and any(value is not None for value in (fd_count, max_open_soft, max_open_hard)):
+        raise ValueError("file descriptor data present while unavailable")
+
+    java_tools = require_keys(runtime["javaTools"], {"available", "jcmdAvailable", "jstackAvailable"})
+    java_tools_available = require_bool(java_tools["available"])
+    jcmd_available = require_optional_bool(java_tools["jcmdAvailable"])
+    jstack_available = require_optional_bool(java_tools["jstackAvailable"])
+    if java_tools_available and (jcmd_available is None or jstack_available is None):
+        raise ValueError("available Java tool flags are incomplete")
+    if not java_tools_available and (jcmd_available is not None or jstack_available is not None):
+        raise ValueError("Java tool flags present while unavailable")
 
     probes = require_keys(diagnostics["probes"], {"host", "container"})
     sanitized_probes: dict[str, dict[str, dict[str, Any]]] = {}
@@ -211,6 +283,24 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
             **runtime_counts,
             "startedAt": started_at,
             "healthcheckExitCodes": healthcheck_codes,
+            "tomcatThreads": {"available": threads_available, **thread_counts},
+            "threadWaitChannels": {"available": wchan_available, **wchan_counts},
+            "port8080": {
+                "available": listener_available,
+                "listenerCount": listener_count,
+                "rxQueue": listener_rx_queue,
+            },
+            "fileDescriptors": {
+                "available": fd_available,
+                "count": fd_count,
+                "maxOpenFilesSoft": max_open_soft,
+                "maxOpenFilesHard": max_open_hard,
+            },
+            "javaTools": {
+                "available": java_tools_available,
+                "jcmdAvailable": jcmd_available,
+                "jstackAvailable": jstack_available,
+            },
         },
         "probes": sanitized_probes,
         "recentExceptions": {"available": exceptions_available, "counts": sanitized_counts},
