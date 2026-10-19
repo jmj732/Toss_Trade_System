@@ -90,7 +90,8 @@ for forbidden in ("'aggregate'", "'metrics'", "Current Price", "Quantity", "Mark
 assert "docker compose" in script and "compose ps -q" in script
 assert "docker inspect" in script and "127.0.0.1:8080/actuator/health/readiness" in script
 assert "timeout 5s docker exec" in script and "--since 36h --tail 10000" in script
-assert script.index('printf "fdLimits') < script.index('printf "javaTools') < script.index('printf "fdCount')
+assert script.index('printf "jvmFlags') < script.index('printf "javaTools') < script.index('printf "fdLimits') < script.index('printf "threads') < script.index('printf "fdCount')
+assert '<<EOF' not in script[script.index('if [ -r /proc/1/limits ]'):script.index('if [ -d /proc/1/task ]')]
 assert 'range .Config.Env' in script and '"INVESTMENT_THESIS_AI_POLICY_ENABLED"' in script
 for safe_setting in (
     '"INVESTMENT_OS_SHEET_ENABLED"', '"INVESTMENT_OS_SHEET_USER_ID"',
@@ -154,7 +155,7 @@ case "${1:-}" in
       if [[ "${3:-}" == sh && "${4:-}" == -c ]]; then
         printf 'memory.current\t10485760\nmemory.max\t805306368\npids.current\t6\npids.max\t0\n'
         printf 'threads\ttrue\t1\t1\t12\t24\nwchan\ttrue\t2\t5\t1\t3\t13\n'
-        printf 'listener\ttrue\t1\t4\nfdLimits\ttrue\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\nfdCount\ttrue\t42\n'
+        printf 'listener\ttrue\t1\t4\njvmFlags\ttrue\ttrue\ttrue\t512\tm\ttrue\t75.5\ttrue\nfdLimits\ttrue\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\nfdCount\ttrue\t42\n'
         exit 0
       fi
       if [[ "${@: -1}" == http://127.0.0.1:8080/* ]]; then
@@ -229,7 +230,7 @@ case "${1:-}" in
     printf 'SQLTransientConnectionException: pool wait timeout\n'
     printf 'SocketTimeoutException: read timeout\n'
     if [[ "$*" == *"--since 36h"* ]]; then
-      printf 'Tomcat http-nio-8080-Acceptor event\nToo many open files\naccept failed\njava.lang.OutOfMemoryError: unable to create native thread\n'
+      printf 'Tomcat http-nio-8080-Acceptor event\nToo many open files\naccept failed\njava.lang.OutOfMemoryError: unable to create native thread\nTomcat http-nio-8080-Acceptor failed: java.lang.OutOfMemoryError: unable to create native thread\njava.lang.OutOfMemoryError: Java heap space\njava.lang.OutOfMemoryError: GC overhead limit exceeded\njava.lang.OutOfMemoryError: Metaspace\njava.lang.OutOfMemoryError: Direct buffer memory\njava.lang.OutOfMemoryError: unknown allocation failure\n'
     fi
     ;;
   *)
@@ -451,6 +452,16 @@ assert diagnostics["backendRuntime"] == {
         "maxOpenFilesHard": 1048576,
     },
     "javaTools": {"available": True, "jcmdAvailable": False, "jstackAvailable": False},
+    "jvmFlags": {
+        "available": True,
+        "environmentAvailable": True,
+        "xmxPresent": True,
+        "xmxValue": 512,
+        "xmxUnit": "m",
+        "maxRamPercentagePresent": True,
+        "maxRamPercentageValue": 75.5,
+        "exitOnOutOfMemoryError": True,
+    },
 }
 for source in ("host", "container"):
     probes = diagnostics["probes"][source]
@@ -473,10 +484,17 @@ assert diagnostics["bindFailureSignals"] == {
     "windowHours": 36,
     "maxLogLines": 10000,
     "counts": {
-        "tomcatAcceptor": 1,
+        "tomcatAcceptor": 2,
         "tooManyOpenFiles": 1,
         "acceptFailed": 1,
-        "outOfMemoryError": 1,
+        "outOfMemoryError": 7,
+        "javaHeapSpace": 1,
+        "gcOverhead": 1,
+        "metaspace": 1,
+        "directBuffer": 1,
+        "unableCreateNativeThread": 2,
+        "otherOom": 1,
+        "oomAcceptorSameLine": 1,
     },
 }
 raw = Path(sys.argv[1]).read_text()
@@ -673,6 +691,24 @@ grep -q 'UNTRUSTED_REMOTE_OUTPUT' "$tmp/http-diagnostics-untrusted-safe.json" ||
   fail "sanitizer did not reject untrusted HTTP diagnostic shape"
 if grep -Eq 'raw-http-exception-secret|raw-thread-secret' "$tmp/http-diagnostics-untrusted-safe.json"; then
   fail "sanitizer leaked an HTTP exception field"
+fi
+
+python3 - "$tmp/valid.json" "$tmp/jvm-flags-untrusted.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+report["httpDiagnostics"]["backendRuntime"]["jvmFlags"]["xmxValue"] = "-Xmxraw-jvm-secret"
+Path(sys.argv[2]).write_text(json.dumps(report))
+PY
+if python3 "$sanitizer" "$tmp/jvm-flags-untrusted.json" "$tmp/jvm-flags-untrusted-safe.json"; then
+  fail "raw JVM flag value passed the allowlist"
+fi
+grep -q 'UNTRUSTED_REMOTE_OUTPUT' "$tmp/jvm-flags-untrusted-safe.json" ||
+  fail "sanitizer did not reject an unfiltered JVM flag"
+if grep -q 'raw-jvm-secret' "$tmp/jvm-flags-untrusted-safe.json"; then
+  fail "sanitizer leaked a raw JVM flag"
 fi
 
 MOCK_IMAGE_TAG="trade-backend:ffffffffffffffffffffffffffffffffffffffff" \

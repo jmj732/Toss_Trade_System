@@ -232,9 +232,11 @@ The two-day artifact contains image tag/digest, readiness and Flyway status, bou
 HTTP probes, backend restart/OOM/start-time and cgroup memory/PID counters, healthcheck exit codes,
 sanitized recent exception counts, Tomcat acceptor/poller/executor thread counts, allowlisted
 thread wait-channel counts (`futex`, `epoll`, accept, `pipe_write`, other), port 8080 listener and
-receive-queue counts, process file-descriptor count and soft/hard open-file limits, and booleans for
-`jcmd`/`jstack` availability. No PID/TID, thread name, socket address, descriptor path, stack, or
-command output is included. The artifact also carries owner-scoped row counts and a SHA-256
+receive-queue counts, process file-descriptor count, independently available soft/hard open-file
+limits, and booleans for `jcmd`/`jstack` availability. It also counts fixed log signals for Tomcat
+acceptor mentions, `Too many open files`/`EMFILE`, accept failures, and `OutOfMemoryError` in at most 10,000 log lines
+from the last 36 hours. No PID/TID, thread name, socket address, descriptor path, stack, log line,
+or command output is included. The artifact also carries owner-scoped row counts and a SHA-256
 fingerprint for the latest six stored security projections (AVT, CSTM,
 GOOGL, LUNR, RDW, VST). The fingerprint contract is published in
 [`scripts/runtime-readonly-fingerprint-v1.json`](../../scripts/runtime-readonly-fingerprint-v1.json).

@@ -140,7 +140,15 @@ java_tools_available='false'
 exceptions_available='false'
 exception_counts='0 0 0 0 0'
 bind_failure_signals_available='false'
-bind_failure_signal_counts='0 0 0 0'
+bind_failure_signal_counts='0 0 0 0 0 0 0 0 0 0 0'
+jvm_flags_available='false'
+jvm_options_environment_available='false'
+jvm_xmx_present='false'
+jvm_xmx_value='null'
+jvm_xmx_unit='null'
+jvm_max_ram_percentage_present='false'
+jvm_max_ram_percentage_value='null'
+jvm_exit_on_oom='false'
 
 probe_http='000'
 probe_exit='null'
@@ -324,6 +332,59 @@ if [[ -n "$backend_id" ]]; then
       if [ -r "$file" ]; then printf "%s\t" "$key"; cat "$file"; fi
     done
 
+    if [ -r /proc/1/cmdline ]; then
+      jvm_env_available=false
+      if [ -r /proc/1/environ ]; then jvm_env_available=true; fi
+      {
+        tr "\\000" "\\n" </proc/1/cmdline 2>/dev/null
+        if [ "$jvm_env_available" = true ]; then
+          tr "\\000" "\\n" </proc/1/environ 2>/dev/null |
+            awk -F= '\''$1 == "JAVA_TOOL_OPTIONS" || $1 == "JDK_JAVA_OPTIONS" || $1 == "_JAVA_OPTIONS" { print substr($0, index($0, "=") + 1) }'\'' |
+            tr "[:space:]" "\\n"
+        fi
+      } | awk -v env_available="$jvm_env_available" '\''
+        BEGIN { xmx_value = "null"; xmx_unit = "null"; ram_value = "null" }
+        /^-Xmx/ {
+          xmx_present = 1
+          candidate = substr($0, 5)
+          if (candidate ~ /^[0-9]+[kKmMgG]?$/) {
+            unit = tolower(substr(candidate, length(candidate), 1))
+            if (unit ~ /^[kmg]$/) number = substr(candidate, 1, length(candidate) - 1)
+            else { unit = "b"; number = candidate }
+            if (length(number) <= 10) { xmx_value = sprintf("%.0f", number + 0); xmx_unit = unit }
+          }
+        }
+        /^-XX:MaxRAMPercentage=/ {
+          ram_present = 1
+          candidate = substr($0, length("-XX:MaxRAMPercentage=") + 1)
+          if (candidate ~ /^[0-9]+([.][0-9]+)?$/ && candidate + 0 <= 100 && candidate + 0 >= 0) {
+            ram_value = sprintf("%.6f", candidate + 0)
+            sub(/0+$/, "", ram_value); sub(/[.]$/, "", ram_value)
+          }
+        }
+        $0 == "-XX:+ExitOnOutOfMemoryError" { exit_on_oom = 1 }
+        END {
+          printf "jvmFlags\ttrue\t%s\t%d\t%s\t%s\t%d\t%s\t%d\n", env_available, xmx_present, xmx_value, xmx_unit, ram_present, ram_value, exit_on_oom
+        }'\''
+    else
+      printf "jvmFlags\tfalse\tfalse\tfalse\tnull\tnull\tfalse\tnull\tfalse\n"
+    fi
+
+    if command -v jcmd >/dev/null 2>&1; then jcmd=true; else jcmd=false; fi
+    if command -v jstack >/dev/null 2>&1; then jstack=true; else jstack=false; fi
+    printf "javaTools\ttrue\t%s\t%s\n" "$jcmd" "$jstack"
+
+    if [ -r /proc/1/limits ]; then
+      awk '\''$1 == "Max" && $2 == "open" && $3 == "files" {
+        soft = ($4 ~ /^[0-9]+$/) ? $4 : "null"
+        hard = ($5 ~ /^[0-9]+$/) ? $5 : "null"
+        printf "fdLimits\ttrue\t%s\t%s\n", soft, hard
+        found = 1
+      } END { if (!found) printf "fdLimits\tfalse\tnull\tnull\n" }'\'' /proc/1/limits 2>/dev/null
+    else
+      printf "fdLimits\tfalse\tnull\tnull\n"
+    fi
+
     if [ -d /proc/1/task ]; then
       acceptor=0; poller=0; exec_count=0; total=0
       for comm_file in /proc/1/task/[0-9]*/comm; do
@@ -384,27 +445,6 @@ if [[ -n "$backend_id" ]]; then
       printf "listener\tfalse\t0\t0\n"
     fi
 
-    if [ -r /proc/1/limits ]; then
-      limits="$(awk '\''$1 == "Max" && $2 == "open" && $3 == "files" {
-        soft = ($4 ~ /^[0-9]+$/) ? $4 : "null"
-        hard = ($5 ~ /^[0-9]+$/) ? $5 : "null"
-        print soft "\t" hard
-        found = 1
-      } END { if (!found) print "null\tnull" }'\'' /proc/1/limits 2>/dev/null)"
-      IFS="$(printf "\\t")" read -r soft_limit hard_limit <<EOF
-$limits
-EOF
-      case "$soft_limit" in ''|*[!0-9]*) soft_limit="null" ;; esac
-      case "$hard_limit" in ''|*[!0-9]*) hard_limit="null" ;; esac
-      printf "fdLimits\ttrue\t%s\t%s\n" "$soft_limit" "$hard_limit"
-    else
-      printf "fdLimits\tfalse\tnull\tnull\n"
-    fi
-
-    if command -v jcmd >/dev/null 2>&1; then jcmd=true; else jcmd=false; fi
-    if command -v jstack >/dev/null 2>&1; then jstack=true; else jstack=false; fi
-    printf "javaTools\ttrue\t%s\t%s\n" "$jcmd" "$jstack"
-
     if [ -d /proc/1/fd ]; then
       fd_count="$(ls -1 /proc/1/fd 2>/dev/null | wc -l | tr -d "[:space:]")"
       case "$fd_count" in ''|*[!0-9]*) printf "fdCount\tfalse\tnull\n" ;; *) printf "fdCount\ttrue\t%s\n" "$fd_count" ;; esac
@@ -412,7 +452,7 @@ EOF
       printf "fdCount\tfalse\tnull\n"
     fi
   ' 2>/dev/null || true)"
-  while IFS=$'\t' read -r key value first second third fourth fifth; do
+  while IFS=$'\t' read -r key value first second third fourth fifth sixth seventh; do
     case "$key" in
       memory.current) if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then runtime_memory_current="$value"; fi ;;
       memory.max) if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then runtime_memory_limit="$value"; fi ;;
@@ -459,6 +499,22 @@ EOF
           jcmd_available="$first"; jstack_available="$second"
         fi
         ;;
+      jvmFlags)
+        if [[ "$value" == true && ( "$first" == true || "$first" == false ) &&
+              ( "$second" == true || "$second" == false ) &&
+              ( "$fifth" == true || "$fifth" == false ) &&
+              ( "$seventh" == true || "$seventh" == false ) ]]; then
+          jvm_flags_available='true'
+          jvm_options_environment_available="$first"
+          jvm_xmx_present="$second"
+          if [[ "$third" =~ ^[0-9]{1,10}$ && "$fourth" =~ ^(b|k|m|g)$ ]]; then
+            jvm_xmx_value="$third"; jvm_xmx_unit="$fourth"
+          fi
+          jvm_max_ram_percentage_present="$fifth"
+          if [[ "$sixth" =~ ^[0-9]{1,3}([.][0-9]{1,6})?$ ]]; then jvm_max_ram_percentage_value="$sixth"; fi
+          jvm_exit_on_oom="$seventh"
+        fi
+        ;;
     esac
   done <<<"$runtime_values"
   if logs_summary="$(timeout 5s docker logs --since 30m --tail 2000 "$backend_id" 2>&1 | awk '
@@ -478,10 +534,22 @@ EOF
     tolower($0) ~ /acceptor/ { tomcat_acceptor++ }
     tolower($0) ~ /too many open files|emfile/ { too_many_open_files++ }
     tolower($0) ~ /accept[[:space:]_-]*(failed|error)|failed[[:space:]]+to[[:space:]]+accept/ { accept_failed++ }
-    /OutOfMemoryError/ { out_of_memory++ }
-    END { printf "%d %d %d %d\n", tomcat_acceptor, too_many_open_files, accept_failed, out_of_memory }
+    {
+      lower = tolower($0)
+      if (lower ~ /outofmemoryerror/) {
+        out_of_memory++
+        if (lower ~ /java heap space/) java_heap_space++
+        else if (lower ~ /gc overhead limit exceeded/) gc_overhead++
+        else if (lower ~ /metaspace/) metaspace++
+        else if (lower ~ /direct buffer memory/) direct_buffer++
+        else if (lower ~ /unable to create native thread|cannot create native thread/) unable_native_thread++
+        else other_oom++
+        if (lower ~ /acceptor/) oom_acceptor_same_line++
+      }
+    }
+    END { printf "%d %d %d %d %d %d %d %d %d %d %d\n", tomcat_acceptor, too_many_open_files, accept_failed, out_of_memory, java_heap_space, gc_overhead, metaspace, direct_buffer, unable_native_thread, other_oom, oom_acceptor_same_line }
   ' 2>/dev/null)"; then
-    if [[ "$bind_signals_summary" =~ ^[0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+$ ]]; then
+    if [[ "$bind_signals_summary" =~ ^[0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+$ ]]; then
       bind_failure_signal_counts="$bind_signals_summary"
       bind_failure_signals_available='true'
     fi
@@ -1116,7 +1184,10 @@ printf ',"expectedShaMatchesImageTag":%s,"backend":{"imageTag":"%s","imageId":"%
   "$expected_sha_matches" "$backend_tag" "$backend_image_id" "$backend_state" "$backend_health"
 printf '"readiness":{"httpStatus":"%s","status":"%s"},' "$readiness_http" "$readiness_status"
 read -r null_pointer_count oom_count pool_timeout_count socket_timeout_count rejected_execution_count <<<"$exception_counts"
-read -r tomcat_acceptor_signal_count too_many_open_files_count accept_failed_count bind_oom_count <<<"$bind_failure_signal_counts"
+read -r tomcat_acceptor_signal_count too_many_open_files_count accept_failed_count bind_oom_count \
+  bind_java_heap_space_count bind_gc_overhead_count bind_metaspace_count bind_direct_buffer_count \
+  bind_unable_native_thread_count bind_other_oom_count bind_oom_acceptor_same_line_count \
+  <<<"$bind_failure_signal_counts"
 printf '"httpDiagnostics":{"backendRuntime":{"available":%s,"oomKilled":%s,"restartCount":%s,"startedAt":%s,"memoryUsageBytes":%s,"memoryLimitBytes":%s,"pidsCurrent":%s,"pidsLimit":%s,"healthcheckExitCodes":[%s],' \
   "$runtime_available" "$runtime_oom_killed" "$runtime_restart_count" "$runtime_started_at" \
   "$runtime_memory_current" "$runtime_memory_limit" "$runtime_pids_current" "$runtime_pids_limit" "$healthcheck_exit_codes"
@@ -1129,15 +1200,22 @@ printf '"port8080":{"available":%s,"listenerCount":%s,"rxQueue":%s},' \
   "$port_8080_available" "$port_8080_listener_count" "$port_8080_rx_queue"
 printf '"fileDescriptors":{"available":%s,"countAvailable":%s,"count":%s,"limitsAvailable":%s,"maxOpenFilesSoft":%s,"maxOpenFilesHard":%s},' \
   "$fd_diagnostics_available" "$fd_count_available" "$fd_count" "$fd_limits_available" "$max_open_files_soft" "$max_open_files_hard"
-printf '"javaTools":{"available":%s,"jcmdAvailable":%s,"jstackAvailable":%s}},' \
+printf '"javaTools":{"available":%s,"jcmdAvailable":%s,"jstackAvailable":%s},' \
   "$java_tools_available" "$jcmd_available" "$jstack_available"
+printf '"jvmFlags":{"available":%s,"environmentAvailable":%s,"xmxPresent":%s,"xmxValue":%s,"xmxUnit":' \
+  "$jvm_flags_available" "$jvm_options_environment_available" "$jvm_xmx_present" "$jvm_xmx_value"
+if [[ "$jvm_xmx_unit" == null ]]; then printf 'null'; else printf '"%s"' "$jvm_xmx_unit"; fi
+printf ',"maxRamPercentagePresent":%s,"maxRamPercentageValue":%s,"exitOnOutOfMemoryError":%s}},' \
+  "$jvm_max_ram_percentage_present" "$jvm_max_ram_percentage_value" "$jvm_exit_on_oom"
 printf '"probes":{"host":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s},"container":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s}},' \
   "$host_liveness" "$host_readiness" "$host_mcp" "$container_liveness" "$container_readiness" "$container_mcp"
 printf '"recentExceptions":{"available":%s,"counts":{"nullPointerException":%s,"outOfMemoryError":%s,"poolTimeout":%s,"socketTimeout":%s,"rejectedExecution":%s}},' \
   "$exceptions_available" "$null_pointer_count" "$oom_count" "$pool_timeout_count" "$socket_timeout_count" "$rejected_execution_count"
-printf '"bindFailureSignals":{"available":%s,"windowHours":36,"maxLogLines":10000,"counts":{"tomcatAcceptor":%s,"tooManyOpenFiles":%s,"acceptFailed":%s,"outOfMemoryError":%s}}},' \
+printf '"bindFailureSignals":{"available":%s,"windowHours":36,"maxLogLines":10000,"counts":{"tomcatAcceptor":%s,"tooManyOpenFiles":%s,"acceptFailed":%s,"outOfMemoryError":%s,"javaHeapSpace":%s,"gcOverhead":%s,"metaspace":%s,"directBuffer":%s,"unableCreateNativeThread":%s,"otherOom":%s,"oomAcceptorSameLine":%s}}},' \
   "$bind_failure_signals_available" "$tomcat_acceptor_signal_count" "$too_many_open_files_count" \
-  "$accept_failed_count" "$bind_oom_count"
+  "$accept_failed_count" "$bind_oom_count" "$bind_java_heap_space_count" "$bind_gc_overhead_count" \
+  "$bind_metaspace_count" "$bind_direct_buffer_count" "$bind_unable_native_thread_count" \
+  "$bind_other_oom_count" "$bind_oom_acceptor_same_line_count"
 printf '"database":{"status":"%s","flywayVersion":%s,"flywaySuccess":%s,' \
   "$db_status" "$flyway_version_json" "$flyway_success"
 printf '"analysisInputSnapshotCount":%s,"securitySnapshotCount":%s,"priceSnapshotCount":%s,"thesisCount":%s,"decisionCount":%s,' \

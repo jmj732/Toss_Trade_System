@@ -121,7 +121,7 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         {
             "available", "oomKilled", "restartCount", "startedAt", "memoryUsageBytes",
             "memoryLimitBytes", "pidsCurrent", "pidsLimit", "healthcheckExitCodes", "tomcatThreads",
-            "threadWaitChannels", "port8080", "fileDescriptors", "javaTools",
+            "threadWaitChannels", "port8080", "fileDescriptors", "javaTools", "jvmFlags",
         },
     )
     runtime_available = require_bool(runtime["available"])
@@ -227,6 +227,35 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
     if not java_tools_available and (jcmd_available is not None or jstack_available is not None):
         raise ValueError("Java tool flags present while unavailable")
 
+    jvm_flags = require_keys(
+        runtime["jvmFlags"],
+        {
+            "available", "environmentAvailable", "xmxPresent", "xmxValue", "xmxUnit",
+            "maxRamPercentagePresent", "maxRamPercentageValue", "exitOnOutOfMemoryError",
+        },
+    )
+    jvm_flags_available = require_bool(jvm_flags["available"])
+    jvm_environment_available = require_bool(jvm_flags["environmentAvailable"])
+    xmx_present = require_bool(jvm_flags["xmxPresent"])
+    xmx_value = None if jvm_flags["xmxValue"] is None else require_count(jvm_flags["xmxValue"])
+    xmx_unit = jvm_flags["xmxUnit"]
+    if xmx_unit is not None and xmx_unit not in {"b", "k", "m", "g"}:
+        raise ValueError("invalid JVM heap size unit")
+    if xmx_value is not None and (xmx_value > 10_000_000_000 or xmx_unit is None or not xmx_present):
+        raise ValueError("invalid JVM heap size")
+    if xmx_value is None and xmx_unit is not None:
+        raise ValueError("JVM heap size unit has no value")
+    max_ram_present = require_bool(jvm_flags["maxRamPercentagePresent"])
+    max_ram_percentage = require_optional_number(jvm_flags["maxRamPercentageValue"], 0, 100)
+    if max_ram_percentage is not None and not max_ram_present:
+        raise ValueError("JVM memory percentage has no corresponding flag")
+    exit_on_oom = require_bool(jvm_flags["exitOnOutOfMemoryError"])
+    if not jvm_flags_available and (
+        jvm_environment_available or xmx_present or xmx_value is not None or xmx_unit is not None
+        or max_ram_present or max_ram_percentage is not None or exit_on_oom
+    ):
+        raise ValueError("JVM flags present while process arguments unavailable")
+
     bind_signals = require_keys(
         diagnostics["bindFailureSignals"],
         {"available", "windowHours", "maxLogLines", "counts"},
@@ -236,7 +265,11 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         raise ValueError("invalid bind failure signal bounds")
     bind_signal_counts = require_keys(
         bind_signals["counts"],
-        {"tomcatAcceptor", "tooManyOpenFiles", "acceptFailed", "outOfMemoryError"},
+        {
+            "tomcatAcceptor", "tooManyOpenFiles", "acceptFailed", "outOfMemoryError", "javaHeapSpace",
+            "gcOverhead", "metaspace", "directBuffer", "unableCreateNativeThread", "otherOom",
+            "oomAcceptorSameLine",
+        },
     )
     sanitized_bind_signal_counts = {
         key: require_count(value) for key, value in bind_signal_counts.items()
@@ -326,6 +359,16 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
                 "available": java_tools_available,
                 "jcmdAvailable": jcmd_available,
                 "jstackAvailable": jstack_available,
+            },
+            "jvmFlags": {
+                "available": jvm_flags_available,
+                "environmentAvailable": jvm_environment_available,
+                "xmxPresent": xmx_present,
+                "xmxValue": xmx_value,
+                "xmxUnit": xmx_unit,
+                "maxRamPercentagePresent": max_ram_present,
+                "maxRamPercentageValue": max_ram_percentage,
+                "exitOnOutOfMemoryError": exit_on_oom,
             },
         },
         "probes": sanitized_probes,
