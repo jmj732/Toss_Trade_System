@@ -114,10 +114,276 @@ def sanitize_portfolio_freshness(raw: Any) -> dict[str, Any]:
     }
 
 
-def sanitize(raw: Any) -> dict[str, Any]:
-    root = require_keys(
-        raw,
+def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
+    diagnostics = require_keys(raw, {"backendRuntime", "probes", "recentExceptions", "bindFailureSignals"})
+    runtime = require_keys(
+        diagnostics["backendRuntime"],
         {
+            "available", "oomKilled", "restartCount", "startedAt", "memoryUsageBytes",
+            "memoryLimitBytes", "pidsCurrent", "pidsLimit", "healthcheckExitCodes", "tomcatThreads",
+            "threadWaitChannels", "port8080", "fileDescriptors", "javaTools", "jvmFlags",
+        },
+    )
+    runtime_available = require_bool(runtime["available"])
+    runtime_oom_killed = require_optional_bool(runtime["oomKilled"])
+    runtime_counts = {
+        key: None if runtime[key] is None else require_count(runtime[key])
+        for key in ("restartCount", "memoryUsageBytes", "memoryLimitBytes", "pidsCurrent", "pidsLimit")
+    }
+    if runtime_counts["restartCount"] is not None and runtime_counts["restartCount"] > 1_000_000_000:
+        raise ValueError("restart count outside allowed range")
+    for key in ("memoryUsageBytes", "memoryLimitBytes"):
+        if runtime_counts[key] is not None and runtime_counts[key] > 2**63 - 1:
+            raise ValueError("memory count outside allowed range")
+    for key in ("pidsCurrent", "pidsLimit"):
+        if runtime_counts[key] is not None and runtime_counts[key] > 1_000_000:
+            raise ValueError("pids count outside allowed range")
+    started_at = require_optional(runtime["startedAt"], TIMESTAMP)
+    healthcheck_codes = runtime["healthcheckExitCodes"]
+    if not isinstance(healthcheck_codes, list) or len(healthcheck_codes) > 20:
+        raise ValueError("invalid healthcheck history")
+    healthcheck_codes = [require_count(code) for code in healthcheck_codes]
+    if any(code > 255 for code in healthcheck_codes):
+        raise ValueError("invalid healthcheck exit code")
+    if not runtime_available and (
+        runtime_oom_killed is not None or any(value is not None for value in runtime_counts.values())
+        or started_at is not None or healthcheck_codes
+    ):
+        raise ValueError("runtime fields present while unavailable")
+
+    threads = require_keys(runtime["tomcatThreads"], {"available", "acceptor", "poller", "exec", "total"})
+    threads_available = require_bool(threads["available"])
+    thread_counts = {
+        key: None if threads[key] is None else require_count(threads[key])
+        for key in ("acceptor", "poller", "exec", "total")
+    }
+    if any(value is not None and value > 100_000 for value in thread_counts.values()):
+        raise ValueError("thread count outside allowed range")
+    if threads_available:
+        if any(value is None for value in thread_counts.values()):
+            raise ValueError("available thread counts are incomplete")
+        if any(thread_counts[key] > thread_counts["total"] for key in ("acceptor", "poller", "exec")):
+            raise ValueError("thread category exceeds total")
+    elif any(value is not None for value in thread_counts.values()):
+        raise ValueError("thread counts present while unavailable")
+
+    wchan = require_keys(
+        runtime["threadWaitChannels"],
+        {"available", "futexWait", "epPoll", "inetCskAccept", "pipeWrite", "other"},
+    )
+    wchan_available = require_bool(wchan["available"])
+    wchan_counts = {
+        key: None if wchan[key] is None else require_count(wchan[key])
+        for key in ("futexWait", "epPoll", "inetCskAccept", "pipeWrite", "other")
+    }
+    if any(value is not None and value > 100_000 for value in wchan_counts.values()):
+        raise ValueError("wait-channel count outside allowed range")
+    if wchan_available:
+        if any(value is None for value in wchan_counts.values()):
+            raise ValueError("available wait-channel counts are incomplete")
+    elif any(value is not None for value in wchan_counts.values()):
+        raise ValueError("wait-channel counts present while unavailable")
+
+    listener = require_keys(runtime["port8080"], {"available", "listenerCount", "rxQueue"})
+    listener_available = require_bool(listener["available"])
+    listener_count = None if listener["listenerCount"] is None else require_count(listener["listenerCount"])
+    listener_rx_queue = None if listener["rxQueue"] is None else require_count(listener["rxQueue"])
+    if listener_count is not None and listener_count > 100:
+        raise ValueError("listener count outside allowed range")
+    if listener_rx_queue is not None and listener_rx_queue > 2**31 - 1:
+        raise ValueError("listener queue outside allowed range")
+    if listener_available and (listener_count is None or listener_rx_queue is None):
+        raise ValueError("available listener data is incomplete")
+    if not listener_available and (listener_count is not None or listener_rx_queue is not None):
+        raise ValueError("listener data present while unavailable")
+
+    file_descriptors = require_keys(
+        runtime["fileDescriptors"],
+        {"available", "countAvailable", "count", "limitsAvailable", "maxOpenFilesSoft", "maxOpenFilesHard"},
+    )
+    fd_available = require_bool(file_descriptors["available"])
+    fd_count_available = require_bool(file_descriptors["countAvailable"])
+    fd_limits_available = require_bool(file_descriptors["limitsAvailable"])
+    fd_count = None if file_descriptors["count"] is None else require_count(file_descriptors["count"])
+    max_open_soft = None if file_descriptors["maxOpenFilesSoft"] is None else require_count(file_descriptors["maxOpenFilesSoft"])
+    max_open_hard = None if file_descriptors["maxOpenFilesHard"] is None else require_count(file_descriptors["maxOpenFilesHard"])
+    if fd_count is not None and fd_count > 10_000_000:
+        raise ValueError("file descriptor count outside allowed range")
+    if any(value is not None and value > 2**63 - 1 for value in (max_open_soft, max_open_hard)):
+        raise ValueError("file descriptor limit outside allowed range")
+    if fd_available != (fd_count_available or fd_limits_available):
+        raise ValueError("file descriptor availability is inconsistent")
+    if fd_count_available != (fd_count is not None):
+        raise ValueError("file descriptor count availability is inconsistent")
+    if not fd_limits_available and any(value is not None for value in (max_open_soft, max_open_hard)):
+        raise ValueError("file descriptor limits present while unavailable")
+
+    java_tools = require_keys(runtime["javaTools"], {"available", "jcmdAvailable", "jstackAvailable"})
+    java_tools_available = require_bool(java_tools["available"])
+    jcmd_available = require_optional_bool(java_tools["jcmdAvailable"])
+    jstack_available = require_optional_bool(java_tools["jstackAvailable"])
+    if java_tools_available and (jcmd_available is None or jstack_available is None):
+        raise ValueError("available Java tool flags are incomplete")
+    if not java_tools_available and (jcmd_available is not None or jstack_available is not None):
+        raise ValueError("Java tool flags present while unavailable")
+
+    jvm_flags = require_keys(
+        runtime["jvmFlags"],
+        {
+            "available", "environmentAvailable", "xmxPresent", "xmxValue", "xmxUnit",
+            "maxRamPercentagePresent", "maxRamPercentageValue", "exitOnOutOfMemoryError",
+        },
+    )
+    jvm_flags_available = require_bool(jvm_flags["available"])
+    jvm_environment_available = require_bool(jvm_flags["environmentAvailable"])
+    xmx_present = require_bool(jvm_flags["xmxPresent"])
+    xmx_value = None if jvm_flags["xmxValue"] is None else require_count(jvm_flags["xmxValue"])
+    xmx_unit = jvm_flags["xmxUnit"]
+    if xmx_unit is not None and xmx_unit not in {"b", "k", "m", "g"}:
+        raise ValueError("invalid JVM heap size unit")
+    if xmx_value is not None and (xmx_value > 10_000_000_000 or xmx_unit is None or not xmx_present):
+        raise ValueError("invalid JVM heap size")
+    if xmx_value is None and xmx_unit is not None:
+        raise ValueError("JVM heap size unit has no value")
+    max_ram_present = require_bool(jvm_flags["maxRamPercentagePresent"])
+    max_ram_percentage = require_optional_number(jvm_flags["maxRamPercentageValue"], 0, 100)
+    if max_ram_percentage is not None and not max_ram_present:
+        raise ValueError("JVM memory percentage has no corresponding flag")
+    exit_on_oom = require_bool(jvm_flags["exitOnOutOfMemoryError"])
+    if not jvm_flags_available and (
+        jvm_environment_available or xmx_present or xmx_value is not None or xmx_unit is not None
+        or max_ram_present or max_ram_percentage is not None or exit_on_oom
+    ):
+        raise ValueError("JVM flags present while process arguments unavailable")
+
+    bind_signals = require_keys(
+        diagnostics["bindFailureSignals"],
+        {"available", "windowHours", "maxLogLines", "counts"},
+    )
+    bind_signals_available = require_bool(bind_signals["available"])
+    if bind_signals["windowHours"] != 36 or bind_signals["maxLogLines"] != 10_000:
+        raise ValueError("invalid bind failure signal bounds")
+    bind_signal_counts = require_keys(
+        bind_signals["counts"],
+        {
+            "tomcatAcceptor", "tooManyOpenFiles", "acceptFailed", "outOfMemoryError", "javaHeapSpace",
+            "gcOverhead", "metaspace", "directBuffer", "unableCreateNativeThread", "otherOom",
+            "oomAcceptorSameLine",
+        },
+    )
+    sanitized_bind_signal_counts = {
+        key: require_count(value) for key, value in bind_signal_counts.items()
+    }
+    if any(value > 10_000 for value in sanitized_bind_signal_counts.values()):
+        raise ValueError("bind failure signal count exceeds inspected log bound")
+    if not bind_signals_available and any(sanitized_bind_signal_counts.values()):
+        raise ValueError("bind failure counts present while logs unavailable")
+
+    probes = require_keys(diagnostics["probes"], {"host", "container"})
+    sanitized_probes: dict[str, dict[str, dict[str, Any]]] = {}
+    allowed_categories = {
+        "EXPECTED_HTTP", "UNEXPECTED_HTTP", "DNS_ERROR", "CONNECTION_REFUSED", "TIMEOUT",
+        "TLS_ERROR", "CONNECTION_CLOSED", "CURL_ERROR", "CONNECTION_ERROR", "UNKNOWN",
+    }
+    for source in ("host", "container"):
+        source_probes = require_keys(probes[source], {"liveness", "readiness", "mcpUnauthenticated"})
+        sanitized_probes[source] = {}
+        for name, expected in (("liveness", "200"), ("readiness", "200"), ("mcpUnauthenticated", "401")):
+            probe = require_keys(
+                source_probes[name], {"expectedHttpStatus", "httpStatus", "exitCode", "category", "durationMs"}
+            )
+            if probe["expectedHttpStatus"] != expected:
+                raise ValueError("invalid expected probe status")
+            status = probe["httpStatus"]
+            if not isinstance(status, str) or re.fullmatch(r"(?:000|[1-5][0-9]{2})", status) is None:
+                raise ValueError("invalid probe HTTP status")
+            exit_code = probe["exitCode"]
+            if exit_code is not None:
+                exit_code = require_count(exit_code)
+                if exit_code > 255:
+                    raise ValueError("invalid probe exit code")
+            category = probe["category"]
+            if category not in allowed_categories:
+                raise ValueError("invalid probe category")
+            duration = probe["durationMs"]
+            if duration is not None:
+                duration = require_count(duration)
+                if duration > 10000:
+                    raise ValueError("probe exceeded its time bound")
+            if status == expected and category != "EXPECTED_HTTP":
+                raise ValueError("expected probe response has inconsistent category")
+            if status != expected and category == "EXPECTED_HTTP":
+                raise ValueError("unexpected probe response has expected category")
+            sanitized_probes[source][name] = {
+                "expectedHttpStatus": expected,
+                "httpStatus": status,
+                "exitCode": exit_code,
+                "category": category,
+                "durationMs": duration,
+            }
+
+    exceptions = require_keys(diagnostics["recentExceptions"], {"available", "counts"})
+    exceptions_available = require_bool(exceptions["available"])
+    exception_counts = require_keys(
+        exceptions["counts"],
+        {"nullPointerException", "outOfMemoryError", "poolTimeout", "socketTimeout", "rejectedExecution"},
+    )
+    sanitized_counts = {key: require_count(value) for key, value in exception_counts.items()}
+    if any(value > 2000 for value in sanitized_counts.values()):
+        raise ValueError("exception count exceeds inspected log bound")
+    if not exceptions_available and any(sanitized_counts.values()):
+        raise ValueError("exception counts present while logs unavailable")
+    return {
+        "backendRuntime": {
+            "available": runtime_available,
+            "oomKilled": runtime_oom_killed,
+            **runtime_counts,
+            "startedAt": started_at,
+            "healthcheckExitCodes": healthcheck_codes,
+            "tomcatThreads": {"available": threads_available, **thread_counts},
+            "threadWaitChannels": {"available": wchan_available, **wchan_counts},
+            "port8080": {
+                "available": listener_available,
+                "listenerCount": listener_count,
+                "rxQueue": listener_rx_queue,
+            },
+            "fileDescriptors": {
+                "available": fd_available,
+                "countAvailable": fd_count_available,
+                "count": fd_count,
+                "limitsAvailable": fd_limits_available,
+                "maxOpenFilesSoft": max_open_soft,
+                "maxOpenFilesHard": max_open_hard,
+            },
+            "javaTools": {
+                "available": java_tools_available,
+                "jcmdAvailable": jcmd_available,
+                "jstackAvailable": jstack_available,
+            },
+            "jvmFlags": {
+                "available": jvm_flags_available,
+                "environmentAvailable": jvm_environment_available,
+                "xmxPresent": xmx_present,
+                "xmxValue": xmx_value,
+                "xmxUnit": xmx_unit,
+                "maxRamPercentagePresent": max_ram_present,
+                "maxRamPercentageValue": max_ram_percentage,
+                "exitOnOutOfMemoryError": exit_on_oom,
+            },
+        },
+        "probes": sanitized_probes,
+        "recentExceptions": {"available": exceptions_available, "counts": sanitized_counts},
+        "bindFailureSignals": {
+            "available": bind_signals_available,
+            "windowHours": 36,
+            "maxLogLines": 10_000,
+            "counts": sanitized_bind_signal_counts,
+        },
+    }
+
+
+def sanitize(raw: Any) -> dict[str, Any]:
+    root_keys = {
             "schemaVersion",
             "ok",
             "expectedSha",
@@ -126,8 +392,10 @@ def sanitize(raw: Any) -> dict[str, Any]:
             "readiness",
             "database",
             "portfolioFreshness",
-        },
-    )
+        }
+    if not isinstance(raw, dict) or frozenset(raw) not in {frozenset(root_keys), frozenset(root_keys | {"httpDiagnostics"})}:
+        raise ValueError("invalid root object shape")
+    root = raw
     if root["schemaVersion"] != 1 or not isinstance(root["ok"], bool):
         raise ValueError("invalid root status")
 
@@ -373,7 +641,7 @@ def sanitize(raw: Any) -> dict[str, Any]:
         "snapshotMatchStatus": snapshot_status,
     }
 
-    return {
+    result = {
         "schemaVersion": 1,
         "ok": root["ok"],
         "expectedSha": expected_sha,
@@ -395,6 +663,9 @@ def sanitize(raw: Any) -> dict[str, Any]:
         },
         "portfolioFreshness": sanitize_portfolio_freshness(root["portfolioFreshness"]),
     }
+    if "httpDiagnostics" in root:
+        result["httpDiagnostics"] = sanitize_http_diagnostics(root["httpDiagnostics"])
+    return result
 
 
 def main() -> int:

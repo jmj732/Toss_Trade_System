@@ -1,6 +1,6 @@
 # 05. 운영, 배포, 검증과 복구
 
-이 문서는 저장소의 기본값과 자동화가 보장하는 절차를 설명한다. 현재 배포 상태, 외부 provider의 가용성, 실제 ChatGPT/MCP 연결, 데이터 신선도는 여기서 확인하지 않았다. 아래 명령은 운영 참고용이며 이번 문서 작업에서 실행하지 않았다. 비밀 값과 계좌·시장 데이터는 기록하지 않는다.
+이 문서는 저장소의 기본값과 자동화가 보장하는 절차를 설명한다. 현재 배포 상태, 외부 provider의 가용성, 실제 ChatGPT/MCP 연결, 데이터 신선도는 일반적으로 여기서 보장하지 않는다. 날짜와 workflow run이 명시된 진단 결과만 해당 시점의 증거로 취급한다. 비밀 값과 계좌·시장 데이터는 기록하지 않는다.
 
 ## 배포 토폴로지와 시작 조건
 
@@ -36,7 +36,11 @@ Scheduler의 시간대, 시작 지연, 간격, 공급자별 활성화는 [`appli
 - 단일 응답 확인 예: `curl -fsS http://127.0.0.1:8080/actuator/health/readiness`. 배포 host에서 접근 가능 여부는 reverse proxy와 network 구성에 달려 있다. readiness 본문이 구성에 따라 상세 상태를 노출할 수 있으므로 외부 공개 설정을 별도로 관리한다.
 - actuator는 `health`, `metrics`, `prometheus`를 expose하도록 설정되어 있다. 로그는 structured ECS console format이다. `CorrelationIdFilter`는 UUID 모양의 요청 상관 ID를 전파하거나 생성하고, operation/outcome/status/duration을 기록한다. `trade.operation.duration` timer와 `WorkflowMetrics`의 stale-running, outbox backlog, dead-letter gauge가 코드에 있다. Compose에는 Prometheus/Grafana/Alertmanager 수집·보관·경보 stack이 포함되지 않는다. endpoint 노출은 실제 scrape나 알림이 설정됐다는 뜻이 아니다.
 - 로그인 사용자용 `GET /api/v1/operations/readiness`는 저장된 provider readiness를 읽는다. `POST /api/v1/operations/readiness/provider-check`는 외부 provider를 직접 호출할 수 있으므로 일반 health check가 아니다. [OperationalReadinessController](../../trading-backend/src/main/java/com/jmj/trade/observability/OperationalReadinessController.java)
-- 수동 GitHub workflow [`runtime-readonly-diagnostic.yml`](../../.github/workflows/runtime-readonly-diagnostic.yml)과 [`runtime-readonly-diagnostic.sh`](../../scripts/runtime-readonly-diagnostic.sh)은 지정된 staging runtime에서 컨테이너·readiness·DB/Flyway 및 일부 sanitized 설정/저장 상태를 읽도록 작성됐다. 진단은 container 재시작, Compose 변경, provider 호출, MCP tool 호출, 사용자 인증 검증, ChatGPT Scheduled Task 검증을 하지 않는다. 이 저장소 문서화 과정에서는 실행하지 않았고, 현재 runtime 상태의 증거가 아니다.
+- 수동 GitHub workflow [`runtime-readonly-diagnostic.yml`](../../.github/workflows/runtime-readonly-diagnostic.yml)과 [`runtime-readonly-diagnostic.sh`](../../scripts/runtime-readonly-diagnostic.sh)은 지정된 staging runtime에서 host/container liveness·readiness와 unauthenticated MCP HTTP status, container healthcheck/runtime/cgroup counters, 최근 30분 allowlisted exception counts, DB/Flyway 및 일부 sanitized 설정/저장 상태를 읽는다. HTTP 진단에는 Tomcat acceptor/poller/executor thread counts, allowlisted `futex`/`epoll`/accept/`pipe_write`/other wait-channel counts, port 8080 listener/receive queue, process FD count와 open-file soft/hard limits, `jcmd`/`jstack` availability booleans, JVM heap/`MaxRAMPercentage`/fail-fast option presence도 포함된다. 별도 로그 요약은 최근 36시간 중 최대 10,000줄에서 Tomcat acceptor, `Too many open files`/`EMFILE`, accept failure, `OutOfMemoryError`와 고정 OOM subtype의 count 및 OOM/Acceptor same-line count만 센다. PID/TID, thread name, socket address, descriptor path, stack, response body, log message, credentials는 artifact에 포함하지 않는다. 진단은 container 재시작, Compose 변경, provider 호출, MCP tool 호출, 사용자 credential 검증, ChatGPT Scheduled Task 검증을 하지 않는다. workflow는 수동 실행 전까지 현재 runtime 상태의 증거가 아니다.
+
+2026-10-19 staging incident에서 workflow run `39255015258`은 12:49:33Z 관측 시점 기준 최근 36시간 `Java heap space` OOM 4건을 셌고, 그중 1개 로그 행에서 Tomcat Acceptor 종료 신호도 함께 확인했다. 같은 incident의 runtime snapshot은 port 8080 listener 1개와 receive queue 101, Acceptor 0개를 보였으며 HTTP/health probe는 응답하지 않았다. DB 조회는 성공했고 계좌 동기화 최신 attempt는 12:48:53Z `SUCCEEDED`, 최신 accepted snapshot의 account1 `asOf`는 12:48:57Z였다. 이는 모든 scheduler가 정상이라는 증거는 아니다. 증거는 heap OOM 이후 Acceptor가 종료되고 요청 queue가 쌓여 HTTP 경로가 중단된 실패 사슬을 확인한다. backend는 해당 snapshot에서 unhealthy였으며, 그 run 이후 상태나 복구 여부는 이 artifact가 확인하지 않는다. 최초 heap pressure의 원인은 확인되지 않았다.
+
+Backend image는 `-XX:+ExitOnOutOfMemoryError`로 OOM 뒤 JVM을 종료하고, staging은 base [`compose.yaml`](../../compose.yaml)의 `restart: unless-stopped` 정책으로 종료된 backend를 다시 시작한다. `-XX:MaxRAMPercentage=50.0`은 768 MiB backend memory limit에서 maximum heap estimate를 기존 약 192 MiB에서 약 384 MiB로 올려 nominal non-heap/native headroom을 남긴다. 이는 자동 회복 경로와 heap sizing guardrail이며 최초 memory pressure 원인을 해결하거나 OOM이 다시 일어나지 않음을 보장하지 않는다. incident 복구는 새 host/container health 및 HTTP probe가 통과한 뒤에만 확인한다.
 
 ## CI, CD와 검증 증거
 

@@ -221,18 +221,50 @@ environment.
 
 Run the GitHub Actions **Read-only runtime diagnostic** workflow manually. It reuses the CD SSH
 secrets and Doppler `trade/stg` environment. Its remote commands inspect Compose container state,
-GET the local readiness endpoint, and run aggregate SQL inside a read-only PostgreSQL transaction;
-it does not deploy, start/restart containers, or call market-data providers. An optional 40-digit
-`expected_sha` checks whether the running backend image tag matches that commit.
+probe host and container liveness/readiness plus the unauthenticated MCP HTTP status, read
+healthcheck/runtime/cgroup counters, count fixed exception classes from the last 30 minutes of
+backend logs, and run aggregate SQL inside a read-only PostgreSQL transaction. It does not deploy,
+start/restart containers, or call market-data providers. Response bodies and log messages/stacks
+are discarded; the artifact contains only HTTP status/exit categories and allowlisted counts. An
+optional 40-digit `expected_sha` checks whether the running backend image tag matches that commit.
 
-The two-day artifact contains image tag/digest, readiness and Flyway status, owner-scoped row
-counts, and a SHA-256 fingerprint for the latest six stored security projections (AVT, CSTM,
+The two-day artifact contains image tag/digest, readiness and Flyway status, bounded host/container
+HTTP probes, backend restart/OOM/start-time and cgroup memory/PID counters, healthcheck exit codes,
+sanitized recent exception counts, Tomcat acceptor/poller/executor thread counts, allowlisted
+thread wait-channel counts (`futex`, `epoll`, accept, `pipe_write`, other), port 8080 listener and
+receive-queue counts, process file-descriptor count, independently available soft/hard open-file
+limits, booleans for `jcmd`/`jstack` availability, and presence/value summaries for `-Xmx`,
+`-XX:MaxRAMPercentage`, and `-XX:+ExitOnOutOfMemoryError`. It also counts fixed log signals for
+Tomcat acceptor mentions, `Too many open files`/`EMFILE`, accept failures, `OutOfMemoryError` subtypes,
+and OOM/Acceptor signals on the same line in at most 10,000 log lines from the last 36 hours. No
+PID/TID, thread name, socket address, descriptor path, stack, log line, or command output is included.
+The artifact also carries owner-scoped row counts and a SHA-256
+fingerprint for the latest six stored security projections (AVT, CSTM,
 GOOGL, LUNR, RDW, VST). The fingerprint contract is published in
 [`scripts/runtime-readonly-fingerprint-v1.json`](../../scripts/runtime-readonly-fingerprint-v1.json).
 It encodes selected price, fundamental, provenance, and consensus fields at stated precision;
 the fingerprint omits security freshness statuses and technical/risk fields, and the artifact
 never emits the raw values, symbols, owner IDs, or credentials. The fingerprint is a comparison
 aid for those selected fields, not proof that other context fields match.
+
+Run `39255015258`, observed at 12:49:33Z on 2026-10-19, counted four `Java heap space` OOM signals
+in the prior 36 hours; one log line also recorded a Tomcat Acceptor termination, with two Acceptor
+mentions total. Earlier runtime snapshots showed one port 8080 listener with receive queue 101 and
+zero Acceptor threads, while host/container HTTP probes failed. The diagnostic also observed a
+successful DB query, a latest account-sync attempt of `SUCCEEDED` at 12:48:53Z, and an accepted
+account1 snapshot `asOf` of 12:48:57Z; this does not establish that every scheduler was healthy.
+The evidence confirms the failure chain from heap OOM through Acceptor termination to the stuck HTTP
+path. The backend was unhealthy at that snapshot; the artifact does not establish later status or
+recovery. The initial source of heap pressure remains unknown.
+
+The backend image now starts with `-XX:+ExitOnOutOfMemoryError` and
+`-XX:MaxRAMPercentage=50.0`. After an OOM, the JVM exits so the existing base Compose
+`restart: unless-stopped` policy can start a replacement process. With the staging backend's
+768 MiB memory limit, the 50% setting gives an estimated 384 MiB maximum heap, up from about
+192 MiB under the previous 25% default, while leaving nominal room for non-heap/native memory.
+This is a fail-fast/restart path and a heap sizing guardrail; it does not identify or fix the initial
+allocation pressure and cannot guarantee OOM-free operation. Confirm recovery with fresh health and
+HTTP probes after deployment.
 
 The artifact also carries a `portfolioFreshness` object read from the owner's
 `investment_os_portfolio_snapshots` rows (V54). It contains only statuses, reason codes, UTC

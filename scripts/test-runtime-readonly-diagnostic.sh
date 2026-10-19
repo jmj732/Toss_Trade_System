@@ -8,6 +8,7 @@ sanitizer="$root/scripts/sanitize-runtime-diagnostic.py"
 contract="$root/scripts/runtime-readonly-fingerprint-v1.json"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
+real_docker_bin="$(command -v docker || true)"
 
 fail() {
   printf 'read-only runtime diagnostic test: FAIL: %s\n' "$1" >&2
@@ -89,6 +90,9 @@ for forbidden in ("'aggregate'", "'metrics'", "Current Price", "Quantity", "Mark
     assert forbidden not in portfolio_sql, f"portfolio query reads a non-freshness sheet field: {forbidden}"
 assert "docker compose" in script and "compose ps -q" in script
 assert "docker inspect" in script and "127.0.0.1:8080/actuator/health/readiness" in script
+assert "timeout 5s docker exec" in script and "--since 36h --tail 10000" in script
+assert script.index('printf "jvmFlags') < script.index('printf "javaTools') < script.index('printf "fdLimits') < script.index('printf "threads') < script.index('printf "fdCount')
+assert '<<EOF' not in script[script.index('if [ -r /proc/1/limits ]'):script.index('if [ -d /proc/1/task ]')]
 assert 'range .Config.Env' in script and '"INVESTMENT_THESIS_AI_POLICY_ENABLED"' in script
 for safe_setting in (
     '"INVESTMENT_OS_SHEET_ENABLED"', '"INVESTMENT_OS_SHEET_USER_ID"',
@@ -138,6 +142,8 @@ case "${1:-}" in
     policy_enabled="$MOCK_BACKEND_AI_POLICY_ENABLED"
     printf '%s\tsha256:%s\t%s\t%s\n' \
       "$MOCK_IMAGE_TAG" "$MOCK_IMAGE_DIGEST" "$MOCK_BACKEND_STATE" "$MOCK_BACKEND_HEALTH"
+    printf 'runtime\tfalse\t3\t2026-10-19T12:00:00.123456789Z\t0\n'
+    printf 'healthcheck\t1\nhealthcheck\t1\nhealthcheck\t0\n'
     [[ "$policy_enabled" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_ENABLED=%s\n' "$policy_enabled"
     [[ "$MOCK_BACKEND_SHEET_ENABLED" == __UNSET__ ]] || printf 'INVESTMENT_OS_SHEET_ENABLED=%s\n' "$MOCK_BACKEND_SHEET_ENABLED"
     [[ "$MOCK_BACKEND_SHEET_OWNER_ID" == __UNSET__ ]] || printf 'INVESTMENT_OS_SHEET_USER_ID=%s\n' "$MOCK_BACKEND_SHEET_OWNER_ID"
@@ -146,7 +152,33 @@ case "${1:-}" in
     [[ "$MOCK_BACKEND_MAX_TRIGGER_PCT" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT=%s\n' "$MOCK_BACKEND_MAX_TRIGGER_PCT"
     ;;
   exec)
-    [[ "${2:-}" == -i ]] || exit 93
+    if [[ "${2:-}" != -i ]]; then
+      if [[ "${3:-}" == sh && "${4:-}" == -c ]]; then
+        if [[ "${MOCK_REAL_COLLECTOR:-0}" == 1 ]]; then
+          "$REAL_DOCKER_BIN" run --rm -i --network none --entrypoint sh \
+            --env 'JAVA_TOOL_OPTIONS=-Xmx512m -XX:MaxRAMPercentage=75.5 -XX:+ExitOnOutOfMemoryError' \
+            --env 'APP_PASSWORD=raw-env-secret' postgres:16-alpine -s <"$MOCK_COLLECTOR_SCRIPT"
+          exit $?
+        fi
+        printf 'memory.current\t10485760\nmemory.max\t805306368\npids.current\t6\npids.max\t0\n'
+        printf 'threads\ttrue\t1\t1\t12\t24\nwchan\ttrue\t2\t5\t1\t3\t13\n'
+        printf 'listener\ttrue\t1\t4\njvmFlags\ttrue\ttrue\ttrue\t512\tm\ttrue\t75.5\ttrue\nfdLimits\ttrue\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\nfdCount\ttrue\t42\n'
+        exit 0
+      fi
+      if [[ "${@: -1}" == http://127.0.0.1:8080/* ]]; then
+        url="${@: -1}"
+        case "$url" in
+          */actuator/health/liveness) status="$MOCK_CONTAINER_LIVENESS_HTTP" ;;
+          */actuator/health/readiness) status="$MOCK_CONTAINER_READINESS_HTTP" ;;
+          */api/v1/connector/mcp) status="$MOCK_CONTAINER_MCP_HTTP" ;;
+          *) exit 96 ;;
+        esac
+        printf '  HTTP/1.1 %s Mock\n' "$status" >&2
+        [[ "$status" == 200 ]] && exit 0
+        exit 1
+      fi
+      exit 93
+    fi
     sql="$(cat)"
     printf '%s\n' "$sql" >>"$MOCK_SQL_LOG"
     [[ "$sql" == *"BEGIN TRANSACTION READ ONLY;"* && "$sql" == *"ROLLBACK;"* ]] || exit 94
@@ -198,6 +230,16 @@ case "${1:-}" in
       exit 98
     fi
     ;;
+  logs)
+    [[ "${MOCK_FAIL_LOGS:-0}" == 0 ]] || exit 97
+    printf 'safe event: java.lang.NullPointerException raw-log-secret-sentinel\n'
+    printf 'HikariPool-1 - Connection is not available, request timed out\n'
+    printf 'SQLTransientConnectionException: pool wait timeout\n'
+    printf 'SocketTimeoutException: read timeout\n'
+    if [[ "$*" == *"--since 36h"* ]]; then
+      printf 'Tomcat http-nio-8080-Acceptor event\nToo many open files\naccept failed\njava.lang.OutOfMemoryError: unable to create native thread\nTomcat http-nio-8080-Acceptor failed: java.lang.OutOfMemoryError: unable to create native thread\njava.lang.OutOfMemoryError: Java heap space\njava.lang.OutOfMemoryError: GC overhead limit exceeded\njava.lang.OutOfMemoryError: Metaspace\njava.lang.OutOfMemoryError: Direct buffer memory\njava.lang.OutOfMemoryError: unknown allocation failure\n'
+    fi
+    ;;
   *)
     exit 99
     ;;
@@ -208,14 +250,50 @@ cat >"$mock_bin/curl" <<'CURL'
 set -euo pipefail
 printf '%s\n' "$*" >>"$MOCK_CURL_LOG"
 out=''
+writeout=''
+url=''
 while (($#)); do
-  if [[ "$1" == --output ]]; then out="$2"; shift 2; else shift; fi
+  case "$1" in
+    --output) out="$2"; shift 2 ;;
+    --write-out) writeout="$2"; shift 2 ;;
+    http://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
 done
-printf '{"status":"%s","secret":"raw-secret-sentinel","container":"raw-container-id-sentinel"}' \
-  "$MOCK_READINESS_STATUS" >"$out"
-printf '%s' "$MOCK_READINESS_HTTP"
+case "$url" in
+  */actuator/health/liveness) name=liveness; status="$MOCK_LIVENESS_HTTP" ;;
+  */actuator/health/readiness) name=readiness; status="$MOCK_READINESS_HTTP" ;;
+  */api/v1/connector/mcp) name=mcp; status="$MOCK_MCP_HTTP" ;;
+  *) exit 98 ;;
+esac
+if [[ "${MOCK_CURL_FAIL:-}" == "$name:"* ]]; then
+  exit_code="${MOCK_CURL_FAIL#*:}"
+  printf '000\t0.012'
+  exit "$exit_code"
+fi
+if [[ "$out" == - ]]; then
+  printf '{"status":"%s","secret":"raw-secret-sentinel","container":"raw-container-id-sentinel"}' \
+    "$MOCK_READINESS_BODY_STATUS"
+elif [[ "$writeout" == *http_code* ]]; then
+  printf '%s\t0.012' "$status"
+fi
+exit 0
 CURL
-chmod +x "$mock_bin/docker" "$mock_bin/curl"
+cat >"$mock_bin/timeout" <<'TIMEOUT'
+#!/usr/bin/env bash
+set -euo pipefail
+shift
+exec "$@"
+TIMEOUT
+cat >"$mock_bin/date" <<'DATE'
+#!/usr/bin/env bash
+set -euo pipefail
+count=0
+[[ -s "$MOCK_DATE_LOG" ]] && count="$(cat "$MOCK_DATE_LOG")"
+printf '%s' "$((count + 1))" >"$MOCK_DATE_LOG"
+printf '%013d\n' "$((1000000000000 + count * 12))"
+DATE
+chmod +x "$mock_bin/docker" "$mock_bin/curl" "$mock_bin/timeout" "$mock_bin/date"
 
 owner_id='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 expected_sha='0123456789abcdef0123456789abcdef01234567'
@@ -230,8 +308,14 @@ mock_run() {
     EXPECTED_SHA="$sha" \
     INVESTMENT_OS_SHEET_USER_ID="$owner_id" \
     MOCK_DOCKER_LOG="$tmp/docker.log" \
+    REAL_DOCKER_BIN="$real_docker_bin" \
+    MOCK_REAL_COLLECTOR="${MOCK_REAL_COLLECTOR:-0}" \
+    MOCK_COLLECTOR_SCRIPT="$tmp/proc-collector.sh" \
     MOCK_SQL_LOG="$tmp/sql.log" \
     MOCK_CURL_LOG="$tmp/curl.log" \
+    MOCK_DATE_LOG="$tmp/date.log" \
+    MOCK_FAIL_LOGS="${MOCK_FAIL_LOGS:-0}" \
+    MOCK_CURL_FAIL="${MOCK_CURL_FAIL:-}" \
     MOCK_BACKEND_CONTAINER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     MOCK_DB_CONTAINER_ID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     MOCK_IMAGE_TAG="${MOCK_IMAGE_TAG:-trade-backend:$expected_sha}" \
@@ -248,7 +332,12 @@ mock_run() {
     MOCK_STORED_POLICY_ENABLED="${MOCK_STORED_POLICY_ENABLED:-true}" \
     MOCK_FAIL_THESIS_REVISIONS="${MOCK_FAIL_THESIS_REVISIONS:-0}" \
     MOCK_READINESS_HTTP="${MOCK_READINESS_HTTP:-200}" \
-    MOCK_READINESS_STATUS="${MOCK_READINESS_STATUS:-UP}" \
+    MOCK_READINESS_BODY_STATUS="${MOCK_READINESS_BODY_STATUS:-UP}" \
+    MOCK_LIVENESS_HTTP="${MOCK_LIVENESS_HTTP:-200}" \
+    MOCK_MCP_HTTP="${MOCK_MCP_HTTP:-401}" \
+    MOCK_CONTAINER_LIVENESS_HTTP="${MOCK_CONTAINER_LIVENESS_HTTP:-200}" \
+    MOCK_CONTAINER_READINESS_HTTP="${MOCK_CONTAINER_READINESS_HTTP:-200}" \
+    MOCK_CONTAINER_MCP_HTTP="${MOCK_CONTAINER_MCP_HTTP:-401}" \
     MOCK_FLYWAY_SUCCESS="${MOCK_FLYWAY_SUCCESS:-true}" \
     MOCK_FAIL_METADATA="${MOCK_FAIL_METADATA:-0}" \
     MOCK_FAIL_PROJECTION="${MOCK_FAIL_PROJECTION:-0}" \
@@ -343,8 +432,83 @@ assert report["portfolioFreshness"] == {
         "positionsPriceSyncedAtMax": "2026-10-09T20:00:00.000Z",
     },
 }
+diagnostics = report["httpDiagnostics"]
+assert diagnostics["backendRuntime"] == {
+    "available": True,
+    "oomKilled": False,
+    "restartCount": 3,
+    "startedAt": "2026-10-19T12:00:00.123Z",
+    "memoryUsageBytes": 10485760,
+    "memoryLimitBytes": 805306368,
+    "pidsCurrent": 6,
+    "pidsLimit": 0,
+    "healthcheckExitCodes": [1, 1, 0],
+    "tomcatThreads": {"available": True, "acceptor": 1, "poller": 1, "exec": 12, "total": 24},
+    "threadWaitChannels": {
+        "available": True,
+        "futexWait": 2,
+        "epPoll": 5,
+        "inetCskAccept": 1,
+        "pipeWrite": 3,
+        "other": 13,
+    },
+    "port8080": {"available": True, "listenerCount": 1, "rxQueue": 4},
+    "fileDescriptors": {
+        "available": True,
+        "countAvailable": True,
+        "count": 42,
+        "limitsAvailable": True,
+        "maxOpenFilesSoft": 1048576,
+        "maxOpenFilesHard": 1048576,
+    },
+    "javaTools": {"available": True, "jcmdAvailable": False, "jstackAvailable": False},
+    "jvmFlags": {
+        "available": True,
+        "environmentAvailable": True,
+        "xmxPresent": True,
+        "xmxValue": 512,
+        "xmxUnit": "m",
+        "maxRamPercentagePresent": True,
+        "maxRamPercentageValue": 75.5,
+        "exitOnOutOfMemoryError": True,
+    },
+}
+for source in ("host", "container"):
+    probes = diagnostics["probes"][source]
+    assert probes["liveness"]["httpStatus"] == "200"
+    assert probes["readiness"]["httpStatus"] == "200"
+    assert probes["mcpUnauthenticated"]["httpStatus"] == "401"
+    assert all(probe["durationMs"] == 12 for probe in probes.values())
+assert diagnostics["recentExceptions"] == {
+    "available": True,
+    "counts": {
+        "nullPointerException": 1,
+        "outOfMemoryError": 0,
+        "poolTimeout": 2,
+        "socketTimeout": 1,
+        "rejectedExecution": 0,
+    },
+}
+assert diagnostics["bindFailureSignals"] == {
+    "available": True,
+    "windowHours": 36,
+    "maxLogLines": 10000,
+    "counts": {
+        "tomcatAcceptor": 2,
+        "tooManyOpenFiles": 1,
+        "acceptFailed": 1,
+        "outOfMemoryError": 7,
+        "javaHeapSpace": 1,
+        "gcOverhead": 1,
+        "metaspace": 1,
+        "directBuffer": 1,
+        "unableCreateNativeThread": 2,
+        "otherOom": 1,
+        "oomAcceptorSameLine": 1,
+    },
+}
 raw = Path(sys.argv[1]).read_text()
-for sentinel in ("raw-financial-sentinel", "raw-provenance-sentinel", "raw-symbol-sentinel", "raw-secret-sentinel", "raw-container-id-sentinel", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
+for sentinel in ("raw-financial-sentinel", "raw-provenance-sentinel", "raw-symbol-sentinel", "raw-secret-sentinel", "raw-container-id-sentinel", "raw-log-secret-sentinel", "java.lang.NullPointerException", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
     assert sentinel not in raw
 PY
 
@@ -422,6 +586,7 @@ from pathlib import Path
 report = json.loads(Path(sys.argv[1]).read_text())
 del report["database"]["aiVerificationPolicy"]
 del report["database"]["thesisRevisionDiagnostics"]
+del report["httpDiagnostics"]
 Path(sys.argv[2]).write_text(json.dumps(report))
 PY
 python3 "$sanitizer" "$tmp/legacy-artifact.json" "$tmp/legacy-artifact-safe.json" ||
@@ -471,6 +636,20 @@ assert report["database"]["thesisRevisionDiagnostics"] == {
 }
 PY
 
+MOCK_FAIL_LOGS=1 mock_run "$tmp/logs-unavailable.json" "$expected_sha" ||
+  fail "log read failure changed the overall diagnostic status"
+python3 "$sanitizer" "$tmp/logs-unavailable.json" "$tmp/logs-unavailable-safe.json" ||
+  fail "log read failure was rejected by the sanitizer"
+python3 - "$tmp/logs-unavailable-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+diagnostics = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["recentExceptions"]
+assert diagnostics["available"] is False
+assert set(diagnostics["counts"].values()) == {0}
+PY
+
 MOCK_FAIL_AI_EVENTS=1 MOCK_FAIL_AI_POLICY=1 \
   mock_run "$tmp/ai-count-query-failure.json" "$expected_sha" ||
   fail "optional AI count-query failures changed the overall diagnostic status"
@@ -505,14 +684,78 @@ if grep -q 'raw-ai-rationale-sentinel' "$tmp/ai-policy-untrusted-safe.json"; the
   fail "sanitizer leaked AI evidence"
 fi
 
+python3 - "$tmp/valid.json" "$tmp/http-diagnostics-untrusted.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+report["httpDiagnostics"]["backendRuntime"]["exceptionMessage"] = "raw-http-exception-secret"
+report["httpDiagnostics"]["backendRuntime"]["threadWaitChannels"]["threadName"] = "raw-thread-secret"
+Path(sys.argv[2]).write_text(json.dumps(report))
+PY
+if python3 "$sanitizer" "$tmp/http-diagnostics-untrusted.json" "$tmp/http-diagnostics-untrusted-safe.json"; then
+  fail "unexpected HTTP diagnostic field passed the allowlist"
+fi
+grep -q 'UNTRUSTED_REMOTE_OUTPUT' "$tmp/http-diagnostics-untrusted-safe.json" ||
+  fail "sanitizer did not reject untrusted HTTP diagnostic shape"
+if grep -Eq 'raw-http-exception-secret|raw-thread-secret' "$tmp/http-diagnostics-untrusted-safe.json"; then
+  fail "sanitizer leaked an HTTP exception field"
+fi
+
+python3 - "$tmp/valid.json" "$tmp/jvm-flags-untrusted.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+report["httpDiagnostics"]["backendRuntime"]["jvmFlags"]["xmxValue"] = "-Xmxraw-jvm-secret"
+Path(sys.argv[2]).write_text(json.dumps(report))
+PY
+if python3 "$sanitizer" "$tmp/jvm-flags-untrusted.json" "$tmp/jvm-flags-untrusted-safe.json"; then
+  fail "raw JVM flag value passed the allowlist"
+fi
+grep -q 'UNTRUSTED_REMOTE_OUTPUT' "$tmp/jvm-flags-untrusted-safe.json" ||
+  fail "sanitizer did not reject an unfiltered JVM flag"
+if grep -q 'raw-jvm-secret' "$tmp/jvm-flags-untrusted-safe.json"; then
+  fail "sanitizer leaked a raw JVM flag"
+fi
+
 MOCK_IMAGE_TAG="trade-backend:ffffffffffffffffffffffffffffffffffffffff" \
   mock_run "$tmp/sha-mismatch.json" "$expected_sha" && fail "mismatched SHA passed"
 grep -q '"expectedShaMatchesImageTag":false' "$tmp/sha-mismatch.json" || fail "image tag SHA mismatch was not reported"
 
-MOCK_READINESS_HTTP=503 MOCK_READINESS_STATUS=DOWN \
+MOCK_READINESS_HTTP=503 MOCK_READINESS_BODY_STATUS=DOWN \
   mock_run "$tmp/readiness-failure.json" '' && fail "readiness failure passed"
 grep -q '"httpStatus":"503","status":"DOWN"' "$tmp/readiness-failure.json" ||
   fail "readiness status was not recorded"
+
+MOCK_CURL_FAIL=liveness:7 mock_run "$tmp/curl-refused.json" "$expected_sha" ||
+  fail "liveness connection refusal changed the overall diagnostic status"
+python3 - "$tmp/curl-refused.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+probe = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["probes"]["host"]["liveness"]
+assert probe["httpStatus"] == "000" and probe["exitCode"] == 7
+assert probe["category"] == "CONNECTION_REFUSED"
+PY
+
+if MOCK_CURL_FAIL=readiness:28 mock_run "$tmp/curl-timeout.json" "$expected_sha"; then
+  fail "readiness curl timeout passed"
+fi
+python3 - "$tmp/curl-timeout.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+probe = report["httpDiagnostics"]["probes"]["host"]["readiness"]
+assert probe["httpStatus"] == "000" and probe["exitCode"] == 28
+assert probe["category"] == "TIMEOUT"
+assert report["readiness"] == {"httpStatus": "000", "status": "UNKNOWN"}
+PY
 
 MOCK_FLYWAY_SUCCESS=false mock_run "$tmp/flyway-failure.json" '' && fail "failed Flyway migration passed"
 grep -q '"flywaySuccess":false' "$tmp/flyway-failure.json" || fail "Flyway failure was not recorded"
@@ -627,6 +870,40 @@ if docker info >/dev/null 2>&1; then
     -e POSTGRES_USER=trade -e "POSTGRES_PASSWORD=$pg_password" -e POSTGRES_DB=trade \
     -e INVESTMENT_THESIS_AI_POLICY_ENABLED=true -e SECRET_SENTINEL=must-not-appear \
     postgres:16-alpine >/dev/null
+  python3 - "$script" "$tmp/proc-collector.sh" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text()
+opening = 'runtime_values="$(timeout 5s docker exec "$backend_id" sh -c \'\n'
+start = source.index(opening) + len(opening)
+end = source.index("\n  ' 2>/dev/null || true)\"", start)
+collector = source[start:end].replace("'\\''", "'")
+Path(sys.argv[2]).write_text(collector)
+PY
+  MOCK_REAL_COLLECTOR=1 mock_run "$tmp/collector-e2e.json" "$expected_sha" ||
+    fail "real Alpine collector did not pass through the runtime parser"
+  python3 "$sanitizer" "$tmp/collector-e2e.json" "$tmp/collector-e2e-safe.json" ||
+    fail "real collector output was rejected by the diagnostic sanitizer"
+  python3 - "$tmp/collector-e2e-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_text()
+assert "APP_PASSWORD" not in raw and "raw-env-secret" not in raw
+flags = json.loads(raw)["httpDiagnostics"]["backendRuntime"]["jvmFlags"]
+assert flags == {
+    "available": True,
+    "environmentAvailable": True,
+    "xmxPresent": True,
+    "xmxValue": 512,
+    "xmxUnit": "m",
+    "maxRamPercentagePresent": True,
+    "maxRamPercentageValue": 75.5,
+    "exitOnOutOfMemoryError": True,
+}, flags
+PY
   inspect_policy="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\t"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{join (slice (split . "=") 1) "="}}{{end}}{{end}}' "$pg_container")"
   IFS=$'\t' read -r _ _ _ _ inspect_policy_enabled <<<"$inspect_policy"
   [[ "$inspect_policy_enabled" == true ]] || fail "narrow Docker inspection did not read the selected policy flag"
@@ -956,7 +1233,7 @@ PY
     fail "portfolio query for an owner without attempts did not return the empty default row"
   after="$(docker exec "$pg_container" psql -X -q -t -A -U trade -d trade -c "$read_sql")"
   [[ "$before" == "$after" ]] || fail "read-only SQL changed fixture row counts"
-  printf 'read-only runtime diagnostic: mock checks and real PostgreSQL SQL checks passed\n'
+  printf 'read-only runtime diagnostic: mock checks, Alpine collector-to-parser E2E, and real PostgreSQL SQL checks passed\n'
 else
   if [[ "${CI:-}" == true ]]; then fail "Docker is required for the real PostgreSQL SQL check in CI"; fi
   printf 'read-only runtime diagnostic: mock checks passed; real PostgreSQL check skipped (Docker unavailable)\n'

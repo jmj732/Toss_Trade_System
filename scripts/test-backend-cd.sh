@@ -40,6 +40,16 @@ done
 test "$(grep -c 'load: true' "$workflow")" -eq 3 || fail "built images must load for SSH transfer"
 test "$(grep -c 'pull: true' "$workflow")" -eq 3 || fail "base images must still be refreshed"
 grep -q 'context: trading-backend' "$workflow" || fail "missing backend build context"
+grep -Fq 'ENTRYPOINT ["java", "-XX:+ExitOnOutOfMemoryError", "-XX:MaxRAMPercentage=50.0", "-jar", "app.jar"]' trading-backend/Dockerfile ||
+  fail "backend JVM must reserve container memory outside the heap and exit on heap exhaustion"
+if ! awk '
+  /^  migrate:/ { in_migrate=1; next }
+  /^  [[:alnum:]_-]+:/ { if (in_migrate) exit }
+  in_migrate && /^    entrypoint: sh$/ { found=1 }
+  END { if (!found) exit 1 }
+' compose.staging.yaml; then
+  fail "the one-shot migration service must keep overriding the backend Java entrypoint"
+fi
 grep -q 'context: analysis-service' "$workflow" || fail "missing analysis build context"
 grep -q 'context: web-dashboard' "$workflow" || fail "missing dashboard build context"
 grep -q 'build-args: BACKEND_URL=http://backend:8080' "$workflow" ||
