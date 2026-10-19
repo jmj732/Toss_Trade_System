@@ -103,6 +103,21 @@ safe_trigger_pct() {
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
+prometheus_capture_script="$tmp_dir/capture-prometheus.py"
+cat >"$prometheus_capture_script" <<'PY'
+import sys
+
+destination = sys.argv[1]
+maximum_bytes = int(sys.argv[2])
+stored_bytes = 0
+with open(destination, "wb") as output:
+    while stored_bytes <= maximum_bytes:
+        chunk = sys.stdin.buffer.read1(min(65_536, maximum_bytes + 1 - stored_bytes))
+        if not chunk:
+            break
+        output.write(chunk)
+        stored_bytes += len(chunk)
+PY
 
 runtime_available='false'
 runtime_oom_killed='null'
@@ -149,6 +164,24 @@ jvm_xmx_unit='null'
 jvm_max_ram_percentage_present='false'
 jvm_max_ram_percentage_value='null'
 jvm_exit_on_oom='false'
+jvm_heap_dump_on_oom='null'
+jvm_jfr_configured='null'
+jvm_gc_logging_configured='null'
+provider_configuration_available='false'
+stock_analysis_sec_enabled='null'
+stock_analysis_sec_fields_configured='null'
+stock_analysis_sec_endpoints_configured='null'
+historical_evidence_available='false'
+historical_logging_driver='unknown'
+previous_backend_container_available='null'
+jvm_memory_available='false'
+jvm_memory_metrics_available='false'
+jvm_memory_http_status='000'
+jvm_memory_category='UNAVAILABLE'
+jvm_heap_used_bytes='null'
+jvm_heap_committed_bytes='null'
+jvm_heap_max_bytes='null'
+jvm_heap_max_unbounded_pool_count='null'
 
 probe_http='000'
 probe_exit='null'
@@ -246,7 +279,7 @@ probe_json() {
 }
 
 if backend_id="$(single_container_id backend)"; then
-  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\n"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_USER_ID"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT"}}{{println .}}{{end}}{{end}}{{printf "runtime\t%t\t%d\t%s\t%v\n" .State.OOMKilled .RestartCount .State.StartedAt .HostConfig.PidsLimit}}{{if .State.Health}}{{range .State.Health.Log}}{{printf "healthcheck\t%d\n" .ExitCode}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
+  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\n"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_USER_ID"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "STOCK_ANALYSIS_SEC_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "SPRING_APPLICATION_JSON"}}{{println .}}{{end}}{{end}}{{printf "runtime\t%t\t%d\t%s\t%v\n" .State.OOMKilled .RestartCount .State.StartedAt .HostConfig.PidsLimit}}{{printf "logDriver\t%s\n" .HostConfig.LogConfig.Type}}{{if .State.Health}}{{range .State.Health.Log}}{{printf "healthcheck\t%d\n" .ExitCode}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
   inspect_header="${inspect%%$'\n'*}"
   IFS=$'\t' read -r candidate_tag candidate_image_id candidate_state candidate_health <<<"$inspect_header"
   inspect_env=''
@@ -258,10 +291,14 @@ if backend_id="$(single_container_id backend)"; then
   candidate_max_evidence_age=''
   candidate_minimum_source_count=''
   candidate_max_trigger_pct=''
+  candidate_stock_analysis_sec_enabled=''
+  candidate_spring_application_json=''
   candidate_runtime_line=''
+  candidate_log_driver=''
   while IFS= read -r config_entry; do
     case "$config_entry" in
       runtime$'\t'*) candidate_runtime_line="$config_entry" ;;
+      logDriver$'\t'*) candidate_log_driver="${config_entry#*$'\t'}" ;;
       healthcheck$'\t'*)
         healthcheck_code="${config_entry#*$'\t'}"
         if [[ "$healthcheck_code" =~ ^[0-9]+$ && "$healthcheck_count" -lt 20 ]]; then
@@ -275,6 +312,8 @@ if backend_id="$(single_container_id backend)"; then
       INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE=*) candidate_max_evidence_age="${config_entry#*=}" ;;
       INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT=*) candidate_minimum_source_count="${config_entry#*=}" ;;
       INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT=*) candidate_max_trigger_pct="${config_entry#*=}" ;;
+      STOCK_ANALYSIS_SEC_ENABLED=*) candidate_stock_analysis_sec_enabled="${config_entry#*=}" ;;
+      SPRING_APPLICATION_JSON=*) candidate_spring_application_json="${config_entry#SPRING_APPLICATION_JSON=}" ;;
     esac
   done <<<"$inspect_env"
   if [[ "$candidate_runtime_line" == runtime$'\t'* ]]; then
@@ -297,6 +336,76 @@ if backend_id="$(single_container_id backend)"; then
   case "${candidate_health:-}" in
     healthy|unhealthy|starting|none) backend_health="$candidate_health" ;;
   esac
+  case "${candidate_log_driver:-}" in
+    json-file|local|journald|syslog|fluentd|gelf|awslogs|splunk|none)
+      historical_logging_driver="$candidate_log_driver"
+      historical_evidence_available='true'
+      ;;
+    '') historical_logging_driver='unknown'; historical_evidence_available='true' ;;
+    *) historical_logging_driver='other'; historical_evidence_available='true' ;;
+  esac
+  if old_backend_ids="$(compose ps -a -q backend 2>/dev/null)"; then
+    previous_backend_container_available='false'
+    while IFS= read -r old_backend_id; do
+      if [[ "$old_backend_id" =~ ^[0-9a-f]{12,64}$ && "$old_backend_id" != "$backend_id" ]]; then
+        previous_backend_container_available='true'
+      fi
+    done <<<"$old_backend_ids"
+    historical_evidence_available='true'
+  fi
+  if [[ -n "$candidate_spring_application_json" ]]; then
+    if sec_summary="$(printf '%s' "$candidate_spring_application_json" | timeout 2s python3 -c '
+import json
+import sys
+
+def as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "on", "1"}:
+            return True
+        if normalized in {"false", "no", "off", "0"}:
+            return False
+    return None
+
+try:
+    config = json.load(sys.stdin)
+    providers = config.get("stock-analysis", {}).get("providers", {})
+    sec = providers.get("sec")
+    if not isinstance(sec, dict):
+        sec = {}
+    enabled = as_bool(sec.get("enabled"))
+    if enabled is None:
+        enabled = as_bool(sys.argv[1])
+    fields = sec.get("fields", {})
+    endpoints = sec.get("endpoints", {})
+    available = isinstance(config, dict) and enabled is not None
+    fields_configured = isinstance(fields, dict) and bool(fields) if available else None
+    endpoints_configured = isinstance(endpoints, dict) and bool(endpoints) if available else None
+    print(chr(9).join(("true" if available else "false",
+                       "null" if enabled is None else ("true" if enabled else "false"),
+                       "null" if fields_configured is None else ("true" if fields_configured else "false"),
+                       "null" if endpoints_configured is None else ("true" if endpoints_configured else "false"))))
+except Exception:
+    print(chr(9).join(("false", "null", "null", "null")))
+' "${candidate_stock_analysis_sec_enabled:-}" 2>/dev/null)"; then
+      IFS=$'\t' read -r provider_configuration_available stock_analysis_sec_enabled \
+        stock_analysis_sec_fields_configured stock_analysis_sec_endpoints_configured <<<"$sec_summary"
+      if [[ "$provider_configuration_available" != true ||
+            ! "$stock_analysis_sec_enabled" =~ ^(true|false|null)$ ||
+            ! "$stock_analysis_sec_fields_configured" =~ ^(true|false|null)$ ||
+            ! "$stock_analysis_sec_endpoints_configured" =~ ^(true|false|null)$ ]]; then
+        provider_configuration_available='false'
+        stock_analysis_sec_enabled='null'
+        stock_analysis_sec_fields_configured='null'
+        stock_analysis_sec_endpoints_configured='null'
+      fi
+    fi
+  elif normalized="$(safe_bool "${candidate_stock_analysis_sec_enabled:-}")"; then
+    provider_configuration_available='true'
+    stock_analysis_sec_enabled="$normalized"
+  fi
   if normalized="$(safe_bool "${candidate_ai_policy_enabled:-}")"; then
     ai_policy_deployment_enabled="$normalized"
     ai_policy_deployment_source='CONTAINER_ENV'
@@ -363,11 +472,14 @@ if [[ -n "$backend_id" ]]; then
           }
         }
         $0 == "-XX:+ExitOnOutOfMemoryError" { exit_on_oom = 1 }
+        $0 == "-XX:+HeapDumpOnOutOfMemoryError" { heap_dump_on_oom = 1 }
+        /^-XX:StartFlightRecording(=|$)/ || $0 == "-XX:+FlightRecorder" || /^-XX:FlightRecorderOptions(=|$)/ { jfr = 1 }
+        /^-Xlog:gc([+:,=].*)?$/ || $0 == "-verbose:gc" || $0 == "-XX:+PrintGCDetails" || $0 == "-XX:+PrintGCDateStamps" { gc_logging = 1 }
         END {
-          printf "jvmFlags\ttrue\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", env_available, (xmx_present ? "true" : "false"), xmx_value, xmx_unit, (ram_present ? "true" : "false"), ram_value, (exit_on_oom ? "true" : "false")
+          printf "jvmFlags\ttrue\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", env_available, (xmx_present ? "true" : "false"), xmx_value, xmx_unit, (ram_present ? "true" : "false"), ram_value, (exit_on_oom ? "true" : "false"), (heap_dump_on_oom ? "true" : "false"), (jfr ? "true" : "false"), (gc_logging ? "true" : "false")
         }'\''
     else
-      printf "jvmFlags\tfalse\tfalse\tfalse\tnull\tnull\tfalse\tnull\tfalse\n"
+      printf "jvmFlags\tfalse\tfalse\tfalse\tnull\tnull\tfalse\tnull\tfalse\tnull\tnull\tnull\n"
     fi
 
     if command -v jcmd >/dev/null 2>&1; then jcmd=true; else jcmd=false; fi
@@ -452,7 +564,7 @@ if [[ -n "$backend_id" ]]; then
       printf "fdCount\tfalse\tnull\n"
     fi
   ' 2>/dev/null || true)"
-  while IFS=$'\t' read -r key value first second third fourth fifth sixth seventh; do
+  while IFS=$'\t' read -r key value first second third fourth fifth sixth seventh eighth ninth tenth; do
     case "$key" in
       memory.current) if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then runtime_memory_current="$value"; fi ;;
       memory.max) if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then runtime_memory_limit="$value"; fi ;;
@@ -503,7 +615,10 @@ if [[ -n "$backend_id" ]]; then
         if [[ "$value" == true && ( "$first" == true || "$first" == false ) &&
               ( "$second" == true || "$second" == false ) &&
               ( "$fifth" == true || "$fifth" == false ) &&
-              ( "$seventh" == true || "$seventh" == false ) ]]; then
+              ( "$seventh" == true || "$seventh" == false ) &&
+              ( "$eighth" == true || "$eighth" == false || "$eighth" == null ) &&
+              ( "$ninth" == true || "$ninth" == false || "$ninth" == null ) &&
+              ( "$tenth" == true || "$tenth" == false || "$tenth" == null ) ]]; then
           jvm_flags_available='true'
           jvm_options_environment_available="$first"
           jvm_xmx_present="$second"
@@ -513,10 +628,133 @@ if [[ -n "$backend_id" ]]; then
           jvm_max_ram_percentage_present="$fifth"
           if [[ "$sixth" =~ ^[0-9]{1,3}([.][0-9]{1,6})?$ ]]; then jvm_max_ram_percentage_value="$sixth"; fi
           jvm_exit_on_oom="$seventh"
+          jvm_heap_dump_on_oom="$eighth"
+          jvm_jfr_configured="$ninth"
+          jvm_gc_logging_configured="$tenth"
         fi
         ;;
     esac
   done <<<"$runtime_values"
+  prometheus_metrics_file="$tmp_dir/prometheus.metrics"
+  prometheus_headers_file="$tmp_dir/prometheus.headers"
+  prometheus_curl_exit=0
+  prometheus_capture_exit=0
+  set +e
+  timeout 4s curl --silent --show-error --connect-timeout 1 --max-time 3 --max-filesize 1048576 \
+    --dump-header "$prometheus_headers_file" --output - \
+    http://127.0.0.1:8080/actuator/prometheus 2>/dev/null |
+    python3 "$prometheus_capture_script" "$prometheus_metrics_file" 1048576 2>/dev/null
+  prometheus_pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  prometheus_curl_exit="${prometheus_pipeline_status[0]:-1}"
+  prometheus_capture_exit="${prometheus_pipeline_status[1]:-1}"
+  if [[ -f "$prometheus_headers_file" ]]; then
+    prometheus_response="$(awk '$1 ~ /^HTTP\// && $2 ~ /^[0-9][0-9][0-9]$/ { status = $2 } END { if (status != "") print status }' \
+      "$prometheus_headers_file")"
+    if [[ "$prometheus_response" =~ ^[0-9]{3}$ ]]; then jvm_memory_http_status="$prometheus_response"; fi
+  fi
+  prometheus_size=0
+  if [[ -f "$prometheus_metrics_file" ]]; then
+    prometheus_size="$(wc -c <"$prometheus_metrics_file" | tr -d '[:space:]')"
+  fi
+  if (( prometheus_curl_exit == 63 )) || { [[ "$prometheus_size" =~ ^[0-9]+$ ]] && (( prometheus_size > 1048576 )); }; then
+    jvm_memory_category='TOO_LARGE'
+  elif (( prometheus_curl_exit == 124 || prometheus_curl_exit == 28 )); then
+    jvm_memory_category='TIMEOUT'
+  elif (( prometheus_curl_exit != 0 || prometheus_capture_exit != 0 )); then
+    jvm_memory_category='REQUEST_FAILED'
+  elif [[ "$jvm_memory_http_status" != 200 ]]; then
+    if [[ "$jvm_memory_http_status" == 000 ]]; then jvm_memory_category='CONNECTION_ERROR'
+    else jvm_memory_category='HTTP_ERROR'; fi
+  else
+    jvm_memory_available='true'
+    if prometheus_summary="$(python3 - "$prometheus_metrics_file" <<'PY'
+import math
+import re
+import sys
+
+MAX_BYTES = 2**63 - 1
+metric = re.compile(r"^(jvm_memory_(used|committed|max)_bytes)\{([^{}]*)\}\s+([^\s]+)(?:\s+[^\s]+)?(?:\s+#.*)?$")
+area = re.compile(r'(?:^|,)\s*area="(heap|nonheap)"(?:,|$)')
+number = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+sums = {"used": 0.0, "committed": 0.0, "max": 0.0}
+counts = {"used": 0, "committed": 0, "max": 0}
+unbounded_max = 0
+invalid = False
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="strict") as source:
+        for line in source:
+            match = metric.fullmatch(line.rstrip("\r\n"))
+            if match is None:
+                continue
+            labels_match = area.search(match.group(3))
+            if labels_match is None or labels_match.group(1) != "heap":
+                continue
+            kind = match.group(2)
+            raw_value = match.group(4)
+            if number.fullmatch(raw_value) is None:
+                invalid = True
+                break
+            value = float(raw_value)
+            if not math.isfinite(value) or value > MAX_BYTES:
+                invalid = True
+                break
+            if kind == "max" and value == -1:
+                unbounded_max += 1
+                counts[kind] += 1
+                continue
+            if value < 0:
+                invalid = True
+                break
+            sums[kind] += value
+            counts[kind] += 1
+            if not math.isfinite(sums[kind]) or sums[kind] > MAX_BYTES:
+                invalid = True
+                break
+except (OSError, UnicodeError):
+    invalid = True
+
+if invalid:
+    print(chr(9).join(("PARSE_ERROR", "false", "null", "null", "null", "null")))
+else:
+    available = all(counts[key] > 0 for key in ("used", "committed", "max"))
+    def value_text(value):
+        return str(int(value)) if value.is_integer() else format(value, ".6f").rstrip("0").rstrip(".")
+    used = value_text(sums["used"]) if counts["used"] else "null"
+    committed = value_text(sums["committed"]) if counts["committed"] else "null"
+    maximum = "null" if not counts["max"] or unbounded_max else value_text(sums["max"])
+    unbounded = str(unbounded_max) if counts["max"] else "null"
+    print(chr(9).join(("OK" if available else "METRICS_MISSING", str(available).lower(), used, committed,
+                       maximum, unbounded)))
+PY
+    2>/dev/null)"; then
+      IFS=$'\t' read -r jvm_memory_category metrics_available_value jvm_heap_used_bytes \
+        jvm_heap_committed_bytes jvm_heap_max_bytes jvm_heap_max_unbounded_pool_count <<<"$prometheus_summary"
+      if [[ "$jvm_memory_category" == OK && "$metrics_available_value" == true ]]; then
+        jvm_memory_metrics_available='true'
+      elif [[ "$jvm_memory_category" == METRICS_MISSING && "$metrics_available_value" == false ]]; then
+        jvm_memory_metrics_available='false'
+      elif [[ "$jvm_memory_category" == PARSE_ERROR ]]; then
+        jvm_memory_available='false'
+        jvm_memory_category='PARSE_ERROR'
+        jvm_heap_used_bytes='null'; jvm_heap_committed_bytes='null'; jvm_heap_max_bytes='null'
+        jvm_heap_max_unbounded_pool_count='null'
+      else
+        jvm_memory_available='false'
+        jvm_memory_category='PARSE_ERROR'
+        jvm_heap_used_bytes='null'; jvm_heap_committed_bytes='null'; jvm_heap_max_bytes='null'
+        jvm_heap_max_unbounded_pool_count='null'
+      fi
+    else
+      jvm_memory_available='false'
+      jvm_memory_category='PARSE_ERROR'
+    fi
+  fi
+  if [[ ! "$jvm_memory_http_status" =~ ^(000|[1-5][0-9]{2})$ ]]; then jvm_memory_http_status='000'; fi
+  if [[ ! "$jvm_heap_used_bytes" =~ ^([0-9]+([.][0-9]+)?|null)$ ]]; then jvm_heap_used_bytes='null'; fi
+  if [[ ! "$jvm_heap_committed_bytes" =~ ^([0-9]+([.][0-9]+)?|null)$ ]]; then jvm_heap_committed_bytes='null'; fi
+  if [[ ! "$jvm_heap_max_bytes" =~ ^([0-9]+([.][0-9]+)?|null)$ ]]; then jvm_heap_max_bytes='null'; fi
+  if [[ ! "$jvm_heap_max_unbounded_pool_count" =~ ^([0-9]{1,4}|null)$ ]]; then jvm_heap_max_unbounded_pool_count='null'; fi
   if logs_summary="$(timeout 5s docker logs --since 30m --tail 2000 "$backend_id" 2>&1 | awk '
     /NullPointerException/ { null_pointer++ }
     /OutOfMemoryError/ { out_of_memory++ }
@@ -1205,17 +1443,26 @@ printf '"javaTools":{"available":%s,"jcmdAvailable":%s,"jstackAvailable":%s},' \
 printf '"jvmFlags":{"available":%s,"environmentAvailable":%s,"xmxPresent":%s,"xmxValue":%s,"xmxUnit":' \
   "$jvm_flags_available" "$jvm_options_environment_available" "$jvm_xmx_present" "$jvm_xmx_value"
 if [[ "$jvm_xmx_unit" == null ]]; then printf 'null'; else printf '"%s"' "$jvm_xmx_unit"; fi
-printf ',"maxRamPercentagePresent":%s,"maxRamPercentageValue":%s,"exitOnOutOfMemoryError":%s}},' \
-  "$jvm_max_ram_percentage_present" "$jvm_max_ram_percentage_value" "$jvm_exit_on_oom"
+printf ',"maxRamPercentagePresent":%s,"maxRamPercentageValue":%s,"exitOnOutOfMemoryError":%s,"heapDumpOnOutOfMemoryError":%s,"jfrConfigured":%s,"gcLoggingConfigured":%s}},' \
+  "$jvm_max_ram_percentage_present" "$jvm_max_ram_percentage_value" "$jvm_exit_on_oom" \
+  "$jvm_heap_dump_on_oom" "$jvm_jfr_configured" "$jvm_gc_logging_configured"
 printf '"probes":{"host":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s},"container":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s}},' \
   "$host_liveness" "$host_readiness" "$host_mcp" "$container_liveness" "$container_readiness" "$container_mcp"
 printf '"recentExceptions":{"available":%s,"counts":{"nullPointerException":%s,"outOfMemoryError":%s,"poolTimeout":%s,"socketTimeout":%s,"rejectedExecution":%s}},' \
   "$exceptions_available" "$null_pointer_count" "$oom_count" "$pool_timeout_count" "$socket_timeout_count" "$rejected_execution_count"
-printf '"bindFailureSignals":{"available":%s,"windowHours":36,"maxLogLines":10000,"counts":{"tomcatAcceptor":%s,"tooManyOpenFiles":%s,"acceptFailed":%s,"outOfMemoryError":%s,"javaHeapSpace":%s,"gcOverhead":%s,"metaspace":%s,"directBuffer":%s,"unableCreateNativeThread":%s,"otherOom":%s,"oomAcceptorSameLine":%s}}},' \
+printf '"bindFailureSignals":{"available":%s,"windowHours":36,"maxLogLines":10000,"counts":{"tomcatAcceptor":%s,"tooManyOpenFiles":%s,"acceptFailed":%s,"outOfMemoryError":%s,"javaHeapSpace":%s,"gcOverhead":%s,"metaspace":%s,"directBuffer":%s,"unableCreateNativeThread":%s,"otherOom":%s,"oomAcceptorSameLine":%s}},' \
   "$bind_failure_signals_available" "$tomcat_acceptor_signal_count" "$too_many_open_files_count" \
   "$accept_failed_count" "$bind_oom_count" "$bind_java_heap_space_count" "$bind_gc_overhead_count" \
   "$bind_metaspace_count" "$bind_direct_buffer_count" "$bind_unable_native_thread_count" \
   "$bind_other_oom_count" "$bind_oom_acceptor_same_line_count"
+printf '"providerConfiguration":{"available":%s,"stockAnalysisSecEnabled":%s,"stockAnalysisSecFieldsConfigured":%s,"stockAnalysisSecEndpointsConfigured":%s},' \
+  "$provider_configuration_available" "$stock_analysis_sec_enabled" \
+  "$stock_analysis_sec_fields_configured" "$stock_analysis_sec_endpoints_configured"
+printf '"jvmMemory":{"available":%s,"metricsAvailable":%s,"httpStatus":"%s","category":"%s","heapUsedBytes":%s,"heapCommittedBytes":%s,"heapMaxBytes":%s,"heapMaxUnboundedPoolCount":%s},' \
+  "$jvm_memory_available" "$jvm_memory_metrics_available" "$jvm_memory_http_status" "$jvm_memory_category" \
+  "$jvm_heap_used_bytes" "$jvm_heap_committed_bytes" "$jvm_heap_max_bytes" "$jvm_heap_max_unbounded_pool_count"
+printf '"historicalEvidence":{"available":%s,"loggingDriver":"%s","previousBackendContainerAvailable":%s}},' \
+  "$historical_evidence_available" "$historical_logging_driver" "$previous_backend_container_available"
 printf '"database":{"status":"%s","flywayVersion":%s,"flywaySuccess":%s,' \
   "$db_status" "$flyway_version_json" "$flyway_success"
 printf '"analysisInputSnapshotCount":%s,"securitySnapshotCount":%s,"priceSnapshotCount":%s,"thesisCount":%s,"decisionCount":%s,' \
