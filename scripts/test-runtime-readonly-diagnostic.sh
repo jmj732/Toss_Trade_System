@@ -264,11 +264,13 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$MOCK_CURL_LOG"
 out=''
 writeout=''
+dump_header=''
 url=''
 while (($#)); do
   case "$1" in
     --output) out="$2"; shift 2 ;;
     --write-out) writeout="$2"; shift 2 ;;
+    --dump-header) dump_header="$2"; shift 2 ;;
     http://*) url="$1"; shift ;;
     *) shift ;;
   esac
@@ -280,10 +282,12 @@ case "$url" in
   */actuator/prometheus)
     name=prometheus
     status="${MOCK_PROMETHEUS_HTTP:-200}"
-    if [[ -n "$out" && "$out" != /dev/null ]]; then
-      case "${MOCK_PROMETHEUS_MODE:-valid}" in
-        valid)
-          cat >"$out" <<'METRICS'
+    if [[ -n "$dump_header" ]]; then
+      printf 'HTTP/1.1 %s Mock\r\nTransfer-Encoding: chunked\r\n\r\n' "$status" >"$dump_header"
+    fi
+    case "${MOCK_PROMETHEUS_MODE:-valid}" in
+      valid|partial)
+        cat <<'METRICS'
 jvm_memory_used_bytes{area="heap",id="G1 Eden Space",raw_label="RAW_METRIC_LABEL_SENTINEL"} 100
 jvm_memory_used_bytes{area="heap",id="G1 Old Gen"} 200
 jvm_memory_committed_bytes{area="heap",id="G1 Eden Space"} 400
@@ -291,27 +295,30 @@ jvm_memory_committed_bytes{area="heap",id="G1 Old Gen"} 800
 jvm_memory_max_bytes{area="heap",id="G1 Eden Space"} 600
 jvm_memory_max_bytes{area="heap",id="G1 Old Gen"} 1200
 METRICS
-          ;;
-        max-unbounded)
-          cat >"$out" <<'METRICS'
+        if [[ "${MOCK_PROMETHEUS_MODE:-valid}" == partial ]]; then
+          exit "${MOCK_PROMETHEUS_TRANSFER_EXIT:-56}"
+        fi
+        ;;
+      max-unbounded)
+        cat <<'METRICS'
 jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} 100
 jvm_memory_committed_bytes{area="heap",id="G1 Eden Space"} 400
 jvm_memory_max_bytes{area="heap",id="G1 Eden Space"} -1
 METRICS
-          ;;
-        missing)
-          printf 'jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} 100\njvm_memory_committed_bytes{area="heap",id="G1 Eden Space"} 400\n' >"$out"
-          ;;
-        invalid)
-          printf 'jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} NaN\n' >"$out"
-          ;;
-        oversized)
-          head -c 1048577 /dev/zero >"$out"
-          ;;
-        *) exit 98 ;;
-      esac
-    fi
-    printf '%s' "$status"
+        ;;
+      missing)
+        printf 'jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} 100\njvm_memory_committed_bytes{area="heap",id="G1 Eden Space"} 400\n'
+        ;;
+      invalid)
+        printf 'jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} NaN\n'
+        ;;
+      oversized)
+        if ! head -c 4194304 /dev/zero; then
+          printf 'PROMETHEUS_STREAM_TRUNCATED\n' >>"$MOCK_CURL_LOG"
+        fi
+        ;;
+      *) exit 98 ;;
+    esac
     exit 0
     ;;
   *) exit 98 ;;
@@ -378,6 +385,7 @@ mock_run() {
     MOCK_SPRING_APPLICATION_JSON="${MOCK_SPRING_APPLICATION_JSON:-{\"stock-analysis\":{\"providers\":{\"sec\":{\"enabled\":true,\"user-agent\":\"raw-provider-secret-sentinel\"}}}}}" \
     MOCK_PROMETHEUS_HTTP="${MOCK_PROMETHEUS_HTTP:-200}" \
     MOCK_PROMETHEUS_MODE="${MOCK_PROMETHEUS_MODE:-valid}" \
+    MOCK_PROMETHEUS_TRANSFER_EXIT="${MOCK_PROMETHEUS_TRANSFER_EXIT:-56}" \
     MOCK_BACKEND_AI_POLICY_ENABLED="${MOCK_BACKEND_AI_POLICY_ENABLED:-true}" \
     MOCK_BACKEND_SHEET_ENABLED="${MOCK_BACKEND_SHEET_ENABLED:-true}" \
     MOCK_BACKEND_SHEET_OWNER_ID="${MOCK_BACKEND_SHEET_OWNER_ID:-AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE}" \
@@ -616,6 +624,8 @@ PY
 
 MOCK_PROMETHEUS_MODE=oversized mock_run "$tmp/prometheus-oversized.json" "$expected_sha" ||
   fail "oversized metrics response changed diagnostic status"
+grep -Fq PROMETHEUS_STREAM_TRUNCATED "$tmp/curl.log" ||
+  fail "unknown-length metrics stream was not stopped at the byte cap"
 python3 "$sanitizer" "$tmp/prometheus-oversized.json" "$tmp/prometheus-oversized-safe.json" ||
   fail "oversized metrics result was rejected by the allowlist"
 python3 - "$tmp/prometheus-oversized-safe.json" <<'PY'
@@ -625,6 +635,21 @@ from pathlib import Path
 
 memory = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["jvmMemory"]
 assert memory["available"] is False and memory["category"] == "TOO_LARGE"
+assert memory["heapUsedBytes"] is None and memory["heapCommittedBytes"] is None and memory["heapMaxBytes"] is None
+PY
+
+MOCK_PROMETHEUS_MODE=partial MOCK_PROMETHEUS_TRANSFER_EXIT=56 mock_run "$tmp/prometheus-partial.json" "$expected_sha" ||
+  fail "partial HTTP 200 metrics response changed diagnostic status"
+python3 "$sanitizer" "$tmp/prometheus-partial.json" "$tmp/prometheus-partial-safe.json" ||
+  fail "partial metrics result was rejected by the allowlist"
+python3 - "$tmp/prometheus-partial-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+memory = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["jvmMemory"]
+assert memory["available"] is False and memory["metricsAvailable"] is False
+assert memory["httpStatus"] == "200" and memory["category"] == "REQUEST_FAILED"
 assert memory["heapUsedBytes"] is None and memory["heapCommittedBytes"] is None and memory["heapMaxBytes"] is None
 PY
 

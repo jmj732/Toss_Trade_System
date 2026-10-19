@@ -334,7 +334,7 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
     memory_category = memory["category"]
     allowed_memory_categories = {
         "OK", "METRICS_MISSING", "HTTP_ERROR", "TIMEOUT", "TOO_LARGE", "PARSE_ERROR",
-        "CONNECTION_ERROR", "UNAVAILABLE",
+        "CONNECTION_ERROR", "REQUEST_FAILED", "UNAVAILABLE",
     }
     if memory_category not in allowed_memory_categories:
         raise ValueError("invalid Prometheus category")

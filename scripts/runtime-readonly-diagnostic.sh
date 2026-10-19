@@ -103,6 +103,21 @@ safe_trigger_pct() {
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
+prometheus_capture_script="$tmp_dir/capture-prometheus.py"
+cat >"$prometheus_capture_script" <<'PY'
+import sys
+
+destination = sys.argv[1]
+maximum_bytes = int(sys.argv[2])
+stored_bytes = 0
+with open(destination, "wb") as output:
+    while stored_bytes <= maximum_bytes:
+        chunk = sys.stdin.buffer.read1(min(65_536, maximum_bytes + 1 - stored_bytes))
+        if not chunk:
+            break
+        output.write(chunk)
+        stored_bytes += len(chunk)
+PY
 
 runtime_available='false'
 runtime_oom_killed='null'
@@ -621,16 +636,23 @@ if [[ -n "$backend_id" ]]; then
     esac
   done <<<"$runtime_values"
   prometheus_metrics_file="$tmp_dir/prometheus.metrics"
-  prometheus_response=''
+  prometheus_headers_file="$tmp_dir/prometheus.headers"
   prometheus_curl_exit=0
-  if prometheus_response="$(timeout 4s curl --silent --show-error --connect-timeout 1 --max-time 3 \
-      --max-filesize 1048576 --output "$prometheus_metrics_file" --write-out '%{http_code}' \
-      http://127.0.0.1:8080/actuator/prometheus 2>/dev/null)"; then
-    prometheus_curl_exit=0
-  else
-    prometheus_curl_exit=$?
+  prometheus_capture_exit=0
+  set +e
+  timeout 4s curl --silent --show-error --connect-timeout 1 --max-time 3 --max-filesize 1048576 \
+    --dump-header "$prometheus_headers_file" --output - \
+    http://127.0.0.1:8080/actuator/prometheus 2>/dev/null |
+    python3 "$prometheus_capture_script" "$prometheus_metrics_file" 1048576 2>/dev/null
+  prometheus_pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  prometheus_curl_exit="${prometheus_pipeline_status[0]:-1}"
+  prometheus_capture_exit="${prometheus_pipeline_status[1]:-1}"
+  if [[ -f "$prometheus_headers_file" ]]; then
+    prometheus_response="$(awk '$1 ~ /^HTTP\// && $2 ~ /^[0-9][0-9][0-9]$/ { status = $2 } END { if (status != "") print status }' \
+      "$prometheus_headers_file")"
+    if [[ "$prometheus_response" =~ ^[0-9]{3}$ ]]; then jvm_memory_http_status="$prometheus_response"; fi
   fi
-  if [[ "$prometheus_response" =~ ^[0-9]{3}$ ]]; then jvm_memory_http_status="$prometheus_response"; fi
   prometheus_size=0
   if [[ -f "$prometheus_metrics_file" ]]; then
     prometheus_size="$(wc -c <"$prometheus_metrics_file" | tr -d '[:space:]')"
@@ -639,6 +661,8 @@ if [[ -n "$backend_id" ]]; then
     jvm_memory_category='TOO_LARGE'
   elif (( prometheus_curl_exit == 124 || prometheus_curl_exit == 28 )); then
     jvm_memory_category='TIMEOUT'
+  elif (( prometheus_curl_exit != 0 || prometheus_capture_exit != 0 )); then
+    jvm_memory_category='REQUEST_FAILED'
   elif [[ "$jvm_memory_http_status" != 200 ]]; then
     if [[ "$jvm_memory_http_status" == 000 ]]; then jvm_memory_category='CONNECTION_ERROR'
     else jvm_memory_category='HTTP_ERROR'; fi
