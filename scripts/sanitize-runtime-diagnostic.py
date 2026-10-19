@@ -115,7 +115,7 @@ def sanitize_portfolio_freshness(raw: Any) -> dict[str, Any]:
 
 
 def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
-    diagnostics = require_keys(raw, {"backendRuntime", "probes", "recentExceptions"})
+    diagnostics = require_keys(raw, {"backendRuntime", "probes", "recentExceptions", "bindFailureSignals"})
     runtime = require_keys(
         diagnostics["backendRuntime"],
         {
@@ -198,9 +198,12 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         raise ValueError("listener data present while unavailable")
 
     file_descriptors = require_keys(
-        runtime["fileDescriptors"], {"available", "count", "maxOpenFilesSoft", "maxOpenFilesHard"}
+        runtime["fileDescriptors"],
+        {"available", "countAvailable", "count", "limitsAvailable", "maxOpenFilesSoft", "maxOpenFilesHard"},
     )
     fd_available = require_bool(file_descriptors["available"])
+    fd_count_available = require_bool(file_descriptors["countAvailable"])
+    fd_limits_available = require_bool(file_descriptors["limitsAvailable"])
     fd_count = None if file_descriptors["count"] is None else require_count(file_descriptors["count"])
     max_open_soft = None if file_descriptors["maxOpenFilesSoft"] is None else require_count(file_descriptors["maxOpenFilesSoft"])
     max_open_hard = None if file_descriptors["maxOpenFilesHard"] is None else require_count(file_descriptors["maxOpenFilesHard"])
@@ -208,10 +211,12 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         raise ValueError("file descriptor count outside allowed range")
     if any(value is not None and value > 2**63 - 1 for value in (max_open_soft, max_open_hard)):
         raise ValueError("file descriptor limit outside allowed range")
-    if fd_available and fd_count is None:
-        raise ValueError("available file descriptor count is missing")
-    if not fd_available and any(value is not None for value in (fd_count, max_open_soft, max_open_hard)):
-        raise ValueError("file descriptor data present while unavailable")
+    if fd_available != (fd_count_available or fd_limits_available):
+        raise ValueError("file descriptor availability is inconsistent")
+    if fd_count_available != (fd_count is not None):
+        raise ValueError("file descriptor count availability is inconsistent")
+    if not fd_limits_available and any(value is not None for value in (max_open_soft, max_open_hard)):
+        raise ValueError("file descriptor limits present while unavailable")
 
     java_tools = require_keys(runtime["javaTools"], {"available", "jcmdAvailable", "jstackAvailable"})
     java_tools_available = require_bool(java_tools["available"])
@@ -221,6 +226,25 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         raise ValueError("available Java tool flags are incomplete")
     if not java_tools_available and (jcmd_available is not None or jstack_available is not None):
         raise ValueError("Java tool flags present while unavailable")
+
+    bind_signals = require_keys(
+        diagnostics["bindFailureSignals"],
+        {"available", "windowHours", "maxLogLines", "counts"},
+    )
+    bind_signals_available = require_bool(bind_signals["available"])
+    if bind_signals["windowHours"] != 36 or bind_signals["maxLogLines"] != 10_000:
+        raise ValueError("invalid bind failure signal bounds")
+    bind_signal_counts = require_keys(
+        bind_signals["counts"],
+        {"tomcatAcceptor", "tooManyOpenFiles", "acceptFailed", "outOfMemoryError"},
+    )
+    sanitized_bind_signal_counts = {
+        key: require_count(value) for key, value in bind_signal_counts.items()
+    }
+    if any(value > 10_000 for value in sanitized_bind_signal_counts.values()):
+        raise ValueError("bind failure signal count exceeds inspected log bound")
+    if not bind_signals_available and any(sanitized_bind_signal_counts.values()):
+        raise ValueError("bind failure counts present while logs unavailable")
 
     probes = require_keys(diagnostics["probes"], {"host", "container"})
     sanitized_probes: dict[str, dict[str, dict[str, Any]]] = {}
@@ -292,7 +316,9 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
             },
             "fileDescriptors": {
                 "available": fd_available,
+                "countAvailable": fd_count_available,
                 "count": fd_count,
+                "limitsAvailable": fd_limits_available,
                 "maxOpenFilesSoft": max_open_soft,
                 "maxOpenFilesHard": max_open_hard,
             },
@@ -304,6 +330,12 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         },
         "probes": sanitized_probes,
         "recentExceptions": {"available": exceptions_available, "counts": sanitized_counts},
+        "bindFailureSignals": {
+            "available": bind_signals_available,
+            "windowHours": 36,
+            "maxLogLines": 10_000,
+            "counts": sanitized_bind_signal_counts,
+        },
     }
 
 

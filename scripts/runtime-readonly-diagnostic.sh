@@ -129,6 +129,8 @@ port_8080_available='false'
 port_8080_listener_count='null'
 port_8080_rx_queue='null'
 fd_diagnostics_available='false'
+fd_count_available='false'
+fd_limits_available='false'
 fd_count='null'
 max_open_files_soft='null'
 max_open_files_hard='null'
@@ -137,6 +139,8 @@ jstack_available='null'
 java_tools_available='false'
 exceptions_available='false'
 exception_counts='0 0 0 0 0'
+bind_failure_signals_available='false'
+bind_failure_signal_counts='0 0 0 0'
 
 probe_http='000'
 probe_exit='null'
@@ -314,7 +318,7 @@ if backend_id="$(single_container_id backend)"; then
 fi
 
 if [[ -n "$backend_id" ]]; then
-  runtime_values="$(timeout 3s docker exec "$backend_id" sh -c '
+  runtime_values="$(timeout 5s docker exec "$backend_id" sh -c '
     for key in memory.current memory.max pids.current pids.max; do
       file="/sys/fs/cgroup/$key"
       if [ -r "$file" ]; then printf "%s\t" "$key"; cat "$file"; fi
@@ -380,12 +384,7 @@ if [[ -n "$backend_id" ]]; then
       printf "listener\tfalse\t0\t0\n"
     fi
 
-    if [ -d /proc/1/fd ] && [ -r /proc/1/limits ]; then
-      fd_count=0
-      for fd_file in /proc/1/fd/[0-9]*; do
-        [ -L "$fd_file" ] || continue
-        fd_count=$((fd_count + 1))
-      done
+    if [ -r /proc/1/limits ]; then
       limits="$(awk '\''$1 == "Max" && $2 == "open" && $3 == "files" {
         soft = ($4 ~ /^[0-9]+$/) ? $4 : "null"
         hard = ($5 ~ /^[0-9]+$/) ? $5 : "null"
@@ -397,14 +396,21 @@ $limits
 EOF
       case "$soft_limit" in ''|*[!0-9]*) soft_limit="null" ;; esac
       case "$hard_limit" in ''|*[!0-9]*) hard_limit="null" ;; esac
-      printf "fd\ttrue\t%d\t%s\t%s\n" "$fd_count" "$soft_limit" "$hard_limit"
+      printf "fdLimits\ttrue\t%s\t%s\n" "$soft_limit" "$hard_limit"
     else
-      printf "fd\tfalse\t0\tnull\tnull\n"
+      printf "fdLimits\tfalse\tnull\tnull\n"
     fi
 
     if command -v jcmd >/dev/null 2>&1; then jcmd=true; else jcmd=false; fi
     if command -v jstack >/dev/null 2>&1; then jstack=true; else jstack=false; fi
     printf "javaTools\ttrue\t%s\t%s\n" "$jcmd" "$jstack"
+
+    if [ -d /proc/1/fd ]; then
+      fd_count="$(ls -1 /proc/1/fd 2>/dev/null | wc -l | tr -d "[:space:]")"
+      case "$fd_count" in ''|*[!0-9]*) printf "fdCount\tfalse\tnull\n" ;; *) printf "fdCount\ttrue\t%s\n" "$fd_count" ;; esac
+    else
+      printf "fdCount\tfalse\tnull\n"
+    fi
   ' 2>/dev/null || true)"
   while IFS=$'\t' read -r key value first second third fourth fifth; do
     case "$key" in
@@ -434,11 +440,16 @@ EOF
           port_8080_available='true'; port_8080_listener_count="$first"; port_8080_rx_queue="$second"
         fi
         ;;
-      fd)
+      fdLimits)
+        if [[ "$value" == true ]]; then
+          fd_limits_available='true'; fd_diagnostics_available='true'
+          if [[ "$first" =~ ^[0-9]{1,15}$ ]]; then max_open_files_soft="$first"; fi
+          if [[ "$second" =~ ^[0-9]{1,15}$ ]]; then max_open_files_hard="$second"; fi
+        fi
+        ;;
+      fdCount)
         if [[ "$value" == true && "$first" =~ ^[0-9]{1,7}$ ]]; then
-          fd_diagnostics_available='true'; fd_count="$first"
-          if [[ "$second" =~ ^[0-9]{1,15}$ ]]; then max_open_files_soft="$second"; fi
-          if [[ "$third" =~ ^[0-9]{1,15}$ ]]; then max_open_files_hard="$third"; fi
+          fd_count_available='true'; fd_diagnostics_available='true'; fd_count="$first"
         fi
         ;;
       javaTools)
@@ -461,6 +472,18 @@ EOF
     if [[ "$logs_summary" =~ ^[0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+$ ]]; then
       exception_counts="$logs_summary"
       exceptions_available='true'
+    fi
+  fi
+  if bind_signals_summary="$(timeout 5s docker logs --since 36h --tail 10000 "$backend_id" 2>&1 | awk '
+    tolower($0) ~ /acceptor/ { tomcat_acceptor++ }
+    tolower($0) ~ /too many open files|emfile/ { too_many_open_files++ }
+    tolower($0) ~ /accept[[:space:]_-]*(failed|error)|failed[[:space:]]+to[[:space:]]+accept/ { accept_failed++ }
+    /OutOfMemoryError/ { out_of_memory++ }
+    END { printf "%d %d %d %d\n", tomcat_acceptor, too_many_open_files, accept_failed, out_of_memory }
+  ' 2>/dev/null)"; then
+    if [[ "$bind_signals_summary" =~ ^[0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+$ ]]; then
+      bind_failure_signal_counts="$bind_signals_summary"
+      bind_failure_signals_available='true'
     fi
   fi
 fi
@@ -1093,6 +1116,7 @@ printf ',"expectedShaMatchesImageTag":%s,"backend":{"imageTag":"%s","imageId":"%
   "$expected_sha_matches" "$backend_tag" "$backend_image_id" "$backend_state" "$backend_health"
 printf '"readiness":{"httpStatus":"%s","status":"%s"},' "$readiness_http" "$readiness_status"
 read -r null_pointer_count oom_count pool_timeout_count socket_timeout_count rejected_execution_count <<<"$exception_counts"
+read -r tomcat_acceptor_signal_count too_many_open_files_count accept_failed_count bind_oom_count <<<"$bind_failure_signal_counts"
 printf '"httpDiagnostics":{"backendRuntime":{"available":%s,"oomKilled":%s,"restartCount":%s,"startedAt":%s,"memoryUsageBytes":%s,"memoryLimitBytes":%s,"pidsCurrent":%s,"pidsLimit":%s,"healthcheckExitCodes":[%s],' \
   "$runtime_available" "$runtime_oom_killed" "$runtime_restart_count" "$runtime_started_at" \
   "$runtime_memory_current" "$runtime_memory_limit" "$runtime_pids_current" "$runtime_pids_limit" "$healthcheck_exit_codes"
@@ -1103,14 +1127,17 @@ printf '"threadWaitChannels":{"available":%s,"futexWait":%s,"epPoll":%s,"inetCsk
   "$wchan_inet_csk_accept_count" "$wchan_pipe_write_count" "$wchan_other_count"
 printf '"port8080":{"available":%s,"listenerCount":%s,"rxQueue":%s},' \
   "$port_8080_available" "$port_8080_listener_count" "$port_8080_rx_queue"
-printf '"fileDescriptors":{"available":%s,"count":%s,"maxOpenFilesSoft":%s,"maxOpenFilesHard":%s},' \
-  "$fd_diagnostics_available" "$fd_count" "$max_open_files_soft" "$max_open_files_hard"
+printf '"fileDescriptors":{"available":%s,"countAvailable":%s,"count":%s,"limitsAvailable":%s,"maxOpenFilesSoft":%s,"maxOpenFilesHard":%s},' \
+  "$fd_diagnostics_available" "$fd_count_available" "$fd_count" "$fd_limits_available" "$max_open_files_soft" "$max_open_files_hard"
 printf '"javaTools":{"available":%s,"jcmdAvailable":%s,"jstackAvailable":%s}},' \
   "$java_tools_available" "$jcmd_available" "$jstack_available"
 printf '"probes":{"host":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s},"container":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s}},' \
   "$host_liveness" "$host_readiness" "$host_mcp" "$container_liveness" "$container_readiness" "$container_mcp"
-printf '"recentExceptions":{"available":%s,"counts":{"nullPointerException":%s,"outOfMemoryError":%s,"poolTimeout":%s,"socketTimeout":%s,"rejectedExecution":%s}}},' \
+printf '"recentExceptions":{"available":%s,"counts":{"nullPointerException":%s,"outOfMemoryError":%s,"poolTimeout":%s,"socketTimeout":%s,"rejectedExecution":%s}},' \
   "$exceptions_available" "$null_pointer_count" "$oom_count" "$pool_timeout_count" "$socket_timeout_count" "$rejected_execution_count"
+printf '"bindFailureSignals":{"available":%s,"windowHours":36,"maxLogLines":10000,"counts":{"tomcatAcceptor":%s,"tooManyOpenFiles":%s,"acceptFailed":%s,"outOfMemoryError":%s}}},' \
+  "$bind_failure_signals_available" "$tomcat_acceptor_signal_count" "$too_many_open_files_count" \
+  "$accept_failed_count" "$bind_oom_count"
 printf '"database":{"status":"%s","flywayVersion":%s,"flywaySuccess":%s,' \
   "$db_status" "$flyway_version_json" "$flyway_success"
 printf '"analysisInputSnapshotCount":%s,"securitySnapshotCount":%s,"priceSnapshotCount":%s,"thesisCount":%s,"decisionCount":%s,' \

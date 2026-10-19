@@ -89,6 +89,8 @@ for forbidden in ("'aggregate'", "'metrics'", "Current Price", "Quantity", "Mark
     assert forbidden not in portfolio_sql, f"portfolio query reads a non-freshness sheet field: {forbidden}"
 assert "docker compose" in script and "compose ps -q" in script
 assert "docker inspect" in script and "127.0.0.1:8080/actuator/health/readiness" in script
+assert "timeout 5s docker exec" in script and "--since 36h --tail 10000" in script
+assert script.index('printf "fdLimits') < script.index('printf "javaTools') < script.index('printf "fdCount')
 assert 'range .Config.Env' in script and '"INVESTMENT_THESIS_AI_POLICY_ENABLED"' in script
 for safe_setting in (
     '"INVESTMENT_OS_SHEET_ENABLED"', '"INVESTMENT_OS_SHEET_USER_ID"',
@@ -152,7 +154,7 @@ case "${1:-}" in
       if [[ "${3:-}" == sh && "${4:-}" == -c ]]; then
         printf 'memory.current\t10485760\nmemory.max\t805306368\npids.current\t6\npids.max\t0\n'
         printf 'threads\ttrue\t1\t1\t12\t24\nwchan\ttrue\t2\t5\t1\t3\t13\n'
-        printf 'listener\ttrue\t1\t4\nfd\ttrue\t42\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\n'
+        printf 'listener\ttrue\t1\t4\nfdLimits\ttrue\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\nfdCount\ttrue\t42\n'
         exit 0
       fi
       if [[ "${@: -1}" == http://127.0.0.1:8080/* ]]; then
@@ -226,6 +228,9 @@ case "${1:-}" in
     printf 'HikariPool-1 - Connection is not available, request timed out\n'
     printf 'SQLTransientConnectionException: pool wait timeout\n'
     printf 'SocketTimeoutException: read timeout\n'
+    if [[ "$*" == *"--since 36h"* ]]; then
+      printf 'Tomcat http-nio-8080-Acceptor event\nToo many open files\naccept failed\njava.lang.OutOfMemoryError: unable to create native thread\n'
+    fi
     ;;
   *)
     exit 99
@@ -439,7 +444,9 @@ assert diagnostics["backendRuntime"] == {
     "port8080": {"available": True, "listenerCount": 1, "rxQueue": 4},
     "fileDescriptors": {
         "available": True,
+        "countAvailable": True,
         "count": 42,
+        "limitsAvailable": True,
         "maxOpenFilesSoft": 1048576,
         "maxOpenFilesHard": 1048576,
     },
@@ -459,6 +466,17 @@ assert diagnostics["recentExceptions"] == {
         "poolTimeout": 2,
         "socketTimeout": 1,
         "rejectedExecution": 0,
+    },
+}
+assert diagnostics["bindFailureSignals"] == {
+    "available": True,
+    "windowHours": 36,
+    "maxLogLines": 10000,
+    "counts": {
+        "tomcatAcceptor": 1,
+        "tooManyOpenFiles": 1,
+        "acceptFailed": 1,
+        "outOfMemoryError": 1,
     },
 }
 raw = Path(sys.argv[1]).read_text()

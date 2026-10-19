@@ -230,7 +230,12 @@ optional 40-digit `expected_sha` checks whether the running backend image tag ma
 
 The two-day artifact contains image tag/digest, readiness and Flyway status, bounded host/container
 HTTP probes, backend restart/OOM/start-time and cgroup memory/PID counters, healthcheck exit codes,
-sanitized recent exception counts, owner-scoped row counts, and a SHA-256 fingerprint for the latest six stored security projections (AVT, CSTM,
+sanitized recent exception counts, Tomcat acceptor/poller/executor thread counts, allowlisted
+thread wait-channel counts (`futex`, `epoll`, accept, `pipe_write`, other), port 8080 listener and
+receive-queue counts, process file-descriptor count and soft/hard open-file limits, and booleans for
+`jcmd`/`jstack` availability. No PID/TID, thread name, socket address, descriptor path, stack, or
+command output is included. The artifact also carries owner-scoped row counts and a SHA-256
+fingerprint for the latest six stored security projections (AVT, CSTM,
 GOOGL, LUNR, RDW, VST). The fingerprint contract is published in
 [`scripts/runtime-readonly-fingerprint-v1.json`](../../scripts/runtime-readonly-fingerprint-v1.json).
 It encodes selected price, fundamental, provenance, and consensus fields at stated precision;
