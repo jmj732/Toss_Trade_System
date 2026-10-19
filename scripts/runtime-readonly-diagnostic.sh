@@ -364,7 +364,7 @@ if [[ -n "$backend_id" ]]; then
         }
         $0 == "-XX:+ExitOnOutOfMemoryError" { exit_on_oom = 1 }
         END {
-          printf "jvmFlags\ttrue\t%s\t%d\t%s\t%s\t%d\t%s\t%d\n", env_available, xmx_present, xmx_value, xmx_unit, ram_present, ram_value, exit_on_oom
+          printf "jvmFlags\ttrue\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", env_available, (xmx_present ? "true" : "false"), xmx_value, xmx_unit, (ram_present ? "true" : "false"), ram_value, (exit_on_oom ? "true" : "false")
         }'\''
     else
       printf "jvmFlags\tfalse\tfalse\tfalse\tnull\tnull\tfalse\tnull\tfalse\n"

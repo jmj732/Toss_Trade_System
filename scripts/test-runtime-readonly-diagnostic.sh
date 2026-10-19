@@ -8,6 +8,7 @@ sanitizer="$root/scripts/sanitize-runtime-diagnostic.py"
 contract="$root/scripts/runtime-readonly-fingerprint-v1.json"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
+real_docker_bin="$(command -v docker || true)"
 
 fail() {
   printf 'read-only runtime diagnostic test: FAIL: %s\n' "$1" >&2
@@ -153,6 +154,12 @@ case "${1:-}" in
   exec)
     if [[ "${2:-}" != -i ]]; then
       if [[ "${3:-}" == sh && "${4:-}" == -c ]]; then
+        if [[ "${MOCK_REAL_COLLECTOR:-0}" == 1 ]]; then
+          "$REAL_DOCKER_BIN" run --rm -i --network none --entrypoint sh \
+            --env 'JAVA_TOOL_OPTIONS=-Xmx512m -XX:MaxRAMPercentage=75.5 -XX:+ExitOnOutOfMemoryError' \
+            --env 'APP_PASSWORD=raw-env-secret' postgres:16-alpine -s <"$MOCK_COLLECTOR_SCRIPT"
+          exit $?
+        fi
         printf 'memory.current\t10485760\nmemory.max\t805306368\npids.current\t6\npids.max\t0\n'
         printf 'threads\ttrue\t1\t1\t12\t24\nwchan\ttrue\t2\t5\t1\t3\t13\n'
         printf 'listener\ttrue\t1\t4\njvmFlags\ttrue\ttrue\ttrue\t512\tm\ttrue\t75.5\ttrue\nfdLimits\ttrue\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\nfdCount\ttrue\t42\n'
@@ -301,6 +308,9 @@ mock_run() {
     EXPECTED_SHA="$sha" \
     INVESTMENT_OS_SHEET_USER_ID="$owner_id" \
     MOCK_DOCKER_LOG="$tmp/docker.log" \
+    REAL_DOCKER_BIN="$real_docker_bin" \
+    MOCK_REAL_COLLECTOR="${MOCK_REAL_COLLECTOR:-0}" \
+    MOCK_COLLECTOR_SCRIPT="$tmp/proc-collector.sh" \
     MOCK_SQL_LOG="$tmp/sql.log" \
     MOCK_CURL_LOG="$tmp/curl.log" \
     MOCK_DATE_LOG="$tmp/date.log" \
@@ -860,6 +870,40 @@ if docker info >/dev/null 2>&1; then
     -e POSTGRES_USER=trade -e "POSTGRES_PASSWORD=$pg_password" -e POSTGRES_DB=trade \
     -e INVESTMENT_THESIS_AI_POLICY_ENABLED=true -e SECRET_SENTINEL=must-not-appear \
     postgres:16-alpine >/dev/null
+  python3 - "$script" "$tmp/proc-collector.sh" <<'PY'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text()
+opening = 'runtime_values="$(timeout 5s docker exec "$backend_id" sh -c \'\n'
+start = source.index(opening) + len(opening)
+end = source.index("\n  ' 2>/dev/null || true)\"", start)
+collector = source[start:end].replace("'\\''", "'")
+Path(sys.argv[2]).write_text(collector)
+PY
+  MOCK_REAL_COLLECTOR=1 mock_run "$tmp/collector-e2e.json" "$expected_sha" ||
+    fail "real Alpine collector did not pass through the runtime parser"
+  python3 "$sanitizer" "$tmp/collector-e2e.json" "$tmp/collector-e2e-safe.json" ||
+    fail "real collector output was rejected by the diagnostic sanitizer"
+  python3 - "$tmp/collector-e2e-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_text()
+assert "APP_PASSWORD" not in raw and "raw-env-secret" not in raw
+flags = json.loads(raw)["httpDiagnostics"]["backendRuntime"]["jvmFlags"]
+assert flags == {
+    "available": True,
+    "environmentAvailable": True,
+    "xmxPresent": True,
+    "xmxValue": 512,
+    "xmxUnit": "m",
+    "maxRamPercentagePresent": True,
+    "maxRamPercentageValue": 75.5,
+    "exitOnOutOfMemoryError": True,
+}, flags
+PY
   inspect_policy="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\t"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{join (slice (split . "=") 1) "="}}{{end}}{{end}}' "$pg_container")"
   IFS=$'\t' read -r _ _ _ _ inspect_policy_enabled <<<"$inspect_policy"
   [[ "$inspect_policy_enabled" == true ]] || fail "narrow Docker inspection did not read the selected policy flag"
@@ -1189,7 +1233,7 @@ PY
     fail "portfolio query for an owner without attempts did not return the empty default row"
   after="$(docker exec "$pg_container" psql -X -q -t -A -U trade -d trade -c "$read_sql")"
   [[ "$before" == "$after" ]] || fail "read-only SQL changed fixture row counts"
-  printf 'read-only runtime diagnostic: mock checks and real PostgreSQL SQL checks passed\n'
+  printf 'read-only runtime diagnostic: mock checks, Alpine collector-to-parser E2E, and real PostgreSQL SQL checks passed\n'
 else
   if [[ "${CI:-}" == true ]]; then fail "Docker is required for the real PostgreSQL SQL check in CI"; fi
   printf 'read-only runtime diagnostic: mock checks passed; real PostgreSQL check skipped (Docker unavailable)\n'
