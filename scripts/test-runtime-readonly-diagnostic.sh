@@ -90,10 +90,15 @@ for forbidden in ("'aggregate'", "'metrics'", "Current Price", "Quantity", "Mark
     assert forbidden not in portfolio_sql, f"portfolio query reads a non-freshness sheet field: {forbidden}"
 assert "docker compose" in script and "compose ps -q" in script
 assert "docker inspect" in script and "127.0.0.1:8080/actuator/health/readiness" in script
+assert "127.0.0.1:8080/actuator/prometheus" in script
+assert "--max-filesize 1048576" in script and "--max-time 3" in script
+assert "compose ps -a -q backend" in script
+assert '"SPRING_APPLICATION_JSON"' in script and '"STOCK_ANALYSIS_SEC_ENABLED"' in script
 assert "timeout 5s docker exec" in script and "--since 36h --tail 10000" in script
 assert script.index('printf "jvmFlags') < script.index('printf "javaTools') < script.index('printf "fdLimits') < script.index('printf "threads') < script.index('printf "fdCount')
 assert '<<EOF' not in script[script.index('if [ -r /proc/1/limits ]'):script.index('if [ -d /proc/1/task ]')]
 assert 'range .Config.Env' in script and '"INVESTMENT_THESIS_AI_POLICY_ENABLED"' in script
+assert '"SPRING_APPLICATION_JSON"' in script and '"STOCK_ANALYSIS_SEC_ENABLED"' in script
 for safe_setting in (
     '"INVESTMENT_OS_SHEET_ENABLED"', '"INVESTMENT_OS_SHEET_USER_ID"',
     '"INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"',
@@ -131,6 +136,11 @@ printf '%s\n' "$*" >>"$MOCK_DOCKER_LOG"
 case "${1:-}" in
   compose)
     service="${@: -1}"
+    if [[ "$*" == *" ps -a -q backend" ]]; then
+      printf '%s\n' "$MOCK_BACKEND_CONTAINER_ID"
+      [[ -z "$MOCK_OLD_BACKEND_CONTAINER_ID" ]] || printf '%s\n' "$MOCK_OLD_BACKEND_CONTAINER_ID"
+      exit 0
+    fi
     [[ "$*" == *" ps -q $service" ]] || exit 91
     case "$service" in
       backend) printf '%s\n' "$MOCK_BACKEND_CONTAINER_ID" ;;
@@ -143,7 +153,10 @@ case "${1:-}" in
     printf '%s\tsha256:%s\t%s\t%s\n' \
       "$MOCK_IMAGE_TAG" "$MOCK_IMAGE_DIGEST" "$MOCK_BACKEND_STATE" "$MOCK_BACKEND_HEALTH"
     printf 'runtime\tfalse\t3\t2026-10-19T12:00:00.123456789Z\t0\n'
+    printf 'logDriver\t%s\n' "$MOCK_LOG_DRIVER"
     printf 'healthcheck\t1\nhealthcheck\t1\nhealthcheck\t0\n'
+    printf 'STOCK_ANALYSIS_SEC_ENABLED=%s\n' "$MOCK_STOCK_ANALYSIS_SEC_ENABLED"
+    printf 'SPRING_APPLICATION_JSON=%s\n' "$MOCK_SPRING_APPLICATION_JSON"
     [[ "$policy_enabled" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_ENABLED=%s\n' "$policy_enabled"
     [[ "$MOCK_BACKEND_SHEET_ENABLED" == __UNSET__ ]] || printf 'INVESTMENT_OS_SHEET_ENABLED=%s\n' "$MOCK_BACKEND_SHEET_ENABLED"
     [[ "$MOCK_BACKEND_SHEET_OWNER_ID" == __UNSET__ ]] || printf 'INVESTMENT_OS_SHEET_USER_ID=%s\n' "$MOCK_BACKEND_SHEET_OWNER_ID"
@@ -162,7 +175,7 @@ case "${1:-}" in
         fi
         printf 'memory.current\t10485760\nmemory.max\t805306368\npids.current\t6\npids.max\t0\n'
         printf 'threads\ttrue\t1\t1\t12\t24\nwchan\ttrue\t2\t5\t1\t3\t13\n'
-        printf 'listener\ttrue\t1\t4\njvmFlags\ttrue\ttrue\ttrue\t512\tm\ttrue\t75.5\ttrue\nfdLimits\ttrue\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\nfdCount\ttrue\t42\n'
+        printf 'listener\ttrue\t1\t4\njvmFlags\ttrue\ttrue\ttrue\t512\tm\ttrue\t75.5\ttrue\tfalse\tfalse\tfalse\nfdLimits\ttrue\t1048576\t1048576\njavaTools\ttrue\tfalse\tfalse\nfdCount\ttrue\t42\n'
         exit 0
       fi
       if [[ "${@: -1}" == http://127.0.0.1:8080/* ]]; then
@@ -264,6 +277,43 @@ case "$url" in
   */actuator/health/liveness) name=liveness; status="$MOCK_LIVENESS_HTTP" ;;
   */actuator/health/readiness) name=readiness; status="$MOCK_READINESS_HTTP" ;;
   */api/v1/connector/mcp) name=mcp; status="$MOCK_MCP_HTTP" ;;
+  */actuator/prometheus)
+    name=prometheus
+    status="${MOCK_PROMETHEUS_HTTP:-200}"
+    if [[ -n "$out" && "$out" != /dev/null ]]; then
+      case "${MOCK_PROMETHEUS_MODE:-valid}" in
+        valid)
+          cat >"$out" <<'METRICS'
+jvm_memory_used_bytes{area="heap",id="G1 Eden Space",raw_label="RAW_METRIC_LABEL_SENTINEL"} 100
+jvm_memory_used_bytes{area="heap",id="G1 Old Gen"} 200
+jvm_memory_committed_bytes{area="heap",id="G1 Eden Space"} 400
+jvm_memory_committed_bytes{area="heap",id="G1 Old Gen"} 800
+jvm_memory_max_bytes{area="heap",id="G1 Eden Space"} 600
+jvm_memory_max_bytes{area="heap",id="G1 Old Gen"} 1200
+METRICS
+          ;;
+        max-unbounded)
+          cat >"$out" <<'METRICS'
+jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} 100
+jvm_memory_committed_bytes{area="heap",id="G1 Eden Space"} 400
+jvm_memory_max_bytes{area="heap",id="G1 Eden Space"} -1
+METRICS
+          ;;
+        missing)
+          printf 'jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} 100\njvm_memory_committed_bytes{area="heap",id="G1 Eden Space"} 400\n' >"$out"
+          ;;
+        invalid)
+          printf 'jvm_memory_used_bytes{area="heap",id="G1 Eden Space"} NaN\n' >"$out"
+          ;;
+        oversized)
+          head -c 1048577 /dev/zero >"$out"
+          ;;
+        *) exit 98 ;;
+      esac
+    fi
+    printf '%s' "$status"
+    exit 0
+    ;;
   *) exit 98 ;;
 esac
 if [[ "${MOCK_CURL_FAIL:-}" == "$name:"* ]]; then
@@ -322,6 +372,12 @@ mock_run() {
     MOCK_IMAGE_DIGEST="$image_digest" \
     MOCK_BACKEND_STATE="${MOCK_BACKEND_STATE:-running}" \
     MOCK_BACKEND_HEALTH="${MOCK_BACKEND_HEALTH:-healthy}" \
+    MOCK_OLD_BACKEND_CONTAINER_ID="${MOCK_OLD_BACKEND_CONTAINER_ID:-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}" \
+    MOCK_LOG_DRIVER="${MOCK_LOG_DRIVER:-json-file}" \
+    MOCK_STOCK_ANALYSIS_SEC_ENABLED="${MOCK_STOCK_ANALYSIS_SEC_ENABLED:-false}" \
+    MOCK_SPRING_APPLICATION_JSON="${MOCK_SPRING_APPLICATION_JSON:-{\"stock-analysis\":{\"providers\":{\"sec\":{\"enabled\":true,\"user-agent\":\"raw-provider-secret-sentinel\"}}}}}" \
+    MOCK_PROMETHEUS_HTTP="${MOCK_PROMETHEUS_HTTP:-200}" \
+    MOCK_PROMETHEUS_MODE="${MOCK_PROMETHEUS_MODE:-valid}" \
     MOCK_BACKEND_AI_POLICY_ENABLED="${MOCK_BACKEND_AI_POLICY_ENABLED:-true}" \
     MOCK_BACKEND_SHEET_ENABLED="${MOCK_BACKEND_SHEET_ENABLED:-true}" \
     MOCK_BACKEND_SHEET_OWNER_ID="${MOCK_BACKEND_SHEET_OWNER_ID:-AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE}" \
@@ -471,7 +527,31 @@ assert diagnostics["backendRuntime"] == {
         "maxRamPercentagePresent": True,
         "maxRamPercentageValue": 75.5,
         "exitOnOutOfMemoryError": True,
+        "heapDumpOnOutOfMemoryError": False,
+        "jfrConfigured": False,
+        "gcLoggingConfigured": False,
     },
+}
+assert diagnostics["providerConfiguration"] == {
+    "available": True,
+    "stockAnalysisSecEnabled": True,
+    "stockAnalysisSecFieldsConfigured": False,
+    "stockAnalysisSecEndpointsConfigured": False,
+}
+assert diagnostics["jvmMemory"] == {
+    "available": True,
+    "metricsAvailable": True,
+    "httpStatus": "200",
+    "category": "OK",
+    "heapUsedBytes": 300,
+    "heapCommittedBytes": 1200,
+    "heapMaxBytes": 1800,
+    "heapMaxUnboundedPoolCount": 0,
+}
+assert diagnostics["historicalEvidence"] == {
+    "available": True,
+    "loggingDriver": "json-file",
+    "previousBackendContainerAvailable": True,
 }
 for source in ("host", "container"):
     probes = diagnostics["probes"][source]
@@ -508,8 +588,88 @@ assert diagnostics["bindFailureSignals"] == {
     },
 }
 raw = Path(sys.argv[1]).read_text()
-for sentinel in ("raw-financial-sentinel", "raw-provenance-sentinel", "raw-symbol-sentinel", "raw-secret-sentinel", "raw-container-id-sentinel", "raw-log-secret-sentinel", "java.lang.NullPointerException", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
+for sentinel in ("raw-financial-sentinel", "raw-provenance-sentinel", "raw-symbol-sentinel", "raw-secret-sentinel", "raw-container-id-sentinel", "raw-log-secret-sentinel", "raw-provider-secret-sentinel", "RAW_METRIC_LABEL_SENTINEL", "java.lang.NullPointerException", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
     assert sentinel not in raw
+PY
+
+MOCK_PROMETHEUS_HTTP=403 mock_run "$tmp/prometheus-forbidden.json" "$expected_sha" ||
+  fail "HTTP 403 from the metrics endpoint changed diagnostic status"
+python3 "$sanitizer" "$tmp/prometheus-forbidden.json" "$tmp/prometheus-forbidden-safe.json" ||
+  fail "HTTP 403 metrics result was rejected by the allowlist"
+python3 - "$tmp/prometheus-forbidden-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+assert report["httpDiagnostics"]["jvmMemory"] == {
+    "available": False,
+    "metricsAvailable": False,
+    "httpStatus": "403",
+    "category": "HTTP_ERROR",
+    "heapUsedBytes": None,
+    "heapCommittedBytes": None,
+    "heapMaxBytes": None,
+    "heapMaxUnboundedPoolCount": None,
+}
+PY
+
+MOCK_PROMETHEUS_MODE=oversized mock_run "$tmp/prometheus-oversized.json" "$expected_sha" ||
+  fail "oversized metrics response changed diagnostic status"
+python3 "$sanitizer" "$tmp/prometheus-oversized.json" "$tmp/prometheus-oversized-safe.json" ||
+  fail "oversized metrics result was rejected by the allowlist"
+python3 - "$tmp/prometheus-oversized-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+memory = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["jvmMemory"]
+assert memory["available"] is False and memory["category"] == "TOO_LARGE"
+assert memory["heapUsedBytes"] is None and memory["heapCommittedBytes"] is None and memory["heapMaxBytes"] is None
+PY
+
+MOCK_PROMETHEUS_MODE=missing mock_run "$tmp/prometheus-missing.json" "$expected_sha" ||
+  fail "missing metrics changed diagnostic status"
+python3 "$sanitizer" "$tmp/prometheus-missing.json" "$tmp/prometheus-missing-safe.json" ||
+  fail "missing metrics result was rejected by the allowlist"
+python3 - "$tmp/prometheus-missing-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+memory = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["jvmMemory"]
+assert memory["available"] is True and memory["metricsAvailable"] is False
+assert memory["heapUsedBytes"] == 100 and memory["heapCommittedBytes"] == 400
+assert memory["heapMaxBytes"] is None and memory["heapMaxUnboundedPoolCount"] is None
+PY
+
+MOCK_PROMETHEUS_MODE=invalid mock_run "$tmp/prometheus-invalid.json" "$expected_sha" ||
+  fail "invalid metrics changed diagnostic status"
+python3 "$sanitizer" "$tmp/prometheus-invalid.json" "$tmp/prometheus-invalid-safe.json" ||
+  fail "invalid metrics result was rejected by the allowlist"
+python3 - "$tmp/prometheus-invalid-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+memory = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["jvmMemory"]
+assert memory["available"] is False and memory["category"] == "PARSE_ERROR"
+assert memory["heapUsedBytes"] is None and memory["heapCommittedBytes"] is None
+assert memory["heapMaxBytes"] is None and memory["heapMaxUnboundedPoolCount"] is None
+PY
+
+MOCK_PROMETHEUS_MODE=max-unbounded mock_run "$tmp/prometheus-max-unbounded.json" "$expected_sha" ||
+  fail "unbounded heap max changed diagnostic status"
+python3 "$sanitizer" "$tmp/prometheus-max-unbounded.json" "$tmp/prometheus-max-unbounded-safe.json" ||
+  fail "unbounded heap max result was rejected by the allowlist"
+python3 - "$tmp/prometheus-max-unbounded-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+memory = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["jvmMemory"]
+assert memory["metricsAvailable"] is True and memory["heapMaxBytes"] is None
+assert memory["heapMaxUnboundedPoolCount"] == 1
 PY
 
 MOCK_AI_EVENT_SCHEMA=false MOCK_AI_POLICY_SCHEMA=false MOCK_AI_POLICY_ENABLED=false \
@@ -902,6 +1062,9 @@ assert flags == {
     "maxRamPercentagePresent": True,
     "maxRamPercentageValue": 75.5,
     "exitOnOutOfMemoryError": True,
+    "heapDumpOnOutOfMemoryError": False,
+    "jfrConfigured": False,
+    "gcLoggingConfigured": False,
 }, flags
 PY
   inspect_policy="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\t"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{join (slice (split . "=") 1) "="}}{{end}}{{end}}' "$pg_container")"

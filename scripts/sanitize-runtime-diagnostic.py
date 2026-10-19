@@ -115,7 +115,11 @@ def sanitize_portfolio_freshness(raw: Any) -> dict[str, Any]:
 
 
 def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
-    diagnostics = require_keys(raw, {"backendRuntime", "probes", "recentExceptions", "bindFailureSignals"})
+    legacy_diagnostic_keys = {"backendRuntime", "probes", "recentExceptions", "bindFailureSignals"}
+    extended_diagnostic_keys = legacy_diagnostic_keys | {"providerConfiguration", "jvmMemory", "historicalEvidence"}
+    if not isinstance(raw, dict) or frozenset(raw) not in {frozenset(legacy_diagnostic_keys), frozenset(extended_diagnostic_keys)}:
+        raise ValueError("invalid HTTP diagnostic shape")
+    diagnostics = raw
     runtime = require_keys(
         diagnostics["backendRuntime"],
         {
@@ -227,13 +231,19 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
     if not java_tools_available and (jcmd_available is not None or jstack_available is not None):
         raise ValueError("Java tool flags present while unavailable")
 
-    jvm_flags = require_keys(
-        runtime["jvmFlags"],
-        {
-            "available", "environmentAvailable", "xmxPresent", "xmxValue", "xmxUnit",
-            "maxRamPercentagePresent", "maxRamPercentageValue", "exitOnOutOfMemoryError",
-        },
-    )
+    legacy_jvm_flag_keys = {
+        "available", "environmentAvailable", "xmxPresent", "xmxValue", "xmxUnit",
+        "maxRamPercentagePresent", "maxRamPercentageValue", "exitOnOutOfMemoryError",
+    }
+    extended_jvm_flag_keys = legacy_jvm_flag_keys | {
+        "heapDumpOnOutOfMemoryError", "jfrConfigured", "gcLoggingConfigured"
+    }
+    raw_jvm_flags = runtime["jvmFlags"]
+    if not isinstance(raw_jvm_flags, dict) or frozenset(raw_jvm_flags) not in {
+        frozenset(legacy_jvm_flag_keys), frozenset(extended_jvm_flag_keys)
+    }:
+        raise ValueError("invalid JVM flags shape")
+    jvm_flags = require_keys(raw_jvm_flags, set(raw_jvm_flags))
     jvm_flags_available = require_bool(jvm_flags["available"])
     jvm_environment_available = require_bool(jvm_flags["environmentAvailable"])
     xmx_present = require_bool(jvm_flags["xmxPresent"])
@@ -250,11 +260,19 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
     if max_ram_percentage is not None and not max_ram_present:
         raise ValueError("JVM memory percentage has no corresponding flag")
     exit_on_oom = require_bool(jvm_flags["exitOnOutOfMemoryError"])
+    heap_dump_on_oom = require_optional_bool(jvm_flags.get("heapDumpOnOutOfMemoryError"))
+    jfr_configured = require_optional_bool(jvm_flags.get("jfrConfigured"))
+    gc_logging_configured = require_optional_bool(jvm_flags.get("gcLoggingConfigured"))
     if not jvm_flags_available and (
         jvm_environment_available or xmx_present or xmx_value is not None or xmx_unit is not None
         or max_ram_present or max_ram_percentage is not None or exit_on_oom
+        or heap_dump_on_oom is not None or jfr_configured is not None or gc_logging_configured is not None
     ):
         raise ValueError("JVM flags present while process arguments unavailable")
+    if jvm_flags_available and (heap_dump_on_oom is None or jfr_configured is None or gc_logging_configured is None) and {
+        "heapDumpOnOutOfMemoryError", "jfrConfigured", "gcLoggingConfigured"
+    }.issubset(jvm_flags):
+        raise ValueError("available JVM forensic flags are incomplete")
 
     bind_signals = require_keys(
         diagnostics["bindFailureSignals"],
@@ -278,6 +296,92 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
         raise ValueError("bind failure signal count exceeds inspected log bound")
     if not bind_signals_available and any(sanitized_bind_signal_counts.values()):
         raise ValueError("bind failure counts present while logs unavailable")
+
+    provider_defaults = {
+        "available": False,
+        "stockAnalysisSecEnabled": None,
+        "stockAnalysisSecFieldsConfigured": None,
+        "stockAnalysisSecEndpointsConfigured": None,
+    }
+    provider = require_keys(
+        diagnostics.get("providerConfiguration", provider_defaults), set(provider_defaults)
+    )
+    provider_available = require_bool(provider["available"])
+    provider_enabled = require_optional_bool(provider["stockAnalysisSecEnabled"])
+    provider_fields = require_optional_bool(provider["stockAnalysisSecFieldsConfigured"])
+    provider_endpoints = require_optional_bool(provider["stockAnalysisSecEndpointsConfigured"])
+    if provider_available and provider_enabled is None:
+        raise ValueError("available provider configuration lacks SEC enabled state")
+    if not provider_available and any(value is not None for value in (provider_enabled, provider_fields, provider_endpoints)):
+        raise ValueError("provider configuration values present while unavailable")
+
+    memory_defaults = {
+        "available": False,
+        "metricsAvailable": False,
+        "httpStatus": "000",
+        "category": "UNAVAILABLE",
+        "heapUsedBytes": None,
+        "heapCommittedBytes": None,
+        "heapMaxBytes": None,
+        "heapMaxUnboundedPoolCount": None,
+    }
+    memory = require_keys(diagnostics.get("jvmMemory", memory_defaults), set(memory_defaults))
+    memory_available = require_bool(memory["available"])
+    memory_metrics_available = require_bool(memory["metricsAvailable"])
+    memory_status = memory["httpStatus"]
+    if not isinstance(memory_status, str) or re.fullmatch(r"(?:000|[1-5][0-9]{2})", memory_status) is None:
+        raise ValueError("invalid Prometheus HTTP status")
+    memory_category = memory["category"]
+    allowed_memory_categories = {
+        "OK", "METRICS_MISSING", "HTTP_ERROR", "TIMEOUT", "TOO_LARGE", "PARSE_ERROR",
+        "CONNECTION_ERROR", "UNAVAILABLE",
+    }
+    if memory_category not in allowed_memory_categories:
+        raise ValueError("invalid Prometheus category")
+    memory_values = {
+        key: require_optional_number(memory[key], 0, 2**63 - 1)
+        for key in ("heapUsedBytes", "heapCommittedBytes", "heapMaxBytes")
+    }
+    unbounded_max_count = memory["heapMaxUnboundedPoolCount"]
+    if unbounded_max_count is not None:
+        unbounded_max_count = require_count(unbounded_max_count)
+        if unbounded_max_count > 1000:
+            raise ValueError("heap max pool count outside allowed range")
+    if memory_category == "OK":
+        if not memory_available or not memory_metrics_available or memory_status != "200":
+            raise ValueError("inconsistent successful Prometheus result")
+        if any(memory_values[key] is None for key in ("heapUsedBytes", "heapCommittedBytes")):
+            raise ValueError("successful Prometheus result lacks heap gauges")
+        if unbounded_max_count is None or (unbounded_max_count == 0 and memory_values["heapMaxBytes"] is None):
+            raise ValueError("successful Prometheus result lacks heap max state")
+        if unbounded_max_count > 0 and memory_values["heapMaxBytes"] is not None:
+            raise ValueError("unbounded heap max must remain null")
+    elif memory_category == "METRICS_MISSING":
+        if not memory_available or memory_metrics_available or memory_status != "200":
+            raise ValueError("inconsistent incomplete Prometheus result")
+    else:
+        if memory_available or memory_metrics_available or any(value is not None for value in memory_values.values()) or unbounded_max_count is not None:
+            raise ValueError("Prometheus values present while unavailable")
+        if memory_category == "HTTP_ERROR" and (memory_status in {"000", "200"}):
+            raise ValueError("invalid Prometheus HTTP error status")
+        if memory_category == "CONNECTION_ERROR" and memory_status != "000":
+            raise ValueError("invalid Prometheus connection status")
+        if memory_category == "UNAVAILABLE" and memory_status != "000":
+            raise ValueError("invalid unavailable Prometheus status")
+
+    history_defaults = {
+        "available": False,
+        "loggingDriver": "unknown",
+        "previousBackendContainerAvailable": None,
+    }
+    history = require_keys(diagnostics.get("historicalEvidence", history_defaults), set(history_defaults))
+    history_available = require_bool(history["available"])
+    logging_driver = history["loggingDriver"]
+    if logging_driver not in {"json-file", "local", "journald", "syslog", "fluentd", "gelf", "awslogs", "splunk", "none", "other", "unknown"}:
+        raise ValueError("invalid Docker logging driver enum")
+    previous_container_available = require_optional_bool(history["previousBackendContainerAvailable"])
+    if not history_available and (logging_driver != "unknown" or previous_container_available is not None):
+        raise ValueError("historical evidence values present while unavailable")
 
     probes = require_keys(diagnostics["probes"], {"host", "container"})
     sanitized_probes: dict[str, dict[str, dict[str, Any]]] = {}
@@ -369,7 +473,29 @@ def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
                 "maxRamPercentagePresent": max_ram_present,
                 "maxRamPercentageValue": max_ram_percentage,
                 "exitOnOutOfMemoryError": exit_on_oom,
+                "heapDumpOnOutOfMemoryError": heap_dump_on_oom,
+                "jfrConfigured": jfr_configured,
+                "gcLoggingConfigured": gc_logging_configured,
             },
+        },
+        "providerConfiguration": {
+            "available": provider_available,
+            "stockAnalysisSecEnabled": provider_enabled,
+            "stockAnalysisSecFieldsConfigured": provider_fields,
+            "stockAnalysisSecEndpointsConfigured": provider_endpoints,
+        },
+        "jvmMemory": {
+            "available": memory_available,
+            "metricsAvailable": memory_metrics_available,
+            "httpStatus": memory_status,
+            "category": memory_category,
+            **memory_values,
+            "heapMaxUnboundedPoolCount": unbounded_max_count,
+        },
+        "historicalEvidence": {
+            "available": history_available,
+            "loggingDriver": logging_driver,
+            "previousBackendContainerAvailable": previous_container_available,
         },
         "probes": sanitized_probes,
         "recentExceptions": {"available": exceptions_available, "counts": sanitized_counts},
