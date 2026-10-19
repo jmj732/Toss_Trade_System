@@ -101,8 +101,119 @@ safe_trigger_pct() {
   printf '0.%06d' "$scaled"
 }
 
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf -- "$tmp_dir"' EXIT
+
+runtime_available='false'
+runtime_oom_killed='null'
+runtime_restart_count='null'
+runtime_started_at='null'
+runtime_memory_current='null'
+runtime_memory_limit='null'
+runtime_pids_current='null'
+runtime_pids_limit='null'
+healthcheck_exit_codes=''
+healthcheck_count=0
+exceptions_available='false'
+exception_counts='0 0 0 0 0'
+
+probe_http='000'
+probe_exit='null'
+probe_category='UNKNOWN'
+probe_duration='null'
+probe_one() {
+  local location="$1" name="$2" expected="$3" curl_exit status elapsed payload stderr_file response timing category started_ms ended_ms
+  status='000'
+  curl_exit=0
+  elapsed='null'
+  response=''
+  timing=''
+  category='UNKNOWN'
+  if [[ "$location" == host ]]; then
+    if [[ "$name" == mcpUnauthenticated ]]; then
+      payload='{"jsonrpc":"2.0","id":1,"method":"ping"}'
+      writeout="%{http_code}\t%{time_total}"
+      if response="$(curl --silent --show-error --connect-timeout 1 --max-time 3 \
+          --output /dev/null --write-out "$writeout" --header 'Content-Type: application/json' \
+          --data "$payload" "http://127.0.0.1:8080/api/v1/connector/mcp" 2>/dev/null)"; then
+        status="${response%%$'\t'*}"
+        timing="${response#*$'\t'}"
+      else
+        curl_exit=$?
+      fi
+    else
+      if response="$(curl --silent --show-error --connect-timeout 1 --max-time 3 \
+          --output /dev/null --write-out '%{http_code}\t%{time_total}' \
+          "http://127.0.0.1:8080/actuator/health/$name" 2>/dev/null)"; then
+        status="${response%%$'\t'*}"
+        timing="${response#*$'\t'}"
+      else
+        curl_exit=$?
+      fi
+    fi
+    status="${response%%$'\t'*}"
+    timing="${response#*$'\t'}"
+    if [[ "$timing" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      elapsed="$(awk -v seconds="$timing" 'BEGIN { printf "%d", seconds * 1000 }')"
+    fi
+  else
+    stderr_file="$tmp_dir/container-probe.$name.stderr"
+    started_ms="$(date +%s%3N 2>/dev/null || true)"
+    if [[ "$name" == mcpUnauthenticated ]]; then
+      if timeout 3s docker exec "$backend_id" wget -T 2 -S -O /dev/null \
+          --header='Content-Type: application/json' --post-data='{"jsonrpc":"2.0","id":1,"method":"ping"}' \
+          http://127.0.0.1:8080/api/v1/connector/mcp >/dev/null 2>"$stderr_file"; then
+        curl_exit=0
+      else
+        curl_exit=$?
+      fi
+    else
+      if timeout 3s docker exec "$backend_id" wget -T 2 -S -O /dev/null \
+          "http://127.0.0.1:8080/actuator/health/$name" >/dev/null 2>"$stderr_file"; then
+        curl_exit=0
+      else
+        curl_exit=$?
+      fi
+    fi
+    status="$(sed -nE 's/.*HTTP\/[0-9.]+[[:space:]]+([0-9]{3}).*/\1/p' "$stderr_file" | tail -n 1)"
+    [[ "$status" =~ ^[0-9]{3}$ ]] || status='000'
+    ended_ms="$(date +%s%3N 2>/dev/null || true)"
+    if [[ "$started_ms" =~ ^[0-9]{13}$ && "$ended_ms" =~ ^[0-9]{13}$ ]] && (( ended_ms >= started_ms )); then
+      elapsed=$((ended_ms - started_ms))
+    fi
+    if (( curl_exit == 124 )); then category='TIMEOUT'
+    elif [[ "$status" == 000 ]]; then category='CONNECTION_ERROR'
+    fi
+  fi
+  [[ "$status" =~ ^[0-9]{3}$ ]] || status='000'
+  if [[ "$category" == UNKNOWN ]]; then
+    if [[ "$status" == "$expected" ]]; then category='EXPECTED_HTTP'
+    elif [[ "$status" == 000 ]]; then
+      case "$curl_exit" in
+        6) category='DNS_ERROR' ;;
+        7) category='CONNECTION_REFUSED' ;;
+        28|124) category='TIMEOUT' ;;
+        35) category='TLS_ERROR' ;;
+        52|56) category='CONNECTION_CLOSED' ;;
+        *) category='CURL_ERROR' ;;
+      esac
+    else category='UNEXPECTED_HTTP'; fi
+  fi
+  probe_http="$status"
+  probe_exit="$curl_exit"
+  probe_category="$category"
+  probe_duration="$elapsed"
+}
+
+probe_json() {
+  local location="$1" name="$2" expected="$3"
+  probe_one "$location" "$name" "$expected"
+  printf '{"expectedHttpStatus":"%s","httpStatus":"%s","exitCode":%s,"category":"%s","durationMs":%s}' \
+    "$expected" "$probe_http" "$probe_exit" "$probe_category" "$probe_duration"
+}
+
 if backend_id="$(single_container_id backend)"; then
-  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\n"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_USER_ID"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT"}}{{println .}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
+  inspect="$(docker inspect --format '{{.Config.Image}}{{"\t"}}{{.Image}}{{"\t"}}{{.State.Status}}{{"\t"}}{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}{{"\n"}}{{range .Config.Env}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_ENABLED"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_OS_SHEET_USER_ID"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_EVIDENCE_AGE"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MINIMUM_SOURCE_COUNT"}}{{println .}}{{end}}{{if eq (index (split . "=") 0) "INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT"}}{{println .}}{{end}}{{end}}{{printf "runtime\t%t\t%d\t%s\t%d\n" .State.OOMKilled .RestartCount .State.StartedAt .HostConfig.PidsLimit}}{{if .State.Health}}{{range .State.Health.Log}}{{printf "healthcheck\t%d\n" .ExitCode}}{{end}}{{end}}' "$backend_id" 2>/dev/null || true)"
   inspect_header="${inspect%%$'\n'*}"
   IFS=$'\t' read -r candidate_tag candidate_image_id candidate_state candidate_health <<<"$inspect_header"
   inspect_env=''
@@ -114,8 +225,17 @@ if backend_id="$(single_container_id backend)"; then
   candidate_max_evidence_age=''
   candidate_minimum_source_count=''
   candidate_max_trigger_pct=''
+  candidate_runtime_line=''
   while IFS= read -r config_entry; do
     case "$config_entry" in
+      runtime$'\t'*) candidate_runtime_line="$config_entry" ;;
+      healthcheck$'\t'*)
+        healthcheck_code="${config_entry#*$'\t'}"
+        if [[ "$healthcheck_code" =~ ^[0-9]+$ && "$healthcheck_count" -lt 20 ]]; then
+          healthcheck_exit_codes+="${healthcheck_exit_codes:+,}$healthcheck_code"
+          healthcheck_count=$((healthcheck_count + 1))
+        fi
+        ;;
       INVESTMENT_THESIS_AI_POLICY_ENABLED=*) candidate_ai_policy_enabled="${config_entry#*=}" ;;
       INVESTMENT_OS_SHEET_ENABLED=*) candidate_sheet_enabled="${config_entry#*=}" ;;
       INVESTMENT_OS_SHEET_USER_ID=*) candidate_sheet_owner_id="${config_entry#*=}"; candidate_sheet_owner_seen='true' ;;
@@ -124,6 +244,18 @@ if backend_id="$(single_container_id backend)"; then
       INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT=*) candidate_max_trigger_pct="${config_entry#*=}" ;;
     esac
   done <<<"$inspect_env"
+  if [[ "$candidate_runtime_line" == runtime$'\t'* ]]; then
+    IFS=$'\t' read -r _ candidate_oom_killed candidate_restart_count candidate_started_at candidate_pids_limit <<<"$candidate_runtime_line"
+    if [[ "$candidate_oom_killed" == true || "$candidate_oom_killed" == false ]]; then runtime_oom_killed="$candidate_oom_killed"; fi
+    if [[ "$candidate_restart_count" =~ ^[0-9]{1,9}$ ]]; then runtime_restart_count="$candidate_restart_count"; fi
+    if [[ "$candidate_started_at" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})([.]([0-9]{1,9}))?Z$ ]]; then
+      started_fraction="${BASH_REMATCH[3]:-000}"
+      while (( ${#started_fraction} < 3 )); do started_fraction+="0"; done
+      runtime_started_at="\"${BASH_REMATCH[1]}.${started_fraction:0:3}Z\""
+    fi
+    if [[ "$candidate_pids_limit" =~ ^[0-9]{1,9}$ ]]; then runtime_pids_limit="$candidate_pids_limit"; fi
+    runtime_available='true'
+  fi
   if [[ "${candidate_tag:-}" =~ ^trade-backend:[0-9a-f]{40}$ ]]; then backend_tag="$candidate_tag"; fi
   if [[ "${candidate_image_id:-}" =~ ^sha256:[0-9a-f]{64}$ ]]; then backend_image_id="$candidate_image_id"; fi
   case "${candidate_state:-}" in
@@ -160,19 +292,47 @@ if backend_id="$(single_container_id backend)"; then
   fi
 fi
 
-readiness_http='000'
-readiness_status='UNKNOWN'
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf -- "$tmp_dir"' EXIT
-if readiness_http="$(curl --silent --show-error --connect-timeout 3 --max-time 8 \
-    --output "$tmp_dir/readiness.json" --write-out '%{http_code}' \
-    http://127.0.0.1:8080/actuator/health/readiness 2>/dev/null)"; then
-  readiness_candidate="$(grep -oE '"status"[[:space:]]*:[[:space:]]*"[A-Z_]+"' "$tmp_dir/readiness.json" 2>/dev/null | head -n 1 | sed -E 's/.*"([A-Z_]+)"/\1/' || true)"
-  if [[ "$readiness_candidate" =~ ^[A-Z_]+$ ]]; then readiness_status="$readiness_candidate"; fi
-else
-  readiness_http='000'
+if [[ -n "$backend_id" ]]; then
+  cgroup_values="$(timeout 3s docker exec "$backend_id" sh -c 'for key in memory.current memory.max pids.current pids.max; do file="/sys/fs/cgroup/$key"; if [ -r "$file" ]; then printf "%s\t" "$key"; cat "$file"; fi; done' 2>/dev/null || true)"
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      memory.current) if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then runtime_memory_current="$value"; fi ;;
+      memory.max) if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then runtime_memory_limit="$value"; fi ;;
+      pids.current) if [[ "$value" =~ ^[0-9]{1,9}$ ]]; then runtime_pids_current="$value"; fi ;;
+      pids.max) if [[ "$value" =~ ^[0-9]{1,9}$ ]]; then runtime_pids_limit="$value"; fi ;;
+    esac
+  done <<<"$cgroup_values"
+  if logs_summary="$(timeout 5s docker logs --since 30m --tail 2000 "$backend_id" 2>&1 | awk '
+    /NullPointerException/ { null_pointer++ }
+    /OutOfMemoryError/ { out_of_memory++ }
+    /SQLTransientConnectionException|HikariPool.*Connection is not available|Connection is not available, request timed out/ { pool_timeout++ }
+    /SocketTimeoutException|ConnectTimeoutException/ { socket_timeout++ }
+    /RejectedExecutionException/ { rejected_execution++ }
+    END { printf "%d %d %d %d %d\n", null_pointer, out_of_memory, pool_timeout, socket_timeout, rejected_execution }
+  ' 2>/dev/null)"; then
+    if [[ "$logs_summary" =~ ^[0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+[[:space:]][0-9]+$ ]]; then
+      exception_counts="$logs_summary"
+      exceptions_available='true'
+    fi
+  fi
 fi
+
+host_liveness="$(probe_json host liveness 200)"
+host_readiness="$(probe_json host readiness 200)"
+host_mcp="$(probe_json host mcpUnauthenticated 401)"
+container_liveness="$(probe_json container liveness 200)"
+container_readiness="$(probe_json container readiness 200)"
+container_mcp="$(probe_json container mcpUnauthenticated 401)"
+readiness_http="$(printf '%s' "$host_readiness" | sed -nE 's/.*"httpStatus":"([0-9]{3})".*/\1/p')"
 [[ "$readiness_http" =~ ^[0-9]{3}$ ]] || readiness_http='000'
+readiness_status='UNKNOWN'
+if readiness_body_status="$(curl --silent --show-error --connect-timeout 1 --max-time 3 \
+    --output - http://127.0.0.1:8080/actuator/health/readiness 2>/dev/null | \
+    grep -oE '"status"[[:space:]]*:[[:space:]]*"[A-Z_]+"' | sed -n '1p' | sed -E 's/.*"([A-Z_]+)"/\1/')"; then
+  case "$readiness_body_status" in
+    UP|DOWN|OUT_OF_SERVICE|UNKNOWN) readiness_status="$readiness_body_status" ;;
+  esac
+fi
 
 db_status='unavailable'
 flyway_version=''
@@ -783,8 +943,17 @@ printf '{"schemaVersion":1,"ok":%s,"expectedSha":' "$ok"
 if [[ -n "$expected_sha" ]]; then printf '"%s"' "$expected_sha"; else printf 'null'; fi
 printf ',"expectedShaMatchesImageTag":%s,"backend":{"imageTag":"%s","imageId":"%s","state":"%s","health":"%s"},' \
   "$expected_sha_matches" "$backend_tag" "$backend_image_id" "$backend_state" "$backend_health"
-printf '"readiness":{"httpStatus":"%s","status":"%s"},"database":{"status":"%s","flywayVersion":%s,"flywaySuccess":%s,' \
-  "$readiness_http" "$readiness_status" "$db_status" "$flyway_version_json" "$flyway_success"
+printf '"readiness":{"httpStatus":"%s","status":"%s"},' "$readiness_http" "$readiness_status"
+read -r null_pointer_count oom_count pool_timeout_count socket_timeout_count rejected_execution_count <<<"$exception_counts"
+printf '"httpDiagnostics":{"backendRuntime":{"available":%s,"oomKilled":%s,"restartCount":%s,"startedAt":%s,"memoryUsageBytes":%s,"memoryLimitBytes":%s,"pidsCurrent":%s,"pidsLimit":%s,"healthcheckExitCodes":[%s]},' \
+  "$runtime_available" "$runtime_oom_killed" "$runtime_restart_count" "$runtime_started_at" \
+  "$runtime_memory_current" "$runtime_memory_limit" "$runtime_pids_current" "$runtime_pids_limit" "$healthcheck_exit_codes"
+printf '"probes":{"host":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s},"container":{"liveness":%s,"readiness":%s,"mcpUnauthenticated":%s}},' \
+  "$host_liveness" "$host_readiness" "$host_mcp" "$container_liveness" "$container_readiness" "$container_mcp"
+printf '"recentExceptions":{"available":%s,"counts":{"nullPointerException":%s,"outOfMemoryError":%s,"poolTimeout":%s,"socketTimeout":%s,"rejectedExecution":%s}}},' \
+  "$exceptions_available" "$null_pointer_count" "$oom_count" "$pool_timeout_count" "$socket_timeout_count" "$rejected_execution_count"
+printf '"database":{"status":"%s","flywayVersion":%s,"flywaySuccess":%s,' \
+  "$db_status" "$flyway_version_json" "$flyway_success"
 printf '"analysisInputSnapshotCount":%s,"securitySnapshotCount":%s,"priceSnapshotCount":%s,"thesisCount":%s,"decisionCount":%s,' \
   "$analysis_input_snapshot_count" "$security_snapshot_count" "$price_snapshot_count" "$thesis_count" "$decision_count"
 printf '"latestSecurityProjectionCount":%s,"latestSecurityProjectionSha256":"%s","aiVerificationPolicy":{"verificationEventsAvailable":%s,"verificationCount":%s,"approvedCount":%s,"blockedCount":%s,"rejectedCount":%s,"policyRevisionsAvailable":%s,"aiPolicyRevisionCount":%s,"deploymentEnabled":%s,"ownerScopeConfigured":%s,' \

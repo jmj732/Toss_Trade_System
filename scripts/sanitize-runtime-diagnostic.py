@@ -114,10 +114,111 @@ def sanitize_portfolio_freshness(raw: Any) -> dict[str, Any]:
     }
 
 
-def sanitize(raw: Any) -> dict[str, Any]:
-    root = require_keys(
-        raw,
+def sanitize_http_diagnostics(raw: Any) -> dict[str, Any]:
+    diagnostics = require_keys(raw, {"backendRuntime", "probes", "recentExceptions"})
+    runtime = require_keys(
+        diagnostics["backendRuntime"],
         {
+            "available", "oomKilled", "restartCount", "startedAt", "memoryUsageBytes",
+            "memoryLimitBytes", "pidsCurrent", "pidsLimit", "healthcheckExitCodes",
+        },
+    )
+    runtime_available = require_bool(runtime["available"])
+    runtime_oom_killed = require_optional_bool(runtime["oomKilled"])
+    runtime_counts = {
+        key: None if runtime[key] is None else require_count(runtime[key])
+        for key in ("restartCount", "memoryUsageBytes", "memoryLimitBytes", "pidsCurrent", "pidsLimit")
+    }
+    if runtime_counts["restartCount"] is not None and runtime_counts["restartCount"] > 1_000_000_000:
+        raise ValueError("restart count outside allowed range")
+    for key in ("memoryUsageBytes", "memoryLimitBytes"):
+        if runtime_counts[key] is not None and runtime_counts[key] > 2**63 - 1:
+            raise ValueError("memory count outside allowed range")
+    for key in ("pidsCurrent", "pidsLimit"):
+        if runtime_counts[key] is not None and runtime_counts[key] > 1_000_000:
+            raise ValueError("pids count outside allowed range")
+    started_at = require_optional(runtime["startedAt"], TIMESTAMP)
+    healthcheck_codes = runtime["healthcheckExitCodes"]
+    if not isinstance(healthcheck_codes, list) or len(healthcheck_codes) > 20:
+        raise ValueError("invalid healthcheck history")
+    healthcheck_codes = [require_count(code) for code in healthcheck_codes]
+    if any(code > 255 for code in healthcheck_codes):
+        raise ValueError("invalid healthcheck exit code")
+    if not runtime_available and (
+        runtime_oom_killed is not None or any(value is not None for value in runtime_counts.values())
+        or started_at is not None or healthcheck_codes
+    ):
+        raise ValueError("runtime fields present while unavailable")
+
+    probes = require_keys(diagnostics["probes"], {"host", "container"})
+    sanitized_probes: dict[str, dict[str, dict[str, Any]]] = {}
+    allowed_categories = {
+        "EXPECTED_HTTP", "UNEXPECTED_HTTP", "DNS_ERROR", "CONNECTION_REFUSED", "TIMEOUT",
+        "TLS_ERROR", "CONNECTION_CLOSED", "CURL_ERROR", "CONNECTION_ERROR", "UNKNOWN",
+    }
+    for source in ("host", "container"):
+        source_probes = require_keys(probes[source], {"liveness", "readiness", "mcpUnauthenticated"})
+        sanitized_probes[source] = {}
+        for name, expected in (("liveness", "200"), ("readiness", "200"), ("mcpUnauthenticated", "401")):
+            probe = require_keys(
+                source_probes[name], {"expectedHttpStatus", "httpStatus", "exitCode", "category", "durationMs"}
+            )
+            if probe["expectedHttpStatus"] != expected:
+                raise ValueError("invalid expected probe status")
+            status = probe["httpStatus"]
+            if not isinstance(status, str) or re.fullmatch(r"(?:000|[1-5][0-9]{2})", status) is None:
+                raise ValueError("invalid probe HTTP status")
+            exit_code = probe["exitCode"]
+            if exit_code is not None:
+                exit_code = require_count(exit_code)
+                if exit_code > 255:
+                    raise ValueError("invalid probe exit code")
+            category = probe["category"]
+            if category not in allowed_categories:
+                raise ValueError("invalid probe category")
+            duration = probe["durationMs"]
+            if duration is not None:
+                duration = require_count(duration)
+                if duration > 10000:
+                    raise ValueError("probe exceeded its time bound")
+            if status == expected and category != "EXPECTED_HTTP":
+                raise ValueError("expected probe response has inconsistent category")
+            if status != expected and category == "EXPECTED_HTTP":
+                raise ValueError("unexpected probe response has expected category")
+            sanitized_probes[source][name] = {
+                "expectedHttpStatus": expected,
+                "httpStatus": status,
+                "exitCode": exit_code,
+                "category": category,
+                "durationMs": duration,
+            }
+
+    exceptions = require_keys(diagnostics["recentExceptions"], {"available", "counts"})
+    exceptions_available = require_bool(exceptions["available"])
+    exception_counts = require_keys(
+        exceptions["counts"],
+        {"nullPointerException", "outOfMemoryError", "poolTimeout", "socketTimeout", "rejectedExecution"},
+    )
+    sanitized_counts = {key: require_count(value) for key, value in exception_counts.items()}
+    if any(value > 2000 for value in sanitized_counts.values()):
+        raise ValueError("exception count exceeds inspected log bound")
+    if not exceptions_available and any(sanitized_counts.values()):
+        raise ValueError("exception counts present while logs unavailable")
+    return {
+        "backendRuntime": {
+            "available": runtime_available,
+            "oomKilled": runtime_oom_killed,
+            **runtime_counts,
+            "startedAt": started_at,
+            "healthcheckExitCodes": healthcheck_codes,
+        },
+        "probes": sanitized_probes,
+        "recentExceptions": {"available": exceptions_available, "counts": sanitized_counts},
+    }
+
+
+def sanitize(raw: Any) -> dict[str, Any]:
+    root_keys = {
             "schemaVersion",
             "ok",
             "expectedSha",
@@ -126,8 +227,10 @@ def sanitize(raw: Any) -> dict[str, Any]:
             "readiness",
             "database",
             "portfolioFreshness",
-        },
-    )
+        }
+    if not isinstance(raw, dict) or frozenset(raw) not in {frozenset(root_keys), frozenset(root_keys | {"httpDiagnostics"})}:
+        raise ValueError("invalid root object shape")
+    root = raw
     if root["schemaVersion"] != 1 or not isinstance(root["ok"], bool):
         raise ValueError("invalid root status")
 
@@ -373,7 +476,7 @@ def sanitize(raw: Any) -> dict[str, Any]:
         "snapshotMatchStatus": snapshot_status,
     }
 
-    return {
+    result = {
         "schemaVersion": 1,
         "ok": root["ok"],
         "expectedSha": expected_sha,
@@ -395,6 +498,9 @@ def sanitize(raw: Any) -> dict[str, Any]:
         },
         "portfolioFreshness": sanitize_portfolio_freshness(root["portfolioFreshness"]),
     }
+    if "httpDiagnostics" in root:
+        result["httpDiagnostics"] = sanitize_http_diagnostics(root["httpDiagnostics"])
+    return result
 
 
 def main() -> int:

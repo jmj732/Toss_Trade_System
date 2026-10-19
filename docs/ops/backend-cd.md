@@ -221,12 +221,16 @@ environment.
 
 Run the GitHub Actions **Read-only runtime diagnostic** workflow manually. It reuses the CD SSH
 secrets and Doppler `trade/stg` environment. Its remote commands inspect Compose container state,
-GET the local readiness endpoint, and run aggregate SQL inside a read-only PostgreSQL transaction;
-it does not deploy, start/restart containers, or call market-data providers. An optional 40-digit
-`expected_sha` checks whether the running backend image tag matches that commit.
+probe host and container liveness/readiness plus the unauthenticated MCP HTTP status, read
+healthcheck/runtime/cgroup counters, count fixed exception classes from the last 30 minutes of
+backend logs, and run aggregate SQL inside a read-only PostgreSQL transaction. It does not deploy,
+start/restart containers, or call market-data providers. Response bodies and log messages/stacks
+are discarded; the artifact contains only HTTP status/exit categories and allowlisted counts. An
+optional 40-digit `expected_sha` checks whether the running backend image tag matches that commit.
 
-The two-day artifact contains image tag/digest, readiness and Flyway status, owner-scoped row
-counts, and a SHA-256 fingerprint for the latest six stored security projections (AVT, CSTM,
+The two-day artifact contains image tag/digest, readiness and Flyway status, bounded host/container
+HTTP probes, backend restart/OOM/start-time and cgroup memory/PID counters, healthcheck exit codes,
+sanitized recent exception counts, owner-scoped row counts, and a SHA-256 fingerprint for the latest six stored security projections (AVT, CSTM,
 GOOGL, LUNR, RDW, VST). The fingerprint contract is published in
 [`scripts/runtime-readonly-fingerprint-v1.json`](../../scripts/runtime-readonly-fingerprint-v1.json).
 It encodes selected price, fundamental, provenance, and consensus fields at stated precision;

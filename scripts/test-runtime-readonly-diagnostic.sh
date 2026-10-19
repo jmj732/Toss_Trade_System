@@ -138,6 +138,8 @@ case "${1:-}" in
     policy_enabled="$MOCK_BACKEND_AI_POLICY_ENABLED"
     printf '%s\tsha256:%s\t%s\t%s\n' \
       "$MOCK_IMAGE_TAG" "$MOCK_IMAGE_DIGEST" "$MOCK_BACKEND_STATE" "$MOCK_BACKEND_HEALTH"
+    printf 'runtime\tfalse\t3\t2026-10-19T12:00:00.123456789Z\t0\n'
+    printf 'healthcheck\t1\nhealthcheck\t1\nhealthcheck\t0\n'
     [[ "$policy_enabled" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_ENABLED=%s\n' "$policy_enabled"
     [[ "$MOCK_BACKEND_SHEET_ENABLED" == __UNSET__ ]] || printf 'INVESTMENT_OS_SHEET_ENABLED=%s\n' "$MOCK_BACKEND_SHEET_ENABLED"
     [[ "$MOCK_BACKEND_SHEET_OWNER_ID" == __UNSET__ ]] || printf 'INVESTMENT_OS_SHEET_USER_ID=%s\n' "$MOCK_BACKEND_SHEET_OWNER_ID"
@@ -146,7 +148,25 @@ case "${1:-}" in
     [[ "$MOCK_BACKEND_MAX_TRIGGER_PCT" == __UNSET__ ]] || printf 'INVESTMENT_THESIS_AI_POLICY_MAX_TRIGGER_BELOW_PRICE_PCT=%s\n' "$MOCK_BACKEND_MAX_TRIGGER_PCT"
     ;;
   exec)
-    [[ "${2:-}" == -i ]] || exit 93
+    if [[ "${2:-}" != -i ]]; then
+      if [[ "${3:-}" == sh && "${4:-}" == -c ]]; then
+        printf 'memory.current\t10485760\nmemory.max\t805306368\npids.current\t6\npids.max\t0\n'
+        exit 0
+      fi
+      if [[ "${@: -1}" == http://127.0.0.1:8080/* ]]; then
+        url="${@: -1}"
+        case "$url" in
+          */actuator/health/liveness) status="$MOCK_CONTAINER_LIVENESS_HTTP" ;;
+          */actuator/health/readiness) status="$MOCK_CONTAINER_READINESS_HTTP" ;;
+          */api/v1/connector/mcp) status="$MOCK_CONTAINER_MCP_HTTP" ;;
+          *) exit 96 ;;
+        esac
+        printf '  HTTP/1.1 %s Mock\n' "$status" >&2
+        [[ "$status" == 200 ]] && exit 0
+        exit 1
+      fi
+      exit 93
+    fi
     sql="$(cat)"
     printf '%s\n' "$sql" >>"$MOCK_SQL_LOG"
     [[ "$sql" == *"BEGIN TRANSACTION READ ONLY;"* && "$sql" == *"ROLLBACK;"* ]] || exit 94
@@ -198,6 +218,13 @@ case "${1:-}" in
       exit 98
     fi
     ;;
+  logs)
+    [[ "${MOCK_FAIL_LOGS:-0}" == 0 ]] || exit 97
+    printf 'safe event: java.lang.NullPointerException raw-log-secret-sentinel\n'
+    printf 'HikariPool-1 - Connection is not available, request timed out\n'
+    printf 'SQLTransientConnectionException: pool wait timeout\n'
+    printf 'SocketTimeoutException: read timeout\n'
+    ;;
   *)
     exit 99
     ;;
@@ -208,14 +235,50 @@ cat >"$mock_bin/curl" <<'CURL'
 set -euo pipefail
 printf '%s\n' "$*" >>"$MOCK_CURL_LOG"
 out=''
+writeout=''
+url=''
 while (($#)); do
-  if [[ "$1" == --output ]]; then out="$2"; shift 2; else shift; fi
+  case "$1" in
+    --output) out="$2"; shift 2 ;;
+    --write-out) writeout="$2"; shift 2 ;;
+    http://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
 done
-printf '{"status":"%s","secret":"raw-secret-sentinel","container":"raw-container-id-sentinel"}' \
-  "$MOCK_READINESS_STATUS" >"$out"
-printf '%s' "$MOCK_READINESS_HTTP"
+case "$url" in
+  */actuator/health/liveness) name=liveness; status="$MOCK_LIVENESS_HTTP" ;;
+  */actuator/health/readiness) name=readiness; status="$MOCK_READINESS_HTTP" ;;
+  */api/v1/connector/mcp) name=mcp; status="$MOCK_MCP_HTTP" ;;
+  *) exit 98 ;;
+esac
+if [[ "${MOCK_CURL_FAIL:-}" == "$name:"* ]]; then
+  exit_code="${MOCK_CURL_FAIL#*:}"
+  printf '000\t0.012'
+  exit "$exit_code"
+fi
+if [[ "$out" == - ]]; then
+  printf '{"status":"%s","secret":"raw-secret-sentinel","container":"raw-container-id-sentinel"}' \
+    "$MOCK_READINESS_BODY_STATUS"
+elif [[ "$writeout" == *http_code* ]]; then
+  printf '%s\t0.012' "$status"
+fi
+exit 0
 CURL
-chmod +x "$mock_bin/docker" "$mock_bin/curl"
+cat >"$mock_bin/timeout" <<'TIMEOUT'
+#!/usr/bin/env bash
+set -euo pipefail
+shift
+exec "$@"
+TIMEOUT
+cat >"$mock_bin/date" <<'DATE'
+#!/usr/bin/env bash
+set -euo pipefail
+count=0
+[[ -s "$MOCK_DATE_LOG" ]] && count="$(cat "$MOCK_DATE_LOG")"
+printf '%s' "$((count + 1))" >"$MOCK_DATE_LOG"
+printf '%013d\n' "$((1000000000000 + count * 12))"
+DATE
+chmod +x "$mock_bin/docker" "$mock_bin/curl" "$mock_bin/timeout" "$mock_bin/date"
 
 owner_id='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 expected_sha='0123456789abcdef0123456789abcdef01234567'
@@ -232,6 +295,9 @@ mock_run() {
     MOCK_DOCKER_LOG="$tmp/docker.log" \
     MOCK_SQL_LOG="$tmp/sql.log" \
     MOCK_CURL_LOG="$tmp/curl.log" \
+    MOCK_DATE_LOG="$tmp/date.log" \
+    MOCK_FAIL_LOGS="${MOCK_FAIL_LOGS:-0}" \
+    MOCK_CURL_FAIL="${MOCK_CURL_FAIL:-}" \
     MOCK_BACKEND_CONTAINER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     MOCK_DB_CONTAINER_ID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     MOCK_IMAGE_TAG="${MOCK_IMAGE_TAG:-trade-backend:$expected_sha}" \
@@ -248,7 +314,12 @@ mock_run() {
     MOCK_STORED_POLICY_ENABLED="${MOCK_STORED_POLICY_ENABLED:-true}" \
     MOCK_FAIL_THESIS_REVISIONS="${MOCK_FAIL_THESIS_REVISIONS:-0}" \
     MOCK_READINESS_HTTP="${MOCK_READINESS_HTTP:-200}" \
-    MOCK_READINESS_STATUS="${MOCK_READINESS_STATUS:-UP}" \
+    MOCK_READINESS_BODY_STATUS="${MOCK_READINESS_BODY_STATUS:-UP}" \
+    MOCK_LIVENESS_HTTP="${MOCK_LIVENESS_HTTP:-200}" \
+    MOCK_MCP_HTTP="${MOCK_MCP_HTTP:-401}" \
+    MOCK_CONTAINER_LIVENESS_HTTP="${MOCK_CONTAINER_LIVENESS_HTTP:-200}" \
+    MOCK_CONTAINER_READINESS_HTTP="${MOCK_CONTAINER_READINESS_HTTP:-200}" \
+    MOCK_CONTAINER_MCP_HTTP="${MOCK_CONTAINER_MCP_HTTP:-401}" \
     MOCK_FLYWAY_SUCCESS="${MOCK_FLYWAY_SUCCESS:-true}" \
     MOCK_FAIL_METADATA="${MOCK_FAIL_METADATA:-0}" \
     MOCK_FAIL_PROJECTION="${MOCK_FAIL_PROJECTION:-0}" \
@@ -343,8 +414,36 @@ assert report["portfolioFreshness"] == {
         "positionsPriceSyncedAtMax": "2026-10-09T20:00:00.000Z",
     },
 }
+diagnostics = report["httpDiagnostics"]
+assert diagnostics["backendRuntime"] == {
+    "available": True,
+    "oomKilled": False,
+    "restartCount": 3,
+    "startedAt": "2026-10-19T12:00:00.123Z",
+    "memoryUsageBytes": 10485760,
+    "memoryLimitBytes": 805306368,
+    "pidsCurrent": 6,
+    "pidsLimit": 0,
+    "healthcheckExitCodes": [1, 1, 0],
+}
+for source in ("host", "container"):
+    probes = diagnostics["probes"][source]
+    assert probes["liveness"]["httpStatus"] == "200"
+    assert probes["readiness"]["httpStatus"] == "200"
+    assert probes["mcpUnauthenticated"]["httpStatus"] == "401"
+    assert all(probe["durationMs"] == 12 for probe in probes.values())
+assert diagnostics["recentExceptions"] == {
+    "available": True,
+    "counts": {
+        "nullPointerException": 1,
+        "outOfMemoryError": 0,
+        "poolTimeout": 2,
+        "socketTimeout": 1,
+        "rejectedExecution": 0,
+    },
+}
 raw = Path(sys.argv[1]).read_text()
-for sentinel in ("raw-financial-sentinel", "raw-provenance-sentinel", "raw-symbol-sentinel", "raw-secret-sentinel", "raw-container-id-sentinel", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
+for sentinel in ("raw-financial-sentinel", "raw-provenance-sentinel", "raw-symbol-sentinel", "raw-secret-sentinel", "raw-container-id-sentinel", "raw-log-secret-sentinel", "java.lang.NullPointerException", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"):
     assert sentinel not in raw
 PY
 
@@ -422,6 +521,7 @@ from pathlib import Path
 report = json.loads(Path(sys.argv[1]).read_text())
 del report["database"]["aiVerificationPolicy"]
 del report["database"]["thesisRevisionDiagnostics"]
+del report["httpDiagnostics"]
 Path(sys.argv[2]).write_text(json.dumps(report))
 PY
 python3 "$sanitizer" "$tmp/legacy-artifact.json" "$tmp/legacy-artifact-safe.json" ||
@@ -471,6 +571,20 @@ assert report["database"]["thesisRevisionDiagnostics"] == {
 }
 PY
 
+MOCK_FAIL_LOGS=1 mock_run "$tmp/logs-unavailable.json" "$expected_sha" ||
+  fail "log read failure changed the overall diagnostic status"
+python3 "$sanitizer" "$tmp/logs-unavailable.json" "$tmp/logs-unavailable-safe.json" ||
+  fail "log read failure was rejected by the sanitizer"
+python3 - "$tmp/logs-unavailable-safe.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+diagnostics = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["recentExceptions"]
+assert diagnostics["available"] is False
+assert set(diagnostics["counts"].values()) == {0}
+PY
+
 MOCK_FAIL_AI_EVENTS=1 MOCK_FAIL_AI_POLICY=1 \
   mock_run "$tmp/ai-count-query-failure.json" "$expected_sha" ||
   fail "optional AI count-query failures changed the overall diagnostic status"
@@ -505,14 +619,59 @@ if grep -q 'raw-ai-rationale-sentinel' "$tmp/ai-policy-untrusted-safe.json"; the
   fail "sanitizer leaked AI evidence"
 fi
 
+python3 - "$tmp/valid.json" "$tmp/http-diagnostics-untrusted.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+report["httpDiagnostics"]["backendRuntime"]["exceptionMessage"] = "raw-http-exception-secret"
+Path(sys.argv[2]).write_text(json.dumps(report))
+PY
+if python3 "$sanitizer" "$tmp/http-diagnostics-untrusted.json" "$tmp/http-diagnostics-untrusted-safe.json"; then
+  fail "unexpected HTTP diagnostic field passed the allowlist"
+fi
+grep -q 'UNTRUSTED_REMOTE_OUTPUT' "$tmp/http-diagnostics-untrusted-safe.json" ||
+  fail "sanitizer did not reject untrusted HTTP diagnostic shape"
+if grep -q 'raw-http-exception-secret' "$tmp/http-diagnostics-untrusted-safe.json"; then
+  fail "sanitizer leaked an HTTP exception field"
+fi
+
 MOCK_IMAGE_TAG="trade-backend:ffffffffffffffffffffffffffffffffffffffff" \
   mock_run "$tmp/sha-mismatch.json" "$expected_sha" && fail "mismatched SHA passed"
 grep -q '"expectedShaMatchesImageTag":false' "$tmp/sha-mismatch.json" || fail "image tag SHA mismatch was not reported"
 
-MOCK_READINESS_HTTP=503 MOCK_READINESS_STATUS=DOWN \
+MOCK_READINESS_HTTP=503 MOCK_READINESS_BODY_STATUS=DOWN \
   mock_run "$tmp/readiness-failure.json" '' && fail "readiness failure passed"
 grep -q '"httpStatus":"503","status":"DOWN"' "$tmp/readiness-failure.json" ||
   fail "readiness status was not recorded"
+
+MOCK_CURL_FAIL=liveness:7 mock_run "$tmp/curl-refused.json" "$expected_sha" ||
+  fail "liveness connection refusal changed the overall diagnostic status"
+python3 - "$tmp/curl-refused.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+probe = json.loads(Path(sys.argv[1]).read_text())["httpDiagnostics"]["probes"]["host"]["liveness"]
+assert probe["httpStatus"] == "000" and probe["exitCode"] == 7
+assert probe["category"] == "CONNECTION_REFUSED"
+PY
+
+if MOCK_CURL_FAIL=readiness:28 mock_run "$tmp/curl-timeout.json" "$expected_sha"; then
+  fail "readiness curl timeout passed"
+fi
+python3 - "$tmp/curl-timeout.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+probe = report["httpDiagnostics"]["probes"]["host"]["readiness"]
+assert probe["httpStatus"] == "000" and probe["exitCode"] == 28
+assert probe["category"] == "TIMEOUT"
+assert report["readiness"] == {"httpStatus": "000", "status": "UNKNOWN"}
+PY
 
 MOCK_FLYWAY_SUCCESS=false mock_run "$tmp/flyway-failure.json" '' && fail "failed Flyway migration passed"
 grep -q '"flywaySuccess":false' "$tmp/flyway-failure.json" || fail "Flyway failure was not recorded"
