@@ -257,6 +257,19 @@ The evidence confirms the failure chain from heap OOM through Acceptor terminati
 path. The backend was unhealthy at that snapshot; the artifact does not establish later status or
 recovery. The initial source of heap pressure remains unknown.
 
+Recovery follow-up: CD run `39256857920` successfully deployed
+`dcf3ae4c344bc60237a7ce33f1d4ff2f867f3881`. Read-only diagnostic run `39257490849`, observed at
+13:07:43Z, matched that SHA and reported the backend `running`/`healthy`, readiness `200 UP`, and
+host/container liveness and readiness HTTP 200. The unauthenticated MCP probe returned its expected
+401. It also observed one Tomcat Acceptor, one port 8080 listener with receive queue 0, and both
+`-XX:+ExitOnOutOfMemoryError` and `-XX:MaxRAMPercentage=50.0` present. This confirms HTTP/health
+recovery at that observation time. A subsequent new ChatGPT app conversation made one authenticated
+`get_investment_risk_events({limit:1})` read; after about 21 seconds the app result showed
+`availability=AVAILABLE`, `status=OK`, and `asOf=2026-10-19T13:08:20.770483200Z`, with no `errorCode`
+returned. This confirms that one app read succeeded as reported by the app result. No Scheduled Task
+was run for this validation. The initial heap pressure source remains unknown, so this recovery does
+not establish that the memory cause is fixed.
+
 The backend image now starts with `-XX:+ExitOnOutOfMemoryError` and
 `-XX:MaxRAMPercentage=50.0`. After an OOM, the JVM exits so the existing base Compose
 `restart: unless-stopped` policy can start a replacement process. With the staging backend's
