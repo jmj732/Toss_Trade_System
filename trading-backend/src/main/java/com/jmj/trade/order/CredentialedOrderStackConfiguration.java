@@ -2,6 +2,7 @@ package com.jmj.trade.order;
 
 import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.account.FreshPortfolioReadService;
+import com.jmj.trade.investment.InvestmentSellReadinessService;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerOrderPort;
 import com.jmj.trade.notification.NotificationOutboxWriter;
@@ -189,10 +190,13 @@ public class CredentialedOrderStackConfiguration {
             SubmissionAttemptRepository attempts,
             JdbcTemplate jdbc,
             UnknownAttemptReconciler reconciler,
-            OrderSubmissionService submissions
+            OrderSubmissionService submissions,
+            InvestmentSellReadinessService sellReadiness,
+            PlatformTransactionManager transactionManager
     ) {
         return new McpOrderExecutionService(
                 activation, risk, portfolios, brokerAdapter, orderPort, safety,
-                intents, brokerOrders, attempts, jdbc, reconciler, submissions);
+                intents, brokerOrders, attempts, jdbc, reconciler, submissions, sellReadiness,
+                new TransactionTemplate(transactionManager));
     }
 }

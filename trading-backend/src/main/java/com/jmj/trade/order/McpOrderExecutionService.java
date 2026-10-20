@@ -10,7 +10,9 @@ import com.jmj.trade.broker.BrokerOrderLifecycle;
 import com.jmj.trade.broker.BrokerOrderPort;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.Quote;
+import com.jmj.trade.investment.InvestmentSellReadinessService;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -36,6 +38,8 @@ public final class McpOrderExecutionService {
     private final JdbcTemplate jdbc;
     private final UnknownAttemptReconciler reconciler;
     private final OrderSubmissionService submissions;
+    private final com.jmj.trade.investment.InvestmentSellReadinessService sellReadiness;
+    private final TransactionTemplate transactions;
 
     public McpOrderExecutionService(LiveOrderActivationService activation, PreTradeRiskEngine risk,
                                     FreshPortfolioReadService portfolios, BrokerAdapter quotes,
@@ -43,6 +47,18 @@ public final class McpOrderExecutionService {
                                     OrderIntentRepository intents, BrokerOrderRepository brokerOrders,
                                     SubmissionAttemptRepository attempts, JdbcTemplate jdbc,
                                     UnknownAttemptReconciler reconciler, OrderSubmissionService submissions) {
+        this(activation, risk, portfolios, quotes, orders, safety, intents, brokerOrders, attempts, jdbc,
+                reconciler, submissions, null, null);
+    }
+
+    public McpOrderExecutionService(LiveOrderActivationService activation, PreTradeRiskEngine risk,
+                                    FreshPortfolioReadService portfolios, BrokerAdapter quotes,
+                                    BrokerOrderPort orders, LiveOrderSafetyLedger safety,
+                                    OrderIntentRepository intents, BrokerOrderRepository brokerOrders,
+                                    SubmissionAttemptRepository attempts, JdbcTemplate jdbc,
+                                    UnknownAttemptReconciler reconciler, OrderSubmissionService submissions,
+                                    com.jmj.trade.investment.InvestmentSellReadinessService sellReadiness,
+                                    TransactionTemplate transactions) {
         this.activation = Objects.requireNonNull(activation);
         this.risk = Objects.requireNonNull(risk);
         this.portfolios = Objects.requireNonNull(portfolios);
@@ -55,16 +71,64 @@ public final class McpOrderExecutionService {
         this.jdbc = Objects.requireNonNull(jdbc);
         this.reconciler = Objects.requireNonNull(reconciler);
         this.submissions = Objects.requireNonNull(submissions);
+        this.sellReadiness = sellReadiness;
+        this.transactions = transactions;
     }
 
     public PrepareResult prepare(UUID userId, UUID connectionId, PrepareCommand command) {
+        if (transactions == null) return prepareLocked(userId, connectionId, command, null);
+        return transactions.execute(status -> prepareLocked(userId, connectionId, command, null));
+    }
+
+    /** Strict defensive SELL path. Action and target live in an owned, current Decision Ledger row. */
+    public PrepareResult prepareDefensive(UUID userId, UUID connectionId, UUID decisionId, UUID eventId,
+                                          String symbol, BigDecimal quantity, BigDecimal limitPrice) {
+        if (transactions == null) throw blocked("transaction lock is unavailable");
+        return transactions.execute(status -> {
+            lockOwnedConnection(userId, connectionId);
+            if (sellReadiness == null) throw blocked("defensive sell readiness is unavailable");
+            var readiness = sellReadiness.evaluate(userId, connectionId, decisionId, eventId);
+            if (!"READY".equals(readiness.actionStatus()) || !"READY".equals(readiness.sizingStatus())
+                    || !"READY".equals(readiness.pricingStatus()) || !"READY".equals(readiness.prepareStatus()))
+                throw blocked("defensive sell readiness is blocked: " + String.join(",", readiness.blockers()));
+            if (!"REDUCE".equals(readiness.action()) && !"EXIT".equals(readiness.action()))
+                throw blocked("authorized decision is not REDUCE or EXIT");
+            var normalized = normalize(new PrepareCommand(symbol, "SELL", "LIMIT", quantity, limitPrice));
+            if (!readiness.ticker().equals(normalized.symbol())
+                    || normalized.quantity().compareTo(readiness.quantity()) != 0
+                    || normalized.price().compareTo(readiness.limitPrice()) != 0)
+                throw blocked("requested order does not match current defensive sell readiness");
+            var proposal = prepareLocked(userId, connectionId, normalized, readiness.limitPrice());
+            var linked = jdbc.update("""
+                    UPDATE order_intents
+                       SET investment_decision_id = ?, investment_risk_event_id = ?
+                     WHERE id = ? AND user_id = ? AND broker_connection_id = ? AND status = 'PROPOSED'
+                    """, decisionId, eventId, parseProposalId(proposal.proposalId()), userId, connectionId);
+            if (linked != 1) throw blocked("defensive proposal audit link could not be persisted");
+            return new PrepareResult(proposal.proposalId(), proposal.status(), proposal.order(),
+                    proposal.estimatedAmount(), proposal.preTrade(), proposal.expiresAt(),
+                    decisionId, eventId, readiness);
+        });
+    }
+
+    private PrepareResult prepareLocked(UUID userId, UUID connectionId, PrepareCommand command,
+                                        BigDecimal verifiedSellReference) {
         requireIds(userId, connectionId);
         var order = normalize(command);
+        lockOwnedConnection(userId, connectionId);
+        if (hasActivePreparedOrder(userId, connectionId, order.symbol()))
+            throw blocked("an active prepared order already exists for this symbol");
         var accountId = accountId(userId, connectionId);
         var account = safety.resolve(userId, connectionId, accountId);
         var portfolio = portfolios.read(userId, connectionId);
-        if (portfolio == null || portfolio.stale() || portfolio.partial()) throw blocked("portfolio is stale or partial");
-        var reference = referencePrice(quote(connectionId, order.symbol()), order.sideEnum());
+        var accountLocalDefensiveSell = verifiedSellReference != null
+                && InvestmentSellReadinessService.accountLocalSellSnapshotUsable(portfolio);
+        if (portfolio == null || portfolio.stale() || portfolio.positions() == null
+                || (portfolio.partial() && !accountLocalDefensiveSell))
+            throw blocked("portfolio is stale or partial");
+        var reference = verifiedSellReference == null
+                ? referencePrice(quote(connectionId, order.symbol()), order.sideEnum())
+                : verifiedSellReference;
         var estimatePrice = order.orderTypeEnum() == OrderType.LIMIT ? order.price() : reference;
         var amount = estimatePrice.multiply(order.quantity());
         var buyingPower = buyingPower(portfolio);
@@ -104,6 +168,42 @@ public final class McpOrderExecutionService {
                         "PASS"), intent.getExpiresAt());
     }
 
+    private void lockOwnedConnection(UUID userId, UUID connectionId) {
+        var owned = jdbc.query("""
+                SELECT id FROM broker_connections
+                 WHERE id = ? AND user_id = ? AND status = 'ACTIVE' AND deleted_at IS NULL
+                 FOR UPDATE
+                """, (rs, row) -> rs.getObject("id", UUID.class), connectionId, userId);
+        if (owned.size() != 1) throw blocked("owned active broker connection is unavailable");
+    }
+
+    private boolean hasActivePreparedOrder(UUID userId, UUID connectionId, String symbol) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS(
+                    SELECT 1 FROM order_intents
+                     WHERE user_id = ? AND broker_connection_id = ? AND upper(symbol) = ?
+                       AND (status <> 'PROPOSED' OR expires_at IS NULL OR expires_at > now())
+                       AND status IN ('PROPOSED','APPROVED','REVALIDATING','SUBMISSION_PENDING',
+                                      'RECONCILIATION_REQUIRED','MANUAL_REVIEW_REQUIRED','ACTIVE','PARTIALLY_COMPLETED')
+                )
+                """, Boolean.class, userId, connectionId, symbol));
+    }
+
+    private DefensiveLink defensiveLink(UUID intentId, UUID userId, UUID connectionId) {
+        var rows = jdbc.query("""
+                SELECT investment_decision_id, investment_risk_event_id
+                  FROM order_intents
+                 WHERE id = ? AND user_id = ? AND broker_connection_id = ?
+                """, (rs, row) -> new DefensiveLink(
+                (UUID) rs.getObject("investment_decision_id"),
+                (UUID) rs.getObject("investment_risk_event_id")), intentId, userId, connectionId);
+        if (rows.size() != 1) throw blocked("order proposal was not found");
+        var link = rows.getFirst();
+        if ((link.decisionId() == null) != (link.eventId() == null))
+            throw blocked("defensive proposal audit link is incomplete");
+        return link.decisionId() == null ? null : link;
+    }
+
     public SubmitResult submit(UUID userId, UUID connectionId, String proposalId) {
         requireIds(userId, connectionId);
         var id = parseProposalId(proposalId);
@@ -128,12 +228,37 @@ public final class McpOrderExecutionService {
             return new SubmitResult(proposalId, "EXPIRED", null);
         }
         if (intent.getProposalReferencePrice() == null) throw blocked("proposal reference price is unavailable");
+        var defensive = defensiveLink(id, userId, connectionId);
         var portfolio = portfolios.read(userId, connectionId);
-        if (portfolio == null || portfolio.stale() || portfolio.partial()) throw blocked("portfolio is stale or partial");
-        var price = referencePrice(quote(connectionId, intent.getSymbol()), intent.getSide());
+        var accountLocalDefensiveSell = defensive != null
+                && intent.getSide() == OrderSide.SELL
+                && InvestmentSellReadinessService.accountLocalSellSnapshotUsable(portfolio);
+        if (portfolio == null || portfolio.stale() || portfolio.positions() == null
+                || (portfolio.partial() && !accountLocalDefensiveSell))
+            throw blocked("portfolio is stale or partial");
+        BigDecimal price;
+        if (defensive != null) {
+            if (intent.getSide() != OrderSide.SELL || intent.getType() != OrderType.LIMIT)
+                throw blocked("risk-linked proposal must be a SELL LIMIT");
+            if (sellReadiness == null) throw blocked("defensive sell readiness is unavailable");
+            var readiness = sellReadiness.evaluate(userId, connectionId,
+                    defensive.decisionId(), defensive.eventId(), id);
+            if (!"READY".equals(readiness.actionStatus()) || !"READY".equals(readiness.sizingStatus())
+                    || !"READY".equals(readiness.pricingStatus()) || !"READY".equals(readiness.prepareStatus())
+                    || !intent.getSymbol().equalsIgnoreCase(readiness.ticker())
+                    || intent.getQuantity().compareTo(readiness.quantity()) != 0
+                    || intent.getLimitPrice() == null || intent.getLimitPrice().compareTo(readiness.limitPrice()) != 0)
+                throw blocked("risk-linked sell readiness changed since proposal");
+            price = readiness.limitPrice();
+        } else {
+            price = referencePrice(quote(connectionId, intent.getSymbol()), intent.getSide());
+        }
         if (price.compareTo(intent.getProposalReferencePrice()) != 0) throw blocked("quote changed since proposal");
         activation.approveFromMcp(userId, id, "MCP:" + userId);
-        var dispatch = activation.dispatchFromMcp(userId, id, clientOrderId(id), "MCP:" + userId, price);
+        var dispatch = defensive == null
+                ? activation.dispatchFromMcp(userId, id, clientOrderId(id), "MCP:" + userId, price)
+                : activation.dispatchFromMcpWithVerifiedReference(userId, id, clientOrderId(id),
+                "MCP:" + userId, price);
         var persisted = brokerOrders.findFirstByOrderIntentIdOrderByIdAsc(id);
         if (persisted.isPresent()) return submitResult(proposalId, persisted.get());
         if (dispatch.attemptStatus() == SubmissionAttemptStatus.UNKNOWN) {
@@ -285,7 +410,15 @@ public final class McpOrderExecutionService {
         OrderSide sideEnum() { return OrderSide.valueOf(side); }
         OrderType orderTypeEnum() { return OrderType.valueOf(orderType); }
     }
-    public record PrepareResult(String proposalId, String status, Order order, BigDecimal estimatedAmount, PreTrade preTrade, Instant expiresAt) {}
+    private record DefensiveLink(UUID decisionId, UUID eventId) {}
+    public record PrepareResult(String proposalId, String status, Order order, BigDecimal estimatedAmount,
+                                PreTrade preTrade, Instant expiresAt, UUID decisionId, UUID eventId,
+                                com.jmj.trade.investment.InvestmentSellReadinessService.Readiness readiness) {
+        public PrepareResult(String proposalId, String status, Order order, BigDecimal estimatedAmount,
+                            PreTrade preTrade, Instant expiresAt) {
+            this(proposalId, status, order, estimatedAmount, preTrade, expiresAt, null, null, null);
+        }
+    }
     public record SubmitResult(String proposalId, String status, String brokerOrderId) {}
     public record CancelResult(String brokerOrderId, String status) {}
     public record OrderResult(String brokerOrderId, String status) {}

@@ -2134,6 +2134,7 @@ public final class InvestmentContextService {
         }
         return jdbc.query("""
                 SELECT decision_id, as_of, asset, action, reference_price, price_session,
+                       target_remaining_quantity, target_broker_connection_id,
                        horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
                        risk_policy_check::text, created_at
                   FROM investment_decision_ledger
@@ -2155,20 +2156,41 @@ public final class InvestmentContextService {
                 .findFirst().orElse(null);
         var riskCheck = riskCheck(context.riskPolicy(), security == null ? null : security.risk());
         var now = timestamp(clock.instant());
+        var prior = jdbc.query("""
+                SELECT decision_id, as_of, asset, action, reference_price, price_session,
+                       target_remaining_quantity, target_broker_connection_id,
+                       horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
+                       risk_policy_check::text, created_at
+                  FROM investment_decision_ledger
+                 WHERE decision_id = ? AND user_id = ?
+                """, decisionRow(), decision.decisionId(), userId).stream().findFirst().orElse(null);
+        if (prior != null) {
+            if (!sameDecision(prior, decision)
+                    || !new java.util.HashSet<>(linkedRiskEventIds(userId, decision.decisionId()))
+                    .equals(new java.util.HashSet<>(decision.riskEventIds()))) {
+                throw new InvestmentException(InvestmentException.Code.CONFLICT);
+            }
+            return prior;
+        }
+        validateTargetConnection(userId, decision);
         var inserted = jdbc.update("""
                 INSERT INTO investment_decision_ledger (
                     decision_id, user_id, as_of, asset, action, reference_price, price_session,
+                    target_remaining_quantity, target_broker_connection_id,
                     horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
                     risk_policy_check, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?)
                 ON CONFLICT (decision_id) DO NOTHING
                 """, decision.decisionId(), userId, timestamp(decision.asOf()), decision.asset(), decision.action(),
-                decision.referencePrice(), decision.priceSession(), decision.horizon().trim(), decision.alphaThesis().trim(),
+                decision.referencePrice(), decision.priceSession(), decision.targetRemainingQuantity(),
+                decision.targetBrokerConnectionId(),
+                decision.horizon().trim(), decision.alphaThesis().trim(),
                 decision.invalidation().trim(), decision.nextReviewTrigger().trim(), decision.confidence(),
                 encode(riskCheck), now);
         if (inserted == 0) {
             var existing = jdbc.query("""
                     SELECT decision_id, as_of, asset, action, reference_price, price_session,
+                           target_remaining_quantity, target_broker_connection_id,
                            horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
                            risk_policy_check::text, created_at
                       FROM investment_decision_ledger
@@ -2184,6 +2206,7 @@ public final class InvestmentContextService {
         linkRiskEvents(userId, decision);
         return jdbc.query("""
                 SELECT decision_id, as_of, asset, action, reference_price, price_session,
+                       target_remaining_quantity, target_broker_connection_id,
                        horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
                        risk_policy_check::text, created_at
                   FROM investment_decision_ledger
@@ -2203,12 +2226,33 @@ public final class InvestmentContextService {
             if (event == null || !decision.asset().equals(event.ticker()) || event.thesisRevisionId() == null) {
                 throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
             }
+            if (decision.targetRemainingQuantity() != null) {
+                var currentRevision = jdbc.query("""
+                        SELECT id FROM investment_thesis_revisions
+                         WHERE user_id = ? AND ticker = ? ORDER BY revision DESC LIMIT 1
+                        """, (rs, rowNum) -> rs.getObject("id", UUID.class), userId, decision.asset())
+                        .stream().findFirst().orElse(null);
+                if (!event.thesisRevisionId().equals(currentRevision)) {
+                    throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+                }
+            }
             jdbc.update("""
                     INSERT INTO investment_risk_event_decision_links (
                         id, user_id, ticker, event_id, decision_id, thesis_revision_id, linked_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, UUID.randomUUID(), userId, decision.asset(), eventId, decision.decisionId(),
                     event.thesisRevisionId(), timestamp(clock.instant()));
+        }
+    }
+
+    private void validateTargetConnection(UUID userId, DecisionInput decision) {
+        if (decision.targetRemainingQuantity() == null) return;
+        var ownedActiveConnection = jdbc.queryForObject("""
+                SELECT EXISTS(SELECT 1 FROM broker_connections
+                               WHERE id = ? AND user_id = ? AND status = 'ACTIVE' AND deleted_at IS NULL)
+                """, Boolean.class, decision.targetBrokerConnectionId(), userId);
+        if (!Boolean.TRUE.equals(ownedActiveConnection)) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         }
     }
 
@@ -3350,6 +3394,8 @@ public final class InvestmentContextService {
                 instant(resultSet.getObject("as_of", OffsetDateTime.class)),
                 resultSet.getString("asset"), resultSet.getString("action"),
                 resultSet.getBigDecimal("reference_price"), resultSet.getString("price_session"),
+                resultSet.getBigDecimal("target_remaining_quantity"),
+                (UUID) resultSet.getObject("target_broker_connection_id"),
                 resultSet.getString("horizon"), resultSet.getString("alpha_thesis"),
                 resultSet.getString("invalidation"), resultSet.getString("next_review_trigger"),
                 resultSet.getBigDecimal("confidence"), decode(resultSet.getString("risk_policy_check")),
@@ -4360,11 +4406,17 @@ public final class InvestmentContextService {
                 && existing.referencePrice() != null
                 && existing.referencePrice().compareTo(input.referencePrice()) == 0
                 && Objects.equals(existing.priceSession(), input.priceSession())
+                && equalDecimal(existing.targetRemainingQuantity(), input.targetRemainingQuantity())
+                && Objects.equals(existing.targetBrokerConnectionId(), input.targetBrokerConnectionId())
                 && existing.horizon().equals(input.horizon())
                 && existing.alphaThesis().equals(input.alphaThesis())
                 && existing.invalidation().equals(input.invalidation())
                 && existing.nextReviewTrigger().equals(input.nextReviewTrigger())
                 && existing.confidence().compareTo(input.confidence()) == 0;
+    }
+
+    private static boolean equalDecimal(BigDecimal left, BigDecimal right) {
+        return left == null ? right == null : right != null && left.compareTo(right) == 0;
     }
 
     static void validateThesis(ThesisInput input) {
@@ -4406,10 +4458,25 @@ public final class InvestmentContextService {
                 && riskEventIds.size() != input.riskEventIds().size()) {
             throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         }
+        var targetRemainingQuantity = input.targetRemainingQuantity();
+        var targetBrokerConnectionId = input.targetBrokerConnectionId();
+        if (targetRemainingQuantity != null) {
+            if (!Set.of("REDUCE", "EXIT").contains(action) || riskEventIds.size() != 1
+                    || targetBrokerConnectionId == null
+                    || targetRemainingQuantity.signum() < 0 || targetRemainingQuantity.scale() > 6
+                    || ("EXIT".equals(action) && targetRemainingQuantity.signum() != 0)
+                    || ("REDUCE".equals(action) && targetRemainingQuantity.signum() == 0)) {
+                throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+            }
+            targetRemainingQuantity = targetRemainingQuantity.setScale(6, RoundingMode.UNNECESSARY);
+        } else if (targetBrokerConnectionId != null) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
         return new DecisionInput(input.decisionId(), input.asOf().truncatedTo(ChronoUnit.MICROS),
                 ticker(input.asset()), action, referencePrice, session, input.horizon().trim(),
                 input.alphaThesis().trim(), input.invalidation().trim(), input.nextReviewTrigger().trim(),
-                input.confidence().setScale(6, RoundingMode.HALF_UP), riskEventIds);
+                input.confidence().setScale(6, RoundingMode.HALF_UP), riskEventIds, targetRemainingQuantity,
+                targetBrokerConnectionId);
     }
 
     private void validateDecision(DecisionInput input) {
@@ -4840,13 +4907,29 @@ public final class InvestmentContextService {
     public record DecisionInput(
             UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
             String priceSession, String horizon, String alphaThesis, String invalidation,
-            String nextReviewTrigger, BigDecimal confidence, List<UUID> riskEventIds
+            String nextReviewTrigger, BigDecimal confidence, List<UUID> riskEventIds,
+            BigDecimal targetRemainingQuantity, UUID targetBrokerConnectionId
     ) {
+        public DecisionInput(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
+                             String priceSession, String horizon, String alphaThesis, String invalidation,
+                             String nextReviewTrigger, BigDecimal confidence, List<UUID> riskEventIds,
+                             BigDecimal targetRemainingQuantity) {
+            this(decisionId, asOf, asset, action, referencePrice, priceSession, horizon, alphaThesis,
+                    invalidation, nextReviewTrigger, confidence, riskEventIds, targetRemainingQuantity, null);
+        }
+
+        public DecisionInput(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
+                             String priceSession, String horizon, String alphaThesis, String invalidation,
+                             String nextReviewTrigger, BigDecimal confidence, List<UUID> riskEventIds) {
+            this(decisionId, asOf, asset, action, referencePrice, priceSession, horizon, alphaThesis,
+                    invalidation, nextReviewTrigger, confidence, riskEventIds, null, null);
+        }
+
         public DecisionInput(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
                              String priceSession, String horizon, String alphaThesis, String invalidation,
                              String nextReviewTrigger, BigDecimal confidence) {
             this(decisionId, asOf, asset, action, referencePrice, priceSession, horizon, alphaThesis,
-                    invalidation, nextReviewTrigger, confidence, List.of());
+                    invalidation, nextReviewTrigger, confidence, List.of(), null, null);
         }
 
         public DecisionInput {
@@ -4857,9 +4940,16 @@ public final class InvestmentContextService {
 
     public record DecisionView(
             UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
-            String priceSession, String horizon, String alphaThesis, String invalidation,
+            String priceSession, BigDecimal targetRemainingQuantity, UUID targetBrokerConnectionId,
+            String horizon, String alphaThesis, String invalidation,
             String nextReviewTrigger, BigDecimal confidence, JsonNode riskPolicyCheck, Instant createdAt
     ) {
+        public DecisionView(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
+                            String priceSession, String horizon, String alphaThesis, String invalidation,
+                            String nextReviewTrigger, BigDecimal confidence, JsonNode riskPolicyCheck, Instant createdAt) {
+            this(decisionId, asOf, asset, action, referencePrice, priceSession, null, null,
+                    horizon, alphaThesis, invalidation, nextReviewTrigger, confidence, riskPolicyCheck, createdAt);
+        }
     }
 
     public record RiskMarkView(BigDecimal value, Instant asOf, String source, String basis,
