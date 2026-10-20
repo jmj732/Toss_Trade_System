@@ -12,7 +12,12 @@ import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.BrokerOrderGroup;
 import com.jmj.trade.broker.BrokerOrderPort;
+import com.jmj.trade.broker.BrokerOrderLifecycle;
+import com.jmj.trade.broker.BrokerOrderSide;
+import com.jmj.trade.broker.BrokerOrderType;
+import com.jmj.trade.broker.BrokerOrderView;
 import com.jmj.trade.broker.BrokerResponse;
+import com.jmj.trade.broker.Currency;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -106,6 +111,92 @@ class ConnectorServiceTest {
 
         assertThat(fills).hasSize(1);
         assertThat(fills.getFirst().averagePrice()).isNull();
+    }
+
+    @Test
+    void usesTheClosedCumulativeSnapshotOnceWhenAnOrderAppearsInBothGroups() {
+        var open = fillOrder("order-1", "ABC", "2", ConnectorResponse.BrokerOrderGroup.OPEN,
+                OBSERVED_AT.minusSeconds(30), "10");
+        var closed = fillOrder("order-1", "ABC", "5", ConnectorResponse.BrokerOrderGroup.CLOSED,
+                OBSERVED_AT, "11");
+
+        var fills = ConnectorService.fills(List.of(open), List.of(closed), null);
+
+        assertThat(fills).hasSize(1);
+        assertThat(fills.getFirst().quantity()).isEqualByComparingTo("5");
+        assertThat(fills.getFirst().averagePrice()).isEqualByComparingTo("11");
+        assertThat(fills.getFirst().filledAt()).isEqualTo(OBSERVED_AT);
+    }
+
+    @Test
+    void rejectsContradictoryCumulativeSnapshotsInsteadOfClaimingAFill() {
+        var open = fillOrder("order-1", "ABC", "5", ConnectorResponse.BrokerOrderGroup.OPEN,
+                OBSERVED_AT.minusSeconds(30), "10");
+        var closed = fillOrder("order-1", "ABC", "4", ConnectorResponse.BrokerOrderGroup.CLOSED,
+                OBSERVED_AT, "11");
+
+        assertThatThrownBy(() -> ConnectorService.fills(List.of(open), List.of(closed), null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("conflicting broker order snapshots");
+    }
+
+    @Test
+    void collapsesExactRepeatedRowsAndRejectsConflictingRowsWithinOneGroup() {
+        var repeated = fillOrder("order-1", "ABC", "2", ConnectorResponse.BrokerOrderGroup.OPEN,
+                OBSERVED_AT, "10");
+
+        assertThat(ConnectorService.fills(List.of(repeated, repeated), List.of(), null)).hasSize(1);
+
+        var conflicting = fillOrder("order-1", "ABC", "3", ConnectorResponse.BrokerOrderGroup.OPEN,
+                OBSERVED_AT.plusSeconds(1), "10");
+        assertThatThrownBy(() -> ConnectorService.fills(List.of(repeated, conflicting), List.of(), null))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("conflicting broker order snapshots");
+    }
+
+    @Test
+    void stillExcludesMissingFillTimestampsWhenFilteringSince() {
+        var order = fillOrder("order-1", "ABC", "2", ConnectorResponse.BrokerOrderGroup.OPEN,
+                null, "10");
+
+        assertThat(ConnectorService.fills(List.of(order), List.of(), null)).hasSize(1);
+        assertThat(ConnectorService.fills(List.of(order), List.of(), OBSERVED_AT.minusSeconds(60))).isEmpty();
+    }
+
+    @Test
+    void propagatesClosedOrderReadFailureInsteadOfReturningAnEmptyFillList() {
+        var broker = mock(BrokerAdapter.class, withSettings().extraInterfaces(BrokerOrderPort.class));
+        var orders = (BrokerOrderPort) broker;
+        var account = new BrokerAccountRef(CONNECTION, "12345678", "GENERAL", "****5678");
+        when(broker.getAccounts(any(BrokerConnectionRef.class))).thenReturn(
+                new BrokerResponse<>(List.of(new BrokerAccountView(account, "Toss")), metadata()));
+        when(orders.getOrders(account, BrokerOrderGroup.OPEN)).thenReturn(new BrokerResponse<>(
+                List.of(brokerOrder("order-1", BrokerOrderLifecycle.PARTIALLY_FILLED, "2")), metadata()));
+        var failure = new BrokerException(
+                BrokerErrorCategory.NETWORK, null, null, null, null, true, "Toss timeout");
+        doThrow(failure).when(orders).getOrders(account, BrokerOrderGroup.CLOSED);
+
+        assertThatThrownBy(() -> new ConnectorService(null, Map.of("brokerAdapter", broker))
+                .fills(USER, CONNECTION, null))
+                .isSameAs(failure);
+    }
+
+    private static ConnectorResponse.Order fillOrder(String id, String symbol, String filled,
+                                                     ConnectorResponse.BrokerOrderGroup group,
+                                                     Instant filledAt, String averagePrice) {
+        return new ConnectorResponse.Order(
+                id, ConnectorResponse.BrokerOrderSide.BUY, ConnectorResponse.BrokerOrderType.LIMIT,
+                symbol, new BigDecimal("10"), new BigDecimal(filled), new BigDecimal("10"), "USD",
+                group == ConnectorResponse.BrokerOrderGroup.CLOSED
+                        ? ConnectorResponse.BrokerOrderLifecycle.FILLED
+                        : ConnectorResponse.BrokerOrderLifecycle.PARTIALLY_FILLED,
+                group, filledAt, new BigDecimal(averagePrice), null, null);
+    }
+
+    private static BrokerOrderView brokerOrder(String id, BrokerOrderLifecycle status, String filled) {
+        return new BrokerOrderView(id, null, BrokerOrderSide.BUY, BrokerOrderType.LIMIT, "ABC",
+                new BigDecimal("10"), new BigDecimal(filled), new BigDecimal("10"), Currency.USD,
+                status, OBSERVED_AT, new BigDecimal("10"), null, null, OBSERVED_AT);
     }
 
     private static PortfolioReadService.PortfolioView portfolio() {

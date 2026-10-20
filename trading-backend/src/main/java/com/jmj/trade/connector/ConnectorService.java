@@ -14,9 +14,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -106,13 +110,97 @@ public final class ConnectorService {
     public static List<ConnectorResponse.Fill> fills(
             List<ConnectorResponse.Order> open, List<ConnectorResponse.Order> closed, Instant since
     ) {
-        return java.util.stream.Stream.concat(
-                        (open == null ? List.<ConnectorResponse.Order>of() : open).stream(),
-                        (closed == null ? List.<ConnectorResponse.Order>of() : closed).stream())
+        var snapshots = new ArrayList<OrderSnapshot>();
+        var indexByOrderId = new HashMap<String, Integer>();
+        addOrderSnapshots(snapshots, indexByOrderId, open, ConnectorResponse.BrokerOrderGroup.OPEN);
+        addOrderSnapshots(snapshots, indexByOrderId, closed, ConnectorResponse.BrokerOrderGroup.CLOSED);
+
+        return snapshots.stream().map(OrderSnapshot::order)
                 .filter(order -> order.filledQuantity() != null && order.filledQuantity().signum() > 0)
                 .map(ConnectorService::fill)
                 .filter(fill -> since == null || (fill.filledAt() != null && !fill.filledAt().isBefore(since)))
                 .toList();
+    }
+
+    private static void addOrderSnapshots(
+            List<OrderSnapshot> snapshots,
+            Map<String, Integer> indexByOrderId,
+            List<ConnectorResponse.Order> orders,
+            ConnectorResponse.BrokerOrderGroup sourceGroup
+    ) {
+        if (orders == null) return;
+        for (var order : orders) {
+            if (order.brokerOrderId() == null || order.brokerOrderId().isBlank()) {
+                snapshots.add(new OrderSnapshot(order, sourceGroup));
+                continue;
+            }
+
+            var existingIndex = indexByOrderId.get(order.brokerOrderId());
+            if (existingIndex == null) {
+                indexByOrderId.put(order.brokerOrderId(), snapshots.size());
+                snapshots.add(new OrderSnapshot(order, sourceGroup));
+                continue;
+            }
+            var existing = snapshots.get(existingIndex);
+            if (sameSnapshot(existing.order(), order)) continue;
+
+            if (existing.sourceGroup() == sourceGroup) {
+                throw conflictingSnapshots(order.brokerOrderId());
+            }
+            requireSameOrderIdentity(existing.order(), order);
+
+            var openOrder = existing.sourceGroup() == ConnectorResponse.BrokerOrderGroup.OPEN
+                    ? existing.order() : order;
+            var closedOrder = existing.sourceGroup() == ConnectorResponse.BrokerOrderGroup.CLOSED
+                    ? existing.order() : order;
+            if (openOrder.filledQuantity() == null || closedOrder.filledQuantity() == null
+                    || closedOrder.filledQuantity().compareTo(openOrder.filledQuantity()) < 0) {
+                throw conflictingSnapshots(order.brokerOrderId());
+            }
+
+            // Closed-order rows are the final cumulative snapshot. Never add the open and closed
+            // quantities because both may describe executions already included in the same total.
+            snapshots.set(existingIndex, new OrderSnapshot(closedOrder, ConnectorResponse.BrokerOrderGroup.CLOSED));
+        }
+    }
+
+    private static void requireSameOrderIdentity(ConnectorResponse.Order left, ConnectorResponse.Order right) {
+        if (!Objects.equals(left.symbol(), right.symbol())
+                || left.side() != right.side()
+                || left.type() != right.type()
+                || !Objects.equals(left.currency(), right.currency())
+                || !sameDecimal(left.quantity(), right.quantity())) {
+            throw conflictingSnapshots(left.brokerOrderId());
+        }
+    }
+
+    private static boolean sameSnapshot(ConnectorResponse.Order left, ConnectorResponse.Order right) {
+        return Objects.equals(left.brokerOrderId(), right.brokerOrderId())
+                && left.side() == right.side()
+                && left.type() == right.type()
+                && Objects.equals(left.symbol(), right.symbol())
+                && sameDecimal(left.quantity(), right.quantity())
+                && sameDecimal(left.filledQuantity(), right.filledQuantity())
+                && sameDecimal(left.limitPrice(), right.limitPrice())
+                && Objects.equals(left.currency(), right.currency())
+                && left.status() == right.status()
+                && left.group() == right.group()
+                && Objects.equals(left.filledAt(), right.filledAt())
+                && sameDecimal(left.averageFilledPrice(), right.averageFilledPrice())
+                && sameDecimal(left.commission(), right.commission())
+                && sameDecimal(left.tax(), right.tax())
+                && Objects.equals(left.orderedAt(), right.orderedAt());
+    }
+
+    private static boolean sameDecimal(BigDecimal left, BigDecimal right) {
+        return left == null ? right == null : right != null && left.compareTo(right) == 0;
+    }
+
+    private static IllegalStateException conflictingSnapshots(String brokerOrderId) {
+        return new IllegalStateException("conflicting broker order snapshots for " + brokerOrderId);
+    }
+
+    private record OrderSnapshot(ConnectorResponse.Order order, ConnectorResponse.BrokerOrderGroup sourceGroup) {
     }
 
     public ConnectorResponse.Order order(UUID userId, UUID connectionId, String brokerOrderId, String clientOrderId) {
