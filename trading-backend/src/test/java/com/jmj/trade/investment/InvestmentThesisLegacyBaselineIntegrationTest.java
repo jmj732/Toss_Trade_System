@@ -53,7 +53,7 @@ class InvestmentThesisLegacyBaselineIntegrationTest extends PostgresIntegrationT
         latest.migrate();
         var migrationFinished = Instant.now();
 
-        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("62");
+        assertThat(latest.info().current().getVersion().getVersion()).isEqualTo("63");
         var dataSource = pooledTestDataSource();
         try {
             var jdbc = new JdbcTemplate(dataSource);
