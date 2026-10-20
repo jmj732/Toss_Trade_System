@@ -35,7 +35,7 @@ class InvestmentDecisionTargetQuantityMigrationTest extends PostgresIntegrationT
         insertLegacyDecision(decisionId, userId);
 
         assertThat(beforeV63.info().current().getVersion().getVersion()).isEqualTo("62");
-        var current = flyway();
+        var current = flyway("63");
         current.migrate();
 
         assertThat(current.info().current().getVersion().getVersion()).isEqualTo("63");
