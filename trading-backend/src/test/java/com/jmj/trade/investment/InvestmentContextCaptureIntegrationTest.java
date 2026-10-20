@@ -242,25 +242,9 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void decisionCanExplicitlyLinkRiskEventAndRevisionWithoutBackfill() {
-        var revisionId = UUID.randomUUID();
-        var eventId = UUID.randomUUID();
-        var observedAt = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(5);
-        jdbc.update("""
-                INSERT INTO investment_thesis_revisions (
-                    id, user_id, ticker, revision, previous_status, new_status, previous_trigger_price,
-                    new_trigger_price, thesis_snapshot, actor_type, actor_user_id, recorded_at
-                ) VALUES (?, ?, 'AAPL', 1, NULL, 'CONFIRMED', NULL, 100, '{}'::jsonb, 'USER_SESSION', ?, ?)
-                """, revisionId, USER_ID, USER_ID, observedAt);
-        jdbc.update("""
-                INSERT INTO monitoring_state_history (
-                    id, user_id, scope, subject_key, previous_state, new_state, source_type,
-                    source_event_id, evidence, observed_at, created_at
-                ) VALUES (?, ?, 'THESIS_REVIEW', 'AAPL', 'NORMAL', 'PRICE_RISK_BREACH',
-                    'CONFIRMED_THESIS_PRICE_TRIGGER', ?, CAST(? AS jsonb), ?, ?)
-                """, eventId, USER_ID, "risk-event:" + eventId,
-                """
-                {"eventId":"%s","ticker":"AAPL","thesisRevisionId":"%s"}
-                """.formatted(eventId, revisionId), observedAt, observedAt);
+        var riskEvent = seedCurrentRiskEvent();
+        var revisionId = riskEvent.revisionId();
+        var eventId = riskEvent.eventId();
         var watchlist = mock(MonitoringWatchlistService.class);
         when(watchlist.list(USER_ID)).thenReturn(List.of());
         var riskPolicies = mock(RiskPolicyService.class);
@@ -295,6 +279,149 @@ class InvestmentContextCaptureIntegrationTest extends PostgresIntegrationTest {
                         input.invalidation(), input.nextReviewTrigger(), input.confidence(), List.of(eventId))))
                 .isInstanceOf(InvestmentException.class)
                 .hasMessage("INVALID_INPUT");
+    }
+
+    @Test
+    void defensiveDecisionPersistsAccountTargetAndAllowsNumericEquivalentReplay() {
+        var riskEvent = seedCurrentRiskEvent();
+        var connectionId = insertActiveTossConnection();
+        var investment = decisionRecordingService();
+        var decisionId = UUID.randomUUID();
+        var decisionAsOf = Instant.now().minusSeconds(30).truncatedTo(ChronoUnit.MICROS);
+
+        var created = investment.recordDecision(USER_ID, targetDecision(decisionId, decisionAsOf,
+                riskEvent.eventId(), "REDUCE", new BigDecimal("22"), connectionId));
+        var replay = investment.recordDecision(USER_ID, targetDecision(decisionId, decisionAsOf,
+                riskEvent.eventId(), "REDUCE", new BigDecimal("22.000000"), connectionId));
+
+        assertThat(created.decisionId()).isEqualTo(decisionId);
+        assertThat(created.targetRemainingQuantity()).isEqualByComparingTo("22.000000");
+        assertThat(created.targetBrokerConnectionId()).isEqualTo(connectionId);
+        assertThat(replay.decisionId()).isEqualTo(created.decisionId());
+        assertThat(replay.targetRemainingQuantity()).isEqualByComparingTo(created.targetRemainingQuantity());
+        assertThat(replay.targetBrokerConnectionId()).isEqualTo(created.targetBrokerConnectionId());
+        assertThat(replay.createdAt()).isEqualTo(created.createdAt());
+        var persisted = jdbc.queryForMap("""
+                SELECT target_remaining_quantity, target_broker_connection_id
+                  FROM investment_decision_ledger WHERE user_id = ? AND decision_id = ?
+                """, USER_ID, decisionId);
+        assertThat((BigDecimal) persisted.get("target_remaining_quantity")).isEqualByComparingTo("22");
+        assertThat(persisted.get("target_broker_connection_id")).isEqualTo(connectionId);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_risk_event_decision_links
+                 WHERE user_id = ? AND event_id = ? AND decision_id = ? AND thesis_revision_id = ?
+                """, Integer.class, USER_ID, riskEvent.eventId(), decisionId, riskEvent.revisionId()))
+                .isEqualTo(1);
+
+        assertThatThrownBy(() -> investment.recordDecision(USER_ID, targetDecision(decisionId, decisionAsOf,
+                riskEvent.eventId(), "REDUCE", new BigDecimal("21.999999"), connectionId)))
+                .isInstanceOf(InvestmentException.class)
+                .hasMessage("CONFLICT");
+        assertThatThrownBy(() -> investment.recordDecision(USER_ID, targetDecision(decisionId, decisionAsOf,
+                riskEvent.eventId(), "REDUCE", new BigDecimal("22"), UUID.randomUUID())))
+                .isInstanceOf(InvestmentException.class)
+                .hasMessage("CONFLICT");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM investment_decision_ledger WHERE decision_id = ?",
+                Integer.class, decisionId)).isEqualTo(1);
+    }
+
+    @Test
+    void defensiveDecisionRejectsInvalidActionAndUnpairedTargetInputs() {
+        var investment = decisionRecordingService();
+        var eventId = UUID.randomUUID();
+        var connectionId = UUID.randomUUID();
+
+        assertInvalidTarget(investment, targetDecision(UUID.randomUUID(), Instant.now().minusSeconds(30),
+                eventId, "HOLD", new BigDecimal("22"), connectionId));
+        assertInvalidTarget(investment, targetDecision(UUID.randomUUID(), Instant.now().minusSeconds(30),
+                eventId, "EXIT", new BigDecimal("1"), connectionId));
+        assertInvalidTarget(investment, targetDecision(UUID.randomUUID(), Instant.now().minusSeconds(30),
+                eventId, "REDUCE", new BigDecimal("22"), null));
+        assertInvalidTarget(investment, targetDecision(UUID.randomUUID(), Instant.now().minusSeconds(30),
+                eventId, "REDUCE", null, connectionId));
+        assertInvalidTarget(investment, targetDecision(UUID.randomUUID(), Instant.now().minusSeconds(30),
+                eventId, "REDUCE", BigDecimal.ZERO, connectionId));
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM investment_decision_ledger", Integer.class)).isZero();
+    }
+
+    @Test
+    void defensiveDecisionRejectsAnotherUsersAccountAndRollsBackLedger() {
+        var riskEvent = seedCurrentRiskEvent();
+        var otherUserId = UUID.randomUUID();
+        jdbc.update("INSERT INTO users (id) VALUES (?)", otherUserId);
+        var otherUsersConnectionId = insertActiveTossConnection(otherUserId);
+        var decisionId = UUID.randomUUID();
+        var investment = decisionRecordingService();
+
+        assertThatThrownBy(() -> investment.recordDecision(USER_ID, targetDecision(decisionId,
+                Instant.now().minusSeconds(30), riskEvent.eventId(), "REDUCE", new BigDecimal("22"),
+                otherUsersConnectionId)))
+                .isInstanceOf(InvestmentException.class)
+                .hasMessage("INVALID_INPUT");
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM investment_decision_ledger WHERE decision_id = ?",
+                Integer.class, decisionId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM investment_risk_event_decision_links WHERE decision_id = ?",
+                Integer.class, decisionId)).isZero();
+    }
+
+    private void assertInvalidTarget(
+            InvestmentContextService investment, InvestmentContextService.DecisionInput input
+    ) {
+        assertThatThrownBy(() -> investment.recordDecision(USER_ID, input))
+                .isInstanceOf(InvestmentException.class)
+                .hasMessage("INVALID_INPUT");
+    }
+
+    private InvestmentContextService.DecisionInput targetDecision(
+            UUID decisionId, Instant asOf, UUID eventId, String action, BigDecimal targetRemaining,
+            UUID targetConnectionId
+    ) {
+        return new InvestmentContextService.DecisionInput(decisionId, asOf, "AAPL", action,
+                new BigDecimal("100"), "REGULAR_CLOSE", "1Y", "caller rationale",
+                "caller invalidation", "review after filing", new BigDecimal("0.8"), List.of(eventId),
+                targetRemaining, targetConnectionId);
+    }
+
+    private InvestmentContextService decisionRecordingService() {
+        var watchlist = mock(MonitoringWatchlistService.class);
+        when(watchlist.list(USER_ID)).thenReturn(List.of());
+        var riskPolicies = mock(RiskPolicyService.class);
+        when(riskPolicies.current(USER_ID)).thenReturn(new RiskPolicyService.RiskPolicySnapshot(
+                0, new BigDecimal("10000000"), new BigDecimal("10000"),
+                new BigDecimal("100"), new BigDecimal("0.25"), false));
+        return new InvestmentContextService(jdbc, mapper, transactions,
+                new StockDataProviderRegistry(List.of()), mock(ObjectProvider.class),
+                new PortfolioReadService(jdbc, mapper, Duration.ofMinutes(15)),
+                watchlist, riskPolicies, Duration.ofMinutes(15), Duration.ofDays(7),
+                Duration.ofDays(210), Duration.ofDays(10));
+    }
+
+    private CurrentRiskEventFixture seedCurrentRiskEvent() {
+        var revisionId = UUID.randomUUID();
+        var eventId = UUID.randomUUID();
+        var observedAt = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(5);
+        jdbc.update("""
+                INSERT INTO investment_thesis_revisions (
+                    id, user_id, ticker, revision, previous_status, new_status, previous_trigger_price,
+                    new_trigger_price, thesis_snapshot, actor_type, actor_user_id, recorded_at
+                ) VALUES (?, ?, 'AAPL', 1, NULL, 'CONFIRMED', NULL, 100, '{}'::jsonb, 'USER_SESSION', ?, ?)
+                """, revisionId, USER_ID, USER_ID, observedAt);
+        jdbc.update("""
+                INSERT INTO monitoring_state_history (
+                    id, user_id, scope, subject_key, previous_state, new_state, source_type,
+                    source_event_id, evidence, observed_at, created_at
+                ) VALUES (?, ?, 'THESIS_REVIEW', 'AAPL', 'NORMAL', 'PRICE_RISK_BREACH',
+                    'CONFIRMED_THESIS_PRICE_TRIGGER', ?, CAST(? AS jsonb), ?, ?)
+                """, eventId, USER_ID, "risk-event:" + eventId,
+                """
+                {"eventId":"%s","ticker":"AAPL","thesisRevisionId":"%s"}
+                """.formatted(eventId, revisionId), observedAt, observedAt);
+        return new CurrentRiskEventFixture(eventId, revisionId);
+    }
+
+    private record CurrentRiskEventFixture(UUID eventId, UUID revisionId) {
     }
 
     @Test
