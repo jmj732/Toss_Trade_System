@@ -144,6 +144,54 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void partialSnapshotAllowsSellWithFreshKnownPositionButStillBlocksBuy() {
+        var sellOwner = owner();
+        var sellRunId = successfulSnapshot(sellOwner, "KNOWN", false, "1000", "1000", null, null);
+        insertSellablePosition(sellRunId, sellOwner, "AAPL", "1");
+        var sellIntentId = intent(sellOwner, OrderSide.SELL, OrderType.LIMIT, "AAPL", "1", "100");
+
+        var sellDecision = riskEngine.approve(command(sellOwner, sellIntentId, "100", T0));
+
+        assertThat(sellDecision.approved()).isTrue();
+        assertThat(sellDecision.reasons()).doesNotContain(PreTradeRiskEngine.Reason.PARTIAL_SNAPSHOT);
+
+        var buyOwner = owner();
+        successfulSnapshot(buyOwner, "KNOWN", false, "1000", "1000", "MSFT", "100");
+        var buyIntentId = intent(buyOwner, OrderSide.BUY, OrderType.LIMIT, "AAPL", "1", "100");
+
+        var buyDecision = riskEngine.approve(command(buyOwner, buyIntentId, "100", T0));
+
+        assertThat(buyDecision.approved()).isFalse();
+        assertThat(buyDecision.reasons()).contains(PreTradeRiskEngine.Reason.PARTIAL_SNAPSHOT);
+    }
+
+    @Test
+    void partialSnapshotStillBlocksSellWhenPositionIsMissingUnknownOrStale() {
+        var missingOwner = owner();
+        successfulSnapshot(missingOwner, "KNOWN", false, "1000", "1000", null, null);
+        var missingIntentId = intent(missingOwner, OrderSide.SELL, OrderType.LIMIT, "AAPL", "1", "100");
+        var missingDecision = riskEngine.approve(command(missingOwner, missingIntentId, "100", T0));
+        assertThat(missingDecision.approved()).isFalse();
+        assertThat(missingDecision.reasons()).contains(PreTradeRiskEngine.Reason.PARTIAL_SNAPSHOT);
+
+        var unknownOwner = owner();
+        var unknownRunId = successfulSnapshot(unknownOwner, "KNOWN", false, "1000", "1000", null, null);
+        insertSellablePosition(unknownRunId, unknownOwner, "AAPL", null);
+        var unknownIntentId = intent(unknownOwner, OrderSide.SELL, OrderType.LIMIT, "AAPL", "1", "100");
+        var unknownDecision = riskEngine.approve(command(unknownOwner, unknownIntentId, "100", T0));
+        assertThat(unknownDecision.approved()).isFalse();
+        assertThat(unknownDecision.reasons()).contains(PreTradeRiskEngine.Reason.PARTIAL_SNAPSHOT);
+
+        var staleOwner = owner();
+        var staleRunId = successfulSnapshot(staleOwner, "KNOWN", false, "1000", "1000", null, null);
+        insertSellablePosition(staleRunId, staleOwner, "AAPL", "1", Instant.now().minus(Duration.ofHours(1)));
+        var staleIntentId = intent(staleOwner, OrderSide.SELL, OrderType.LIMIT, "AAPL", "1", "100");
+        var staleDecision = riskEngine.approve(command(staleOwner, staleIntentId, "100", T0));
+        assertThat(staleDecision.approved()).isFalse();
+        assertThat(staleDecision.reasons()).contains(PreTradeRiskEngine.Reason.PARTIAL_SNAPSHOT);
+    }
+
+    @Test
     void snapshotOlderThanMaxAgeIsBlockedAsStaleEvenWithoutANewerRun() {
         var owner = owner();
         // 더 새로운 RUNNING/FAILED run 이 없어도, 선택된 성공 스냅샷의 completed_at 이
@@ -456,6 +504,11 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
     }
 
     private void insertSellablePosition(UUID runId, Owner owner, String symbol, String sellable) {
+        insertSellablePosition(runId, owner, symbol, sellable, T0);
+    }
+
+    private void insertSellablePosition(UUID runId, Owner owner, String symbol, String sellable,
+                                        Instant observedAt) {
         jdbc.update("""
                 INSERT INTO position_snapshots (
                     id, sync_run_id, user_id, broker_connection_id, symbol, name,
@@ -470,7 +523,7 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
                     1, 1, 1, 0, 0, 0, 0, 0, 0, 0, NULL, CAST(? AS numeric), ?, ?
                 )
                 """, UUID.randomUUID(), runId, owner.userId(), owner.connectionId(),
-                symbol, symbol, sellable, at(T0), at(T0));
+                symbol, symbol, sellable, at(observedAt), at(T0));
     }
 
     private void insertOpenOrderIntent(Owner owner, String symbol) {

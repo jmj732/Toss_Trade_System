@@ -10,12 +10,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 public class PreTradeRiskEngine {
@@ -321,7 +323,7 @@ public class PreTradeRiskEngine {
         if (portfolio.stale()) {
             reasons.add(Reason.STALE_SNAPSHOT);
         }
-        if (portfolio.partial()) {
+        if (portfolio.partial() && !partialSnapshotSupportsSell(subject, portfolio, evaluatedAt)) {
             reasons.add(Reason.PARTIAL_SNAPSHOT);
         }
         var price = subject.type() == OrderType.LIMIT ? subject.limitPrice() : referencePrice;
@@ -357,6 +359,44 @@ public class PreTradeRiskEngine {
                 subject.currency(),
                 policy.version(),
                 evaluatedAt);
+    }
+
+    /**
+     * A partial account snapshot can support an account-local SELL when its gaps are limited to account totals
+     * or cash sections and the exact position being sold is independently fresh and complete. BUY sizing still
+     * requires the full snapshot, and unknown sections or position data remain fail-closed.
+     */
+    private boolean partialSnapshotSupportsSell(
+            Subject subject,
+            PortfolioReadService.PortfolioView portfolio,
+            Instant evaluatedAt
+    ) {
+        if (subject.side() != OrderSide.SELL || portfolio.missingSections() == null
+                || portfolio.missingSections().isEmpty()
+                || !Set.of("ACCOUNT", "BUYING_POWER_KRW", "BUYING_POWER_USD")
+                .containsAll(portfolio.missingSections())
+                || portfolio.positions() == null) {
+            return false;
+        }
+
+        var matchingPositions = portfolio.positions().stream()
+                .filter(Objects::nonNull)
+                .filter(position -> subject.symbol().equalsIgnoreCase(position.symbol()))
+                .filter(position -> subject.currency().name().equalsIgnoreCase(position.currency()))
+                .toList();
+        if (matchingPositions.size() != 1) {
+            return false;
+        }
+        var position = matchingPositions.getFirst();
+        var observedAt = position.observedAt();
+        var maxAge = portfolioReadService.snapshotMaxAge();
+        return position.quantity() != null && position.quantity().signum() > 0
+                && position.quantity().compareTo(subject.quantity()) >= 0
+                && position.sellableQuantity() != null
+                && position.sellableQuantity().compareTo(subject.quantity()) >= 0
+                && observedAt != null && !observedAt.isAfter(evaluatedAt)
+                && maxAge != null && maxAge.isPositive()
+                && Duration.between(observedAt, evaluatedAt).compareTo(maxAge) <= 0;
     }
 
     private void evaluateBuyLimits(
