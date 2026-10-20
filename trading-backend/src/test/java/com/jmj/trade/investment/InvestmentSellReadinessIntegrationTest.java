@@ -118,6 +118,68 @@ class InvestmentSellReadinessIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void allowsPartialAccountSnapshotWhenOnlyCashSectionsAreMissing() throws Exception {
+        var decision = seedDecision("REDUCE", bd("22"), connectionId, NOW.minusSeconds(60), OBSERVED_AT,
+                "INTRADAY_BREACH");
+        stubAccountPosition("42", "42", OBSERVED_AT, false, true,
+                List.of("ACCOUNT", "BUYING_POWER_KRW", "BUYING_POWER_USD"));
+
+        var result = service.evaluate(userId, connectionId, decision.decisionId(), decision.eventId());
+
+        assertThat(result.actionStatus()).isEqualTo("READY");
+        assertThat(result.sizingStatus()).isEqualTo("READY");
+        assertThat(result.pricingStatus()).isEqualTo("READY");
+        assertThat(result.prepareStatus()).isEqualTo("READY");
+        assertThat(result.quantity()).isEqualByComparingTo("20");
+        assertThat(result.blockers()).isEmpty();
+        verify(portfolios).read(userId, connectionId);
+        verify(brokerSurface).orderBook(userId, connectionId, TICKER);
+    }
+
+    @Test
+    void blocksPartialAccountSnapshotWithUnknownMissingSection() throws Exception {
+        var decision = seedDecision("REDUCE", bd("22"), connectionId, NOW.minusSeconds(60), OBSERVED_AT,
+                "INTRADAY_BREACH");
+        stubAccountPosition("42", "42", OBSERVED_AT, false, true, List.of("UNRECOGNIZED_SECTION"));
+
+        var result = service.evaluate(userId, connectionId, decision.decisionId(), decision.eventId());
+
+        assertThat(result.actionStatus()).isEqualTo("READY");
+        assertThat(result.sizingStatus()).isEqualTo("BLOCKED");
+        assertThat(result.blockers()).contains("ACCOUNT_SNAPSHOT_STALE_OR_PARTIAL");
+        verify(portfolios).read(userId, connectionId);
+        verifyNoInteractions(brokerSurface, connector);
+    }
+
+    @Test
+    void blocksPartialAccountSnapshotWithoutPosition() throws Exception {
+        var decision = seedDecision("REDUCE", bd("22"), connectionId, NOW.minusSeconds(60), OBSERVED_AT,
+                "INTRADAY_BREACH");
+        stubAccountPortfolio(List.of(), false, true,
+                List.of("ACCOUNT", "BUYING_POWER_KRW", "BUYING_POWER_USD"));
+
+        var result = service.evaluate(userId, connectionId, decision.decisionId(), decision.eventId());
+
+        assertThat(result.sizingStatus()).isEqualTo("BLOCKED");
+        assertThat(result.blockers()).contains("POSITION_OR_SELLABLE_QUANTITY_MISSING");
+        verifyNoInteractions(brokerSurface, connector);
+    }
+
+    @Test
+    void blocksStalePositionInsideOtherwiseUsablePartialAccountSnapshot() throws Exception {
+        var decision = seedDecision("REDUCE", bd("22"), connectionId, NOW.minusSeconds(60), OBSERVED_AT,
+                "INTRADAY_BREACH");
+        stubAccountPosition("42", "42", NOW.minusSeconds(16 * 60), false, true,
+                List.of("ACCOUNT", "BUYING_POWER_KRW", "BUYING_POWER_USD"));
+
+        var result = service.evaluate(userId, connectionId, decision.decisionId(), decision.eventId());
+
+        assertThat(result.sizingStatus()).isEqualTo("BLOCKED");
+        assertThat(result.blockers()).contains("POSITION_OBSERVATION_MISSING_OR_INVALID");
+        verifyNoInteractions(brokerSurface, connector);
+    }
+
+    @Test
     void blocksMissingPolicyWithoutReadingPositionOrExecutionData() throws Exception {
         var decision = seedDecision("REDUCE", null, null, NOW.minusSeconds(60), OBSERVED_AT,
                 "INTRADAY_BREACH");
@@ -388,8 +450,26 @@ class InvestmentSellReadinessIntegrationTest extends PostgresIntegrationTest {
                 TICKER, "Lunar", "US", bd(quantity), "USD", bd("9.5"), bd("10.35"),
                 null, null, null, null, null, null, null, null, null, null, null,
                 bd(sellable), observedAt);
+        stubAccountPortfolio(List.of(position), stale, partial, List.of());
+    }
+
+    private void stubAccountPosition(
+            String quantity, String sellable, Instant observedAt, boolean stale, boolean partial,
+            List<String> missingSections
+    ) {
+        var position = new PortfolioReadService.PositionView(
+                TICKER, "Lunar", "US", bd(quantity), "USD", bd("9.5"), bd("10.35"),
+                null, null, null, null, null, null, null, null, null, null, null,
+                bd(sellable), observedAt);
+        stubAccountPortfolio(List.of(position), stale, partial, missingSections);
+    }
+
+    private void stubAccountPortfolio(
+            List<PortfolioReadService.PositionView> positions, boolean stale, boolean partial,
+            List<String> missingSections
+    ) {
         var portfolio = new PortfolioReadService.PortfolioView(UUID.randomUUID(), OBSERVED_AT,
-                stale, null, partial, List.of(), List.of(), null, List.of(position), Map.of());
+                stale, null, partial, missingSections, List.of(), null, positions, Map.of());
         when(portfolios.read(userId, connectionId)).thenReturn(portfolio);
     }
 
