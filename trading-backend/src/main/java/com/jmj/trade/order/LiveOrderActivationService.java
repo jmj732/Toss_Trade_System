@@ -260,6 +260,36 @@ public final class LiveOrderActivationService {
         return dispatchPrepared(prepared, clientOrderId, actor);
     }
 
+    /**
+     * Defensive sell dispatch path. Its caller must revalidate a current, session-verified Toss order book
+     * and the linked owned decision immediately before calling. This deliberately skips generic Quote
+     * last-price fallback and uses only the supplied, revalidated limit reference.
+     */
+    public DispatchResult dispatchFromMcpWithVerifiedReference(UUID userId, UUID orderIntentId,
+                                                                 String clientOrderId, String actor,
+                                                                 java.math.BigDecimal expectedReferencePrice) {
+        requireId(userId, "userId");
+        requireId(orderIntentId, "orderIntentId");
+        requireClientOrderId(clientOrderId);
+        if (expectedReferencePrice == null || expectedReferencePrice.signum() <= 0)
+            throw new LiveOrderActivationException(LiveOrderActivationException.Code.CONFLICT,
+                    "verified defensive reference is unavailable");
+        var intent = ownedIntent(userId, orderIntentId);
+        if (intent.getExecutionMode() != OrderExecutionMode.LIVE || intent.getStatus() != OrderIntentStatus.APPROVED
+                || intent.getSide() != OrderSide.SELL || intent.getType() != OrderType.LIMIT) {
+            throw conflict();
+        }
+        if (intent.getProposalReferencePrice() == null
+                || expectedReferencePrice.compareTo(intent.getProposalReferencePrice()) != 0) {
+            throw new LiveOrderActivationException(LiveOrderActivationException.Code.CONFLICT,
+                    "verified defensive reference changed since proposal");
+        }
+        var syncedPortfolio = portfolios.read(userId, intent.getBrokerConnectionId());
+        var prepared = Objects.requireNonNull(transactions.execute(status -> prepare(
+                userId, orderIntentId, clientOrderId, null, actor, expectedReferencePrice, syncedPortfolio, false)));
+        return dispatchPrepared(prepared, clientOrderId, actor);
+    }
+
     private DispatchResult dispatchPrepared(Prepared prepared, String clientOrderId, String actor) {
         if (!prepared.callBroker()) {
             return result(prepared.attemptId());

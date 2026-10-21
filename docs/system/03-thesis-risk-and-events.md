@@ -220,7 +220,29 @@ rationale, invalidation, next-review trigger, confidence, thesis revision 및 �
 FK와 unique key는 [V62 migration](../../trading-backend/src/main/resources/db/migration/V62__investment_risk_event_links.sql)에
 있다.
 
-## 5. 읽을 때 기억할 경계
+## 5. 위험 결정에서 방어 매도 준비까지
+
+위험 이벤트는 여전히 행동을 고르지 않는다. 매도 의도가 있으면 caller가 `append_investment_decision`에 `REDUCE` 또는 `EXIT`, event 하나의 `riskEventIds`, `targetRemainingQuantity`, `targetBrokerConnectionId`를 함께 기록한다. 두 target 필드는 함께 생략하거나 함께 제공한다. target을 제공할 때 event도 정확히 하나여야 하고, 해당 계좌는 같은 사용자의 active Toss connection이어야 한다. `EXIT` target은 0, `REDUCE` target은 양수다. 이 값은 caller가 작성한 정책 결과이며 서버가 CRITICAL severity만으로 행동·목표 보유량을 선택하지 않는다. V63은 이 optional target과 connection을 ledger에 추가하고 기존 행은 `NULL`로 유지한다. 규칙은 [`DecisionInput` 정규화](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextService.java), [V63 migration](../../trading-backend/src/main/resources/db/migration/V63__add_investment_decision_target_quantity.sql)에 있다.
+
+`get_investment_sell_readiness`는 `decisionId`와 `eventId` UUID만 받는 읽기 도구다. 사용자 소유 decision/event 링크, `REDUCE`/`EXIT`, decision과 event의 신선도(기본 15분), 현재 미해결 이벤트와 동일한 thesis revision, decision이 더 새로운 account-scoped decision에 의해 대체되지 않았는지를 검사한다. 선택한 연결의 계좌 snapshot만 이용하므로 오래된 통합 계좌가 계좌별 매도를 대신 승인하지 않는다. 해당 계좌 snapshot이 stale/partial이거나 보유·매도 가능 수량·관측 시각이 빠지거나 오래되면 sizing을 막는다. 산식은 `quantity = current position quantity - targetRemainingQuantity`다. 결과가 0 이하이거나 매도 가능량보다 크면 차단한다. 소수점 매도량은 주문 단위로 반올림하지 않고 `FRACTIONAL_LIMIT_SELL_UNSUPPORTED`로 차단한다. 따라서 소수점 보유량 전량 매도도 브로커가 지원하지 않는 한 준비할 수 없다.
+
+열린 주문 조회 실패, 같은 종목의 OPEN 주문, 기존 준비/진행 중 제안도 별도 blocker다. 가격 준비는 Toss order book의 bid/ask, quote timestamp와 provider observation timestamp, 미국 시장 캘린더를 함께 확인한다. 종목·통화가 맞고 최대 quote age(기본 30초) 안이며, order book과 현재 시각이 모두 검증된 `LIVE_REGULAR`여야 한다. 준비 limit은 bid이며 `ask - bid` 및 spread bps를 계산한다. spread 최대값은 설정돼야 하고 초과하면 차단한다. 종목별 price increment도 HTTPS 출처와 `verified=true` 설정이 있어야 하며 bid가 increment에 맞아야 한다. runtime 설정 키는 `investment.execution.readiness.max-quote-age`, `investment.execution.readiness.max-spread-bps`, `investment.execution.readiness.price-increments.<TICKER>`, `investment.execution.readiness.price-increment-source`, `investment.execution.readiness.price-increment-verified`다. 미설정/미검증 increment 또는 spread 정책은 추정하지 않고 blocker로 돌려준다. 실제 Toss order book 계약 참조는 [Toss OpenAPI specification](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json)이다. 이 경로가 별도 실시간 시세 공급자를 사용한다고 문서화하지 않는다.
+
+응답은 `actionStatus`, `sizingStatus`, `pricingStatus`, `prepareStatus`, 계산 `quantity`, `targetRemainingQuantity`, `bid`, `ask`, `limitPrice`, spread, session/source, quote as-of와 provider observed-at, `blockers`, `asOf`를 제공한다. 차단 단계에 따라 숫자 필드는 null일 수 있다. `append_investment_decision`은 계속 caller-authored 기록이고 `get_investment_sell_readiness`는 provider를 읽지만 저장하지 않는다.
+
+`prepare_order`는 기존 입력을 유지한다. `decisionId` 또는 `eventId`를 risk-linked defensive 경로로 보낼 때는 두 ID가 모두 필요하고, `SELL` + `LIMIT`만 허용된다. 이 경로는 transaction과 owned-connection row lock 안에서 readiness를 다시 평가하고 입력 ticker·수량·가격이 최신 계산과 일치하는지 검사한다. 통과하면 V64 order intent에 decision/event UUID를 연결해 proposal을 저장하고 `proposalId`를 반환한다. `submit_order`에서도 연결된 proposal의 action, 수량, 가격, event와 revision을 다시 검증한 뒤 기존 명시적 승인/실행 경로를 탄다. event-linked 경로를 선택할 때는 두 ID를 함께 제공해야 한다. 둘 다 생략하면 기존 generic `prepare_order` 계약을 사용하며, 그 제안에는 이 decision/event 연결을 증명하는 audit link가 없다. 제안은 실제 제출이 아니다. 구현은 [`InvestmentSellReadinessService`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentSellReadinessService.java), [`McpOrderExecutionService`](../../trading-backend/src/main/java/com/jmj/trade/order/McpOrderExecutionService.java), [V64 audit-link migration](../../trading-backend/src/main/resources/db/migration/V64__link_defensive_order_proposals.sql)에 있다. Toss adapter가 만드는 order는 `DAY` time-in-force다.
+
+가격 이벤트 시각도 구분해 읽는다. `sourceAsOf`는 가격 공급자의 시각 또는 거래일 label일 수 있고, `observedAt`은 서버가 상태를 평가/전이한 시각, `persistedAt`은 저장 시각이다. 정규장 종가는 `regularCloseSessionDate`, 마지막 완료 거래일, close status/reason으로 별도 검사한다. 이 구조에서 같은 거래일이라는 사실만으로 source observation이 정규장 마감 뒤였거나 provider가 종가를 최종 확정했다고 증명되지는 않는다. `sourceAsOf`가 bell 이전인 기록은 값이 틀렸다고 단정하지 말고 timestamp 의미·timezone·완료 session 및 provider의 finality 근거를 조사한다. 현재 저장 contract에는 provider의 독립 `finalized` flag가 없다. 장중 `INTRADAY_BREACH`와 완료 close에 근거한 `PRICE_RISK_BREACH`는 계속 다른 상태다.
+
+체결 조회도 독립 fill endpoint와 혼동하지 않는다. `get_recent_fills`는 OPEN/CLOSED order의 cumulative `filledQuantity`에서 fill view를 만들고, 같은 `brokerOrderId`의 repeated snapshot을 축약한다. OPEN/CLOSED 양쪽에 같은 주문이 있으면 identity와 단조 증가 조건을 검증하고 CLOSED snapshot만 쓴다; 양을 합산하지 않는다. 체결량은 주문별 누적량이지 부분 체결별 실행 원장이 아니다. `since` 필터에서 `filledAt`이 없는 항목은 제외된다. Toss 예외는 MCP `TOSS_API_ERROR`와 provider retry flag로 반환되고, snapshot identity/cumulative conflict는 `CONNECTOR_ERROR`로 실패한다. 어떤 조회 실패도 성공한 빈 배열로 간주하지 말고 `get_orders` OPEN 결과 0건만으로 체결 0건을 추정하지 않는다. exact fill history API 및 안정적인 fill IDs는 별도 미구현 경계다.
+
+### OPENING 예약 실행 provenance (P07)
+
+저장소에는 ChatGPT Scheduled Task를 읽거나 수정하는 API, 실제 task ID/revision, prompt 내용, 실행 tool 권한을 증명하는 런타임 registry가 없다. 따라서 보고서에 적힌 `OPENING v1.5`와 편집 prompt의 `v1.5.1`만으로 실제 실행 prompt 또는 schedule revision을 확정할 수 없다. 실제 Task 설정과 실행 artifact로 확인되지 않은 값은 `UNVERIFIED`로 기록한다. 저장소 prompt 파일이나 connector tool schema가 Task에 자동 반영됐다고 추정하지 않는다.
+
+외부 실행 감사에는 적어도 실제 task ID와 `scheduleRevision`, 정확한 `promptVersion`(가능하면 prompt hash), unique `runId`, scheduled/started/finished timestamp(UTC; ET는 `America/New_York`로 변환), 선택 connection, 호출한 MCP tool/인수 식별자, 결과·typed error·retryable 상태를 같은 run record에 캡처하는 것을 권장한다. 이들은 현재 Task API 또는 backend audit table이 보장하는 필드가 아니라 run 운영용 권고다. repo는 task 설정을 조회·수정하거나 위 run metadata를 자동 영속화하지 않는다.
+
+## 6. 읽을 때 기억할 경계
 
 - AI 검증 결과는 외부 호출자가 제출한 판정·출처 주장에 대한 서버 정책 결과다. 서버는 URL의 형식과 수, 시각, revision·run 연결, 저장 mark 대비 trigger 조건을 검사하지만 출처 문서나 투자
   논리의 사실을 독립 조사하지 않는다.

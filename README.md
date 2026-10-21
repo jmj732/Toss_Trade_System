@@ -33,6 +33,10 @@ ChatGPT의 Toss 커넥터는 MCP를 통해 Spring 백엔드에 읽기를 요청�
 
 보유 종목의 승인된 thesis 가격 위험 감지는 기존 `monitoring_current_states` / `monitoring_state_history`와 Telegram `notification_outbox_events`를 재사용한다. DB 상태 전환과 outbox 알림은 함께 저장되고, `get_investment_risk_events`는 이벤트 이력·현재 미해소 위험을 `connector:read`로 조회한다. 이벤트 조회는 refresh하지 않고, 기존 `get_investment_context` 응답을 키우지 않는다. 장중 `INTRADAY_BREACH`, 검증된 정규장 종가 `PRICE_RISK_BREACH`, 가격 회복 `RECOVERED`를 구분한다. 가격 이벤트는 Fundamental Thesis 무효화나 매도/주문 신호가 아니다. 자세한 전환, Telegram 재시도, Decision 연결 규칙은 [상시 모니터링 문서](docs/ops/continuous-monitoring.md)와 [MCP 계약](docs/ops/investment-context-mcp-contract.md)을 본다.
 
+위험 이벤트 뒤 방어적 매도 준비는 caller가 `append_investment_decision`에 명시한 `REDUCE`/`EXIT`와 계좌별 `targetRemainingQuantity`를 입력으로 받는다. 서버는 이 값으로 매도 정책이나 수량 목표를 추론하지 않는다. `get_investment_sell_readiness`는 소유한 현재 decision·event·thesis revision, 선택 계좌의 신선한 보유/매도 가능량, 중복 주문, Toss 실시간 order book과 미국 시장 캘린더를 확인해 단계별 상태와 blocker를 반환한다. 호가·세션·스프레드 정책·검증된 가격 단위가 충족되지 않으면 차단한다. `prepare_order`에 `decisionId`와 `eventId`를 함께 주면 같은 검사를 다시 수행해 준비된 제안(`proposalId`)만 만들며, 브로커 제출은 별도 사용자 승인 후 `submit_order`에서 일어난다. 이 로컬 계약은 특정 배포나 ChatGPT task에서 도구가 활성화됐다는 증거가 아니다. 세부 사항은 [위험/매도 경계](docs/system/03-thesis-risk-and-events.md#5-위험-결정에서-방어-매도-준비까지)와 [MCP 계약](docs/ops/investment-context-mcp-contract.md#decision-target-and-defensive-sell-readiness-v63v64)을 본다.
+
+`get_recent_fills`는 Toss의 OPEN/CLOSED 주문 스냅샷에서 누적 체결량이 양수인 주문을 구성한다. 동일 주문이 두 그룹에 보이면 closed 누적 스냅샷을 최종값으로 사용해 체결량을 더하지 않는다. 이 결과는 독립 체결 원장이 아니다. 조회 오류를 빈 체결 목록으로 읽지 말고 MCP의 typed error와 재시도 가능 여부를 확인한다.
+
 ```text
 ChatGPT → Toss Connector MCP → Spring Boot → PostgreSQL (스냅샷·입력·이력)
                                       │

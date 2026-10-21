@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.sql.ResultSet;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -34,6 +36,8 @@ class McpOrderExecutionServiceTest {
     private static final UUID CONNECTION = UUID.randomUUID();
     private static final UUID ACCOUNT = UUID.randomUUID();
     private static final UUID INTENT = UUID.randomUUID();
+    private static final UUID DECISION = UUID.randomUUID();
+    private static final UUID RISK_EVENT = UUID.randomUUID();
 
     @Test
     void prepareCreatesReadyProposalWithoutCallingBrokerWrite() {
@@ -49,6 +53,8 @@ class McpOrderExecutionServiceTest {
         var jdbc = mock(JdbcTemplate.class);
         when(jdbc.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), eq(USER), eq(CONNECTION)))
                 .thenReturn(List.of(ACCOUNT));
+        when(jdbc.query(contains("FOR UPDATE"), any(org.springframework.jdbc.core.RowMapper.class),
+                eq(CONNECTION), eq(USER))).thenReturn(List.of(CONNECTION));
         when(safety.resolve(USER, CONNECTION, ACCOUNT)).thenReturn(
                 new com.jmj.trade.broker.BrokerAccountRef(CONNECTION, "01", "LIVE", "****0001"));
         var portfolio = new PortfolioReadService.PortfolioView(UUID.randomUUID(), Instant.now(), false, null, false,
@@ -140,6 +146,69 @@ class McpOrderExecutionServiceTest {
         assertThat(result.status()).isEqualTo("SUBMITTED");
         assertThat(result.brokerOrderId()).isEqualTo("toss-1");
         verify(orders, never()).placeOrder(any(), any(), any());
+    }
+
+    @Test
+    void riskLinkedSubmitRevalidatesAndUsesVerifiedOrderBookPriceWithoutQuoteFallback() throws Exception {
+        var activation = mock(LiveOrderActivationService.class);
+        var intents = mock(OrderIntentRepository.class);
+        var brokerOrders = mock(BrokerOrderRepository.class);
+        var attempts = mock(SubmissionAttemptRepository.class);
+        var jdbc = mock(JdbcTemplate.class);
+        var readiness = mock(com.jmj.trade.investment.InvestmentSellReadinessService.class);
+        var quotes = mock(BrokerAdapter.class);
+        var intent = OrderIntent.proposedLive(INTENT, ACCOUNT, USER, CONNECTION,
+                OrderSide.SELL, OrderType.LIMIT, "LUNR", new BigDecimal("2"), new BigDecimal("10.50"), Currency.USD);
+        intent.stampProposal(Instant.now(), Instant.now().plusSeconds(300));
+        intent.stampProposalReferencePrice(new BigDecimal("10.50"));
+        when(intents.findOwnedById(INTENT, USER, CONNECTION)).thenReturn(Optional.of(intent));
+        when(brokerOrders.findFirstByOrderIntentIdOrderByIdAsc(INTENT)).thenReturn(Optional.empty(),
+                Optional.of(BrokerOrder.confirmed(UUID.randomUUID(), INTENT, ACCOUNT, "toss-verified", "mcp-client",
+                        BrokerOrderStatus.PENDING)));
+        when(attempts.findTopByOrderIntentIdAndClientOrderIdOrderByAttemptNumberDesc(eq(INTENT), anyString()))
+                .thenReturn(Optional.empty());
+        var observedAt = Instant.now();
+        when(jdbc.query(contains("SELECT investment_decision_id"),
+                any(org.springframework.jdbc.core.RowMapper.class), eq(INTENT), eq(USER), eq(CONNECTION)))
+                .thenAnswer(invocation -> {
+                    @SuppressWarnings("unchecked")
+                    var rowMapper = (org.springframework.jdbc.core.RowMapper<Object>) invocation.getArgument(1);
+                    var row = mock(ResultSet.class);
+                    when(row.getObject("investment_decision_id")).thenReturn(DECISION);
+                    when(row.getObject("investment_risk_event_id")).thenReturn(RISK_EVENT);
+                    return List.of(rowMapper.mapRow(row, 0));
+                });
+        var readinessResult = new com.jmj.trade.investment.InvestmentSellReadinessService.Readiness(
+                "READY", "READY", "READY", "READY", DECISION, RISK_EVENT, "LUNR", "REDUCE", observedAt,
+                UUID.randomUUID(), new BigDecimal("2"), BigDecimal.ONE, observedAt,
+                new BigDecimal("10.50"), new BigDecimal("10.60"), new BigDecimal("10.50"),
+                new BigDecimal("0.10"), new BigDecimal("94.79"), "LIVE_REGULAR", "TOSS", "USD",
+                observedAt, observedAt, "/api/v1/market-calendar/US", "official-capability-source",
+                new BigDecimal("0.01"), List.of(), observedAt);
+        when(readiness.evaluate(USER, CONNECTION, DECISION, RISK_EVENT, INTENT)).thenReturn(readinessResult);
+        when(activation.dispatchFromMcpWithVerifiedReference(eq(USER), eq(INTENT), anyString(),
+                eq("MCP:" + USER), eq(new BigDecimal("10.50"))))
+                .thenReturn(new LiveOrderActivationService.DispatchResult(UUID.randomUUID(),
+                        SubmissionAttemptStatus.ACKNOWLEDGED, OrderIntentStatus.SUBMISSION_PENDING, null));
+
+        var portfolio = new PortfolioReadService.PortfolioView(UUID.randomUUID(), observedAt, false, null,
+                false, List.of(), List.of(), null, List.of(), Map.of());
+        var portfolios = mock(FreshPortfolioReadService.class);
+        when(portfolios.read(USER, CONNECTION)).thenReturn(portfolio);
+        var service = new McpOrderExecutionService(activation, mock(PreTradeRiskEngine.class),
+                portfolios, quotes, mock(BrokerOrderPort.class),
+                mock(LiveOrderSafetyLedger.class), intents, brokerOrders, attempts, jdbc,
+                mock(UnknownAttemptReconciler.class), mock(OrderSubmissionService.class), readiness, null);
+
+        var result = service.submit(USER, CONNECTION, "ordp_" + INTENT);
+
+        assertThat(result.status()).isEqualTo("SUBMITTED");
+        assertThat(result.brokerOrderId()).isEqualTo("toss-verified");
+        verify(readiness).evaluate(USER, CONNECTION, DECISION, RISK_EVENT, INTENT);
+        verify(activation).dispatchFromMcpWithVerifiedReference(eq(USER), eq(INTENT), anyString(),
+                eq("MCP:" + USER), eq(new BigDecimal("10.50")));
+        verify(activation, never()).dispatchFromMcp(any(), any(), anyString(), anyString(), any());
+        verify(quotes, never()).getQuote(any(BrokerConnectionRef.class), eq("LUNR"));
     }
 
     @Test

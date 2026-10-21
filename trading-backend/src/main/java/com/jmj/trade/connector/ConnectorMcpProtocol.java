@@ -48,6 +48,7 @@ public final class ConnectorMcpProtocol {
     private final InvestmentOnboardingService investmentOnboardingService;
     private final InvestmentRiskPreflightService investmentRiskPreflightService;
     private final InvestmentRiskEventService investmentRiskEventService;
+    private final com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
@@ -64,11 +65,13 @@ public final class ConnectorMcpProtocol {
                          ObjectProvider<InvestmentOnboardingService> investmentOnboardingService,
                          ObjectProvider<InvestmentRiskPreflightService> investmentRiskPreflightService,
                          ObjectProvider<InvestmentRiskEventService> investmentRiskEventService,
+                         ObjectProvider<com.jmj.trade.investment.InvestmentSellReadinessService> sellReadinessService,
                          ObjectMapper objectMapper) {
         this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(),
                 investmentReviewService.getIfAvailable(), thesisVerificationService.getIfAvailable(),
                 investmentOnboardingService.getIfAvailable(), investmentRiskPreflightService.getIfAvailable(),
                 investmentRiskEventService.getIfAvailable(),
+                sellReadinessService.getIfAvailable(),
                 objectMapper);
     }
 
@@ -116,6 +119,20 @@ public final class ConnectorMcpProtocol {
                                 InvestmentRiskPreflightService investmentRiskPreflightService,
                                 InvestmentRiskEventService investmentRiskEventService,
                                 ObjectMapper objectMapper) {
+        this(service, tradeService, investmentContextService, investmentReviewService, thesisVerificationService,
+                investmentOnboardingService, investmentRiskPreflightService, investmentRiskEventService, null,
+                objectMapper);
+    }
+
+    public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                                InvestmentContextService investmentContextService,
+                                InvestmentReviewService investmentReviewService,
+                                InvestmentThesisVerificationService thesisVerificationService,
+                                InvestmentOnboardingService investmentOnboardingService,
+                                InvestmentRiskPreflightService investmentRiskPreflightService,
+                                InvestmentRiskEventService investmentRiskEventService,
+                                com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService,
+                                ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
         this.investmentContextService = investmentContextService;
@@ -124,6 +141,7 @@ public final class ConnectorMcpProtocol {
         this.investmentOnboardingService = investmentOnboardingService;
         this.investmentRiskPreflightService = investmentRiskPreflightService;
         this.investmentRiskEventService = investmentRiskEventService;
+        this.sellReadinessService = sellReadinessService;
         this.objectMapper = objectMapper;
     }
 
@@ -226,6 +244,11 @@ public final class ConnectorMcpProtocol {
                     "Read persisted thesis price-risk state transitions for the authenticated user. Does not call providers, refresh data, alter thesis or risk policy, or place orders.",
                     investmentRiskEventsSchema(), investmentRiskEventsOutputSchema()));
         }
+        if (sellReadinessService != null) {
+            tools.add(tool("get_investment_sell_readiness", "Get defensive sell readiness",
+                    "Read an externally authored REDUCE/EXIT decision and its linked current risk event, derive account-local sell quantity, and inspect Toss order-book/calendar evidence. Never chooses an action, rounds quantities, writes data, or submits an order.",
+                    sellReadinessSchema(), sellReadinessOutputSchema()));
+        }
         if (thesisVerificationService != null) {
             tools.add(tool("get_investment_thesis_verification_context", "Get thesis verification context",
                     "Read the authenticated user's current thesis revision, verification policy, trusted price view, and latest verification event for one ticker. This tool does not call providers or write data.",
@@ -313,6 +336,8 @@ public final class ConnectorMcpProtocol {
                         optionalText(arguments, "clientOrderId", null)));
                 case "get_investment_context" -> investmentContext(request, userId, arguments);
                 case "get_investment_risk_events" -> getInvestmentRiskEvents(request, userId, arguments);
+                case "get_investment_sell_readiness" -> getInvestmentSellReadiness(
+                        request, userId, connectionId, arguments);
                 case "get_investment_thesis_verification_context" ->
                         investmentThesisVerificationContext(request, userId, arguments);
                 case "get_investment_onboarding_readiness" ->
@@ -337,7 +362,7 @@ public final class ConnectorMcpProtocol {
                         ? forbiddenTrade(request)
                         : !liveExecutionAvailable
                         ? liveOrderExecutionDisabled(request)
-                        : toolResult(request, tradeService.prepare(userId, connectionId, prepare(arguments)));
+                        : prepareOrder(request, userId, connectionId, arguments);
                 case "submit_order" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : !liveExecutionAvailable
@@ -376,7 +401,7 @@ public final class ConnectorMcpProtocol {
             }
             if (exception instanceof BrokerException brokerException) {
                 return toolError(request, "TOSS_API_ERROR", "Toss API request failed",
-                        brokerException.isRetriable(), false);
+                        brokerException.isRetriable(), false, brokerException.category().name());
             }
             if (exception instanceof IllegalArgumentException) {
                 return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
@@ -397,6 +422,11 @@ public final class ConnectorMcpProtocol {
 
     private ObjectNode toolError(ObjectNode request, String code, String message, boolean retryable,
                                  boolean reauthorizationRequired) {
+        return toolError(request, code, message, retryable, reauthorizationRequired, null);
+    }
+
+    private ObjectNode toolError(ObjectNode request, String code, String message, boolean retryable,
+                                 boolean reauthorizationRequired, String errorCategory) {
         var payload = objectMapper.createObjectNode();
         payload.put("isError", true);
         var structured = payload.objectNode();
@@ -404,6 +434,7 @@ public final class ConnectorMcpProtocol {
         structured.put("errorCode", code);
         structured.put("retryable", retryable);
         structured.put("reauthorizationRequired", reauthorizationRequired);
+        if (errorCategory != null) structured.put("errorCategory", errorCategory);
         payload.set("structuredContent", structured);
         payload.putArray("content").addObject().put("type", "text").put("text", message);
         return result(request, payload);
@@ -518,6 +549,66 @@ public final class ConnectorMcpProtocol {
         }
     }
 
+    private ObjectNode getInvestmentSellReadiness(ObjectNode request, UUID userId, UUID connectionId,
+                                                  JsonNode arguments) {
+        if (sellReadinessService == null) return sellReadinessUnavailable(request);
+        try {
+            if (arguments == null || !arguments.isObject() || arguments.size() != 2
+                    || !arguments.has("decisionId") || !arguments.has("eventId"))
+                throw new IllegalArgumentException("decisionId and eventId are required");
+            for (var field : arguments.propertyNames()) {
+                if (!Set.of("decisionId", "eventId").contains(field))
+                    throw new IllegalArgumentException("unsupported argument");
+            }
+            return toolResult(request, sellReadinessService.evaluate(userId, connectionId,
+                    requiredUuid(arguments, "decisionId"), requiredUuid(arguments, "eventId")));
+        } catch (IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
+        } catch (DataAccessException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_sell_readiness")
+                    .addKeyValue("outcome", "unavailable")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Investment sell readiness unavailable");
+            return sellReadinessUnavailable(request);
+        } catch (RuntimeException exception) {
+            LOG.atWarn().addKeyValue("operation", "mcp_tool")
+                    .addKeyValue("tool", "get_investment_sell_readiness")
+                    .addKeyValue("outcome", "failure")
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("Investment sell readiness failed");
+            return toolError(request, "INTERNAL_ERROR", "Sell readiness could not be evaluated", false, false);
+        }
+    }
+
+    private ObjectNode sellReadinessUnavailable(ObjectNode request) {
+        return toolError(request, "SELL_READINESS_UNAVAILABLE",
+                "Sell readiness could not be read", true, false);
+    }
+
+    private ObjectNode prepareOrder(ObjectNode request, UUID userId, UUID connectionId, JsonNode arguments) {
+        if (!arguments.path("decisionId").isMissingNode() || !arguments.path("eventId").isMissingNode()) {
+            if (!arguments.has("decisionId") || !arguments.has("eventId"))
+                return toolError(request, "INVALID_ARGUMENT", "decisionId and eventId must be supplied together",
+                        false, false);
+            if (!"SELL".equalsIgnoreCase(requiredText(arguments, "side"))
+                    || !"LIMIT".equalsIgnoreCase(requiredText(arguments, "orderType")))
+                return toolError(request, "INVALID_ARGUMENT",
+                        "Risk-linked defensive preparation requires SELL LIMIT", false, false);
+            for (var field : arguments.propertyNames()) {
+                if (!Set.of("symbol", "side", "orderType", "quantity", "price", "decisionId", "eventId")
+                        .contains(field))
+                    return toolError(request, "INVALID_ARGUMENT", "Unsupported prepare_order field", false, false);
+            }
+            var proposal = tradeService.prepareDefensive(userId, connectionId,
+                    requiredUuid(arguments, "decisionId"), requiredUuid(arguments, "eventId"),
+                    requiredText(arguments, "symbol"), decimal(arguments, "quantity"),
+                    decimal(arguments, "price"));
+            return toolResult(request, proposal);
+        }
+        return toolResult(request, tradeService.prepare(userId, connectionId, prepare(arguments)));
+    }
+
     private ObjectNode riskEventsUnavailable(ObjectNode request) {
         return toolError(request, "INVESTMENT_RISK_EVENTS_UNAVAILABLE",
                 "Investment risk events could not be read", true, false);
@@ -571,8 +662,8 @@ public final class ConnectorMcpProtocol {
         if (investmentContextService == null) return investmentContextUnavailable(request);
         var fields = java.util.Set.of("decisionId", "asOf", "asset", "action", "referencePrice",
                 "priceSession", "horizon", "alphaThesis", "invalidation", "nextReviewTrigger", "confidence",
-                "riskEventIds");
-        if (arguments == null || !arguments.isObject() || arguments.size() < 11 || arguments.size() > 12)
+                "riskEventIds", "targetRemainingQuantity", "targetBrokerConnectionId");
+        if (arguments == null || !arguments.isObject() || arguments.size() < 11 || arguments.size() > 14)
             return toolError(request, "INVALID_ARGUMENT", "All supported decision fields are required", false, false);
         for (var field : arguments.propertyNames()) {
             if (!fields.contains(field))
@@ -584,6 +675,11 @@ public final class ConnectorMcpProtocol {
                 return toolError(request, "INVALID_ARGUMENT", "Decision fields have invalid types", false, false);
         }
         if (!arguments.path("referencePrice").isNumber() || !arguments.path("confidence").isNumber())
+            return toolError(request, "INVALID_ARGUMENT", "Decision fields have invalid types", false, false);
+        if (arguments.has("targetRemainingQuantity") && !arguments.path("targetRemainingQuantity").isNumber())
+            return toolError(request, "INVALID_ARGUMENT", "Decision fields have invalid types", false, false);
+        if (arguments.has("targetBrokerConnectionId")
+                && !arguments.path("targetBrokerConnectionId").isTextual())
             return toolError(request, "INVALID_ARGUMENT", "Decision fields have invalid types", false, false);
         if (!java.util.Set.of("ADD", "HOLD", "REDUCE", "EXIT", "REPLACE")
                     .contains(arguments.path("action").asText())
@@ -1127,6 +1223,8 @@ public final class ConnectorMcpProtocol {
         properties.set("orderType", enumSchema("LIMIT", "MARKET"));
         properties.set("quantity", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
         properties.set("price", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        properties.set("decisionId", uuidSchema());
+        properties.set("eventId", uuidSchema());
         var schema = objectMapper.createObjectNode().put("type", "object");
         schema.set("properties", properties);
         schema.putArray("required").add("symbol").add("side").add("orderType").add("quantity");
@@ -1189,6 +1287,54 @@ public final class ConnectorMcpProtocol {
         var schema = objectMapper.createObjectNode().put("type", "object").put("additionalProperties", false);
         schema.set("properties", properties);
         return schema;
+    }
+
+    private ObjectNode sellReadinessSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("decisionId", uuidSchema());
+        properties.set("eventId", uuidSchema());
+        var schema = objectMapper.createObjectNode().put("type", "object").put("additionalProperties", false);
+        schema.set("properties", properties);
+        schema.putArray("required").add("decisionId").add("eventId");
+        return schema;
+    }
+
+    private ObjectNode sellReadinessOutputSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("actionStatus", enumSchema("READY", "BLOCKED", "NOT_EVALUATED"));
+        properties.set("sizingStatus", enumSchema("READY", "BLOCKED", "NOT_EVALUATED"));
+        properties.set("pricingStatus", enumSchema("READY", "BLOCKED", "NOT_EVALUATED"));
+        properties.set("prepareStatus", enumSchema("READY", "BLOCKED", "NOT_EVALUATED"));
+        properties.set("decisionId", uuidSchema());
+        properties.set("eventId", uuidSchema());
+        properties.set("ticker", nullableStringSchema());
+        properties.set("action", nullableStringSchema());
+        properties.set("decisionAsOf", nullableDateTimeSchema());
+        properties.set("thesisRevisionId", nullableUuidSchema());
+        properties.set("quantity", nullableNumberSchema());
+        properties.set("targetRemainingQuantity", nullableNumberSchema());
+        properties.set("positionAsOf", nullableDateTimeSchema());
+        properties.set("bid", nullableNumberSchema());
+        properties.set("ask", nullableNumberSchema());
+        properties.set("limitPrice", nullableNumberSchema());
+        properties.set("absoluteSpread", nullableNumberSchema());
+        properties.set("spreadBps", nullableNumberSchema());
+        properties.set("priceSession", nullableStringSchema());
+        properties.set("priceSource", nullableStringSchema());
+        properties.set("currency", nullableStringSchema());
+        properties.set("orderBookAsOf", nullableDateTimeSchema());
+        properties.set("orderBookObservedAt", nullableDateTimeSchema());
+        properties.set("marketCalendarSource", nullableStringSchema());
+        properties.set("priceIncrementSource", nullableStringSchema());
+        properties.set("priceIncrement", nullableNumberSchema());
+        properties.set("blockers", arrayOf(stringSchema()));
+        properties.set("asOf", dateTimeSchema());
+        var success = closedObject(properties, "actionStatus", "sizingStatus", "pricingStatus", "prepareStatus",
+                "decisionId", "eventId", "ticker", "action", "decisionAsOf", "thesisRevisionId", "quantity",
+                "targetRemainingQuantity", "positionAsOf", "bid", "ask", "limitPrice", "absoluteSpread",
+                "spreadBps", "priceSession", "priceSource", "currency", "orderBookAsOf", "orderBookObservedAt",
+                "marketCalendarSource", "priceIncrementSource", "priceIncrement", "blockers", "asOf");
+        return outputSchema(success, "INVALID_ARGUMENT", "SELL_READINESS_UNAVAILABLE", "INTERNAL_ERROR");
     }
 
     private ObjectNode investmentRiskEventsOutputSchema() {
@@ -1699,6 +1845,8 @@ public final class ConnectorMcpProtocol {
         errorProperties.set("errorCode", enumSchema(codes));
         errorProperties.set("retryable", objectMapper.createObjectNode().put("type", "boolean"));
         errorProperties.set("reauthorizationRequired", objectMapper.createObjectNode().put("type", "boolean"));
+        errorProperties.set("errorCategory", enumSchema(java.util.Arrays.stream(
+                com.jmj.trade.broker.BrokerErrorCategory.values()).map(Enum::name).toArray(String[]::new)));
         var errors = objectMapper.createObjectNode().put("type", "object");
         errors.set("properties", errorProperties);
         errors.putArray("required").add("ok").add("errorCode").add("retryable").add("reauthorizationRequired");
@@ -1889,10 +2037,13 @@ public final class ConnectorMcpProtocol {
     private ObjectNode listEnvelopeSchema(String field) {
         var properties = objectMapper.createObjectNode();
         properties.set(field, arraySchema());
-        var schema = objectMapper.createObjectNode()
+        var success = objectMapper.createObjectNode()
                 .put("type", "object")
                 .set("properties", properties);
-        schema.putArray("required").add(field);
+        success.putArray("required").add(field);
+        var schema = objectMapper.createObjectNode().put("type", "object");
+        schema.putArray("anyOf").add(success).add(verificationErrorSchema(
+                "INVALID_ARGUMENT", "TOSS_API_ERROR", "CONNECTOR_ERROR"));
         return schema;
     }
 

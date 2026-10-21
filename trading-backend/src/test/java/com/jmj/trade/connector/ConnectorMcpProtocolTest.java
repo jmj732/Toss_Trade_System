@@ -10,6 +10,7 @@ import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
+import com.jmj.trade.investment.InvestmentSellReadinessService;
 import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
@@ -34,6 +35,68 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
+    @Test
+    void exposesSellReadinessReadContractAndRoutesRiskLinkedPrepare() throws Exception {
+        var readinessService = mock(InvestmentSellReadinessService.class);
+        var trade = mock(McpOrderExecutionService.class);
+        var mapper = new ObjectMapper();
+        var protocol = new ConnectorMcpProtocol(service, trade, null, null, null,
+                null, null, null, readinessService, mapper);
+        var listed = protocol.handle(request("sell-readiness-tools", "tools/list", "{}"), USER, CONNECTION);
+        var tool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
+                .filter(item -> "get_investment_sell_readiness".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(tool.path("annotations").path("readOnlyHint").asBoolean()).isTrue();
+        assertThat(tool.path("inputSchema").path("additionalProperties").asBoolean()).isFalse();
+        assertThat(tool.path("inputSchema").path("required").toString()).contains("decisionId", "eventId");
+        var successSchema = tool.path("outputSchema").path("anyOf").get(0);
+        assertThat(successSchema.path("properties").has("bid")).isTrue();
+        assertThat(successSchema.path("properties").has("ask")).isTrue();
+        assertThat(successSchema.path("properties").has("orderBookObservedAt")).isTrue();
+        assertThat(successSchema.path("properties").has("blockers")).isTrue();
+        assertThat(successSchema.path("properties").path("sizingStatus").path("enum").toString())
+                .contains("NOT_EVALUATED");
+
+        var decisionId = UUID.fromString("018f0000-0000-7000-8000-000000000051");
+        var eventId = UUID.fromString("018f0000-0000-7000-8000-000000000052");
+        when(trade.prepareDefensive(eq(USER), eq(CONNECTION), eq(decisionId), eq(eventId), eq("LUNR"),
+                argThat(value -> value != null && value.compareTo(new BigDecimal("2")) == 0),
+                argThat(value -> value != null && value.compareTo(new BigDecimal("10.50")) == 0))).thenReturn(
+                new McpOrderExecutionService.PrepareResult("ordp_018f0000-0000-7000-8000-000000000053",
+                        "READY_FOR_APPROVAL", new McpOrderExecutionService.Order("LUNR", "SELL", "LIMIT",
+                        new BigDecimal("2"), new BigDecimal("10.50")), new BigDecimal("21.00"),
+                        new McpOrderExecutionService.PreTrade(new BigDecimal("100"), new BigDecimal("5"),
+                                new BigDecimal("3"), "PASS"), Instant.parse("2026-10-20T12:05:00Z"),
+                        decisionId, eventId, null));
+        var response = protocol.handle(toolCall("strict-prepare", "prepare_order",
+                "{\"symbol\":\"LUNR\",\"side\":\"SELL\",\"orderType\":\"LIMIT\","
+                        + "\"quantity\":2,\"price\":10.50,\"decisionId\":\"" + decisionId
+                        + "\",\"eventId\":\"" + eventId + "\"}"), USER, CONNECTION, true);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(response.path("result").path("structuredContent").path("decisionId").asText())
+                .isEqualTo(decisionId.toString());
+        verify(trade).prepareDefensive(eq(USER), eq(CONNECTION), eq(decisionId), eq(eventId), eq("LUNR"),
+                argThat(value -> value != null && value.compareTo(new BigDecimal("2")) == 0),
+                argThat(value -> value != null && value.compareTo(new BigDecimal("10.50")) == 0));
+    }
+
+    @Test
+    void rejectsRiskLinkedPrepareWithoutBothOwnedRecordIds() throws Exception {
+        var trade = mock(McpOrderExecutionService.class);
+        var protocol = new ConnectorMcpProtocol(service, trade, new ObjectMapper());
+
+        var response = protocol.handle(toolCall("strict-prepare-partial-link", "prepare_order",
+                "{\"symbol\":\"LUNR\",\"side\":\"SELL\",\"orderType\":\"LIMIT\","
+                        + "\"quantity\":2,\"price\":10.50,"
+                        + "\"decisionId\":\"018f0000-0000-7000-8000-000000000051\"}"),
+                USER, CONNECTION, true);
+
+        assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        verifyNoInteractions(trade);
+    }
+
     @Test
     void exposesRiskEventReadToolUnderReadScopeWithStableFiltersAndSchema() throws Exception {
         var risks = mock(InvestmentRiskEventService.class);
@@ -662,13 +725,18 @@ class ConnectorMcpProtocolTest {
         assertThat(tools.get(0).path("title").asText()).isEqualTo("Get portfolio");
         assertThat(tools.get(0).path("outputSchema").path("type").asText()).isEqualTo("object");
         assertThat(tools.get(1).path("outputSchema").path("type").asText()).isEqualTo("object");
-        assertThat(tools.get(1).path("outputSchema").path("properties").path("orders")
+        assertThat(tools.get(1).path("outputSchema").path("anyOf").get(0).path("properties").path("orders")
                 .path("type").asText()).isEqualTo("array");
-        assertThat(tools.get(1).path("outputSchema").path("required").toString()).contains("orders");
+        assertThat(tools.get(1).path("outputSchema").path("anyOf").get(0).path("required").toString())
+                .contains("orders");
         assertThat(tools.get(2).path("outputSchema").path("type").asText()).isEqualTo("object");
-        assertThat(tools.get(2).path("outputSchema").path("properties").path("fills")
+        assertThat(tools.get(2).path("outputSchema").path("anyOf").get(0).path("properties").path("fills")
                 .path("type").asText()).isEqualTo("array");
-        assertThat(tools.get(2).path("outputSchema").path("required").toString()).contains("fills");
+        assertThat(tools.get(2).path("outputSchema").path("anyOf").get(0).path("required").toString())
+                .contains("fills");
+        assertThat(tools.get(1).path("outputSchema").path("anyOf").get(1)
+                .path("properties").path("errorCategory").path("enum").toString())
+                .contains("AUTHENTICATION", "RATE_LIMITED", "NETWORK");
         assertThat(tools.get(3).path("name").asText()).isEqualTo("get_order");
         var contextTool = tools.get(4);
         assertThat(contextTool.path("name").asText()).isEqualTo("get_investment_context");
@@ -1003,6 +1071,8 @@ class ConnectorMcpProtocolTest {
         assertThat(response.path("result").path("structuredContent").path("errorCode").asText())
                 .isEqualTo("TOSS_API_ERROR");
         assertThat(response.path("result").path("structuredContent").path("retryable").asBoolean()).isTrue();
+        assertThat(response.path("result").path("structuredContent").path("errorCategory").asText())
+                .isEqualTo("NETWORK");
         assertThat(response.path("result").path("structuredContent").path("reauthorizationRequired").asBoolean())
                 .isFalse();
     }
