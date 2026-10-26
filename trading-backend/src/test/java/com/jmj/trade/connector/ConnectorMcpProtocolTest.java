@@ -496,6 +496,21 @@ class ConnectorMcpProtocolTest {
         assertThat(writeTool.path("inputSchema").path("required").toString())
                 .contains("decisionId", "asOf", "asset", "action", "referencePrice", "priceSession",
                         "horizon", "alphaThesis", "invalidation", "nextReviewTrigger", "confidence");
+        var decisionProperties = writeTool.path("inputSchema").path("properties");
+        assertThat(decisionProperties.path("targetRemainingQuantity").path("type").asText())
+                .isEqualTo("number");
+        assertThat(decisionProperties.path("targetRemainingQuantity").path("minimum").asInt())
+                .isZero();
+        assertThat(decisionProperties.path("targetRemainingQuantity").path("description").asText())
+                .contains("targetBrokerConnectionId");
+        assertThat(decisionProperties.path("targetBrokerConnectionId").path("type").asText())
+                .isEqualTo("string");
+        assertThat(decisionProperties.path("targetBrokerConnectionId").path("format").asText())
+                .isEqualTo("uuid");
+        assertThat(decisionProperties.path("targetBrokerConnectionId").path("description").asText())
+                .contains("targetRemainingQuantity", "one riskEventId");
+        assertThat(writeTool.path("inputSchema").path("required").toString())
+                .doesNotContain("targetRemainingQuantity", "targetBrokerConnectionId");
 
         var decisionId = UUID.fromString("018f0000-0000-7000-8000-000000000003");
         var riskEventId = UUID.fromString("018f0000-0000-7000-8000-000000000099");
