@@ -1909,6 +1909,16 @@ public final class ConnectorMcpProtocol {
         fields.set("riskEventIds", objectMapper.createObjectNode().put("type", "array")
                 .put("maxItems", 20).put("uniqueItems", true)
                 .set("items", objectMapper.createObjectNode().put("type", "string").put("format", "uuid")));
+        fields.set("targetRemainingQuantity", objectMapper.createObjectNode()
+                .put("type", "number")
+                .put("minimum", 0)
+                .put("description", "Required together with targetBrokerConnectionId "
+                        + "for a targeted REDUCE or EXIT decision."));
+        fields.set("targetBrokerConnectionId", objectMapper.createObjectNode()
+                .put("type", "string")
+                .put("format", "uuid")
+                .put("description", "Active user-owned broker connection. Must be paired "
+                        + "with targetRemainingQuantity and one riskEventId."));
         schema.putArray("required").add("decisionId").add("asOf").add("asset").add("action")
                 .add("referencePrice").add("priceSession").add("horizon").add("alphaThesis")
                 .add("invalidation").add("nextReviewTrigger").add("confidence");
