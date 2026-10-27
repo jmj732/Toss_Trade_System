@@ -531,7 +531,8 @@ public final class InvestmentContextService {
                 pipelineState(userId, "SECURITY_DATA"),
                 tacticalReadModel.portfolio(),
                 tacticalReadModel.decisions(),
-                reviewService == null ? List.of() : reviewService.recent(userId, InvestmentReviewService.CONTEXT_LIMIT));
+                reviewService == null ? List.of() : reviewService.recent(userId, InvestmentReviewService.CONTEXT_LIMIT),
+                positionMandates(userId));
     }
 
     /** Read-only assembly of every input riskContributions needs; shared by context() and hypotheticalRisk(). */
@@ -2136,12 +2137,70 @@ public final class InvestmentContextService {
                 SELECT decision_id, as_of, asset, action, reference_price, price_session,
                        target_remaining_quantity, target_broker_connection_id,
                        horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
-                       risk_policy_check::text, created_at
+                       risk_policy_check::text, created_at, investment_horizon, price_risk_state,
+                       thesis_health, action_reason
                   FROM investment_decision_ledger
                  WHERE user_id = ?
                  ORDER BY as_of DESC, decision_id DESC
                  LIMIT ?
                 """, decisionRow(), userId, limit);
+    }
+
+    public List<PositionMandateView> positionMandates(UUID userId) {
+        requireUser(userId);
+        return jdbc.query("""
+                SELECT ticker, investment_horizon, risk_price_role, source, effective_date, updated_at
+                  FROM investment_position_mandates
+                 WHERE user_id = ?
+                 ORDER BY ticker
+                """, positionMandateRow(), userId);
+    }
+
+    public PositionMandateView upsertPositionMandate(UUID userId, String rawTicker, PositionMandateInput input) {
+        requireUser(userId);
+        var normalizedTicker = ticker(rawTicker);
+        var normalizedInput = normalizePositionMandate(input);
+        var role = PositionMandatePolicy.riskPriceRole(normalizedInput.investmentHorizon());
+        var updatedAt = timestamp(clock.instant());
+        jdbc.update("""
+                INSERT INTO investment_position_mandates (
+                    user_id, ticker, investment_horizon, risk_price_role, source, effective_date, updated_at
+                ) VALUES (?, ?, ?, ?, 'USER_CONFIRMED', ?, ?)
+                ON CONFLICT (user_id, ticker) DO UPDATE SET
+                    investment_horizon = EXCLUDED.investment_horizon,
+                    risk_price_role = EXCLUDED.risk_price_role,
+                    source = 'USER_CONFIRMED',
+                    effective_date = EXCLUDED.effective_date,
+                    updated_at = EXCLUDED.updated_at
+                WHERE investment_position_mandates.investment_horizon IS DISTINCT FROM EXCLUDED.investment_horizon
+                   OR investment_position_mandates.risk_price_role IS DISTINCT FROM EXCLUDED.risk_price_role
+                   OR investment_position_mandates.effective_date IS DISTINCT FROM EXCLUDED.effective_date
+                """, userId, normalizedTicker, normalizedInput.investmentHorizon(), role,
+                normalizedInput.effectiveDate(), updatedAt);
+        return jdbc.query("""
+                SELECT ticker, investment_horizon, risk_price_role, source, effective_date, updated_at
+                  FROM investment_position_mandates
+                 WHERE user_id = ? AND ticker = ?
+                """, positionMandateRow(), userId, normalizedTicker).getFirst();
+    }
+
+    private static PositionMandateInput normalizePositionMandate(PositionMandateInput input) {
+        if (input == null || input.effectiveDate() == null || blank(input.investmentHorizon())) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
+        var horizon = input.investmentHorizon().trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("TACTICAL", "STRATEGIC").contains(horizon)) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
+        return new PositionMandateInput(horizon, input.effectiveDate());
+    }
+
+    private RowMapper<PositionMandateView> positionMandateRow() {
+        return (resultSet, rowNum) -> new PositionMandateView(
+                resultSet.getString("ticker"), resultSet.getString("investment_horizon"),
+                resultSet.getString("risk_price_role"), resultSet.getString("source"),
+                resultSet.getObject("effective_date", LocalDate.class),
+                instant(resultSet.getObject("updated_at", OffsetDateTime.class)));
     }
 
     public DecisionView recordDecision(UUID userId, DecisionInput input) {
@@ -2160,7 +2219,8 @@ public final class InvestmentContextService {
                 SELECT decision_id, as_of, asset, action, reference_price, price_session,
                        target_remaining_quantity, target_broker_connection_id,
                        horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
-                       risk_policy_check::text, created_at
+                       risk_policy_check::text, created_at, investment_horizon, price_risk_state,
+                       thesis_health, action_reason
                   FROM investment_decision_ledger
                  WHERE decision_id = ? AND user_id = ?
                 """, decisionRow(), decision.decisionId(), userId).stream().findFirst().orElse(null);
@@ -2178,21 +2238,23 @@ public final class InvestmentContextService {
                     decision_id, user_id, as_of, asset, action, reference_price, price_session,
                     target_remaining_quantity, target_broker_connection_id,
                     horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
-                    risk_policy_check, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?)
+                    risk_policy_check, created_at, investment_horizon, price_risk_state, thesis_health, action_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?)
                 ON CONFLICT (decision_id) DO NOTHING
                 """, decision.decisionId(), userId, timestamp(decision.asOf()), decision.asset(), decision.action(),
                 decision.referencePrice(), decision.priceSession(), decision.targetRemainingQuantity(),
                 decision.targetBrokerConnectionId(),
                 decision.horizon().trim(), decision.alphaThesis().trim(),
                 decision.invalidation().trim(), decision.nextReviewTrigger().trim(), decision.confidence(),
-                encode(riskCheck), now);
+                encode(riskCheck), now, decision.investmentHorizon(), decision.priceRiskState(),
+                decision.thesisHealth(), decision.actionReason());
         if (inserted == 0) {
             var existing = jdbc.query("""
                     SELECT decision_id, as_of, asset, action, reference_price, price_session,
                            target_remaining_quantity, target_broker_connection_id,
                            horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
-                           risk_policy_check::text, created_at
+                           risk_policy_check::text, created_at, investment_horizon, price_risk_state,
+                           thesis_health, action_reason
                       FROM investment_decision_ledger
                      WHERE decision_id = ? AND user_id = ?
                     """, decisionRow(), decision.decisionId(), userId).stream().findFirst().orElse(null);
@@ -2208,7 +2270,8 @@ public final class InvestmentContextService {
                 SELECT decision_id, as_of, asset, action, reference_price, price_session,
                        target_remaining_quantity, target_broker_connection_id,
                        horizon, alpha_thesis, invalidation, next_review_trigger, confidence,
-                       risk_policy_check::text, created_at
+                       risk_policy_check::text, created_at, investment_horizon, price_risk_state,
+                       thesis_health, action_reason
                   FROM investment_decision_ledger
                  WHERE decision_id = ? AND user_id = ?
                 """, decisionRow(), decision.decisionId(), userId).getFirst();
@@ -3399,7 +3462,9 @@ public final class InvestmentContextService {
                 resultSet.getString("horizon"), resultSet.getString("alpha_thesis"),
                 resultSet.getString("invalidation"), resultSet.getString("next_review_trigger"),
                 resultSet.getBigDecimal("confidence"), decode(resultSet.getString("risk_policy_check")),
-                instant(resultSet.getObject("created_at", OffsetDateTime.class)));
+                instant(resultSet.getObject("created_at", OffsetDateTime.class)),
+                resultSet.getString("investment_horizon"), resultSet.getString("price_risk_state"),
+                resultSet.getString("thesis_health"), resultSet.getString("action_reason"));
     }
 
     private FundamentalData latestFundamental(UUID userId, String ticker) {
@@ -4412,7 +4477,11 @@ public final class InvestmentContextService {
                 && existing.alphaThesis().equals(input.alphaThesis())
                 && existing.invalidation().equals(input.invalidation())
                 && existing.nextReviewTrigger().equals(input.nextReviewTrigger())
-                && existing.confidence().compareTo(input.confidence()) == 0;
+                && existing.confidence().compareTo(input.confidence()) == 0
+                && Objects.equals(existing.investmentHorizon(), input.investmentHorizon())
+                && Objects.equals(existing.priceRiskState(), input.priceRiskState())
+                && Objects.equals(existing.thesisHealth(), input.thesisHealth())
+                && Objects.equals(existing.actionReason(), input.actionReason());
     }
 
     private static boolean equalDecimal(BigDecimal left, BigDecimal right) {
@@ -4472,11 +4541,30 @@ public final class InvestmentContextService {
         } else if (targetBrokerConnectionId != null) {
             throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
         }
+        var investmentHorizon = optionalDecisionEnum(input.investmentHorizon(),
+                Set.of("TACTICAL", "STRATEGIC", "UNKNOWN"));
+        var priceRiskState = optionalDecisionEnum(input.priceRiskState(),
+                Set.of("UNKNOWN", "CLEAR", "NEAR", "INTRADAY_BREACH", "PRICE_RISK_BREACH", "RECOVERED"));
+        var thesisHealth = optionalDecisionEnum(input.thesisHealth(),
+                Set.of("UNKNOWN", "INTACT", "IMPAIRED", "INVALIDATED"));
+        var actionReason = input.actionReason() == null ? null : input.actionReason().trim();
+        if (input.actionReason() != null && (actionReason.isEmpty() || actionReason.length() > 2000)) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
         return new DecisionInput(input.decisionId(), input.asOf().truncatedTo(ChronoUnit.MICROS),
                 ticker(input.asset()), action, referencePrice, session, input.horizon().trim(),
                 input.alphaThesis().trim(), input.invalidation().trim(), input.nextReviewTrigger().trim(),
                 input.confidence().setScale(6, RoundingMode.HALF_UP), riskEventIds, targetRemainingQuantity,
-                targetBrokerConnectionId);
+                targetBrokerConnectionId, investmentHorizon, priceRiskState, thesisHealth, actionReason);
+    }
+
+    private static String optionalDecisionEnum(String raw, Set<String> allowed) {
+        if (raw == null) return null;
+        var normalized = raw.trim().toUpperCase(Locale.ROOT);
+        if (normalized.isEmpty() || !allowed.contains(normalized)) {
+            throw new InvestmentException(InvestmentException.Code.INVALID_INPUT);
+        }
+        return normalized;
     }
 
     private void validateDecision(DecisionInput input) {
@@ -4713,13 +4801,25 @@ public final class InvestmentContextService {
             PipelineView pipeline,
             TacticalOverlayPortfolioView tacticalOverlay,
             Map<UUID, DecisionTacticalOverlayView> decisionOverlays,
-            List<InvestmentReviewService.ReviewView> reviewLog
+            List<InvestmentReviewService.ReviewView> reviewLog,
+            List<PositionMandateView> positionMandates
     ) {
         public ContextView(PortfolioView portfolio, List<SecurityView> securities,
                            List<WatchlistView> watchlist, RiskPolicyService.RiskPolicySnapshot riskPolicy,
                            List<DecisionView> decisionLedger, PipelineView pipeline) {
             this(portfolio, securities, watchlist, riskPolicy, decisionLedger, pipeline,
-                    TacticalOverlayPortfolioView.notConfigured(), Map.of(), List.of());
+                    TacticalOverlayPortfolioView.notConfigured(), Map.of(), List.of(), List.of());
+        }
+
+        /** Backward-compatible signature without the additive position mandate list. */
+        public ContextView(PortfolioView portfolio, List<SecurityView> securities,
+                           List<WatchlistView> watchlist, RiskPolicyService.RiskPolicySnapshot riskPolicy,
+                           List<DecisionView> decisionLedger, PipelineView pipeline,
+                           TacticalOverlayPortfolioView tacticalOverlay,
+                           Map<UUID, DecisionTacticalOverlayView> decisionOverlays,
+                           List<InvestmentReviewService.ReviewView> reviewLog) {
+            this(portfolio, securities, watchlist, riskPolicy, decisionLedger, pipeline,
+                    tacticalOverlay, decisionOverlays, reviewLog, List.of());
         }
 
         /** Backward-compatible signature without the additive review log (defaults to empty). */
@@ -4736,7 +4836,15 @@ public final class InvestmentContextService {
             tacticalOverlay = tacticalOverlay == null ? TacticalOverlayPortfolioView.notConfigured() : tacticalOverlay;
             decisionOverlays = decisionOverlays == null ? Map.of() : Map.copyOf(decisionOverlays);
             reviewLog = reviewLog == null ? List.of() : List.copyOf(reviewLog);
+            positionMandates = positionMandates == null ? List.of() : List.copyOf(positionMandates);
         }
+    }
+
+    public record PositionMandateInput(String investmentHorizon, LocalDate effectiveDate) {
+    }
+
+    public record PositionMandateView(String ticker, String investmentHorizon, String riskPriceRole,
+                                      String source, LocalDate effectiveDate, Instant updatedAt) {
     }
 
     public record PortfolioView(
@@ -4908,8 +5016,19 @@ public final class InvestmentContextService {
             UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
             String priceSession, String horizon, String alphaThesis, String invalidation,
             String nextReviewTrigger, BigDecimal confidence, List<UUID> riskEventIds,
-            BigDecimal targetRemainingQuantity, UUID targetBrokerConnectionId
+            BigDecimal targetRemainingQuantity, UUID targetBrokerConnectionId,
+            String investmentHorizon, String priceRiskState, String thesisHealth, String actionReason
     ) {
+        /** Backward-compatible signature before position-context fields were added. */
+        public DecisionInput(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
+                             String priceSession, String horizon, String alphaThesis, String invalidation,
+                             String nextReviewTrigger, BigDecimal confidence, List<UUID> riskEventIds,
+                             BigDecimal targetRemainingQuantity, UUID targetBrokerConnectionId) {
+            this(decisionId, asOf, asset, action, referencePrice, priceSession, horizon, alphaThesis, invalidation,
+                    nextReviewTrigger, confidence, riskEventIds, targetRemainingQuantity, targetBrokerConnectionId,
+                    null, null, null, null);
+        }
+
         public DecisionInput(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
                              String priceSession, String horizon, String alphaThesis, String invalidation,
                              String nextReviewTrigger, BigDecimal confidence, List<UUID> riskEventIds,
@@ -4942,8 +5061,19 @@ public final class InvestmentContextService {
             UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
             String priceSession, BigDecimal targetRemainingQuantity, UUID targetBrokerConnectionId,
             String horizon, String alphaThesis, String invalidation,
-            String nextReviewTrigger, BigDecimal confidence, JsonNode riskPolicyCheck, Instant createdAt
+            String nextReviewTrigger, BigDecimal confidence, JsonNode riskPolicyCheck, Instant createdAt,
+            String investmentHorizon, String priceRiskState, String thesisHealth, String actionReason
     ) {
+        /** Backward-compatible signature before position-context fields were added. */
+        public DecisionView(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
+                            String priceSession, BigDecimal targetRemainingQuantity, UUID targetBrokerConnectionId,
+                            String horizon, String alphaThesis, String invalidation, String nextReviewTrigger,
+                            BigDecimal confidence, JsonNode riskPolicyCheck, Instant createdAt) {
+            this(decisionId, asOf, asset, action, referencePrice, priceSession, targetRemainingQuantity,
+                    targetBrokerConnectionId, horizon, alphaThesis, invalidation, nextReviewTrigger, confidence,
+                    riskPolicyCheck, createdAt, null, null, null, null);
+        }
+
         public DecisionView(UUID decisionId, Instant asOf, String asset, String action, BigDecimal referencePrice,
                             String priceSession, String horizon, String alphaThesis, String invalidation,
                             String nextReviewTrigger, BigDecimal confidence, JsonNode riskPolicyCheck, Instant createdAt) {

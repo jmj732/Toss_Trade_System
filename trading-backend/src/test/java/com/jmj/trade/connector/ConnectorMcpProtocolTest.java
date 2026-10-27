@@ -20,6 +20,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -35,6 +36,75 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
+    @Test
+    void positionMandateWriteIsTradeScopedAndServerDerivesRoleAndSource() throws Exception {
+        var investment = mock(InvestmentContextService.class);
+        var writer = new ConnectorMcpProtocol(service, null, investment, new ObjectMapper());
+
+        var readOnly = writer.handle(request("read-mandate", "tools/list", "{}"), USER, CONNECTION);
+        assertThat(java.util.stream.StreamSupport.stream(readOnly.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText())).doesNotContain("upsert_position_mandate");
+
+        var listed = writer.handle(request("trade-mandate", "tools/list", "{}"), USER, CONNECTION, true);
+        var contextTool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
+                .filter(item -> "get_investment_context".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(contextTool.path("outputSchema").path("anyOf").get(0).path("properties")
+                .has("positionMandates")).isTrue();
+        assertThat(contextTool.path("outputSchema").path("anyOf").get(0).path("required").toString())
+                .contains("positionMandates");
+        var tool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
+                .filter(item -> "upsert_position_mandate".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        assertThat(tool.path("securitySchemes").get(0).path("scopes").get(0).asText())
+                .isEqualTo(ConnectorApiKeyService.TRADE_SCOPE);
+        assertThat(tool.path("annotations").path("readOnlyHint").asBoolean()).isFalse();
+        assertThat(tool.path("annotations").path("destructiveHint").asBoolean()).isFalse();
+        assertThat(tool.path("inputSchema").path("required").toString())
+                .contains("ticker", "investmentHorizon", "effectiveDate");
+        assertThat(tool.path("inputSchema").path("properties").path("investmentHorizon").path("enum").toString())
+                .contains("TACTICAL", "STRATEGIC");
+        assertThat(tool.path("inputSchema").path("properties").has("source")).isFalse();
+        assertThat(tool.path("inputSchema").path("properties").has("riskPriceRole")).isFalse();
+
+        var asOf = Instant.parse("2026-10-27T00:00:00Z");
+        var mandate = new InvestmentContextService.PositionMandateView("LUNR", "STRATEGIC",
+                "REVIEW_TRIGGER", "USER_CONFIRMED", LocalDate.parse("2026-10-27"), asOf);
+        when(investment.upsertPositionMandate(eq(USER), eq("LUNR"), any())).thenReturn(mandate);
+        var response = writer.handle(toolCall("mandate-write", "upsert_position_mandate",
+                "{\"ticker\":\"lunr\",\"investmentHorizon\":\"STRATEGIC\","
+                        + "\"effectiveDate\":\"2026-10-27\"}"), USER, CONNECTION, true);
+
+        assertThat(response.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(response.path("result").path("structuredContent").path("riskPriceRole").asText())
+                .isEqualTo("REVIEW_TRIGGER");
+        assertThat(response.path("result").path("structuredContent").path("source").asText())
+                .isEqualTo("USER_CONFIRMED");
+        verify(investment).upsertPositionMandate(eq(USER), eq("LUNR"), argThat(input ->
+                "STRATEGIC".equals(input.investmentHorizon())
+                        && LocalDate.parse("2026-10-27").equals(input.effectiveDate())));
+        verifyNoInteractions(service);
+    }
+
+    @Test
+    void rejectsPositionMandateSourceOverrideAndUnknownHorizon() throws Exception {
+        var investment = mock(InvestmentContextService.class);
+        var writer = new ConnectorMcpProtocol(service, null, investment, new ObjectMapper());
+        var sourceOverride = writer.handle(toolCall("mandate-source", "upsert_position_mandate",
+                "{\"ticker\":\"LUNR\",\"investmentHorizon\":\"STRATEGIC\","
+                        + "\"effectiveDate\":\"2026-10-27\",\"source\":\"USER_CONFIRMED\"}"),
+                USER, CONNECTION, true);
+        var unknownHorizon = writer.handle(toolCall("mandate-horizon", "upsert_position_mandate",
+                "{\"ticker\":\"LUNR\",\"investmentHorizon\":\"UNKNOWN\","
+                        + "\"effectiveDate\":\"2026-10-27\"}"), USER, CONNECTION, true);
+
+        assertThat(sourceOverride.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        assertThat(unknownHorizon.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        verifyNoInteractions(investment);
+    }
+
     @Test
     void exposesSellReadinessReadContractAndRoutesRiskLinkedPrepare() throws Exception {
         var readinessService = mock(InvestmentSellReadinessService.class);
@@ -511,6 +581,13 @@ class ConnectorMcpProtocolTest {
                 .contains("targetRemainingQuantity", "one riskEventId");
         assertThat(writeTool.path("inputSchema").path("required").toString())
                 .doesNotContain("targetRemainingQuantity", "targetBrokerConnectionId");
+        assertThat(writeTool.path("inputSchema").path("properties").path("investmentHorizon").path("enum").toString())
+                .contains("TACTICAL", "STRATEGIC", "UNKNOWN");
+        assertThat(writeTool.path("inputSchema").path("properties").path("priceRiskState").path("enum").toString())
+                .contains("INTRADAY_BREACH", "PRICE_RISK_BREACH", "RECOVERED");
+        assertThat(writeTool.path("inputSchema").path("properties").has("thesisHealth")).isTrue();
+        assertThat(writeTool.path("inputSchema").path("properties").path("actionReason").path("maxLength").asInt())
+                .isEqualTo(2000);
 
         var decisionId = UUID.fromString("018f0000-0000-7000-8000-000000000003");
         var riskEventId = UUID.fromString("018f0000-0000-7000-8000-000000000099");

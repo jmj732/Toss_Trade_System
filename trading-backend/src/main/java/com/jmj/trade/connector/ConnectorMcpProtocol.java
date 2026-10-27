@@ -237,7 +237,7 @@ public final class ConnectorMcpProtocol {
         tools.add(tool(
                 "get_investment_context",
                 "Get investment context",
-                "Read the authenticated user's persisted investment context, including portfolio, security data, risk, thesis, decisions, review notes (reviewLog), and tactical overlays. This tool does not call providers or write data. Optionally filter only the securities array by ticker.",
+                "Read the authenticated user's persisted investment context, including portfolio, security data, position mandates, risk, thesis, decisions, review notes (reviewLog), and tactical overlays. This tool does not call providers or write data. Optionally filter only the securities array by ticker.",
                 investmentContextSchema(), investmentContextOutputSchema()));
         if (investmentRiskEventService != null) {
             tools.add(tool("get_investment_risk_events", "Get investment risk events",
@@ -266,6 +266,10 @@ public final class ConnectorMcpProtocol {
         }
         if (canTrade) {
             if (investmentContextService != null) {
+                tools.add(tool("upsert_position_mandate", "Save position investment mandate",
+                        "Store one user-confirmed ticker investment horizon in PostgreSQL. The server derives riskPriceRole and USER_CONFIRMED provenance. Does not set a price trigger, create an investment decision, or place an order. Requires connector:trade.",
+                        positionMandateUpsertSchema(), positionMandateOutputSchema(), false, false, true,
+                        ConnectorApiKeyService.TRADE_SCOPE));
                 tools.add(tool("upsert_investment_theme", "Upsert investment theme mapping",
                         "Store or update one user-supplied theme and ticker mapping in the existing append-only PostgreSQL tactical inputs, then refresh the derived Tactical V1 snapshots. The server records USER_INPUT provenance and its own source timestamp. Does not create investment judgments or place orders. Requires connector:trade.",
                         investmentThemeUpsertSchema(), investmentThemeUpsertOutputSchema(), false, false, true,
@@ -349,6 +353,9 @@ public final class ConnectorMcpProtocol {
                 case "upsert_investment_theme" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : upsertInvestmentTheme(request, userId, arguments);
+                case "upsert_position_mandate" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : upsertPositionMandate(request, userId, arguments);
                 case "verify_investment_thesis" -> !tradeScopeGranted
                         ? forbiddenTrade(request)
                         : verifyInvestmentThesis(request, userId, authenticatedApiKeyId, arguments);
@@ -658,12 +665,43 @@ public final class ConnectorMcpProtocol {
         }
     }
 
+    private ObjectNode upsertPositionMandate(ObjectNode request, UUID userId, JsonNode arguments) {
+        if (investmentContextService == null) return investmentContextUnavailable(request);
+        final String ticker;
+        final String investmentHorizon;
+        final LocalDate effectiveDate;
+        var fields = Set.of("ticker", "investmentHorizon", "effectiveDate");
+        try {
+            if (arguments == null || !arguments.isObject() || arguments.size() != fields.size())
+                throw new IllegalArgumentException("All position mandate fields are required");
+            ticker = requiredInvestmentTicker(arguments, fields);
+            investmentHorizon = requiredText(arguments, "investmentHorizon");
+            effectiveDate = LocalDate.parse(requiredText(arguments, "effectiveDate"));
+            if (!Set.of("TACTICAL", "STRATEGIC").contains(investmentHorizon))
+                throw new IllegalArgumentException("Unsupported investment horizon");
+        } catch (IllegalArgumentException exception) {
+            return invalidInvestmentArguments(request);
+        }
+        try {
+            var input = new InvestmentContextService.PositionMandateInput(investmentHorizon, effectiveDate);
+            return toolResult(request, investmentContextService.upsertPositionMandate(userId, ticker, input));
+        } catch (InvestmentException exception) {
+            return investmentException(request, exception);
+        } catch (DataAccessException exception) {
+            return investmentContextUnavailable(request);
+        } catch (RuntimeException exception) {
+            logInvestmentToolFailure("upsert_position_mandate", exception);
+            return toolError(request, "INTERNAL_ERROR", "Position mandate could not be saved", false, false);
+        }
+    }
+
     private ObjectNode appendInvestmentDecision(ObjectNode request, UUID userId, JsonNode arguments) {
         if (investmentContextService == null) return investmentContextUnavailable(request);
         var fields = java.util.Set.of("decisionId", "asOf", "asset", "action", "referencePrice",
                 "priceSession", "horizon", "alphaThesis", "invalidation", "nextReviewTrigger", "confidence",
-                "riskEventIds", "targetRemainingQuantity", "targetBrokerConnectionId");
-        if (arguments == null || !arguments.isObject() || arguments.size() < 11 || arguments.size() > 14)
+                "riskEventIds", "targetRemainingQuantity", "targetBrokerConnectionId", "investmentHorizon",
+                "priceRiskState", "thesisHealth", "actionReason");
+        if (arguments == null || !arguments.isObject() || arguments.size() < 11 || arguments.size() > 18)
             return toolError(request, "INVALID_ARGUMENT", "All supported decision fields are required", false, false);
         for (var field : arguments.propertyNames()) {
             if (!fields.contains(field))
@@ -681,6 +719,12 @@ public final class ConnectorMcpProtocol {
         if (arguments.has("targetBrokerConnectionId")
                 && !arguments.path("targetBrokerConnectionId").isTextual())
             return toolError(request, "INVALID_ARGUMENT", "Decision fields have invalid types", false, false);
+        for (var field : new String[]{"investmentHorizon", "priceRiskState", "thesisHealth", "actionReason"}) {
+            if (arguments.has(field) && !arguments.path(field).isTextual())
+                return toolError(request, "INVALID_ARGUMENT", "Decision fields have invalid types", false, false);
+        }
+        if (arguments.has("actionReason") && arguments.path("actionReason").asText().length() > 2000)
+            return toolError(request, "INVALID_ARGUMENT", "actionReason exceeds the supported length", false, false);
         if (!java.util.Set.of("ADD", "HOLD", "REDUCE", "EXIT", "REPLACE")
                     .contains(arguments.path("action").asText())
                 || !java.util.Set.of("REGULAR_CLOSE", "LIVE_REGULAR", "AFTER_HOURS", "PREMARKET")
@@ -1439,6 +1483,30 @@ public final class ConnectorMcpProtocol {
         return closedObject(properties, "themeId", "name", "ticker", "effectiveDate");
     }
 
+    private ObjectNode positionMandateUpsertSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 32).put("pattern", "^[A-Za-z0-9._-]{1,32}$"));
+        properties.set("investmentHorizon", enumSchema("TACTICAL", "STRATEGIC"));
+        properties.set("effectiveDate", objectMapper.createObjectNode().put("type", "string")
+                .put("format", "date").put("pattern", "^\\d{4}-\\d{2}-\\d{2}$"));
+        return closedObject(properties, "ticker", "investmentHorizon", "effectiveDate");
+    }
+
+    private ObjectNode positionMandateOutputSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", stringSchema());
+        properties.set("investmentHorizon", enumSchema("TACTICAL", "STRATEGIC"));
+        properties.set("riskPriceRole", enumSchema("EXIT_EVALUATION", "REVIEW_TRIGGER"));
+        properties.set("source", enumSchema("USER_CONFIRMED"));
+        properties.set("effectiveDate", objectMapper.createObjectNode().put("type", "string").put("format", "date"));
+        properties.set("updatedAt", dateTimeSchema());
+        return outputSchema(closedObject(properties, "ticker", "investmentHorizon", "riskPriceRole", "source",
+                "effectiveDate", "updatedAt"), "TRADE_SCOPE_REQUIRED", "INVALID_ARGUMENT",
+                "AUTHENTICATED_USER_INVALID", "INVESTMENT_STATE_NOT_FOUND", "INVESTMENT_CONTEXT_UNAVAILABLE",
+                "INTERNAL_ERROR");
+    }
+
     private ObjectNode investmentThemeUpsertOutputSchema() {
         var properties = objectMapper.createObjectNode();
         properties.set("themeId", stringSchema());
@@ -1919,6 +1987,19 @@ public final class ConnectorMcpProtocol {
                 .put("format", "uuid")
                 .put("description", "Active user-owned broker connection. Must be paired "
                         + "with targetRemainingQuantity and one riskEventId."));
+        var investmentHorizon = enumSchema("TACTICAL", "STRATEGIC", "UNKNOWN");
+        investmentHorizon.put("description", "Persisted ticker mandate horizon; use UNKNOWN only when no mandate is available.");
+        fields.set("investmentHorizon", investmentHorizon);
+        var priceRiskState = enumSchema("UNKNOWN", "CLEAR", "NEAR", "INTRADAY_BREACH",
+                "PRICE_RISK_BREACH", "RECOVERED");
+        priceRiskState.put("description", "Current risk state; keep separate from the action decision.");
+        fields.set("priceRiskState", priceRiskState);
+        var thesisHealth = enumSchema("UNKNOWN", "INTACT", "IMPAIRED", "INVALIDATED");
+        thesisHealth.put("description", "Current thesis assessment, independent of the price-risk state.");
+        fields.set("thesisHealth", thesisHealth);
+        fields.set("actionReason", objectMapper.createObjectNode().put("type", "string")
+                .put("minLength", 1).put("maxLength", 2000)
+                .put("description", "Caller-authored reason for HOLD, REDUCE, EXIT, or other action."));
         schema.putArray("required").add("decisionId").add("asOf").add("asset").add("action")
                 .add("referencePrice").add("priceSession").add("horizon").add("alphaThesis")
                 .add("invalidation").add("nextReviewTrigger").add("confidence");
@@ -1982,11 +2063,12 @@ public final class ConnectorMcpProtocol {
                 .put("type", "object").set("additionalProperties", objectMapper.createObjectNode()
                         .put("type", "object").put("additionalProperties", true)));
         contextProperties.set("reviewLog", nullableArraySchema());
+        contextProperties.set("positionMandates", arrayOf(positionMandateViewSchema()));
         var context = objectMapper.createObjectNode().put("type", "object");
         context.set("properties", contextProperties);
         context.putArray("required").add("portfolio").add("securities").add("watchlist")
                 .add("riskPolicy").add("decisionLedger").add("pipeline")
-                .add("tacticalOverlay").add("decisionOverlays");
+                .add("tacticalOverlay").add("decisionOverlays").add("reviewLog").add("positionMandates");
         context.put("additionalProperties", true);
         anyOf.add(context);
 
@@ -2022,6 +2104,18 @@ public final class ConnectorMcpProtocol {
                         .put("additionalProperties", true)));
         anyOf.add(objectMapper.createObjectNode().put("type", "null"));
         return schema;
+    }
+
+    private ObjectNode positionMandateViewSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("ticker", stringSchema());
+        properties.set("investmentHorizon", enumSchema("TACTICAL", "STRATEGIC"));
+        properties.set("riskPriceRole", enumSchema("EXIT_EVALUATION", "REVIEW_TRIGGER"));
+        properties.set("source", enumSchema("USER_CONFIRMED"));
+        properties.set("effectiveDate", objectMapper.createObjectNode().put("type", "string").put("format", "date"));
+        properties.set("updatedAt", dateTimeSchema());
+        return closedObject(properties, "ticker", "investmentHorizon", "riskPriceRole", "source",
+                "effectiveDate", "updatedAt");
     }
 
     private ObjectNode requiredStringSchema(String name) {
