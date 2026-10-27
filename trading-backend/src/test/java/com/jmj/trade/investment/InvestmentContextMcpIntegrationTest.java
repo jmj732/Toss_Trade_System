@@ -60,12 +60,13 @@ class InvestmentContextMcpIntegrationTest extends PostgresIntegrationTest {
 
     private static final UUID USER_ID = UUID.fromString("01990000-0000-7000-8000-000000000001");
     private static final UUID CONNECTION_ID = UUID.fromString("01990000-0000-7000-8000-000000000002");
+    private static final UUID OTHER_USER_ID = UUID.fromString("01990000-0000-7000-8000-000000000004");
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
     private static final List<String> READ_TABLES = List.of(
             "analysis_input_snapshots", "investment_price_snapshots", "investment_security_snapshots",
             "investment_tactical_overlay_inputs", "investment_tactical_overlay_bar_snapshots",
             "investment_tactical_overlay_snapshots", "investment_pipeline_state", "investment_decision_ledger",
-            "investment_thesis_states");
+            "investment_thesis_states", "investment_position_mandates");
 
     private JdbcTemplate jdbc;
     private HikariDataSource dataSource;
@@ -199,10 +200,14 @@ class InvestmentContextMcpIntegrationTest extends PostgresIntegrationTest {
                 .put("decisionId", decisionId.toString())
                 .put("asOf", asOf.toString())
                 .put("asset", "AVT")
-                .put("action", "HOLD")
+                .put("action", "REDUCE")
                 .put("referencePrice", 123.45)
                 .put("priceSession", "REGULAR_CLOSE")
                 .put("horizon", "caller-defined swing horizon")
+                .put("investmentHorizon", "TACTICAL")
+                .put("priceRiskState", "PRICE_RISK_BREACH")
+                .put("thesisHealth", "INTACT")
+                .put("actionReason", "Confirmed price-risk breach; evaluate tactical exit.")
                 .put("alphaThesis", "caller-supplied thesis")
                 .put("invalidation", "caller-supplied invalidation")
                 .put("nextReviewTrigger", "caller-supplied review trigger")
@@ -212,7 +217,12 @@ class InvestmentContextMcpIntegrationTest extends PostgresIntegrationTest {
                 .path("structuredContent");
         assertThat(appended.path("decisionId").asText()).isEqualTo(decisionId.toString());
         assertThat(appended.path("asset").asText()).isEqualTo("AVT");
-        assertThat(appended.path("action").asText()).isEqualTo("HOLD");
+        assertThat(appended.path("action").asText()).isEqualTo("REDUCE");
+        assertThat(appended.path("investmentHorizon").asText()).isEqualTo("TACTICAL");
+        assertThat(appended.path("priceRiskState").asText()).isEqualTo("PRICE_RISK_BREACH");
+        assertThat(appended.path("thesisHealth").asText()).isEqualTo("INTACT");
+        assertThat(appended.path("actionReason").asText())
+                .isEqualTo("Confirmed price-risk breach; evaluate tactical exit.");
         assertThat(appended.path("alphaThesis").asText()).isEqualTo("caller-supplied thesis");
         assertThat(appended.has("riskPolicyCheck")).isTrue();
         assertThat(appended.has("createdAt")).isTrue();
@@ -232,6 +242,63 @@ class InvestmentContextMcpIntegrationTest extends PostgresIntegrationTest {
                 .path("structuredContent");
         assertThat(context.path("decisionLedger").get(0)).isEqualTo(appended);
         assertThat(contextService.decisionLedger(USER_ID, 50)).hasSize(1);
+        verifyNoInteractions(portfolios);
+    }
+
+    @Test
+    void positionMandateMcpWritePersistsAndContextReturnsOnlyTheAuthenticatedUsersPolicy() throws Exception {
+        jdbc.update("INSERT INTO users (id) VALUES (?)", OTHER_USER_ID);
+        var portfolios = mock(PortfolioReadService.class);
+        var watchlist = mock(MonitoringWatchlistService.class);
+        when(watchlist.list(USER_ID)).thenReturn(List.of());
+        when(watchlist.list(OTHER_USER_ID)).thenReturn(List.of());
+        var risks = mock(RiskPolicyService.class);
+        var policy = new RiskPolicyService.RiskPolicySnapshot(
+                0, bd("10000000"), bd("10000"), bd("100"), bd("0.25"), false);
+        when(risks.current(USER_ID)).thenReturn(policy);
+        when(risks.current(OTHER_USER_ID)).thenReturn(policy);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<BrokerSurfaceService> surfaceProvider = mock(ObjectProvider.class);
+        when(surfaceProvider.getIfAvailable()).thenReturn(null);
+        var contextService = new InvestmentContextService(jdbc, mapper, transactions,
+                new StockDataProviderRegistry(List.of()), surfaceProvider, portfolios,
+                watchlist, risks, Duration.ofMinutes(15), Duration.ofDays(7),
+                Duration.ofDays(210), Duration.ofDays(10));
+        var protocol = new ConnectorMcpProtocol(mock(ConnectorService.class), null, contextService, mapper);
+        var connectorMvc = standaloneSetup(new ConnectorMcpController(
+                protocol, "https://dashboard.example")).build();
+        var effectiveDate = LocalDate.parse("2026-10-27");
+        var strategic = mapper.createObjectNode().put("ticker", "LUNR")
+                .put("investmentHorizon", "STRATEGIC").put("effectiveDate", effectiveDate.toString());
+        var tactical = mapper.createObjectNode().put("ticker", "LUNR")
+                .put("investmentHorizon", "TACTICAL").put("effectiveDate", effectiveDate.toString());
+
+        var userWrite = callMcp(connectorMvc, "upsert_position_mandate", strategic, tradeAuthentication())
+                .path("structuredContent");
+        var replay = callMcp(connectorMvc, "upsert_position_mandate", strategic, tradeAuthentication())
+                .path("structuredContent");
+        callMcp(connectorMvc, "upsert_position_mandate", tactical, tradeAuthentication(OTHER_USER_ID));
+        var userContext = callMcp(connectorMvc, "get_investment_context", mapper.createObjectNode(), tradeAuthentication())
+                .path("structuredContent");
+        var otherContext = callMcp(connectorMvc, "get_investment_context", mapper.createObjectNode(),
+                tradeAuthentication(OTHER_USER_ID)).path("structuredContent");
+
+        assertThat(userWrite.path("investmentHorizon").asText()).isEqualTo("STRATEGIC");
+        assertThat(userWrite.path("riskPriceRole").asText()).isEqualTo("REVIEW_TRIGGER");
+        assertThat(userWrite.path("source").asText()).isEqualTo("USER_CONFIRMED");
+        assertThat(userWrite.path("effectiveDate").asText()).isEqualTo(effectiveDate.toString());
+        assertThat(userWrite.path("updatedAt").isTextual()).isTrue();
+        assertThat(replay).isEqualTo(userWrite);
+        assertThat(userContext.path("positionMandates").size()).isEqualTo(1);
+        assertThat(userContext.path("positionMandates").get(0).path("riskPriceRole").asText())
+                .isEqualTo("REVIEW_TRIGGER");
+        assertThat(otherContext.path("positionMandates").size()).isEqualTo(1);
+        assertThat(otherContext.path("positionMandates").get(0).path("riskPriceRole").asText())
+                .isEqualTo("EXIT_EVALUATION");
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM investment_position_mandates
+                 WHERE ticker = 'LUNR' AND source = 'USER_CONFIRMED'
+                """, Integer.class)).isEqualTo(2);
         verifyNoInteractions(portfolios);
     }
 
@@ -311,9 +378,13 @@ class InvestmentContextMcpIntegrationTest extends PostgresIntegrationTest {
     }
 
     private static TestingAuthenticationToken tradeAuthentication() {
-        var token = new TestingAuthenticationToken(USER_ID.toString(), null, "SCOPE_CONNECTOR_TRADE");
+        return tradeAuthentication(USER_ID);
+    }
+
+    private static TestingAuthenticationToken tradeAuthentication(UUID userId) {
+        var token = new TestingAuthenticationToken(userId.toString(), null, "SCOPE_CONNECTOR_TRADE");
         token.setDetails(new ConnectorApiKeyService.AuthenticatedKey(
-                UUID.randomUUID(), USER_ID, CONNECTION_ID, "", null, false, ConnectorApiKeyService.TRADE_SCOPE));
+                UUID.randomUUID(), userId, CONNECTION_ID, "", null, false, ConnectorApiKeyService.TRADE_SCOPE));
         return token;
     }
 

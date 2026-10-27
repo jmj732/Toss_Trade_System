@@ -116,6 +116,12 @@ Registration requires `connector:trade`. Missing write scope returns
 `TRADE_SCOPE_REQUIRED`; malformed input returns `INVALID_ARGUMENT`. Neither
 read tool requires write scope.
 
+## Position horizon context (V65/V66)
+
+Position horizons are stored separately from Thesis `classification` in the user-scoped `investment_position_mandates` table. `get_investment_context` exposes each row through `positionMandates[]`; `upsert_position_mandate` writes one ticker through the existing `connector:trade` scope. The server derives `riskPriceRole` and `source=USER_CONFIRMED` from the supplied horizon. Missing rows remain missing and must be treated as `UNKNOWN` unless an explicitly user-confirmed prompt fallback applies. Neither the mandate nor this onboarding contract changes `priceRiskTriggerPrice`.
+
+V66 adds optional decision fields `investmentHorizon`, `priceRiskState`, `thesisHealth`, and `actionReason`, preserving historical ledger rows. Updated prompt drafts require the four values for new decisions. Tactical price breaches trigger an EXIT/REDUCE evaluation; strategic breaches trigger thesis revalidation, and an intact thesis may remain HOLD. Hard Risk Gates and confirmed structural thesis damage remain independent of the horizon. The policy resolver returns review states only; it does not choose order actions or place orders. See the full [Investment Context MCP contract](investment-context-mcp-contract.md#position-mandates-and-decision-context-v65v66).
+
 ## Protocol and source references
 
 The MCP endpoint is `POST /api/v1/connector/mcp`. The connector key supplies
