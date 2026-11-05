@@ -12,7 +12,6 @@ import org.springframework.web.client.RestClientResponseException;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.UUID;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -147,19 +146,7 @@ final class TossOAuthClient {
     }
 
     private static Duration parseRetryAfter(RestClientResponseException exception) {
-        return Optional.ofNullable(exception.getResponseHeaders())
-                .map(headers -> headers.getFirst("Retry-After"))
-                .flatMap(TossOAuthClient::parsePositiveSeconds)
-                .orElse(null);
-    }
-
-    private static Optional<Duration> parsePositiveSeconds(String value) {
-        try {
-            var seconds = Long.parseLong(value);
-            return seconds < 0 ? Optional.empty() : Optional.of(Duration.ofSeconds(seconds));
-        } catch (RuntimeException ignored) {
-            return Optional.empty();
-        }
+        return TossErrorNormalizer.parseRetryAfter(exception.getResponseHeaders()).orElse(null);
     }
 
     private static String safeText(String value) {

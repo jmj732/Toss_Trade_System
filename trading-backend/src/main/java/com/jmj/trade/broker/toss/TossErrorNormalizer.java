@@ -7,6 +7,9 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 
 final class TossErrorNormalizer {
@@ -71,7 +74,11 @@ final class TossErrorNormalizer {
         };
     }
 
-    private static Optional<Duration> parseRetryAfter(HttpHeaders headers) {
+    static Optional<Duration> parseRetryAfter(HttpHeaders headers) {
+        return parseRetryAfter(headers, Instant.now());
+    }
+
+    static Optional<Duration> parseRetryAfter(HttpHeaders headers, Instant now) {
         if (headers == null) {
             return Optional.empty();
         }
@@ -80,8 +87,14 @@ final class TossErrorNormalizer {
             if (value == null || value.isBlank()) {
                 return Optional.empty();
             }
-            var seconds = Long.parseLong(value);
-            return seconds < 0 ? Optional.empty() : Optional.of(Duration.ofSeconds(seconds));
+            try {
+                var seconds = Long.parseLong(value.trim());
+                return seconds < 0 ? Optional.empty() : Optional.of(Duration.ofSeconds(seconds));
+            } catch (NumberFormatException ignored) {
+                var retryAt = ZonedDateTime.parse(value.trim(), DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+                var delay = Duration.between(now, retryAt);
+                return Optional.of(delay.isNegative() ? Duration.ZERO : delay);
+            }
         } catch (RuntimeException ignored) {
             return Optional.empty();
         }

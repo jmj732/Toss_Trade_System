@@ -4302,9 +4302,9 @@ public final class InvestmentContextService {
             var triggerPrice = thesis == null ? null : thesis.priceRiskTriggerPrice();
             var confirmed = thesis != null && "CONFIRMED".equals(thesis.invalidationStatus());
             var trustedPriceStatus = mark.status();
-            var trustedInputs = portfolioNumbersAvailable
-                    && trustedPriceStatus == InvestmentDataCalculator.DataStatus.OK
+            var trustedMark = trustedPriceStatus == InvestmentDataCalculator.DataStatus.OK
                     && mark.available() && priceAsOf != null && price != null && price.signum() > 0;
+            var trustedInputs = portfolioNumbersAvailable && trustedMark;
             // Risk numbers derive only from an approved (CONFIRMED) invalidation trigger. An unapproved
             // trigger (AI_PROPOSED/UNVERIFIED/INVALIDATION_UNDEFINED) is never fed into downside/loss.
             var computable = confirmed && triggerPrice != null;
@@ -4322,7 +4322,7 @@ public final class InvestmentContextService {
                     : overall(List.of(portfolioDataStatus, trustedPriceStatus));
             var eligible = confirmed
                     && portfolioCurrent && trustedInputs && weight != null && downside != null && loss != null;
-            var reasons = eligibilityReasons(thesis, confirmed, triggerPrice, downside, trustedInputs,
+            var reasons = eligibilityReasons(thesis, confirmed, triggerPrice, price, trustedMark,
                     portfolioDataStatus, portfolioCurrent, portfolioNumbersAvailable, trustedPriceStatus, weight);
             if (position != null) exposures.add(new RiskExposure(symbol, loss, riskStatus));
             risks.put(symbol, new RiskContributionView(weight, downside, loss,
@@ -4368,15 +4368,16 @@ public final class InvestmentContextService {
      * signal is the INVALIDATION_PRICE_BREACHED reason code.
      */
     private static List<String> eligibilityReasons(
-            ThesisView thesis, boolean confirmed, BigDecimal triggerPrice, BigDecimal downside,
-            boolean trustedInputs, InvestmentDataCalculator.DataStatus portfolioDataStatus,
+            ThesisView thesis, boolean confirmed, BigDecimal triggerPrice, BigDecimal price,
+            boolean trustedMark, InvestmentDataCalculator.DataStatus portfolioDataStatus,
             boolean portfolioCurrent, boolean portfolioNumbersAvailable,
             InvestmentDataCalculator.DataStatus trustedPriceStatus, BigDecimal weight) {
         var reasons = new ArrayList<String>();
         if (thesis == null) reasons.add("THESIS_MISSING");
         else if (!confirmed) reasons.add("INVALIDATION_NOT_CONFIRMED");
         if (triggerPrice == null) reasons.add("INVALIDATION_PRICE_NOT_CONFIGURED");
-        else if (confirmed && trustedInputs && downside == null) reasons.add("INVALIDATION_PRICE_BREACHED");
+        else if (confirmed && trustedMark && triggerPrice.compareTo(price) > 0)
+            reasons.add("INVALIDATION_PRICE_BREACHED");
         if (portfolioDataStatus == InvestmentDataCalculator.DataStatus.STALE) reasons.add("PORTFOLIO_STALE");
         else if (portfolioDataStatus == InvestmentDataCalculator.DataStatus.PARTIAL) reasons.add("PORTFOLIO_PARTIAL");
         else if (!portfolioCurrent || !portfolioNumbersAvailable) reasons.add("PORTFOLIO_UNAVAILABLE");
