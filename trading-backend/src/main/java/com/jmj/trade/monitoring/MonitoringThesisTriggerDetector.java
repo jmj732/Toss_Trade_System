@@ -12,6 +12,7 @@ import java.time.ZoneId;
 import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.UUID;
+import org.slf4j.LoggerFactory;
 
 /**
  * Flags held positions whose CONFIRMED thesis invalidation trigger is breached or nearly breached by a trusted
@@ -29,6 +30,7 @@ import java.util.UUID;
 @Service
 class MonitoringThesisTriggerDetector {
 
+    private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(MonitoringThesisTriggerDetector.class);
     static final String SCOPE = "THESIS_REVIEW";
     /** NEAR: trigger &lt; price &le; trigger × 1.03 (within 3% above the trigger). BREACH: price &le; trigger. */
     static final BigDecimal NEAR_BAND_MULTIPLIER = new BigDecimal("1.03");
@@ -45,18 +47,30 @@ class MonitoringThesisTriggerDetector {
 
     /**
      * Held = a position with positive quantity in the fresh monitoring holdings snapshot. A stale or missing
-     * snapshot ({@code asOf == null}) yields no held set and therefore no alert; tickers that are not held are
-     * never alerted.
+     * snapshot ({@code asOf == null}) cannot establish broker holdings. Verified fresh manual holdings are
+     * independently considered for review alerts, never as broker sellable quantities.
      */
     void detect(UUID userId, MonitoringEvaluationContract.PortfolioInput portfolio) {
         Objects.requireNonNull(userId, "userId");
-        if (portfolio == null || portfolio.asOf() == null || portfolio.positions() == null) return;
         var held = new LinkedHashSet<String>();
-        for (var position : portfolio.positions()) {
-            if (position.symbol() != null && position.quantity() != null && position.quantity().signum() > 0) {
-                held.add(position.symbol());
+        if (portfolio != null && portfolio.asOf() != null && portfolio.positions() != null) {
+            for (var position : portfolio.positions()) {
+                if (position.symbol() != null && position.quantity() != null && position.quantity().signum() > 0) {
+                    held.add(position.symbol());
+                }
             }
         }
+        java.util.Map<String, LocalDate> manualHoldings;
+        try {
+            manualHoldings = investmentContext.freshManualReviewHoldings(userId);
+        } catch (RuntimeException exception) {
+            LOG.atWarn().addKeyValue("operation", "manual_holding_review")
+                    .addKeyValue("user_id", userId)
+                    .addKeyValue("error_type", exception.getClass().getSimpleName())
+                    .log("manual holdings could not be read for thesis review");
+            manualHoldings = java.util.Map.of();
+        }
+        held.addAll(manualHoldings.keySet());
         if (held.isEmpty()) return;
         var evaluatedAt = Instant.now();
         for (var observation : investmentContext.confirmedTriggerObservations(userId, held)) {
@@ -84,6 +98,10 @@ class MonitoringThesisTriggerDetector {
             evidence.put("thesisRevisionId", observation.thesisRevisionId() == null
                     ? null : observation.thesisRevisionId().toString());
             evidence.put("thesisRevision", observation.thesisRevision());
+            if (manualHoldings.containsKey(observation.ticker())) {
+                evidence.put("manualHoldingAsOf", manualHoldings.get(observation.ticker()).toString());
+                evidence.put("manualHoldingSource", "ACCOUNT_2");
+            }
             evidence.put("invalidationStatus", observation.invalidationStatus());
             evidence.put("reasonCode", reasonCode);
             evidence.put("sessionDate", LocalDate.ofInstant(price.asOf(), NEW_YORK).toString());

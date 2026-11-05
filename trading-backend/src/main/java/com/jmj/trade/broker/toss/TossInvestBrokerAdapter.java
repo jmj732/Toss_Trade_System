@@ -293,6 +293,7 @@ final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter,
         mapper.requireToss(account);
         var all = new java.util.ArrayList<BrokerOrderView>();
         String cursor = null;
+        var seenCursors = new java.util.HashSet<String>();
         BrokerCallMetadata metadata = null;
         do {
             var response = apiClient.getOrders(account, group, cursor);
@@ -312,6 +313,10 @@ final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter,
                         "Toss order list cursor was missing");
             }
             cursor = page.hasNext() ? page.nextCursor() : null;
+            if (cursor != null && !seenCursors.add(cursor)) {
+                throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
+                        "Toss order list cursor repeated");
+            }
         } while (cursor != null);
         return new BrokerResponse<>(List.copyOf(all), Objects.requireNonNull(metadata, "metadata"));
     }

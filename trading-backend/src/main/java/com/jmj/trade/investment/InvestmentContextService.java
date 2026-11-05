@@ -156,6 +156,31 @@ public final class InvestmentContextService {
                 && userId != null && userId.equals(investmentOsSheetProperties.userId());
     }
 
+    /** Fresh manual holdings for review alerts only; these quantities are not broker sellable quantities. */
+    public Map<String, LocalDate> freshManualReviewHoldings(UUID userId) {
+        if (!configuredSheetOwner(userId)) return Map.of();
+        var snapshots = latestSheetSnapshots(userId);
+        var payload = snapshots.payload();
+        if (payload == null || "FAILED".equals(snapshots.latestStatus())
+                || !"OK".equals(text(payload.get("manualStatus")))) return Map.of();
+        var table = sheetTable(payload.get("accountState"));
+        var now = clock.instant();
+        if (!InvestmentOsSheetModel.manualRowsStructurallyValid(table)
+                || !InvestmentOsSheetModel.manualRowsHaveVerifiedMetadata(table,
+                now.atZone(MANUAL_SHEET_ZONE).toLocalDate())) return Map.of();
+        var result = new LinkedHashMap<String, LocalDate>();
+        for (var row : table.rows()) {
+            if (!InvestmentOsSheetModel.ACCOUNT_2.equalsIgnoreCase(sheetCell(table, row, "Account"))) continue;
+            var symbol = safeTicker(sheetCell(table, row, "Ticker", "Asset"));
+            var quantity = sheetDecimal(sheetCell(table, row, "Quantity"));
+            if (symbol == null || InvestmentOsSheetModel.isCash(table, row, symbol)
+                    || quantity == null || quantity.signum() <= 0) continue;
+            var asOf = InvestmentOsSheetModel.manualAsOf(table, symbol);
+            if (isFreshDate(asOf, now)) result.put(symbol, asOf);
+        }
+        return Map.copyOf(result);
+    }
+
     private PortfolioView readSheetPortfolio(UUID userId) {
         var snapshots = latestSheetSnapshots(userId);
         var payload = snapshots.payload();
