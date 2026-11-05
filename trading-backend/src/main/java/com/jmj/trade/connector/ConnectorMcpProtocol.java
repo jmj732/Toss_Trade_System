@@ -227,7 +227,10 @@ public final class ConnectorMcpProtocol {
         tools.add(tool(
                 "get_recent_fills",
                 "Get recent fills",
-                "Read filled quantities derived from Toss Invest open and closed orders. Optionally filter by an ISO-8601 instant.",
+                "Read cumulative filled quantities derived from Toss Invest OPEN and CLOSED order snapshots, not individual executions. "
+                        + "The optional since filter uses the broker-reported filledAt timestamp and excludes orders without it; "
+                        + "results cannot establish that no fills occurred when timestamps are missing. "
+                        + "Both groups must be available; broker rate limits are returned as errors.",
                 fillsSchema(), listEnvelopeSchema("fills")));
         tools.add(tool(
                 "get_order",
@@ -407,8 +410,12 @@ public final class ConnectorMcpProtocol {
                 return toolError(request, "ORDER_BLOCKED", activationException.getMessage(), false, false);
             }
             if (exception instanceof BrokerException brokerException) {
-                return toolError(request, "TOSS_API_ERROR", "Toss API request failed",
+                var response = toolError(request, "TOSS_API_ERROR", "Toss API request failed",
                         brokerException.isRetriable(), false, brokerException.category().name());
+                brokerException.retryAfter().ifPresent(retryAfter ->
+                        ((ObjectNode) response.path("result").path("structuredContent"))
+                                .put("retryAfterSeconds", retryAfter.toSeconds()));
+                return response;
             }
             if (exception instanceof IllegalArgumentException) {
                 return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
@@ -1407,7 +1414,9 @@ public final class ConnectorMcpProtocol {
         properties.set("transition", nullableStringSchema());
         properties.set("severity", nullableStringSchema());
         properties.set("observedAt", dateTimeSchema());
-        properties.set("sourceAsOf", nullableDateTimeSchema());
+        properties.set("sourceAsOf", nullableDateTimeSchema().put("description",
+                "For Toss REGULAR_CLOSE, this is the New York midnight session-date label, not the close observation time. "
+                        + "Use regularCloseSessionDate for the session date and observedAt for the event observation time."));
         properties.set("priceSource", nullableStringSchema());
         properties.set("priceSession", nullableStringSchema());
         properties.set("priceBasis", nullableStringSchema());
@@ -2168,7 +2177,15 @@ public final class ConnectorMcpProtocol {
 
     private static Instant optionalInstant(JsonNode arguments, String field) {
         var value = arguments.path(field);
-        return value.isTextual() && !value.asText().isBlank() ? Instant.parse(value.asText()) : null;
+        if (value.isMissingNode() || value.isNull()) return null;
+        if (!value.isTextual() || value.asText().isBlank()) {
+            throw new IllegalArgumentException(field + " must be an ISO-8601 instant");
+        }
+        try {
+            return Instant.parse(value.asText());
+        } catch (java.time.format.DateTimeParseException exception) {
+            throw new IllegalArgumentException(field + " must be an ISO-8601 instant", exception);
+        }
     }
 
     private static McpOrderExecutionService.PrepareCommand prepare(JsonNode arguments) {

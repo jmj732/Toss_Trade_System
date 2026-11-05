@@ -414,11 +414,16 @@ public final class InvestmentSellReadinessService {
                         || closeDate == null || !closeDate.equals(sessionDate)
                         || !closeDate.equals(label.toLocalDate()) || !label.toLocalTime().equals(java.time.LocalTime.MIDNIGHT))
                     blockers.add("RISK_EVENT_EVIDENCE_UNVERIFIED");
-            } else if (!(("LIVE_REGULAR".equals(target.eventPriceBasis())
-                    && "LIVE_REGULAR".equals(target.eventPriceSession()))
-                    || ("REGULAR_CLOSE".equals(target.eventPriceBasis())
+            } else if ("REGULAR_CLOSE".equals(target.eventPriceBasis())
                     && "REGULAR_CLOSE".equals(target.eventPriceSession())
-                    && "TOSS".equals(target.eventPriceSource())))) {
+                    && "TOSS".equals(target.eventPriceSource())) {
+                var closeDate = target.eventRegularCloseSessionDate();
+                var label = evidenceAsOf.atZone(NEW_YORK);
+                if (closeDate == null || !closeDate.equals(target.eventSessionDate())
+                        || !closeDate.equals(label.toLocalDate()) || !label.toLocalTime().equals(java.time.LocalTime.MIDNIGHT))
+                    blockers.add("RISK_EVENT_EVIDENCE_UNVERIFIED");
+            } else if (!("LIVE_REGULAR".equals(target.eventPriceBasis())
+                    && "LIVE_REGULAR".equals(target.eventPriceSession()))) {
                 blockers.add("RISK_EVENT_EVIDENCE_UNVERIFIED");
             }
         } catch (RuntimeException exception) {
