@@ -414,7 +414,7 @@ public final class ConnectorMcpProtocol {
                         brokerException.isRetriable(), false, brokerException.category().name());
                 brokerException.retryAfter().ifPresent(retryAfter ->
                         ((ObjectNode) response.path("result").path("structuredContent"))
-                                .put("retryAfterSeconds", retryAfter.toSeconds()));
+                                .put("retryAfterSeconds", retryAfter.toSeconds() + (retryAfter.getNano() == 0 ? 0 : 1)));
                 return response;
             }
             if (exception instanceof IllegalArgumentException) {

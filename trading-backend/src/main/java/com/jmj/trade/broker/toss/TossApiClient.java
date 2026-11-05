@@ -428,7 +428,7 @@ final class TossApiClient {
         var limit = number(headers, "X-RateLimit-Limit");
         var remaining = number(headers, "X-RateLimit-Remaining");
         var reset = resetAt(headers, observedAt);
-        var retryAfter = seconds(headers, "Retry-After");
+        var retryAfter = TossErrorNormalizer.parseRetryAfter(headers, observedAt);
         if (limit.isEmpty() && remaining.isEmpty() && reset.isEmpty() && retryAfter.isEmpty()) {
             return Optional.empty();
         }
@@ -452,16 +452,6 @@ final class TossApiClient {
                 throw new IllegalArgumentException();
             }
             return observedAt.plus(Duration.ofSeconds(seconds));
-        });
-    }
-
-    private Optional<Duration> seconds(HttpHeaders headers, String name) {
-        return parseHeader(headers, name, () -> {
-            var seconds = Long.parseLong(headers.getFirst(name));
-            if (seconds < 0) {
-                throw new IllegalArgumentException();
-            }
-            return Duration.ofSeconds(seconds);
         });
     }
 
