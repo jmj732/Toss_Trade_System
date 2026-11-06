@@ -4331,7 +4331,11 @@ public final class InvestmentContextService {
                     InvestmentDataCalculator.DataStatus.DATA_MISSING, eligible,
                     riskBudgetStatus(null, null, null), reasons,
                     new RiskMarkView(mark.value(), mark.asOf(), mark.source(), mark.basis(),
-                            mark.asOfBasis(), mark.status(), mark.reason())));
+                            mark.asOfBasis(), mark.status(), mark.reason()),
+                    approvedTriggerRisk(confirmed, triggerPrice, mark.value(), mark.asOf(), mark.source(),
+                            mark.status(), mark.reason(), trustedMark),
+                    new ForwardDownsideRiskView("NOT_EVALUABLE", "BEAR_CASE_EVIDENCE_UNAVAILABLE", null, null, null),
+                    new ThesisHealthView("NOT_EVALUABLE", "NO_CURRENT_THESIS_ASSESSMENT", null, null)));
         }
         var held = exposures.stream().filter(item -> positions.containsKey(item.ticker())).toList();
         var thesisFailureStatus = held.isEmpty() ? InvestmentDataCalculator.DataStatus.DATA_MISSING
@@ -4356,9 +4360,33 @@ public final class InvestmentContextService {
                     risk.portfolioWeight(), risk.invalidationDownside(), risk.plannedLossContribution(),
                     risk.status(), thesisFailureStress, thesisFailureStatus, top2.stress(), top2.assets(),
                     top2.correlation(), top2.status(), finalEligible, budgetStatus, List.copyOf(updatedReasons),
-                    risk.riskMark());
+                    risk.riskMark(), risk.approvedTriggerRisk(), risk.forwardDownsideRisk(), risk.thesisHealth());
         });
         return Map.copyOf(risks);
+    }
+
+    private static ApprovedTriggerRiskView approvedTriggerRisk(boolean confirmed, BigDecimal trigger,
+            BigDecimal price, Instant asOf, String source, InvestmentDataCalculator.DataStatus markStatus,
+            String markReason, boolean trustedMark) {
+        if (trigger == null || trigger.signum() < 0)
+            return new ApprovedTriggerRiskView("NOT_CONFIGURED", "APPROVED_TRIGGER_MISSING", source, asOf, trigger, null);
+        if (!confirmed)
+            return new ApprovedTriggerRiskView("UNVERIFIED", "TRIGGER_NOT_CONFIRMED", source, asOf, trigger, null);
+        if (!trustedMark) {
+            var status = markStatus == null || markStatus == InvestmentDataCalculator.DataStatus.OK
+                    ? "DATA_MISSING" : markStatus.name();
+            return new ApprovedTriggerRiskView(status, markReason == null ? "RISK_MARK_UNAVAILABLE" : markReason,
+                    source, asOf, trigger, null);
+        }
+        var comparison = price.compareTo(trigger);
+        if (comparison <= 0) {
+            var breach = trigger.subtract(price).divide(trigger, MathContext.DECIMAL128)
+                    .setScale(8, RoundingMode.HALF_UP);
+            return new ApprovedTriggerRiskView("TRIGGER_BREACHED", "PRICE_AT_OR_BELOW_APPROVED_TRIGGER", source, asOf,
+                    trigger, breach);
+        }
+        return new ApprovedTriggerRiskView("ABOVE_TRIGGER", null,
+                source, asOf, trigger, null);
     }
 
     /**
@@ -4376,7 +4404,7 @@ public final class InvestmentContextService {
         if (thesis == null) reasons.add("THESIS_MISSING");
         else if (!confirmed) reasons.add("INVALIDATION_NOT_CONFIRMED");
         if (triggerPrice == null) reasons.add("INVALIDATION_PRICE_NOT_CONFIGURED");
-        else if (confirmed && trustedMark && triggerPrice.compareTo(price) > 0)
+        else if (confirmed && trustedMark && triggerPrice.compareTo(price) >= 0)
             reasons.add("INVALIDATION_PRICE_BREACHED");
         if (portfolioDataStatus == InvestmentDataCalculator.DataStatus.STALE) reasons.add("PORTFOLIO_STALE");
         else if (portfolioDataStatus == InvestmentDataCalculator.DataStatus.PARTIAL) reasons.add("PORTFOLIO_PARTIAL");
@@ -5111,16 +5139,38 @@ public final class InvestmentContextService {
     public record RiskMarkView(BigDecimal value, Instant asOf, String source, String basis,
                                String asOfBasis, InvestmentDataCalculator.DataStatus status, String reason) {}
 
+    public record ApprovedTriggerRiskView(String status, String reason, String source, Instant asOf,
+                                          BigDecimal triggerPrice, BigDecimal breachFraction) {}
+
+    public record ForwardDownsideRiskView(String status, String reason, String source, Instant asOf,
+                                          BigDecimal downsideFraction) {}
+
+    public record ThesisHealthView(String status, String reason, String source, Instant asOf) {}
+
     public record RiskContributionView(
             BigDecimal portfolioWeight, BigDecimal invalidationDownside, BigDecimal plannedLossContribution,
             InvestmentDataCalculator.DataStatus status, BigDecimal thesisFailureStress,
             InvestmentDataCalculator.DataStatus thesisFailureStressStatus, BigDecimal top2CorrelatedStress,
             String top2CorrelatedAssets, BigDecimal top2Correlation,
             InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
-            String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark
+            String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark,
+            ApprovedTriggerRiskView approvedTriggerRisk, ForwardDownsideRiskView forwardDownsideRisk,
+            ThesisHealthView thesisHealth
     ) {
         public RiskContributionView {
             eligibilityReasons = eligibilityReasons == null ? List.of() : List.copyOf(eligibilityReasons);
+        }
+
+        /** Backward-compatible signature with trusted risk mark. */
+        public RiskContributionView(BigDecimal portfolioWeight, BigDecimal invalidationDownside,
+                BigDecimal plannedLossContribution, InvestmentDataCalculator.DataStatus status,
+                BigDecimal thesisFailureStress, InvestmentDataCalculator.DataStatus thesisFailureStressStatus,
+                BigDecimal top2CorrelatedStress, String top2CorrelatedAssets, BigDecimal top2Correlation,
+                InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
+                String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark) {
+            this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
+                    thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, riskMark, null, null, null);
         }
 
         /** Backward-compatible signature without the additive eligibility reasons (defaults to empty). */
@@ -5133,7 +5183,7 @@ public final class InvestmentContextService {
                 String softBudgetStatus) {
             this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
                     thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
-                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of(), null);
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of(), null, null, null, null);
         }
 
         /** Backward-compatible signature with eligibility reasons but without separate trusted risk mark. */
@@ -5146,7 +5196,7 @@ public final class InvestmentContextService {
                 String softBudgetStatus, List<String> eligibilityReasons) {
             this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
                     thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
-                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, null);
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, null, null, null, null);
         }
     }
 

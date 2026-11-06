@@ -1722,10 +1722,44 @@ public final class ConnectorMcpProtocol {
         properties.set("softBudgetStatus", stringSchema());
         properties.set("eligibilityReasons", arrayOf(stringSchema()));
         properties.set("riskMark", nullableSchema(riskMarkViewSchema()));
+        properties.set("approvedTriggerRisk", nullableSchema(approvedTriggerRiskSchema()));
+        properties.set("forwardDownsideRisk", nullableSchema(forwardDownsideRiskSchema()));
+        properties.set("thesisHealth", nullableSchema(thesisHealthSchema()));
         return closedObject(properties, "portfolioWeight", "invalidationDownside", "plannedLossContribution",
                 "status", "thesisFailureStress", "thesisFailureStressStatus", "top2CorrelatedStress",
                 "top2CorrelatedAssets", "top2Correlation", "top2CorrelatedStatus", "sizingEligible",
-                "softBudgetStatus", "eligibilityReasons", "riskMark");
+                "softBudgetStatus", "eligibilityReasons", "riskMark", "approvedTriggerRisk",
+                "forwardDownsideRisk", "thesisHealth");
+    }
+
+    private ObjectNode approvedTriggerRiskSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("reason", nullableStringSchema());
+        properties.set("source", nullableStringSchema());
+        properties.set("asOf", nullableDateTimeSchema());
+        properties.set("triggerPrice", nullableNumberSchema());
+        properties.set("breachFraction", nullableNumberSchema());
+        return closedObject(properties, "status", "reason", "source", "asOf", "triggerPrice", "breachFraction");
+    }
+
+    private ObjectNode forwardDownsideRiskSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("reason", stringSchema());
+        properties.set("source", nullableStringSchema());
+        properties.set("asOf", nullableDateTimeSchema());
+        properties.set("downsideFraction", nullableNumberSchema());
+        return closedObject(properties, "status", "reason", "source", "asOf", "downsideFraction");
+    }
+
+    private ObjectNode thesisHealthSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("reason", stringSchema());
+        properties.set("source", nullableStringSchema());
+        properties.set("asOf", nullableDateTimeSchema());
+        return closedObject(properties, "status", "reason", "source", "asOf");
     }
 
     private ObjectNode riskMarkViewSchema() {
@@ -2070,7 +2104,7 @@ public final class ConnectorMcpProtocol {
 
         var contextProperties = objectMapper.createObjectNode();
         contextProperties.set("portfolio", nullableObjectSchema());
-        contextProperties.set("securities", nullableArraySchema());
+        contextProperties.set("securities", investmentSecuritiesSchema());
         contextProperties.set("watchlist", nullableArraySchema());
         contextProperties.set("riskPolicy", nullableObjectSchema());
         contextProperties.set("decisionLedger", nullableArraySchema());
@@ -2111,6 +2145,17 @@ public final class ConnectorMcpProtocol {
         anyOf.add(objectMapper.createObjectNode().put("type", "object").put("additionalProperties", true));
         anyOf.add(objectMapper.createObjectNode().put("type", "null"));
         return schema;
+    }
+
+    private ObjectNode investmentSecuritiesSchema() {
+        var security = objectMapper.createObjectNode().put("type", "object");
+        var properties = security.putObject("properties");
+        var risk = riskContributionSchema();
+        risk.put("additionalProperties", true);
+        risk.remove("required");
+        properties.set("risk", nullableSchema(risk));
+        security.put("additionalProperties", true);
+        return nullableSchema(arrayOf(security));
     }
 
     private ObjectNode nullableArraySchema() {

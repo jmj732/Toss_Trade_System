@@ -104,9 +104,17 @@ quote 또는 마지막 완료 정규장의 검증된 TOSS 종가를 사용할 �
 
 ## 3. 위험 기여도와 매수 사전점검
 
+종목별 `approvedTriggerRisk`는 승인 트리거와 신뢰 가능한 mark를 비교하고 상태·사유·출처·기준시각을 표시한다.
+이 객체의 `source`와 `asOf`는 가격 risk mark의 출처와 기준시각이며 트리거 승인 근거가 아니다.
+트리거 승인 근거는 기존 thesis 및 revision·승인 증거를 참조한다.
+현재 mark가 트리거 이하이면 `TRIGGER_BREACHED`이며 이탈 폭 `breachFraction`은 `(trigger - mark) / trigger`다.
+동일 가격의 이탈 폭은 0이며 이는 추가 하락 위험이 0이라는 뜻이 아니다. `forwardDownsideRisk`는 기업별
+Bear Case 근거가 없으면 `NOT_EVALUABLE`, 하방 수치 `null`이다. `thesisHealth`도 가격 이탈만으로 유효·무효를
+판정하지 않는다. 이 세 평가는 기존 승인 트리거 예산과 별개이며 자동 매도 또는 주문을 생성하지 않는다.
+
 확정된 트리거와 신뢰 가능한 현재 mark가 있으면 무효화 하방 비율은 `invalidationDownside = (mark - trigger) / mark`, 개별 계획 손실 기여도는
 `plannedLossContribution = portfolioWeight × invalidationDownside`로 계산한다. 두 계산 결과는 소수점 이하 8자리로 반올림한다. mark가 양수가 아니거나, 트리거가
-없거나 음수이거나 현재 mark보다 높으면 하방 값은 `null`이다. 특히 트리거가 현재가보다 높으면 이미 가격을 넘은 것으로 보고 `INVALIDATION_PRICE_BREACHED`를 이유로 남긴다. 미확정 트리거,
+없거나 음수이거나 현재 mark 이상이면 하방 값은 `null`이다. 트리거가 현재가와 같거나 높으면 이탈로 보고 `INVALIDATION_PRICE_BREACHED`를 이유로 남긴다. 동가인 경우에도 기존 하방 예산에 0을 대입하지 않으며 sizing을 차단한다. 미확정 트리거,
 신뢰할 수 없는 mark, 누락된 포트폴리오 비중에서 수치를 지어내지 않는다. 계산식은
 [`InvestmentDataCalculator`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentDataCalculator.java), 사용
 조건과 budget 판정은

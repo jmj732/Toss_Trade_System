@@ -11,6 +11,7 @@ import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
 import com.jmj.trade.investment.InvestmentSellReadinessService;
+import com.jmj.trade.investment.InvestmentRiskPreflightService;
 import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,27 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
     @Test
+    void preflightRiskSchemaExposesSeparateThesisAndDownsideEvidence() throws Exception {
+        var preflight = mock(InvestmentRiskPreflightService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, null, null, preflight,
+                new ObjectMapper());
+        var listed = protocol.handle(request("preflight-schema", "tools/list", "{}"), USER, CONNECTION);
+        var tool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
+                .filter(item -> "preflight_investment_risk".equals(item.path("name").asText()))
+                .findFirst().orElseThrow();
+        var properties = tool.path("outputSchema").path("anyOf").get(0).path("properties")
+                .path("currentRisk").path("additionalProperties").path("properties");
+        assertThat(properties.has("approvedTriggerRisk")).isTrue();
+        assertThat(properties.has("forwardDownsideRisk")).isTrue();
+        assertThat(properties.has("thesisHealth")).isTrue();
+        assertThat(properties.path("approvedTriggerRisk").toString())
+                .contains("breachFraction", "triggerPrice", "source", "asOf");
+        assertThat(properties.path("forwardDownsideRisk").toString())
+                .contains("downsideFraction", "reason", "source", "asOf");
+        assertThat(properties.path("thesisHealth").toString()).contains("reason", "source", "asOf");
+    }
+
+    @Test
     void positionMandateWriteIsTradeScopedAndServerDerivesRoleAndSource() throws Exception {
         var investment = mock(InvestmentContextService.class);
         var writer = new ConnectorMcpProtocol(service, null, investment, new ObjectMapper());
@@ -53,6 +75,17 @@ class ConnectorMcpProtocolTest {
                 .has("positionMandates")).isTrue();
         assertThat(contextTool.path("outputSchema").path("anyOf").get(0).path("required").toString())
                 .contains("positionMandates");
+        var securities = contextTool.path("outputSchema").path("anyOf").get(0).path("properties")
+                .path("securities").path("anyOf");
+        assertThat(securities.get(1).path("type").asText()).isEqualTo("null");
+        var security = securities.get(0).path("items");
+        assertThat(security.path("additionalProperties").asBoolean()).isTrue();
+        var risk = security.path("properties").path("risk").path("anyOf");
+        assertThat(risk.get(1).path("type").asText()).isEqualTo("null");
+        assertThat(risk.get(0).path("additionalProperties").asBoolean()).isTrue();
+        assertThat(risk.get(0).has("required")).isFalse();
+        assertThat(risk.get(0).path("properties").toString())
+                .contains("approvedTriggerRisk", "forwardDownsideRisk", "thesisHealth");
         var tool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
                 .filter(item -> "upsert_position_mandate".equals(item.path("name").asText()))
                 .findFirst().orElseThrow();

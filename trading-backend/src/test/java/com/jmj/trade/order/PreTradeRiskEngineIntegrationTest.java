@@ -28,6 +28,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -56,7 +57,7 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
     // 스냅샷 신선도(portfolio.snapshot.max-age, 기본 PT15M)가 실제 시각 기준으로 판정되므로,
     // 성공 스냅샷이 나이만으로 SNAPSHOT_TOO_OLD 처리되지 않도록 픽스처 기준 시각을 현재 기준
     // 상대값으로 고정한다. 나이 기반 stale 자체는 별도 테스트에서 명시적으로 검증한다.
-    private static final Instant T0 = Instant.now().minusSeconds(30);
+    private static final Instant T0 = Instant.now().minusSeconds(30).truncatedTo(ChronoUnit.MICROS);
 
     @Autowired
     private PreTradeRiskEngine riskEngine;
@@ -152,7 +153,7 @@ class PreTradeRiskEngineIntegrationTest extends PostgresIntegrationTest {
 
         var sellDecision = riskEngine.approve(command(sellOwner, sellIntentId, "100", T0));
 
-        assertThat(sellDecision.approved()).isTrue();
+        assertThat(sellDecision.approved()).as("reasons: %s", sellDecision.reasons()).isTrue();
         assertThat(sellDecision.reasons()).doesNotContain(PreTradeRiskEngine.Reason.PARTIAL_SNAPSHOT);
 
         var buyOwner = owner();
