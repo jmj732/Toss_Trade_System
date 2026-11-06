@@ -51,6 +51,9 @@ class ConnectorMcpProtocolTest {
         assertThat(properties.has("approvedTriggerRisk")).isTrue();
         assertThat(properties.has("forwardDownsideRisk")).isTrue();
         assertThat(properties.has("thesisHealth")).isTrue();
+        assertThat(properties.path("thesisEvidence").toString())
+                .contains("mandate", "recordedInvestmentHorizon", "effectiveDate", "revisionId",
+                        "fundamentals", "consensusSource", "consensusAsOf");
         assertThat(properties.path("approvedTriggerRisk").toString())
                 .contains("breachFraction", "triggerPrice", "source", "asOf");
         assertThat(properties.path("forwardDownsideRisk").toString())
@@ -85,7 +88,7 @@ class ConnectorMcpProtocolTest {
         assertThat(risk.get(0).path("additionalProperties").asBoolean()).isTrue();
         assertThat(risk.get(0).has("required")).isFalse();
         assertThat(risk.get(0).path("properties").toString())
-                .contains("approvedTriggerRisk", "forwardDownsideRisk", "thesisHealth");
+                .contains("approvedTriggerRisk", "forwardDownsideRisk", "thesisHealth", "thesisEvidence");
         var tool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
                 .filter(item -> "upsert_position_mandate".equals(item.path("name").asText()))
                 .findFirst().orElseThrow();

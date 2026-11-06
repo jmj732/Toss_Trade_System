@@ -101,6 +101,15 @@ or loss. `thesisHealth` contains `status`, `reason`, `source`, and `asOf`; price
 establish thesis validity. These objects can be null for legacy constructors. They do not
 replace existing loss-budget inputs or authorize any action or order.
 
+`thesisEvidence` exposes provenance for review, not a computed investment judgment:
+`mandate` contains the recorded horizon and risk-price role, source, effective date and update
+time; `thesis.status` is the stored invalidation rule approval state, not thesis health (`CONFIRMED` means the rule is approved), and the object contains revision ID and number, approval actor type and update time;
+`fundamentals` contains status, source and as-of; and `revision` contains status and consensus
+source/as-of. Missing evidence remains null or explicitly marked unavailable. A stored mandate
+is reported with `EFFECTIVE_DATE_POLICY_UNSPECIFIED`: its recorded values are not a finding
+that it is effective, because the effective-date timezone contract is not specified. A missing
+mandate is `NOT_CONFIGURED`. This evidence does not automatically determine `thesisHealth`.
+
 The portfolio's PositionMandate remains the authoritative horizon: a tactical breach calls
 for an EXIT/REDUCE evaluation, while a strategic breach calls for thesis revalidation and
 can result in HOLD. Hard Risk remains independent of horizon. Account freshness and trusted

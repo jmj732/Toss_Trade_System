@@ -111,6 +111,9 @@ quote 또는 마지막 완료 정규장의 검증된 TOSS 종가를 사용할 �
 동일 가격의 이탈 폭은 0이며 이는 추가 하락 위험이 0이라는 뜻이 아니다. `forwardDownsideRisk`는 기업별
 Bear Case 근거가 없으면 `NOT_EVALUABLE`, 하방 수치 `null`이다. `thesisHealth`도 가격 이탈만으로 유효·무효를
 판정하지 않는다. 이 세 평가는 기존 승인 트리거 예산과 별개이며 자동 매도 또는 주문을 생성하지 않는다.
+`thesisEvidence`는 저장된 mandate, thesis revision·승인 주체, 펀더멘털 및 컨센서스 revision의
+상태·출처·기준시각을 검토 근거로 제공한다. mandate 날짜의 시간대 계약이 없으므로 저장된 값의
+적용 여부는 `EFFECTIVE_DATE_POLICY_UNSPECIFIED`로 표시하며 자동으로 thesis 상태를 판정하지 않는다.
 
 확정된 트리거와 신뢰 가능한 현재 mark가 있으면 무효화 하방 비율은 `invalidationDownside = (mark - trigger) / mark`, 개별 계획 손실 기여도는
 `plannedLossContribution = portfolioWeight × invalidationDownside`로 계산한다. 두 계산 결과는 소수점 이하 8자리로 반올림한다. mark가 양수가 아니거나, 트리거가

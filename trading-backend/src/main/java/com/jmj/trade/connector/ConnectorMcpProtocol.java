@@ -1725,11 +1725,42 @@ public final class ConnectorMcpProtocol {
         properties.set("approvedTriggerRisk", nullableSchema(approvedTriggerRiskSchema()));
         properties.set("forwardDownsideRisk", nullableSchema(forwardDownsideRiskSchema()));
         properties.set("thesisHealth", nullableSchema(thesisHealthSchema()));
+        properties.set("thesisEvidence", nullableSchema(thesisEvidenceSchema()));
         return closedObject(properties, "portfolioWeight", "invalidationDownside", "plannedLossContribution",
                 "status", "thesisFailureStress", "thesisFailureStressStatus", "top2CorrelatedStress",
                 "top2CorrelatedAssets", "top2Correlation", "top2CorrelatedStatus", "sizingEligible",
                 "softBudgetStatus", "eligibilityReasons", "riskMark", "approvedTriggerRisk",
-                "forwardDownsideRisk", "thesisHealth");
+                "forwardDownsideRisk", "thesisHealth", "thesisEvidence");
+    }
+
+    private ObjectNode thesisEvidenceSchema() {
+        var mandate = objectMapper.createObjectNode();
+        mandate.set("status", stringSchema());
+        mandate.set("recordedInvestmentHorizon", nullableStringSchema());
+        mandate.set("recordedRiskPriceRole", nullableStringSchema());
+        mandate.set("source", nullableStringSchema());
+        mandate.set("effectiveDate", nullableDateSchema());
+        mandate.set("updatedAt", nullableDateTimeSchema());
+        var thesis = objectMapper.createObjectNode();
+        thesis.set("status", stringSchema());
+        thesis.set("revisionId", nullableUuidSchema());
+        thesis.set("revision", nullableNumberSchema());
+        thesis.set("approvalActorType", nullableStringSchema());
+        thesis.set("updatedAt", nullableDateTimeSchema());
+        var fundamentals = objectMapper.createObjectNode();
+        fundamentals.set("status", stringSchema());
+        fundamentals.set("source", nullableStringSchema());
+        fundamentals.set("asOf", nullableDateTimeSchema());
+        var revision = objectMapper.createObjectNode();
+        revision.set("status", stringSchema());
+        revision.set("consensusSource", nullableStringSchema());
+        revision.set("consensusAsOf", nullableDateTimeSchema());
+        var properties = objectMapper.createObjectNode();
+        properties.set("mandate", closedObject(mandate, "status", "recordedInvestmentHorizon", "recordedRiskPriceRole", "source", "effectiveDate", "updatedAt"));
+        properties.set("thesis", closedObject(thesis, "status", "revisionId", "revision", "approvalActorType", "updatedAt"));
+        properties.set("fundamentals", closedObject(fundamentals, "status", "source", "asOf"));
+        properties.set("revision", closedObject(revision, "status", "consensusSource", "consensusAsOf"));
+        return closedObject(properties, "mandate", "thesis", "fundamentals", "revision");
     }
 
     private ObjectNode approvedTriggerRiskSchema() {
