@@ -119,7 +119,7 @@ public final class InvestmentDataCalculator {
 
     public static BigDecimal invalidationDownside(BigDecimal currentPrice, BigDecimal triggerPrice) {
         if (!positive(currentPrice) || triggerPrice == null || triggerPrice.signum() < 0
-                || triggerPrice.compareTo(currentPrice) > 0) {
+                || triggerPrice.compareTo(currentPrice) >= 0) {
             return null;
         }
         return currentPrice.subtract(triggerPrice)

@@ -333,6 +333,12 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
         assertThat(risk.sizingEligible()).isFalse();
         assertThat(risk.softBudgetStatus()).isEqualTo("DATA_MISSING");
+        // The approved trigger comparison uses the independent trusted price mark, but a stale
+        // account snapshot must not produce a usable portfolio loss or forward-risk estimate.
+        assertThat(risk.approvedTriggerRisk().status()).isEqualTo("ABOVE_TRIGGER");
+        assertThat(risk.forwardDownsideRisk().status()).isEqualTo("NOT_EVALUABLE");
+        assertThat(risk.forwardDownsideRisk().downsideFraction()).isNull();
+        assertThat(risk.thesisHealth().status()).isEqualTo("NOT_EVALUABLE");
     }
 
     @Test
@@ -355,8 +361,27 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.plannedLossContribution()).isNull();
         assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT);
+        assertThat(risk.approvedTriggerRisk().status()).isEqualTo("SOURCE_CONFLICT");
+        assertThat(risk.approvedTriggerRisk().breachFraction()).isNull();
         assertThat(risk.thesisFailureStressStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT);
         assertThat(risk.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.SOURCE_CONFLICT);
+        assertThat(risk.sizingEligible()).isFalse();
+        assertThat(risk.softBudgetStatus()).isEqualTo("DATA_MISSING");
+    }
+
+    @Test
+    void missingPriceCannotEstablishTriggerOrForwardRisk() throws Exception {
+        var overrides = new LinkedHashMap<String, Object>();
+        overrides.put("latestPrice", null);
+        var risk = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"), overrides)
+                .context(USER_ID).securities().getFirst().risk();
+
+        assertThat(risk.approvedTriggerRisk().status()).isEqualTo("DATA_MISSING");
+        assertThat(risk.approvedTriggerRisk().breachFraction()).isNull();
+        assertThat(risk.forwardDownsideRisk().status()).isEqualTo("NOT_EVALUABLE");
+        assertThat(risk.forwardDownsideRisk().downsideFraction()).isNull();
+        assertThat(risk.thesisHealth().status()).isEqualTo("NOT_EVALUABLE");
+        assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.sizingEligible()).isFalse();
         assertThat(risk.softBudgetStatus()).isEqualTo("DATA_MISSING");
     }
@@ -370,6 +395,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(security.readiness().get("overallDataStatus").asText()).isEqualTo("STALE");
         assertThat(security.risk().status()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
         assertThat(security.risk().riskMark().status()).isEqualTo(InvestmentDataCalculator.DataStatus.STALE);
+        assertThat(security.risk().approvedTriggerRisk().status()).isEqualTo("STALE");
+        assertThat(security.risk().approvedTriggerRisk().breachFraction()).isNull();
         assertThat(security.risk().plannedLossContribution()).isNull();
         assertThat(security.risk().sizingEligible()).isFalse();
     }
@@ -407,6 +434,61 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void evidenceReferencesRecordedInputsWithoutApplyingFutureMandate() throws Exception {
+        var service = service("OK", "OK", Instant.now(), Instant.now(), bd("0.10"));
+        var future = LocalDate.now(ZoneOffset.UTC).plusDays(30);
+        service.upsertPositionMandate(USER_ID, "AAPL",
+                new InvestmentContextService.PositionMandateInput("STRATEGIC", future));
+
+        var security = service.context(USER_ID).securities().getFirst();
+        var evidence = security.risk().thesisEvidence();
+        assertThat(evidence.mandate().status()).isEqualTo("EFFECTIVE_DATE_POLICY_UNSPECIFIED");
+        assertThat(evidence.mandate().recordedInvestmentHorizon()).isEqualTo("STRATEGIC");
+        assertThat(evidence.mandate().recordedRiskPriceRole()).isEqualTo("REVIEW_TRIGGER");
+        assertThat(evidence.mandate().effectiveDate()).isEqualTo(future);
+        assertThat(evidence.mandate().source()).isEqualTo("USER_CONFIRMED");
+        assertThat(evidence.thesis().status()).isEqualTo(security.thesis().invalidationStatus());
+        assertThat(evidence.thesis().revisionId()).isEqualTo(security.thesis().revisionId()).isNotNull();
+        assertThat(evidence.thesis().updatedAt()).isEqualTo(security.thesis().updatedAt());
+        assertThat(evidence.fundamentals().status()).isEqualTo("DATA_MISSING");
+        assertThat(evidence.revision().status()).isEqualTo("DATA_MISSING");
+        assertThat(evidence.revision().consensusAsOf()).isNotNull();
+        assertThat(security.risk().thesisHealth().status()).isEqualTo("NOT_EVALUABLE");
+    }
+
+    @Test
+    void evidencePreservesSnapshotStatusesSourcesAndDistinctTimestamps() throws Exception {
+        var observed = Instant.now().minusSeconds(60);
+        var consensusTime = Instant.now().minusSeconds(120);
+        var service = service("OK", "OK", Instant.now(), consensusTime, bd("0.10"));
+        var inputs = Map.of(
+                "fundamentals", Map.of("status", "OK", "source", "SEC", "asOf", observed.toString()),
+                "revision", Map.of("status", "INSUFFICIENT_HISTORY"),
+                "consensus", Map.of("status", "OK", "source", "TEST_CONSENSUS", "asOf", consensusTime.toString()));
+        jdbc.update("INSERT INTO investment_security_snapshots (id, user_id, ticker, as_of, payload, created_at) "
+                + "SELECT ?, user_id, ticker, ?, payload || CAST(? AS jsonb), ? "
+                + "FROM investment_security_snapshots WHERE user_id=? AND ticker='AAPL'", UUID.randomUUID(),
+                OffsetDateTime.ofInstant(NOW.plusSeconds(10), ZoneOffset.UTC), mapper.writeValueAsString(inputs),
+                OffsetDateTime.now(ZoneOffset.UTC), USER_ID);
+
+        var evidence = service.context(USER_ID).securities().getFirst().risk().thesisEvidence();
+        assertThat(evidence.fundamentals().status()).isEqualTo("OK");
+        assertThat(evidence.fundamentals().source()).isEqualTo("SEC");
+        assertThat(evidence.fundamentals().asOf()).isEqualTo(observed);
+        assertThat(evidence.revision().status()).isEqualTo("INSUFFICIENT_HISTORY");
+        assertThat(evidence.revision().consensusSource()).isEqualTo("TEST_CONSENSUS");
+        assertThat(evidence.revision().consensusAsOf()).isEqualTo(consensusTime);
+    }
+
+    @Test
+    void missingMandateIsExplicitInEvidence() throws Exception {
+        var risk = context("OK", "OK").securities().getFirst().risk();
+        assertThat(risk.thesisEvidence().mandate().status()).isEqualTo("NOT_CONFIGURED");
+        assertThat(risk.thesisEvidence().mandate().recordedInvestmentHorizon()).isNull();
+        assertThat(risk.thesisEvidence().mandate().effectiveDate()).isNull();
+    }
+
+    @Test
     void confirmedThesisUsesPortfolioFractionTimesPriceDownside() throws Exception {
         var risk = context("OK", "OK").securities().getFirst().risk();
 
@@ -417,6 +499,12 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_APPLICABLE);
         assertThat(risk.sizingEligible()).isTrue();
         assertThat(risk.softBudgetStatus()).isEqualTo("WITHIN_SOFT_BUDGET");
+        assertThat(risk.approvedTriggerRisk().status()).isEqualTo("ABOVE_TRIGGER");
+        assertThat(risk.approvedTriggerRisk().breachFraction()).isNull();
+        assertThat(risk.approvedTriggerRisk().asOf()).isNotNull();
+        assertThat(risk.forwardDownsideRisk().status()).isEqualTo("NOT_EVALUABLE");
+        assertThat(risk.forwardDownsideRisk().downsideFraction()).isNull();
+        assertThat(risk.thesisHealth().status()).isEqualTo("NOT_EVALUABLE");
     }
 
     @Test
@@ -473,6 +561,11 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.plannedLossContribution()).isNull();
         assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.UNVERIFIED);
+        assertThat(risk.approvedTriggerRisk().status()).isEqualTo("UNVERIFIED");
+        assertThat(risk.approvedTriggerRisk().reason()).isEqualTo("TRIGGER_NOT_CONFIRMED");
+        assertThat(risk.approvedTriggerRisk().breachFraction()).isNull();
+        assertThat(risk.forwardDownsideRisk().status()).isEqualTo("NOT_EVALUABLE");
+        assertThat(risk.thesisHealth().status()).isEqualTo("NOT_EVALUABLE");
         assertThat(risk.thesisFailureStress()).isNull();
         assertThat(risk.sizingEligible()).isFalse();
         assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("NO");
@@ -487,6 +580,10 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         var risk = context("OK", "OK").securities().getFirst().risk();
 
         assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_CONFIGURED);
+        assertThat(risk.approvedTriggerRisk().status()).isEqualTo("NOT_CONFIGURED");
+        assertThat(risk.approvedTriggerRisk().reason()).isEqualTo("APPROVED_TRIGGER_MISSING");
+        assertThat(risk.approvedTriggerRisk().triggerPrice()).isNull();
+        assertThat(risk.approvedTriggerRisk().breachFraction()).isNull();
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.eligibilityReasons())
                 .containsExactly("INVALIDATION_NOT_CONFIRMED", "INVALIDATION_PRICE_NOT_CONFIGURED", "RISK_BUDGET_UNEVALUATED");
@@ -503,6 +600,27 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.plannedLossContribution()).isNull();
         assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_PRICE_BREACHED", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.sizingEligible()).isFalse();
+        assertThat(risk.approvedTriggerRisk().status()).isEqualTo("TRIGGER_BREACHED");
+        assertThat(risk.approvedTriggerRisk().breachFraction()).isEqualByComparingTo("0.16666667");
+        assertThat(risk.forwardDownsideRisk().status()).isEqualTo("NOT_EVALUABLE");
+        assertThat(risk.thesisHealth().status()).isEqualTo("NOT_EVALUABLE");
+        assertThat(risk.softBudgetStatus()).isEqualTo("DATA_MISSING");
+    }
+
+    @Test
+    void triggerEqualityMatchesMonitoringWithoutInventingForwardLoss() throws Exception {
+        jdbc.update("UPDATE investment_thesis_states SET price_risk_trigger_price=100 "
+                + "WHERE user_id=? AND ticker='AAPL'", USER_ID);
+        var risk = context("OK", "OK").securities().getFirst().risk();
+        assertThat(risk.approvedTriggerRisk().status()).isEqualTo("TRIGGER_BREACHED");
+        assertThat(risk.approvedTriggerRisk().breachFraction()).isEqualByComparingTo("0");
+        assertThat(risk.invalidationDownside()).isNull();
+        assertThat(risk.plannedLossContribution()).isNull();
+        assertThat(risk.softBudgetStatus()).isEqualTo("DATA_MISSING");
+        assertThat(risk.sizingEligible()).isFalse();
+        assertThat(risk.eligibilityReasons()).contains("INVALIDATION_PRICE_BREACHED");
+        assertThat(risk.forwardDownsideRisk().downsideFraction()).isNull();
+        assertThat(risk.thesisHealth().status()).isEqualTo("NOT_EVALUABLE");
     }
 
     @Test

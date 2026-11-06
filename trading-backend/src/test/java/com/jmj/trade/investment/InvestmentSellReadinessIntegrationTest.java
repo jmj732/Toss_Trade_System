@@ -215,6 +215,30 @@ class InvestmentSellReadinessIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void acceptsFreshObservationForAnOlderActiveRiskEvent() throws Exception {
+        var original = NOW.minusSeconds(35 * 60);
+        var decision = seedDecision("REDUCE", bd("22"), connectionId, NOW.minusSeconds(60), original,
+                "INTRADAY_BREACH");
+        var latestEvidence = riskEvidence(decision.eventId(), decision.revisionId(), revisionSequence,
+                OBSERVED_AT, "INTRADAY_BREACH", EvidenceVariant.VALID);
+        jdbc.update("""
+                UPDATE monitoring_current_states
+                   SET observed_at = ?, evidence = jsonb_set(evidence, '{latestObservation}',
+                       CAST(? AS jsonb)->'latestObservation')
+                 WHERE user_id = ? AND scope = 'THESIS_REVIEW' AND subject_key = ?
+                """, offset(OBSERVED_AT), latestEvidence, userId, TICKER);
+        stubAccountPosition("42", "42", OBSERVED_AT, false, false);
+
+        var result = service.evaluate(userId, connectionId, decision.decisionId(), decision.eventId());
+
+        assertThat(result.prepareStatus()).isEqualTo("READY");
+        assertThat(result.quantity()).isEqualByComparingTo("20");
+        assertThat(result.blockers()).doesNotContain("RISK_EVENT_STALE_OR_INVALID");
+        assertThat(jdbc.queryForObject("SELECT observed_at FROM monitoring_state_history WHERE id = ?",
+                OffsetDateTime.class, decision.eventId()).toInstant()).isEqualTo(original);
+    }
+
+    @Test
     void blocksStaleRiskEvent() throws Exception {
         var stale = seedDecision("REDUCE", bd("22"), connectionId, NOW.minusSeconds(60),
                 NOW.minusSeconds(16 * 60), "INTRADAY_BREACH");

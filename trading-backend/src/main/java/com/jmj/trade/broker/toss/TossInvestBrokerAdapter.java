@@ -24,6 +24,7 @@ import com.jmj.trade.broker.MarketDataAdapter;
 import com.jmj.trade.broker.Position;
 import com.jmj.trade.broker.Quote;
 import com.jmj.trade.broker.SellableQuantitySnapshot;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -38,6 +39,7 @@ import static com.jmj.trade.broker.BrokerOrderPort.ack;
 
 final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter, BrokerOrderPort {
 
+    private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(TossInvestBrokerAdapter.class);
     private static final Duration ACCOUNT_LIST_CACHE_TTL = Duration.ofMinutes(5);
 
     private final TossApiClient apiClient;
@@ -295,29 +297,40 @@ final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter,
         String cursor = null;
         var seenCursors = new java.util.HashSet<String>();
         BrokerCallMetadata metadata = null;
-        do {
-            var response = apiClient.getOrders(account, group, cursor);
-            if (response == null) {
-                throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
-                        "Toss order list response was missing");
-            }
-            metadata = response.metadata();
-            var page = response.value();
-            if (page == null || page.orders() == null || page.hasNext() == null) {
-                throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
-                        "Toss order list response was invalid");
-            }
-            all.addAll(page.orders().stream().map(mapper::order).toList());
-            if (page.hasNext() && (page.nextCursor() == null || page.nextCursor().isBlank())) {
-                throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
-                        "Toss order list cursor was missing");
-            }
-            cursor = page.hasNext() ? page.nextCursor() : null;
-            if (cursor != null && !seenCursors.add(cursor)) {
-                throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
-                        "Toss order list cursor repeated");
-            }
-        } while (cursor != null);
+        int pageNumber = 0;
+        try {
+            do {
+                pageNumber++;
+                var response = apiClient.getOrders(account, group, cursor);
+                if (response == null) {
+                    throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
+                            "Toss order list response was missing");
+                }
+                metadata = response.metadata();
+                var page = response.value();
+                if (page == null || page.orders() == null || page.hasNext() == null) {
+                    throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
+                            "Toss order list response was invalid");
+                }
+                all.addAll(page.orders().stream().map(mapper::order).toList());
+                if (page.hasNext() && (page.nextCursor() == null || page.nextCursor().isBlank())) {
+                    throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
+                            "Toss order list cursor was missing");
+                }
+                cursor = page.hasNext() ? page.nextCursor() : null;
+                if (cursor != null && !seenCursors.add(cursor)) {
+                    throw new BrokerException(BrokerErrorCategory.CONTRACT, 200, null, null, null, false,
+                            "Toss order list cursor repeated");
+                }
+            } while (cursor != null);
+        } catch (BrokerException exception) {
+            var log = LOG.atWarn().addKeyValue("operation", "toss_orders")
+                    .addKeyValue("group", group.name()).addKeyValue("page", pageNumber)
+                    .addKeyValue("error_category", exception.category().name());
+            exception.httpStatus().ifPresent(status -> log.addKeyValue("http_status", status));
+            log.log("Toss order page failed");
+            throw exception;
+        }
         return new BrokerResponse<>(List.copyOf(all), Objects.requireNonNull(metadata, "metadata"));
     }
 

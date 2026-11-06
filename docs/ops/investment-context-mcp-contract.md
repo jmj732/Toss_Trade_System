@@ -79,7 +79,7 @@ Names supplied by an external agent are not automatically backend enums. The sou
 | Requested or exposed name | Actual backend type |
 | --- | --- |
 | `InvalidationStatus` | **No Java enum exists.** It is a DTO/DB string checked against legacy `NOT_REVIEWED`, `SUSPECTED`, `CONFIRMED`, `CLEARED` and proposal `AI_PROPOSED`, `UNVERIFIED`, `INVALIDATION_UNDEFINED`. V56 broadens the constraint without rewriting existing states. [`ThesisInput`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextService.java#L3590), [`validateThesis`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextService.java#L3213), [V52 constraint](../../trading-backend/src/main/resources/db/migration/V52__create_investment_analysis_data.sql#L100). |
-| `SizingEligible` | **No enum exists.** `RiskContributionView.sizingEligible` is a boolean. The backend sets it only when thesis invalidation is `CONFIRMED`, portfolio is current, inputs are trusted, and weight/downside/loss are present. `invalidationDownside` and `plannedLossContribution` (and the derived `thesisFailureStress`/`top2CorrelatedStress`) are computed only from an approved (`CONFIRMED`) invalidation trigger: a trigger carried by a non-confirmed thesis (`AI_PROPOSED`, `UNVERIFIED`, `INVALIDATION_UNDEFINED`) yields `status=UNVERIFIED` with `null` values and is never fed into any risk number. No trigger at all stays `NOT_CONFIGURED`. A `CONFIRMED` trigger already breached by the trusted price (trigger above current price) keeps `null` values with `status=DATA_MISSING`; no value is invented, and the `INVALIDATION_PRICE_BREACHED` reason is the distinguishing signal. [`RiskContributionView`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextService.java#L3620), [`riskContributions`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextService.java#L3057). |
+| `SizingEligible` | **No enum exists.** `RiskContributionView.sizingEligible` is a boolean. The backend sets it only when thesis invalidation is `CONFIRMED`, portfolio is current, inputs are trusted, and weight/downside/loss are present. `invalidationDownside` and `plannedLossContribution` (and the derived `thesisFailureStress`/`top2CorrelatedStress`) are computed only from an approved (`CONFIRMED`) invalidation trigger: a trigger carried by a non-confirmed thesis (`AI_PROPOSED`, `UNVERIFIED`, `INVALIDATION_UNDEFINED`) yields `status=UNVERIFIED` with `null` values and is never fed into any risk number. No trigger at all stays `NOT_CONFIGURED`. A trusted price at or below a `CONFIRMED` trigger keeps `null` values with `status=DATA_MISSING`; no value is invented, and the `INVALIDATION_PRICE_BREACHED` reason is the distinguishing signal. [`RiskContributionView`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextService.java#L3620), [`riskContributions`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextService.java#L3057). |
 | `TrendStage` | **No type or enum by that name exists.** The context field is a string carrying `TacticalOverlayCalculator.Stage`: `BASE`, `EARLY_UPTREND`, `CONFIRMED_UPTREND`, `EXTENDED`, `DISTRIBUTION`, `BREAKDOWN`. [`SecurityTacticalOverlayView`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentContextService.java#L3561), [`Stage`](../../trading-backend/src/main/java/com/jmj/trade/investment/tactical/TacticalOverlayCalculator.java#L547). |
 | `OverlayEffect` | Actual enum: `BETTER_ENTRY`, `AVOIDED_CHASE`, `AVOIDED_FAILED_BREAKOUT`, `PREMATURE_FILTER`, `NO_EFFECT`. `EntrySetup` is a bounded string, not an enum. [`OverlayEffect` and input validation](../../trading-backend/src/main/java/com/jmj/trade/investment/tactical/TacticalOverlayService.java#L337), [enum declaration](../../trading-backend/src/main/java/com/jmj/trade/investment/tactical/TacticalOverlayService.java#L1357). |
 | `DataStatus` | Actual data enum: `OK`, `PARTIAL`, `DATA_MISSING`, `SOURCE_CONFLICT`, `STALE`, `INSUFFICIENT_HISTORY`, `UNVERIFIED`, `NOT_APPLICABLE`, `NOT_CONFIGURED`. [`DataStatus`](../../trading-backend/src/main/java/com/jmj/trade/investment/InvestmentDataCalculator.java#L196). |
@@ -87,6 +87,33 @@ Names supplied by an external agent are not automatically backend enums. The sou
 | Anchors/events/method | `AnchorType`: `EARNINGS_GAP`, `BREAKOUT_DAY`, `CATALYST_DAY`, `MAJOR_LOW`, `POSITION_ENTRY`; `EventType`: `EMA21_RECLAIM`, `EMA50_RECLAIM`, `BREAKOUT`, `FAILED_BREAKOUT`, `HIGH_RVOL_BREAKOUT`, `TREND_BREAKDOWN`; `VwapMethod`: `DAILY_ROLLING_20`. [`TacticalOverlayCalculator` enums](../../trading-backend/src/main/java/com/jmj/trade/investment/tactical/TacticalOverlayCalculator.java#L556). |
 
 ### Portfolio loss completeness and sizing gate
+
+Each position risk also exposes three additive, independent assessments. `approvedTriggerRisk`
+contains `status`, `reason`, `source`, `asOf`, `triggerPrice`, and `breachFraction`. With a
+confirmed trigger and a trusted mark, a mark at or below the trigger is `TRIGGER_BREACHED`;
+the fraction is `(triggerPrice - mark) / triggerPrice` (zero at equality), not a forecast of
+future loss. Unavailable, stale, conflicting, or unapproved evidence retains its own status.
+Its `source` and `asOf` describe the price risk mark, not the trigger's approval provenance;
+refer to the existing thesis and its revision/approval evidence for the trigger's provenance.
+`forwardDownsideRisk` contains `status`, `reason`, `source`, `asOf`, and `downsideFraction`;
+without a supported company-specific bear case it is `NOT_EVALUABLE`, with no invented price
+or loss. `thesisHealth` contains `status`, `reason`, `source`, and `asOf`; price alone does not
+establish thesis validity. These objects can be null for legacy constructors. They do not
+replace existing loss-budget inputs or authorize any action or order.
+
+`thesisEvidence` exposes provenance for review, not a computed investment judgment:
+`mandate` contains the recorded horizon and risk-price role, source, effective date and update
+time; `thesis.status` is the stored invalidation rule approval state, not thesis health (`CONFIRMED` means the rule is approved), and the object contains revision ID and number, approval actor type and update time;
+`fundamentals` contains status, source and as-of; and `revision` contains status and consensus
+source/as-of. Missing evidence remains null or explicitly marked unavailable. A stored mandate
+is reported with `EFFECTIVE_DATE_POLICY_UNSPECIFIED`: its recorded values are not a finding
+that it is effective, because the effective-date timezone contract is not specified. A missing
+mandate is `NOT_CONFIGURED`. This evidence does not automatically determine `thesisHealth`.
+
+The portfolio's PositionMandate remains the authoritative horizon: a tactical breach calls
+for an EXIT/REDUCE evaluation, while a strategic breach calls for thesis revalidation and
+can result in HOLD. Hard Risk remains independent of horizon. Account freshness and trusted
+mark requirements remain in force, and missing inputs are not treated as zero exposure.
 
 `risk.status` and `portfolio.riskNumbersAvailable` are narrower than portfolio budget evaluation. An individual risk can be `OK`, and numeric portfolio inputs can be available, while the total held-position loss remains incomplete. `portfolio.riskNumbersAvailable` does not certify that every held position has a usable loss contribution. For each held position, the backend computes downside and planned loss only from a `CONFIRMED` invalidation trigger and trusted inputs. A non-confirmed trigger yields `UNVERIFIED` with null loss; a missing or breached trigger does not produce an estimated loss.
 

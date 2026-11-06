@@ -514,7 +514,8 @@ public final class InvestmentContextService {
         var positions = inputs.positions();
         var analysis = inputs.analysis();
         var theses = inputs.theses();
-        var risks = riskContributions(userId, symbols, positions, inputs.weights(), portfolio, theses, analysis);
+        var mandates = positionMandates(userId);
+        var risks = riskContributions(userId, symbols, positions, inputs.weights(), portfolio, theses, analysis, mandates);
         var securities = symbols.stream().sorted().map(symbol -> {
             var snapshot = analysis.get(symbol);
             var risk = risks.get(symbol);
@@ -557,7 +558,7 @@ public final class InvestmentContextService {
                 tacticalReadModel.portfolio(),
                 tacticalReadModel.decisions(),
                 reviewService == null ? List.of() : reviewService.recent(userId, InvestmentReviewService.CONTEXT_LIMIT),
-                positionMandates(userId));
+                mandates);
     }
 
     /** Read-only assembly of every input riskContributions needs; shared by context() and hypotheticalRisk(). */
@@ -4278,19 +4279,24 @@ public final class InvestmentContextService {
     }
 
     private Map<String, RiskContributionView> riskContributions(
-            UUID userId,
-            Set<String> symbols,
-            Map<String, PositionView> positions,
-            Map<String, BigDecimal> weights,
-            PortfolioView portfolio,
-            Map<String, ThesisView> theses,
-            Map<String, JsonNode> analysis
-    ) {
+            UUID userId, Set<String> symbols, Map<String, PositionView> positions,
+            Map<String, BigDecimal> weights, PortfolioView portfolio, Map<String, ThesisView> theses,
+            Map<String, JsonNode> analysis) {
+        return riskContributions(userId, symbols, positions, weights, portfolio, theses, analysis,
+                positionMandates(userId));
+    }
+
+    private Map<String, RiskContributionView> riskContributions(
+            UUID userId, Set<String> symbols, Map<String, PositionView> positions,
+            Map<String, BigDecimal> weights, PortfolioView portfolio, Map<String, ThesisView> theses,
+            Map<String, JsonNode> analysis, List<PositionMandateView> positionMandates) {
         var portfolioDataStatus = dataStatus(portfolio.status());
         var portfolioNumbersAvailable = portfolio.riskNumbersAvailable();
         var portfolioCurrent = portfolioDataStatus == InvestmentDataCalculator.DataStatus.OK;
         var exposures = new ArrayList<RiskExposure>();
         var risks = new LinkedHashMap<String, RiskContributionView>();
+        var mandates = new LinkedHashMap<String, PositionMandateView>();
+        positionMandates.forEach(mandate -> mandates.put(mandate.ticker(), mandate));
         for (var symbol : symbols) {
             var thesis = theses.get(symbol);
             var position = positions.get(symbol);
@@ -4331,7 +4337,12 @@ public final class InvestmentContextService {
                     InvestmentDataCalculator.DataStatus.DATA_MISSING, eligible,
                     riskBudgetStatus(null, null, null), reasons,
                     new RiskMarkView(mark.value(), mark.asOf(), mark.source(), mark.basis(),
-                            mark.asOfBasis(), mark.status(), mark.reason())));
+                            mark.asOfBasis(), mark.status(), mark.reason()),
+                    approvedTriggerRisk(confirmed, triggerPrice, mark.value(), mark.asOf(), mark.source(),
+                            mark.status(), mark.reason(), trustedMark),
+                    new ForwardDownsideRiskView("NOT_EVALUABLE", "BEAR_CASE_EVIDENCE_UNAVAILABLE", null, null, null),
+                    new ThesisHealthView("NOT_EVALUABLE", "NO_CURRENT_THESIS_ASSESSMENT", null, null),
+                    thesisEvidence(mandates.get(symbol), thesis, analysis.get(symbol))));
         }
         var held = exposures.stream().filter(item -> positions.containsKey(item.ticker())).toList();
         var thesisFailureStatus = held.isEmpty() ? InvestmentDataCalculator.DataStatus.DATA_MISSING
@@ -4356,9 +4367,56 @@ public final class InvestmentContextService {
                     risk.portfolioWeight(), risk.invalidationDownside(), risk.plannedLossContribution(),
                     risk.status(), thesisFailureStress, thesisFailureStatus, top2.stress(), top2.assets(),
                     top2.correlation(), top2.status(), finalEligible, budgetStatus, List.copyOf(updatedReasons),
-                    risk.riskMark());
+                    risk.riskMark(), risk.approvedTriggerRisk(), risk.forwardDownsideRisk(), risk.thesisHealth(),
+                    risk.thesisEvidence());
         });
         return Map.copyOf(risks);
+    }
+
+    private static ThesisEvidenceView thesisEvidence(PositionMandateView mandate, ThesisView thesis,
+                                                      JsonNode snapshot) {
+        // The stored date has no timezone contract or history; expose it as a recorded mandate,
+        // without asserting that it applies at the instant this context was read.
+        var mandateEvidence = new MandateEvidenceView(mandate == null ? "NOT_CONFIGURED"
+                : "EFFECTIVE_DATE_POLICY_UNSPECIFIED",
+                mandate == null ? null : mandate.investmentHorizon(), mandate == null ? null : mandate.riskPriceRole(),
+                mandate == null ? null : mandate.source(), mandate == null ? null : mandate.effectiveDate(),
+                mandate == null ? null : mandate.updatedAt());
+        var thesisEvidence = new StoredThesisEvidenceView(thesis == null ? "NOT_CONFIGURED" : thesis.invalidationStatus(),
+                thesis == null ? null : thesis.revisionId(), thesis == null ? null : thesis.revision(),
+                thesis == null ? null : thesis.approvalActorType(), thesis == null ? null : thesis.updatedAt());
+        var fundamentals = node(snapshot, "fundamentals");
+        var revision = node(snapshot, "revision");
+        var consensus = node(snapshot, "consensus");
+        return new ThesisEvidenceView(mandateEvidence, thesisEvidence,
+                new FundamentalEvidenceView(dataStatus(text(fundamentals.get("status"))).name(),
+                        text(fundamentals.get("source")), instant(fundamentals.get("asOf"))),
+                new RevisionEvidenceView(dataStatus(text(revision.get("status"))).name(),
+                        text(consensus.get("source")), instant(consensus.get("asOf"))));
+    }
+
+    private static ApprovedTriggerRiskView approvedTriggerRisk(boolean confirmed, BigDecimal trigger,
+            BigDecimal price, Instant asOf, String source, InvestmentDataCalculator.DataStatus markStatus,
+            String markReason, boolean trustedMark) {
+        if (trigger == null || trigger.signum() < 0)
+            return new ApprovedTriggerRiskView("NOT_CONFIGURED", "APPROVED_TRIGGER_MISSING", source, asOf, trigger, null);
+        if (!confirmed)
+            return new ApprovedTriggerRiskView("UNVERIFIED", "TRIGGER_NOT_CONFIRMED", source, asOf, trigger, null);
+        if (!trustedMark) {
+            var status = markStatus == null || markStatus == InvestmentDataCalculator.DataStatus.OK
+                    ? "DATA_MISSING" : markStatus.name();
+            return new ApprovedTriggerRiskView(status, markReason == null ? "RISK_MARK_UNAVAILABLE" : markReason,
+                    source, asOf, trigger, null);
+        }
+        var comparison = price.compareTo(trigger);
+        if (comparison <= 0) {
+            var breach = trigger.subtract(price).divide(trigger, MathContext.DECIMAL128)
+                    .setScale(8, RoundingMode.HALF_UP);
+            return new ApprovedTriggerRiskView("TRIGGER_BREACHED", "PRICE_AT_OR_BELOW_APPROVED_TRIGGER", source, asOf,
+                    trigger, breach);
+        }
+        return new ApprovedTriggerRiskView("ABOVE_TRIGGER", null,
+                source, asOf, trigger, null);
     }
 
     /**
@@ -4376,7 +4434,7 @@ public final class InvestmentContextService {
         if (thesis == null) reasons.add("THESIS_MISSING");
         else if (!confirmed) reasons.add("INVALIDATION_NOT_CONFIRMED");
         if (triggerPrice == null) reasons.add("INVALIDATION_PRICE_NOT_CONFIGURED");
-        else if (confirmed && trustedMark && triggerPrice.compareTo(price) > 0)
+        else if (confirmed && trustedMark && triggerPrice.compareTo(price) >= 0)
             reasons.add("INVALIDATION_PRICE_BREACHED");
         if (portfolioDataStatus == InvestmentDataCalculator.DataStatus.STALE) reasons.add("PORTFOLIO_STALE");
         else if (portfolioDataStatus == InvestmentDataCalculator.DataStatus.PARTIAL) reasons.add("PORTFOLIO_PARTIAL");
@@ -5111,16 +5169,47 @@ public final class InvestmentContextService {
     public record RiskMarkView(BigDecimal value, Instant asOf, String source, String basis,
                                String asOfBasis, InvestmentDataCalculator.DataStatus status, String reason) {}
 
+    public record ApprovedTriggerRiskView(String status, String reason, String source, Instant asOf,
+                                          BigDecimal triggerPrice, BigDecimal breachFraction) {}
+
+    public record ForwardDownsideRiskView(String status, String reason, String source, Instant asOf,
+                                          BigDecimal downsideFraction) {}
+
+    public record ThesisHealthView(String status, String reason, String source, Instant asOf) {}
+
+    public record MandateEvidenceView(String status, String recordedInvestmentHorizon, String recordedRiskPriceRole,
+                                      String source, LocalDate effectiveDate, Instant updatedAt) {}
+    public record StoredThesisEvidenceView(String status, UUID revisionId, Long revision,
+                                           String approvalActorType, Instant updatedAt) {}
+    public record FundamentalEvidenceView(String status, String source, Instant asOf) {}
+    public record RevisionEvidenceView(String status, String consensusSource, Instant consensusAsOf) {}
+    public record ThesisEvidenceView(MandateEvidenceView mandate, StoredThesisEvidenceView thesis,
+                                     FundamentalEvidenceView fundamentals, RevisionEvidenceView revision) {}
+
     public record RiskContributionView(
             BigDecimal portfolioWeight, BigDecimal invalidationDownside, BigDecimal plannedLossContribution,
             InvestmentDataCalculator.DataStatus status, BigDecimal thesisFailureStress,
             InvestmentDataCalculator.DataStatus thesisFailureStressStatus, BigDecimal top2CorrelatedStress,
             String top2CorrelatedAssets, BigDecimal top2Correlation,
             InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
-            String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark
+            String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark,
+            ApprovedTriggerRiskView approvedTriggerRisk, ForwardDownsideRiskView forwardDownsideRisk,
+            ThesisHealthView thesisHealth, ThesisEvidenceView thesisEvidence
     ) {
         public RiskContributionView {
             eligibilityReasons = eligibilityReasons == null ? List.of() : List.copyOf(eligibilityReasons);
+        }
+
+        /** Backward-compatible signature with trusted risk mark. */
+        public RiskContributionView(BigDecimal portfolioWeight, BigDecimal invalidationDownside,
+                BigDecimal plannedLossContribution, InvestmentDataCalculator.DataStatus status,
+                BigDecimal thesisFailureStress, InvestmentDataCalculator.DataStatus thesisFailureStressStatus,
+                BigDecimal top2CorrelatedStress, String top2CorrelatedAssets, BigDecimal top2Correlation,
+                InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
+                String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark) {
+            this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
+                    thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, riskMark, null, null, null, null);
         }
 
         /** Backward-compatible signature without the additive eligibility reasons (defaults to empty). */
@@ -5133,7 +5222,7 @@ public final class InvestmentContextService {
                 String softBudgetStatus) {
             this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
                     thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
-                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of(), null);
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of(), null, null, null, null, null);
         }
 
         /** Backward-compatible signature with eligibility reasons but without separate trusted risk mark. */
@@ -5146,7 +5235,7 @@ public final class InvestmentContextService {
                 String softBudgetStatus, List<String> eligibilityReasons) {
             this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
                     thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
-                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, null);
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, null, null, null, null, null);
         }
     }
 

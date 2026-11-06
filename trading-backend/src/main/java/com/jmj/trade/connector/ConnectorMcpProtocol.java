@@ -412,9 +412,13 @@ public final class ConnectorMcpProtocol {
             if (exception instanceof BrokerException brokerException) {
                 var response = toolError(request, "TOSS_API_ERROR", "Toss API request failed",
                         brokerException.isRetriable(), false, brokerException.category().name());
+                var diagnostics = (ObjectNode) response.path("result").path("structuredContent");
+                brokerException.httpStatus().ifPresent(status -> diagnostics.put("httpStatus", status));
+                brokerException.brokerErrorCode()
+                        .filter(code -> code.matches("[A-Za-z0-9_.-]{1,64}"))
+                        .ifPresent(code -> diagnostics.put("providerErrorCode", code));
                 brokerException.retryAfter().ifPresent(retryAfter ->
-                        ((ObjectNode) response.path("result").path("structuredContent"))
-                                .put("retryAfterSeconds", retryAfter.toSeconds() + (retryAfter.getNano() == 0 ? 0 : 1)));
+                        diagnostics.put("retryAfterSeconds", retryAfter.toSeconds() + (retryAfter.getNano() == 0 ? 0 : 1)));
                 return response;
             }
             if (exception instanceof IllegalArgumentException) {
@@ -1718,10 +1722,75 @@ public final class ConnectorMcpProtocol {
         properties.set("softBudgetStatus", stringSchema());
         properties.set("eligibilityReasons", arrayOf(stringSchema()));
         properties.set("riskMark", nullableSchema(riskMarkViewSchema()));
+        properties.set("approvedTriggerRisk", nullableSchema(approvedTriggerRiskSchema()));
+        properties.set("forwardDownsideRisk", nullableSchema(forwardDownsideRiskSchema()));
+        properties.set("thesisHealth", nullableSchema(thesisHealthSchema()));
+        properties.set("thesisEvidence", nullableSchema(thesisEvidenceSchema()));
         return closedObject(properties, "portfolioWeight", "invalidationDownside", "plannedLossContribution",
                 "status", "thesisFailureStress", "thesisFailureStressStatus", "top2CorrelatedStress",
                 "top2CorrelatedAssets", "top2Correlation", "top2CorrelatedStatus", "sizingEligible",
-                "softBudgetStatus", "eligibilityReasons", "riskMark");
+                "softBudgetStatus", "eligibilityReasons", "riskMark", "approvedTriggerRisk",
+                "forwardDownsideRisk", "thesisHealth", "thesisEvidence");
+    }
+
+    private ObjectNode thesisEvidenceSchema() {
+        var mandate = objectMapper.createObjectNode();
+        mandate.set("status", stringSchema());
+        mandate.set("recordedInvestmentHorizon", nullableStringSchema());
+        mandate.set("recordedRiskPriceRole", nullableStringSchema());
+        mandate.set("source", nullableStringSchema());
+        mandate.set("effectiveDate", nullableDateSchema());
+        mandate.set("updatedAt", nullableDateTimeSchema());
+        var thesis = objectMapper.createObjectNode();
+        thesis.set("status", stringSchema());
+        thesis.set("revisionId", nullableUuidSchema());
+        thesis.set("revision", nullableNumberSchema());
+        thesis.set("approvalActorType", nullableStringSchema());
+        thesis.set("updatedAt", nullableDateTimeSchema());
+        var fundamentals = objectMapper.createObjectNode();
+        fundamentals.set("status", stringSchema());
+        fundamentals.set("source", nullableStringSchema());
+        fundamentals.set("asOf", nullableDateTimeSchema());
+        var revision = objectMapper.createObjectNode();
+        revision.set("status", stringSchema());
+        revision.set("consensusSource", nullableStringSchema());
+        revision.set("consensusAsOf", nullableDateTimeSchema());
+        var properties = objectMapper.createObjectNode();
+        properties.set("mandate", closedObject(mandate, "status", "recordedInvestmentHorizon", "recordedRiskPriceRole", "source", "effectiveDate", "updatedAt"));
+        properties.set("thesis", closedObject(thesis, "status", "revisionId", "revision", "approvalActorType", "updatedAt"));
+        properties.set("fundamentals", closedObject(fundamentals, "status", "source", "asOf"));
+        properties.set("revision", closedObject(revision, "status", "consensusSource", "consensusAsOf"));
+        return closedObject(properties, "mandate", "thesis", "fundamentals", "revision");
+    }
+
+    private ObjectNode approvedTriggerRiskSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("reason", nullableStringSchema());
+        properties.set("source", nullableStringSchema());
+        properties.set("asOf", nullableDateTimeSchema());
+        properties.set("triggerPrice", nullableNumberSchema());
+        properties.set("breachFraction", nullableNumberSchema());
+        return closedObject(properties, "status", "reason", "source", "asOf", "triggerPrice", "breachFraction");
+    }
+
+    private ObjectNode forwardDownsideRiskSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("reason", stringSchema());
+        properties.set("source", nullableStringSchema());
+        properties.set("asOf", nullableDateTimeSchema());
+        properties.set("downsideFraction", nullableNumberSchema());
+        return closedObject(properties, "status", "reason", "source", "asOf", "downsideFraction");
+    }
+
+    private ObjectNode thesisHealthSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", stringSchema());
+        properties.set("reason", stringSchema());
+        properties.set("source", nullableStringSchema());
+        properties.set("asOf", nullableDateTimeSchema());
+        return closedObject(properties, "status", "reason", "source", "asOf");
     }
 
     private ObjectNode riskMarkViewSchema() {
@@ -1924,6 +1993,10 @@ public final class ConnectorMcpProtocol {
         errorProperties.set("reauthorizationRequired", objectMapper.createObjectNode().put("type", "boolean"));
         errorProperties.set("errorCategory", enumSchema(java.util.Arrays.stream(
                 com.jmj.trade.broker.BrokerErrorCategory.values()).map(Enum::name).toArray(String[]::new)));
+        errorProperties.set("httpStatus", objectMapper.createObjectNode().put("type", "integer")
+                .put("minimum", 100).put("maximum", 599));
+        errorProperties.set("providerErrorCode", boundedStringSchema(64));
+        errorProperties.set("retryAfterSeconds", objectMapper.createObjectNode().put("type", "integer").put("minimum", 0));
         var errors = objectMapper.createObjectNode().put("type", "object");
         errors.set("properties", errorProperties);
         errors.putArray("required").add("ok").add("errorCode").add("retryable").add("reauthorizationRequired");
@@ -2062,7 +2135,7 @@ public final class ConnectorMcpProtocol {
 
         var contextProperties = objectMapper.createObjectNode();
         contextProperties.set("portfolio", nullableObjectSchema());
-        contextProperties.set("securities", nullableArraySchema());
+        contextProperties.set("securities", investmentSecuritiesSchema());
         contextProperties.set("watchlist", nullableArraySchema());
         contextProperties.set("riskPolicy", nullableObjectSchema());
         contextProperties.set("decisionLedger", nullableArraySchema());
@@ -2103,6 +2176,17 @@ public final class ConnectorMcpProtocol {
         anyOf.add(objectMapper.createObjectNode().put("type", "object").put("additionalProperties", true));
         anyOf.add(objectMapper.createObjectNode().put("type", "null"));
         return schema;
+    }
+
+    private ObjectNode investmentSecuritiesSchema() {
+        var security = objectMapper.createObjectNode().put("type", "object");
+        var properties = security.putObject("properties");
+        var risk = riskContributionSchema();
+        risk.put("additionalProperties", true);
+        risk.remove("required");
+        properties.set("risk", nullableSchema(risk));
+        security.put("additionalProperties", true);
+        return nullableSchema(arrayOf(security));
     }
 
     private ObjectNode nullableArraySchema() {
