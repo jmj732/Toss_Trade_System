@@ -1170,6 +1170,21 @@ class ConnectorMcpProtocolTest {
     }
 
     @Test
+    void exposesSafeProviderDiagnosticsForOrderFailures() throws Exception {
+        when(service.orders(USER, CONNECTION, "CLOSED")).thenThrow(new BrokerException(
+                BrokerErrorCategory.RATE_LIMITED, 429, "RATE_LIMIT", "private-request-id",
+                java.time.Duration.ofMillis(1500), true, "provider error"));
+
+        var response = protocol.handle(toolCall("broker-diagnostics", "get_orders", "{\"group\":\"CLOSED\"}"),
+                USER, CONNECTION);
+        var error = response.path("result").path("structuredContent");
+        assertThat(error.path("httpStatus").asInt()).isEqualTo(429);
+        assertThat(error.path("providerErrorCode").asText()).isEqualTo("RATE_LIMIT");
+        assertThat(error.path("retryAfterSeconds").asInt()).isEqualTo(2);
+        assertThat(response.toString()).doesNotContain("private-request-id");
+    }
+
+    @Test
     void returnsJsonRpcErrorForUnknownMethodAndIgnoresNotifications() throws Exception {
         var unknown = protocol.handle(request("6", "unknown/method", "{}"), USER, CONNECTION);
         var notification = protocol.handle(request(null, "notifications/initialized", "{}"), USER, CONNECTION);

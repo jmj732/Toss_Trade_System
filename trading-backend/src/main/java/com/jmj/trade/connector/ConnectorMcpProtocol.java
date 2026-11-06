@@ -412,9 +412,13 @@ public final class ConnectorMcpProtocol {
             if (exception instanceof BrokerException brokerException) {
                 var response = toolError(request, "TOSS_API_ERROR", "Toss API request failed",
                         brokerException.isRetriable(), false, brokerException.category().name());
+                var diagnostics = (ObjectNode) response.path("result").path("structuredContent");
+                brokerException.httpStatus().ifPresent(status -> diagnostics.put("httpStatus", status));
+                brokerException.brokerErrorCode()
+                        .filter(code -> code.matches("[A-Za-z0-9_.-]{1,64}"))
+                        .ifPresent(code -> diagnostics.put("providerErrorCode", code));
                 brokerException.retryAfter().ifPresent(retryAfter ->
-                        ((ObjectNode) response.path("result").path("structuredContent"))
-                                .put("retryAfterSeconds", retryAfter.toSeconds() + (retryAfter.getNano() == 0 ? 0 : 1)));
+                        diagnostics.put("retryAfterSeconds", retryAfter.toSeconds() + (retryAfter.getNano() == 0 ? 0 : 1)));
                 return response;
             }
             if (exception instanceof IllegalArgumentException) {
@@ -1924,6 +1928,10 @@ public final class ConnectorMcpProtocol {
         errorProperties.set("reauthorizationRequired", objectMapper.createObjectNode().put("type", "boolean"));
         errorProperties.set("errorCategory", enumSchema(java.util.Arrays.stream(
                 com.jmj.trade.broker.BrokerErrorCategory.values()).map(Enum::name).toArray(String[]::new)));
+        errorProperties.set("httpStatus", objectMapper.createObjectNode().put("type", "integer")
+                .put("minimum", 100).put("maximum", 599));
+        errorProperties.set("providerErrorCode", boundedStringSchema(64));
+        errorProperties.set("retryAfterSeconds", objectMapper.createObjectNode().put("type", "integer").put("minimum", 0));
         var errors = objectMapper.createObjectNode().put("type", "object");
         errors.set("properties", errorProperties);
         errors.putArray("required").add("ok").add("errorCode").add("retryable").add("reauthorizationRequired");
