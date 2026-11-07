@@ -62,10 +62,10 @@ is independent of `marketHealth` and of the stored thesis approval state.
   missing/stale strategic evidence also blocks. Unknown horizons require review. Evidence
   availability does not imply a healthy business thesis. This gate is separate from the unchanged
   10% approved-trigger Soft Risk Budget. Strategic review-required proposals can be prepared for
-  inspection. Submission requires a separate current AI revalidation record linked to the existing
-  ADD Decision and current Thesis revision; `submit_order` is only individual order approval. The
-  backend rechecks the recorded verdict, evidence freshness, Thesis/mandate/market state, price and
-  quantity scope, Hard/Soft Risk, account, and quote before dispatch. `BLOCKED` cannot be overridden.
+  inspection. Submission requires a `SERVER_GENERATED` revalidation record linked to the existing
+  ADD Decision and current Thesis revision; no server-managed reviewer currently creates one, so
+  Strategic `REVIEW_REQUIRED` submissions are blocked. `submit_order` is only individual order
+  approval. Caller-authored claims cannot authorize orders. `BLOCKED` cannot be overridden.
   TACTICAL BUY gates and defensive SELL readiness are unchanged.
 
 ## Stages and events

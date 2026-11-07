@@ -25,7 +25,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
-/** Stores caller-authored AI revalidation evidence; it does not call or authenticate a model provider. */
+/** Stores review assertions and only trusts reviews produced by a server-managed reviewer. */
 @Service
 public final class InvestmentStrategicBuyRevalidationService {
     private static final Duration MAX_REVIEW_TTL = Duration.ofMinutes(30);
@@ -56,7 +56,7 @@ public final class InvestmentStrategicBuyRevalidationService {
         this.clock = clock;
     }
 
-    public RevalidationView record(UUID authenticatedUserId, UUID authenticatedApiKeyId, RevalidationInput rawInput) {
+    RevalidationView record(UUID authenticatedUserId, UUID authenticatedApiKeyId, RevalidationInput rawInput) {
         if (authenticatedUserId == null) throw new InvestmentException(InvestmentException.Code.INVALID_USER);
         var input = normalize(rawInput, clock.instant());
         var bodyHash = hash(input);
@@ -90,16 +90,17 @@ public final class InvestmentStrategicBuyRevalidationService {
                         || mark.value().compareTo(input.minPrice()) < 0
                         || mark.value().compareTo(input.maxPrice()) > 0) throw invalid();
 
-                var verdict = input.assessment().passes() ? "PASS" : "BLOCKED";
+                // Callers can submit review claims, never a trusted approval verdict.
+                var verdict = "UNTRUSTED";
                 var now = clock.instant();
                 jdbc.update("""
                         INSERT INTO investment_strategic_buy_revalidations (
                             review_id, user_id, decision_id, ticker, investment_horizon, mandate_updated_at,
-                            thesis_revision_id, verdict, provider, model, rationale, source_as_of, sources,
+                            thesis_revision_id, verdict, review_origin, provider, model, rationale, source_as_of, sources,
                             assessment, reviewed_market_price, market_observed_at, market_health,
                             price_risk_state, min_price, max_price, max_quantity, expires_at,
                             authenticated_actor_user_id, authenticated_actor_key_id, body_hash, created_at
-                        ) VALUES (?, ?, ?, ?, 'STRATEGIC', ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb),
+                        ) VALUES (?, ?, ?, ?, 'STRATEGIC', ?, ?, ?, 'CALLER_ASSERTED', ?, ?, ?, ?, CAST(? AS jsonb),
                                   CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, input.reviewId(), authenticatedUserId, input.decisionId(), input.ticker(),
                         timestamp(mandate.updatedAt()), thesis.revisionId(), verdict, input.provider(), input.model(),
@@ -129,6 +130,8 @@ public final class InvestmentStrategicBuyRevalidationService {
         var ticker = InvestmentContextService.ticker(rawTicker);
         var latest = latest(userId, decisionId);
         if (latest == null) return Validation.blocked("STRATEGIC_REVALIDATION_MISSING");
+        if (!"SERVER_GENERATED".equals(latest.reviewOrigin()))
+            return Validation.blocked("STRATEGIC_REVALIDATION_UNTRUSTED");
         var now = clock.instant();
         if (!"PASS".equals(latest.verdict())) return Validation.blocked("STRATEGIC_REVALIDATION_NOT_PASSED");
         if (latest.expiresAt() == null || !now.isBefore(latest.expiresAt()))
@@ -244,7 +247,7 @@ public final class InvestmentStrategicBuyRevalidationService {
     private RevalidationView find(UUID reviewId) {
         return jdbc.query("""
                 SELECT review_id, user_id, decision_id, ticker, investment_horizon, mandate_updated_at,
-                       thesis_revision_id, verdict, provider, model, rationale, source_as_of,
+                       thesis_revision_id, verdict, review_origin, provider, model, rationale, source_as_of,
                        sources::text, assessment::text, reviewed_market_price, market_observed_at,
                        market_health, price_risk_state, min_price, max_price, max_quantity, expires_at,
                        body_hash, created_at
@@ -256,7 +259,7 @@ public final class InvestmentStrategicBuyRevalidationService {
         if (userId == null || decisionId == null) return null;
         return jdbc.query("""
                 SELECT review_id, user_id, decision_id, ticker, investment_horizon, mandate_updated_at,
-                       thesis_revision_id, verdict, provider, model, rationale, source_as_of,
+                       thesis_revision_id, verdict, review_origin, provider, model, rationale, source_as_of,
                        sources::text, assessment::text, reviewed_market_price, market_observed_at,
                        market_health, price_risk_state, min_price, max_price, max_quantity, expires_at,
                        body_hash, created_at
@@ -271,7 +274,8 @@ public final class InvestmentStrategicBuyRevalidationService {
                 rs.getObject("review_id", UUID.class), rs.getObject("user_id", UUID.class),
                 rs.getObject("decision_id", UUID.class), rs.getString("ticker"), rs.getString("investment_horizon"),
                 instant(rs.getObject("mandate_updated_at", OffsetDateTime.class)),
-                rs.getObject("thesis_revision_id", UUID.class), rs.getString("verdict"), rs.getString("provider"),
+                rs.getObject("thesis_revision_id", UUID.class), rs.getString("verdict"), rs.getString("review_origin"),
+                rs.getString("provider"),
                 rs.getString("model"), rs.getString("rationale"), instant(rs.getObject("source_as_of", OffsetDateTime.class)),
                 readJson(rs.getString("sources")), readJson(rs.getString("assessment")),
                 rs.getBigDecimal("reviewed_market_price"), instant(rs.getObject("market_observed_at", OffsetDateTime.class)),
@@ -323,7 +327,7 @@ public final class InvestmentStrategicBuyRevalidationService {
 
     public record RevalidationView(UUID reviewId, UUID userId, UUID decisionId, String ticker,
                                   String investmentHorizon, Instant mandateUpdatedAt, UUID thesisRevisionId,
-                                  String verdict, String provider, String model, String rationale,
+                                  String verdict, String reviewOrigin, String provider, String model, String rationale,
                                   Instant sourceAsOf, JsonNode sources, JsonNode assessment,
                                   BigDecimal reviewedMarketPrice, Instant marketObservedAt,
                                   String marketHealth, String priceRiskState,

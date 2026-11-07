@@ -12,7 +12,6 @@ import com.jmj.trade.investment.InvestmentReviewService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
 import com.jmj.trade.investment.InvestmentSellReadinessService;
 import com.jmj.trade.investment.InvestmentRiskPreflightService;
-import com.jmj.trade.investment.InvestmentStrategicBuyRevalidationService;
 import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
@@ -39,29 +38,23 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
     @Test
-    void strategicBuyRevalidationToolIsTradeScopedAndRequiresEvidenceAndOrderBounds() throws Exception {
+    void callerCannotRegisterStrategicBuyRevalidationThroughMcp() throws Exception {
         var context = mock(InvestmentContextService.class);
-        var revalidation = mock(InvestmentStrategicBuyRevalidationService.class);
         var protocol = new ConnectorMcpProtocol(service, null, context, null, null, null, null, null,
-                null, revalidation, new ObjectMapper());
+                null, new ObjectMapper());
 
         var readOnly = protocol.handle(request("revalidation-read-only", "tools/list", "{}"), USER, CONNECTION);
         assertThat(java.util.stream.StreamSupport.stream(readOnly.path("result").path("tools").spliterator(), false)
                 .map(tool -> tool.path("name").asText())).doesNotContain("record_strategic_buy_revalidation");
 
-        var writable = protocol.handle(request("revalidation-trade", "tools/list", "{}"),
+        var trade = protocol.handle(request("revalidation-trade", "tools/list", "{}"), USER, CONNECTION, true);
+        assertThat(java.util.stream.StreamSupport.stream(trade.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText())).doesNotContain("record_strategic_buy_revalidation");
+
+        var attempted = protocol.handle(toolCall("caller-review", "record_strategic_buy_revalidation", "{}"),
                 USER, CONNECTION, true);
-        var tool = java.util.stream.StreamSupport.stream(writable.path("result").path("tools").spliterator(), false)
-                .filter(item -> "record_strategic_buy_revalidation".equals(item.path("name").asText()))
-                .findFirst().orElseThrow();
-        assertThat(tool.path("securitySchemes").get(0).path("scopes").get(0).asText())
-                .isEqualTo(ConnectorApiKeyService.TRADE_SCOPE);
-        assertThat(tool.path("description").asText()).contains("does not call or authenticate a model");
-        assertThat(tool.path("inputSchema").path("required").toString())
-                .contains("thesisRevisionId", "sources", "assessment", "minPrice", "maxPrice", "maxQuantity");
-        assertThat(tool.path("inputSchema").path("properties").path("assessment").path("required").toString())
-                .contains("thesisHealth", "fundamentalRevision", "expectationsGap", "riskReward", "hardRisk",
-                        "thesisInvalidation");
+        assertThat(attempted.path("error").path("code").asInt()).isEqualTo(-32601);
+        assertThat(attempted.path("error").path("message").asText()).contains("Tool not found");
     }
 
     @Test

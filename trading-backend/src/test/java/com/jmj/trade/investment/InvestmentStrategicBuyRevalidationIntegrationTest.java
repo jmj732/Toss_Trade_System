@@ -83,7 +83,7 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
     }
 
     @Test
-    void persistsPassLinkedToCurrentDecisionAndRevisionAndMakesExactReplayIdempotent() {
+    void storesCallerClaimAsUntrustedAndRejectsItAtSubmission() {
         var input = input(UUID.randomUUID(), assessment("INTACT", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR"));
 
         var saved = service.record(userId, apiKeyId, input);
@@ -93,21 +93,27 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
                  WHERE user_id = ? AND decision_id = ?
                 """, Integer.class, userId, decisionId);
 
-        assertThat(saved.verdict()).isEqualTo("PASS");
+        assertThat(saved.verdict()).isEqualTo("UNTRUSTED");
+        assertThat(saved.reviewOrigin()).isEqualTo("CALLER_ASSERTED");
         assertThat(saved.decisionId()).isEqualTo(decisionId);
         assertThat(saved.thesisRevisionId()).isEqualTo(thesisRevisionId);
         assertThat(saved.investmentHorizon()).isEqualTo("STRATEGIC");
         assertThat(replay.reviewId()).isEqualTo(saved.reviewId());
         assertThat(count).isEqualTo(1);
+
+        var submission = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), null);
+        assertThat(submission.allowed()).isFalse();
+        assertThat(submission.reason()).isEqualTo("STRATEGIC_REVALIDATION_UNTRUSTED");
     }
 
     @Test
-    void failedReviewIsPersistedBlockedAndCannotBePresentedAsPass() {
+    void callerAssessmentIsStoredAsUntrustedEvenWhenItFails() {
         var input = input(UUID.randomUUID(), assessment("IMPAIRED", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR"));
 
         var saved = service.record(userId, apiKeyId, input);
 
-        assertThat(saved.verdict()).isEqualTo("BLOCKED");
+        assertThat(saved.verdict()).isEqualTo("UNTRUSTED");
         assertThat(saved.assessment().path("thesisHealth").path("status").asText()).isEqualTo("IMPAIRED");
     }
 

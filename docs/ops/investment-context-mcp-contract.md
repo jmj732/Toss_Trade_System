@@ -133,28 +133,35 @@ and submission. For each submit, the backend re-evaluates against the current To
 latest saved evidence. It appends an `MCP_SUBMIT_RISK_GATE` audit snapshot with the resulting
 status/reasons, horizon, market state, fundamental evidence, quote price/as-of and `evaluatedAt`
 before either rejecting a `BLOCKED` order or dispatching it. Strategic `REVIEW_REQUIRED` may be
-prepared for inspection, but submission requires a separate persisted revalidation record linked
-to the proposal's existing `ADD` Decision, current STRATEGIC PositionMandate, and current confirmed
-Thesis revision. `submit_order` is only the individual order approval; it is never evidence that the
-investment thesis was revalidated. The submission path rechecks the latest review verdict and expiry,
+prepared for inspection, but submission requires a current `SERVER_GENERATED` revalidation record
+linked to the proposal's existing `ADD` Decision, current STRATEGIC PositionMandate, and current
+confirmed Thesis revision. V68 removes caller access to the record-write tool, and no server-managed
+reviewer currently produces such a record; therefore Strategic `REVIEW_REQUIRED` submissions are
+currently blocked. `submit_order` is only the individual order approval; it is never evidence that
+the investment thesis was revalidated. The submission path rechecks review origin/verdict/expiry,
 mandate and thesis revision, market state, allowed price/quantity scope, Hard/Soft Risk preflight,
 account freshness and cash, and the live quote before dispatch. `BLOCKED` remains non-overridable.
 Existing Hard Risk, account, cash, concentration, and approved-trigger Soft Risk Budget checks remain
 independent. Defensive SELL readiness is unchanged.
 
-### Strategic BUY revalidation (V67)
+### Strategic BUY revalidation (V67–V68)
 
-`record_strategic_buy_revalidation` stores a caller-authored review; the backend does not invoke or
-authenticate an AI provider. A record is accepted only for an owned `ADD` Decision, a stored
-STRATEGIC mandate, the current confirmed Thesis revision, and a fresh `REVIEW_REQUIRED` market
-assessment. It records provider/model, rationale, typed source URLs and as-of times, separate results
-for Thesis health, fundamentals/Revision, expectations gap, current-price risk/reward, Hard Risk, and
-Thesis invalidation, plus the reviewed market state, bounded price/quantity scope, and expiry (at most
-30 minutes). Any failed or indeterminate criterion is persisted as `BLOCKED` and cannot authorize a
-BUY. Records are append-only and keyed for idempotent retries. A passing record is not an order
-approval; the user must still approve the specific prepared order. New Thesis or mandate revisions,
-changed market state, stale/expired evidence, or an order outside the recorded scope invalidate the
-record. TACTICAL BUY gates and defensive SELL flow are unchanged.
+V67 introduced a caller-authored review record. That record did not prove that the named AI provider
+ran or that its sources supported the supplied conclusions. V68 removes the
+`record_strategic_buy_revalidation` MCP write tool. New caller assertions are stored as
+`verdict=UNTRUSTED` and `review_origin=CALLER_ASSERTED`; all existing rows default to
+`CALLER_ASSERTED`, including historical `PASS` rows. `validateForSubmit` rejects every origin except
+`SERVER_GENERATED` before checking the verdict, so caller-supplied review claims cannot authorize a
+BUY.
+
+There is currently no server-managed AI reviewer or trusted source-grounding path that can create a
+`SERVER_GENERATED` record. Therefore a Strategic `REVIEW_REQUIRED` BUY is fail-closed at submission
+until that reviewer exists. This is an availability limitation, not evidence that the Thesis failed.
+Provider/model labels, URLs, dates, and well-formed assessment fields alone are not treated as proof
+of analysis or source support. The append-only record keeps its review origin so a later
+server-managed reviewer can be introduced without trusting caller-authored history. `BLOCKED`
+remains non-overridable; individual order approval, Hard/Soft Risk, account, and quote checks remain
+separate. TACTICAL BUY gates and defensive SELL flow are unchanged.
 
 The portfolio's PositionMandate remains the authoritative horizon: a tactical breach calls
 for an EXIT/REDUCE evaluation, while a strategic breach calls for thesis revalidation and

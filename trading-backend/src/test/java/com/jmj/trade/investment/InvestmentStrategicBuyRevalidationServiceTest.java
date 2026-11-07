@@ -96,6 +96,20 @@ class InvestmentStrategicBuyRevalidationServiceTest {
     }
 
     @Test
+    void callerAssertedPassCannotAuthorizeSubmission() throws Exception {
+        var jdbc = mock(JdbcTemplate.class);
+        var context = mock(InvestmentContextService.class);
+        stubCurrent(jdbc, context, NOW.plusSeconds(600), REVISION, "IMPAIRED", "TRIGGER_BREACHED",
+                "PASS", "CALLER_ASSERTED");
+
+        var result = service(jdbc, context).validateForSubmit(USER, DECISION, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), currentGate("IMPAIRED", "TRIGGER_BREACHED"));
+
+        assertThat(result.allowed()).isFalse();
+        assertThat(result.reason()).isEqualTo("STRATEGIC_REVALIDATION_UNTRUSTED");
+    }
+
+    @Test
     void thesisOrMarketStateChangeInvalidatesTheReview() throws Exception {
         var jdbc = mock(JdbcTemplate.class);
         var context = mock(InvestmentContextService.class);
@@ -140,6 +154,13 @@ class InvestmentStrategicBuyRevalidationServiceTest {
     private static void stubCurrent(JdbcTemplate jdbc, InvestmentContextService context, Instant expiresAt,
                                     UUID thesisRevisionId, String marketHealth, String priceRiskState,
                                     String verdict) throws Exception {
+        stubCurrent(jdbc, context, expiresAt, thesisRevisionId, marketHealth, priceRiskState,
+                verdict, "SERVER_GENERATED");
+    }
+
+    private static void stubCurrent(JdbcTemplate jdbc, InvestmentContextService context, Instant expiresAt,
+                                    UUID thesisRevisionId, String marketHealth, String priceRiskState,
+                                    String verdict, String reviewOrigin) throws Exception {
         var mandate = new InvestmentContextService.PositionMandateView("LUNR", "STRATEGIC", "REVIEW_TRIGGER",
                 "USER_CONFIRMED", LocalDate.parse("2026-10-27"), MANDATE_UPDATED);
         when(context.positionMandates(USER)).thenReturn(List.of(mandate));
@@ -157,6 +178,7 @@ class InvestmentStrategicBuyRevalidationServiceTest {
             when(rs.getObject("mandate_updated_at", OffsetDateTime.class)).thenReturn(MANDATE_UPDATED.atOffset(ZoneOffset.UTC));
             when(rs.getObject("thesis_revision_id", UUID.class)).thenReturn(REVISION);
             when(rs.getString("verdict")).thenReturn(verdict);
+            when(rs.getString("review_origin")).thenReturn(reviewOrigin);
             when(rs.getString("provider")).thenReturn("review-provider");
             when(rs.getString("model")).thenReturn("review-model");
             when(rs.getString("rationale")).thenReturn("Thesis remains supported by current evidence.");

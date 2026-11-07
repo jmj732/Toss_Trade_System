@@ -52,7 +52,7 @@ class OrderIntentRepositoryIntegrationTest extends PostgresIntegrationTest {
 
     @Test
     void applicationRunsFlywayMigrationAgainstPostgres() {
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("67");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("68");
     }
 
     @Test
