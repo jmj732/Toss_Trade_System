@@ -1,6 +1,7 @@
 package com.jmj.trade.investment;
 
 import com.jmj.trade.investment.InvestmentDataCalculator.DataStatus;
+import com.jmj.trade.investment.tactical.MarketRiskEvaluator;
 import com.jmj.trade.investment.tactical.TacticalOverlayService;
 import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.account.PortfolioReadService;
@@ -99,6 +100,7 @@ public final class InvestmentContextService {
     private final Duration regularCloseStaleAfter;
     private final Duration fundamentalStaleAfter;
     private final Duration consensusStaleAfter;
+    private final MarketRiskEvaluator marketRiskEvaluator = new MarketRiskEvaluator();
     private InvestmentOsSheetProperties investmentOsSheetProperties;
     private TacticalOverlayService tacticalOverlayService;
     private InvestmentReviewService reviewService;
@@ -515,7 +517,8 @@ public final class InvestmentContextService {
         var analysis = inputs.analysis();
         var theses = inputs.theses();
         var mandates = positionMandates(userId);
-        var risks = riskContributions(userId, symbols, positions, inputs.weights(), portfolio, theses, analysis, mandates);
+        var risks = riskContributions(userId, symbols, positions, inputs.weights(), portfolio, theses, analysis,
+                mandates, tacticalReadModel.securities());
         var securities = symbols.stream().sorted().map(symbol -> {
             var snapshot = analysis.get(symbol);
             var risk = risks.get(symbol);
@@ -612,8 +615,10 @@ public final class InvestmentContextService {
         if (thesis != null) theses.put(ticker, thesis);
 
         var portfolio = inputs.portfolio();
+        var tacticalViews = tacticalOverlayService == null ? Map.<String, SecurityTacticalOverlayView>of()
+                : tacticalOverlayService.context(userId, List.copyOf(symbols)).securities();
         var currentRisk = riskContributions(userId, symbols, inputs.positions(), inputs.weights(), portfolio,
-                theses, analysis);
+                theses, analysis, positionMandates(userId), tacticalViews);
         var existing = inputs.positions().get(ticker);
         var priceNode = node(analysis.get(ticker), "price");
         var explicitCurrency = clean(text(priceNode.get("currency")));
@@ -676,7 +681,8 @@ public final class InvestmentContextService {
                 var proFormaSymbols = new LinkedHashSet<>(symbols);
                 proFormaSymbols.add(ticker);
                 proFormaRisk = riskContributions(userId, proFormaSymbols, proFormaPositionsByTicker,
-                        portfolioWeights(proFormaPortfolio), proFormaPortfolio, theses, analysis);
+                        portfolioWeights(proFormaPortfolio), proFormaPortfolio, theses, analysis,
+                        positionMandates(userId), tacticalViews);
             }
         }
         var cash = preflightCash(userId);
@@ -755,8 +761,10 @@ public final class InvestmentContextService {
                 current.expectationsGap(), current.fundamentalInvalidation(), current.revisionInvalidation(),
                 current.priceRiskTrigger(), triggerPrice, "CONFIRMED", current.expandTrigger(),
                 current.exitOrDiscardTrigger(), current.classification(), current.updatedAt()));
+        var tacticalViews = tacticalOverlayService == null ? Map.<String, SecurityTacticalOverlayView>of()
+                : tacticalOverlayService.context(userId, List.copyOf(symbols)).securities();
         return riskContributions(userId, symbols, inputs.positions(), inputs.weights(), inputs.portfolio(),
-                theses, analysis).get(ticker);
+                theses, analysis, positionMandates(userId), tacticalViews).get(ticker);
     }
 
     /** Current stored thesis or null; read-only accessor for the approval workflow (same row mapper as context). */
@@ -2180,6 +2188,52 @@ public final class InvestmentContextService {
                  WHERE user_id = ?
                  ORDER BY ticker
                 """, positionMandateRow(), userId);
+    }
+
+    /** Latest Toss-only market assessment for a live BUY gate; performs reads only. */
+    public MarketRiskEvaluator.Assessment marketRiskAssessment(UUID userId, String rawTicker,
+                                                                BigDecimal livePrice, Instant livePriceAsOf) {
+        requireUser(userId);
+        var symbol = ticker(rawTicker);
+        var snapshot = latestSecuritySnapshot(userId, symbol);
+        return marketRiskAssessment(userId, symbol, livePrice, livePriceAsOf, snapshot);
+    }
+
+    /** Latest market and freshness-checked fundamental evidence for a live BUY decision. */
+    public InvestmentBuyRiskGate.Decision investmentBuyRiskGate(UUID userId, String rawTicker,
+                                                                 BigDecimal livePrice, Instant livePriceAsOf) {
+        requireUser(userId);
+        var symbol = ticker(rawTicker);
+        var snapshot = latestSecuritySnapshot(userId, symbol);
+        var assessedAt = clock.instant();
+        return InvestmentBuyRiskGate.evaluate(
+                marketRiskAssessment(userId, symbol, livePrice, livePriceAsOf, snapshot),
+                fundamentalVerification(snapshot, assessedAt), assessedAt);
+    }
+
+    private MarketRiskEvaluator.Assessment marketRiskAssessment(UUID userId, String symbol,
+                                                                  BigDecimal livePrice, Instant livePriceAsOf,
+                                                                  JsonNode snapshot) {
+        var thesis = thesisIfPresent(userId, symbol);
+        var mandate = positionMandates(userId).stream().filter(item -> symbol.equals(item.ticker()))
+                .findFirst().orElse(null);
+        var priceFacts = priceFactsFromNode(node(snapshot, "price"));
+        var mark = priceFacts.riskMark(clock.instant());
+        var price = livePrice == null ? mark.value() : livePrice;
+        var asOf = livePrice == null ? mark.asOf() : livePriceAsOf;
+        var tossSource = livePrice != null || mark.source() != null && mark.source().startsWith("TOSS");
+        var trusted = price != null && price.signum() > 0 && asOf != null && !asOf.isAfter(clock.instant())
+                && !asOf.isBefore(clock.instant().minus(priceStaleAfter))
+                && tossSource
+                && (livePrice != null || mark.status() == DataStatus.OK);
+        var tactical = tacticalOverlayService == null ? null
+                : tacticalOverlayService.context(userId, List.of(symbol)).securities().get(symbol);
+        return marketRiskEvaluator.assess(tactical == null ? null : tactical.marketRisk(),
+                mandate == null ? null : mandate.investmentHorizon(),
+                mandate == null ? null : mandate.riskPriceRole(),
+                thesis != null && "CONFIRMED".equals(thesis.invalidationStatus()) && trusted,
+                thesis == null ? null : thesis.priceRiskTriggerPrice(), trusted ? price : null,
+                trusted ? asOf : null, clock.instant(), regularCloseStaleAfter);
     }
 
     public PositionMandateView upsertPositionMandate(UUID userId, String rawTicker, PositionMandateInput input) {
@@ -4282,14 +4336,27 @@ public final class InvestmentContextService {
             UUID userId, Set<String> symbols, Map<String, PositionView> positions,
             Map<String, BigDecimal> weights, PortfolioView portfolio, Map<String, ThesisView> theses,
             Map<String, JsonNode> analysis) {
+        var tacticalViews = tacticalOverlayService == null ? Map.<String, SecurityTacticalOverlayView>of()
+                : tacticalOverlayService.context(userId, List.copyOf(symbols)).securities();
         return riskContributions(userId, symbols, positions, weights, portfolio, theses, analysis,
-                positionMandates(userId));
+                positionMandates(userId), tacticalViews);
     }
 
     private Map<String, RiskContributionView> riskContributions(
             UUID userId, Set<String> symbols, Map<String, PositionView> positions,
             Map<String, BigDecimal> weights, PortfolioView portfolio, Map<String, ThesisView> theses,
             Map<String, JsonNode> analysis, List<PositionMandateView> positionMandates) {
+        var tacticalViews = tacticalOverlayService == null ? Map.<String, SecurityTacticalOverlayView>of()
+                : tacticalOverlayService.context(userId, List.copyOf(symbols)).securities();
+        return riskContributions(userId, symbols, positions, weights, portfolio, theses, analysis,
+                positionMandates, tacticalViews);
+    }
+
+    private Map<String, RiskContributionView> riskContributions(
+            UUID userId, Set<String> symbols, Map<String, PositionView> positions,
+            Map<String, BigDecimal> weights, PortfolioView portfolio, Map<String, ThesisView> theses,
+            Map<String, JsonNode> analysis, List<PositionMandateView> positionMandates,
+            Map<String, SecurityTacticalOverlayView> tacticalViews) {
         var portfolioDataStatus = dataStatus(portfolio.status());
         var portfolioNumbersAvailable = portfolio.riskNumbersAvailable();
         var portfolioCurrent = portfolioDataStatus == InvestmentDataCalculator.DataStatus.OK;
@@ -4328,8 +4395,24 @@ public final class InvestmentContextService {
                     : overall(List.of(portfolioDataStatus, trustedPriceStatus));
             var eligible = confirmed
                     && portfolioCurrent && trustedInputs && weight != null && downside != null && loss != null;
-            var reasons = eligibilityReasons(thesis, confirmed, triggerPrice, price, trustedMark,
-                    portfolioDataStatus, portfolioCurrent, portfolioNumbersAvailable, trustedPriceStatus, weight);
+            var reasons = new ArrayList<>(eligibilityReasons(thesis, confirmed, triggerPrice, price, trustedMark,
+                    portfolioDataStatus, portfolioCurrent, portfolioNumbersAvailable, trustedPriceStatus, weight));
+            var mandate = mandates.get(symbol);
+            var tactical = tacticalViews.get(symbol);
+            var marketMetrics = tactical == null ? null : tactical.marketRisk();
+            var tossMark = mark.source() != null && mark.source().startsWith("TOSS");
+            var marketRisk = marketRiskEvaluator.assess(
+                    marketMetrics, mandate == null ? null : mandate.investmentHorizon(),
+                    mandate == null ? null : mandate.riskPriceRole(), confirmed && trustedMark && tossMark,
+                    triggerPrice, trustedMark && tossMark ? price : null,
+                    trustedMark && tossMark ? priceAsOf : null, clock.instant(), regularCloseStaleAfter);
+            var assessedAt = clock.instant();
+            var buyGate = InvestmentBuyRiskGate.evaluate(marketRisk,
+                    fundamentalVerification(analysis.get(symbol), assessedAt), assessedAt);
+            if ("BLOCKED".equals(buyGate.status())) {
+                reasons.addAll(buyGate.reasons());
+                eligible = false;
+            }
             if (position != null) exposures.add(new RiskExposure(symbol, loss, riskStatus));
             risks.put(symbol, new RiskContributionView(weight, downside, loss,
                     riskStatus,
@@ -4342,7 +4425,7 @@ public final class InvestmentContextService {
                             mark.status(), mark.reason(), trustedMark),
                     new ForwardDownsideRiskView("NOT_EVALUABLE", "BEAR_CASE_EVIDENCE_UNAVAILABLE", null, null, null),
                     new ThesisHealthView("NOT_EVALUABLE", "NO_CURRENT_THESIS_ASSESSMENT", null, null),
-                    thesisEvidence(mandates.get(symbol), thesis, analysis.get(symbol))));
+                    thesisEvidence(mandate, thesis, analysis.get(symbol)), marketRisk, buyGate));
         }
         var held = exposures.stream().filter(item -> positions.containsKey(item.ticker())).toList();
         var thesisFailureStatus = held.isEmpty() ? InvestmentDataCalculator.DataStatus.DATA_MISSING
@@ -4368,9 +4451,37 @@ public final class InvestmentContextService {
                     risk.status(), thesisFailureStress, thesisFailureStatus, top2.stress(), top2.assets(),
                     top2.correlation(), top2.status(), finalEligible, budgetStatus, List.copyOf(updatedReasons),
                     risk.riskMark(), risk.approvedTriggerRisk(), risk.forwardDownsideRisk(), risk.thesisHealth(),
-                    risk.thesisEvidence());
+                    risk.thesisEvidence(), risk.marketRisk(), risk.investmentBuyGate());
         });
         return Map.copyOf(risks);
+    }
+
+    private InvestmentBuyRiskGate.FundamentalVerification fundamentalVerification(JsonNode snapshot, Instant now) {
+        var fundamentals = node(snapshot, "fundamentals");
+        var revision = node(snapshot, "revision");
+        var consensus = node(snapshot, "consensus");
+        var fundamentalStatus = dataStatus(text(fundamentals.get("status"))).name();
+        var fundamentalAsOf = instant(fundamentals.get("asOf"));
+        var fundamentalSource = clean(text(fundamentals.get("source")));
+        var revisionStatus = dataStatus(text(revision.get("status"))).name();
+        var consensusStatus = dataStatus(text(consensus.get("status"))).name();
+        var consensusAsOf = instant(consensus.get("asOf"));
+        var consensusSource = clean(text(consensus.get("source")));
+        var reasons = new ArrayList<String>();
+        if (!"OK".equals(fundamentalStatus)) reasons.add("FUNDAMENTALS_" + fundamentalStatus);
+        else if (fundamentalSource == null) reasons.add("FUNDAMENTAL_SOURCE_MISSING");
+        if (fundamentalAsOf == null) reasons.add("FUNDAMENTAL_AS_OF_MISSING");
+        else if (fundamentalAsOf.isAfter(now)) reasons.add("FUNDAMENTAL_AS_OF_IN_FUTURE");
+        else if (fundamentalAsOf.isBefore(now.minus(fundamentalStaleAfter))) reasons.add("FUNDAMENTALS_STALE");
+        if (!"OK".equals(revisionStatus)) reasons.add("REVISION_" + revisionStatus);
+        if (!"OK".equals(consensusStatus)) reasons.add("CONSENSUS_" + consensusStatus);
+        if (consensusSource == null) reasons.add("CONSENSUS_SOURCE_MISSING");
+        if (consensusAsOf == null) reasons.add("CONSENSUS_AS_OF_MISSING");
+        else if (consensusAsOf.isAfter(now)) reasons.add("CONSENSUS_AS_OF_IN_FUTURE");
+        else if (consensusAsOf.isBefore(now.minus(consensusStaleAfter))) reasons.add("CONSENSUS_STALE");
+        return new InvestmentBuyRiskGate.FundamentalVerification(reasons.isEmpty() ? "AVAILABLE" : "UNAVAILABLE",
+                reasons, fundamentalStatus, fundamentalSource, fundamentalAsOf,
+                revisionStatus, consensusSource, consensusAsOf);
     }
 
     private static ThesisEvidenceView thesisEvidence(PositionMandateView mandate, ThesisView thesis,
@@ -4987,7 +5098,9 @@ public final class InvestmentContextService {
         /** Operational eligibility only; external thesis confirmation is never inferred. */
         public String getSizingEligibility() {
             if (thesis == null || !"CONFIRMED".equals(thesis.invalidationStatus())) return "NO";
-            return risk != null && risk.sizingEligible() ? "YES" : "CONDITIONAL";
+            return risk != null && risk.sizingEligible()
+                    && (risk.investmentBuyGate() == null || "ELIGIBLE".equals(risk.investmentBuyGate().status()))
+                    ? "YES" : "CONDITIONAL";
         }
     }
 
@@ -5003,8 +5116,18 @@ public final class InvestmentContextService {
             String status, String reason, String themeId, String trendStage, String entrySetup,
             BigDecimal initialRiskPrice, String overlayEffect, String source, Instant sourceAsOf,
             LocalDate asOf, String overlayVersion, JsonNode indicators, JsonNode events,
-            JsonNode cohorts, JsonNode anchoredVwaps, JsonNode performance
+            JsonNode cohorts, JsonNode anchoredVwaps, JsonNode performance,
+            com.jmj.trade.investment.tactical.MarketRiskEvaluator.MarketMetrics marketRisk
     ) {
+        public SecurityTacticalOverlayView(String status, String reason, String themeId, String trendStage,
+                                           String entrySetup, BigDecimal initialRiskPrice, String overlayEffect,
+                                           String source, Instant sourceAsOf, LocalDate asOf, String overlayVersion,
+                                           JsonNode indicators, JsonNode events, JsonNode cohorts,
+                                           JsonNode anchoredVwaps, JsonNode performance) {
+            this(status, reason, themeId, trendStage, entrySetup, initialRiskPrice, overlayEffect, source,
+                    sourceAsOf, asOf, overlayVersion, indicators, events, cohorts, anchoredVwaps, performance, null);
+        }
+
         public JsonNode getDailyAvwaps() {
             return anchoredVwaps;
         }
@@ -5012,7 +5135,7 @@ public final class InvestmentContextService {
         public static SecurityTacticalOverlayView notConfigured() {
             return new SecurityTacticalOverlayView("NOT_CONFIGURED", "TACTICAL_INPUTS_NOT_CONFIGURED",
                     null, null, null, null, null, null, null, null, "TACTICAL_V1",
-                    null, null, null, null, null);
+                    null, null, null, null, null, null);
         }
     }
 
@@ -5194,7 +5317,9 @@ public final class InvestmentContextService {
             InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
             String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark,
             ApprovedTriggerRiskView approvedTriggerRisk, ForwardDownsideRiskView forwardDownsideRisk,
-            ThesisHealthView thesisHealth, ThesisEvidenceView thesisEvidence
+            ThesisHealthView thesisHealth, ThesisEvidenceView thesisEvidence,
+            com.jmj.trade.investment.tactical.MarketRiskEvaluator.Assessment marketRisk,
+            InvestmentBuyRiskGate.Decision investmentBuyGate
     ) {
         public RiskContributionView {
             eligibilityReasons = eligibilityReasons == null ? List.of() : List.copyOf(eligibilityReasons);
@@ -5209,7 +5334,8 @@ public final class InvestmentContextService {
                 String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark) {
             this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
                     thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
-                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, riskMark, null, null, null, null);
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, riskMark,
+                    null, null, null, null, null, null);
         }
 
         /** Backward-compatible signature without the additive eligibility reasons (defaults to empty). */
@@ -5222,7 +5348,8 @@ public final class InvestmentContextService {
                 String softBudgetStatus) {
             this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
                     thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
-                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of(), null, null, null, null, null);
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, List.of(), null,
+                    null, null, null, null, null, null);
         }
 
         /** Backward-compatible signature with eligibility reasons but without separate trusted risk mark. */
@@ -5235,7 +5362,39 @@ public final class InvestmentContextService {
                 String softBudgetStatus, List<String> eligibilityReasons) {
             this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
                     thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
-                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, null, null, null, null, null);
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, null,
+                    null, null, null, null, null, null);
+        }
+
+        /** Backward-compatible full signature before market-risk assessment was added. */
+        public RiskContributionView(BigDecimal portfolioWeight, BigDecimal invalidationDownside,
+                BigDecimal plannedLossContribution, InvestmentDataCalculator.DataStatus status,
+                BigDecimal thesisFailureStress, InvestmentDataCalculator.DataStatus thesisFailureStressStatus,
+                BigDecimal top2CorrelatedStress, String top2CorrelatedAssets, BigDecimal top2Correlation,
+                InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
+                String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark,
+                ApprovedTriggerRiskView approvedTriggerRisk, ForwardDownsideRiskView forwardDownsideRisk,
+                ThesisHealthView thesisHealth, ThesisEvidenceView thesisEvidence) {
+            this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
+                    thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, riskMark,
+                    approvedTriggerRisk, forwardDownsideRisk, thesisHealth, thesisEvidence, null, null);
+        }
+
+        /** Backward-compatible full signature before the additive BUY gate. */
+        public RiskContributionView(BigDecimal portfolioWeight, BigDecimal invalidationDownside,
+                BigDecimal plannedLossContribution, InvestmentDataCalculator.DataStatus status,
+                BigDecimal thesisFailureStress, InvestmentDataCalculator.DataStatus thesisFailureStressStatus,
+                BigDecimal top2CorrelatedStress, String top2CorrelatedAssets, BigDecimal top2Correlation,
+                InvestmentDataCalculator.DataStatus top2CorrelatedStatus, boolean sizingEligible,
+                String softBudgetStatus, List<String> eligibilityReasons, RiskMarkView riskMark,
+                ApprovedTriggerRiskView approvedTriggerRisk, ForwardDownsideRiskView forwardDownsideRisk,
+                ThesisHealthView thesisHealth, ThesisEvidenceView thesisEvidence,
+                com.jmj.trade.investment.tactical.MarketRiskEvaluator.Assessment marketRisk) {
+            this(portfolioWeight, invalidationDownside, plannedLossContribution, status, thesisFailureStress,
+                    thesisFailureStressStatus, top2CorrelatedStress, top2CorrelatedAssets, top2Correlation,
+                    top2CorrelatedStatus, sizingEligible, softBudgetStatus, eligibilityReasons, riskMark,
+                    approvedTriggerRisk, forwardDownsideRisk, thesisHealth, thesisEvidence, marketRisk, null);
         }
     }
 

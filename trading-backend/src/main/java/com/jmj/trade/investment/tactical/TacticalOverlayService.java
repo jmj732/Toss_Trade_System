@@ -874,7 +874,17 @@ public class TacticalOverlayService {
                 payload == null ? null : payload.path("indicators"),
                 payload == null ? null : payload.path("events"),
                 payload == null ? null : payload.path("cohorts"),
-                payload == null ? null : payload.path("anchoredVwaps"), performance);
+                payload == null ? null : payload.path("anchoredVwaps"), performance,
+                marketRisk(payload));
+    }
+
+    private MarketRiskEvaluator.MarketMetrics marketRisk(JsonNode payload) {
+        if (payload == null || !payload.hasNonNull("marketRisk")) return null;
+        try {
+            return mapper.treeToValue(payload.path("marketRisk"), MarketRiskEvaluator.MarketMetrics.class);
+        } catch (JacksonException ignored) {
+            return null;
+        }
     }
 
     private Map<UUID, com.jmj.trade.investment.InvestmentContextService.DecisionTacticalOverlayView> decisionViews(UUID userId) {

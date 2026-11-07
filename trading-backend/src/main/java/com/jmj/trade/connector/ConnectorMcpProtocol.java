@@ -1643,8 +1643,9 @@ public final class ConnectorMcpProtocol {
         properties.set("cash", nullableSchema(cashGateSchema()));
         properties.set("currentRisk", mapSchema(riskContributionSchema()));
         properties.set("proFormaRisk", mapSchema(riskContributionSchema()));
+        properties.set("buyGate", investmentBuyGateSchema());
         var success = closedObject(properties, "ticker", "quantity", "buyEligible", "blockers", "thesis",
-                "portfolio", "policy", "cash", "currentRisk", "proFormaRisk");
+                "portfolio", "policy", "cash", "currentRisk", "proFormaRisk", "buyGate");
         return outputSchema(success, "INVALID_ARGUMENT", "AUTHENTICATED_USER_INVALID",
                 "INVESTMENT_STATE_NOT_FOUND", "INVESTMENT_STATE_CONFLICT",
                 "INVESTMENT_CONTEXT_UNAVAILABLE", "INTERNAL_ERROR");
@@ -1726,11 +1727,78 @@ public final class ConnectorMcpProtocol {
         properties.set("forwardDownsideRisk", nullableSchema(forwardDownsideRiskSchema()));
         properties.set("thesisHealth", nullableSchema(thesisHealthSchema()));
         properties.set("thesisEvidence", nullableSchema(thesisEvidenceSchema()));
+        properties.set("marketRisk", nullableSchema(marketRiskAssessmentSchema()));
+        properties.set("investmentBuyGate", nullableSchema(investmentBuyGateSchema()));
         return closedObject(properties, "portfolioWeight", "invalidationDownside", "plannedLossContribution",
                 "status", "thesisFailureStress", "thesisFailureStressStatus", "top2CorrelatedStress",
                 "top2CorrelatedAssets", "top2Correlation", "top2CorrelatedStatus", "sizingEligible",
                 "softBudgetStatus", "eligibilityReasons", "riskMark", "approvedTriggerRisk",
-                "forwardDownsideRisk", "thesisHealth", "thesisEvidence");
+                "forwardDownsideRisk", "thesisHealth", "thesisEvidence", "marketRisk", "investmentBuyGate");
+    }
+
+    private ObjectNode investmentBuyGateSchema() {
+        var fundamentals = objectMapper.createObjectNode();
+        fundamentals.set("status", enumSchema("AVAILABLE", "UNAVAILABLE"));
+        fundamentals.set("reasons", arrayOf(stringSchema()));
+        fundamentals.set("fundamentalsStatus", stringSchema());
+        fundamentals.set("source", nullableStringSchema());
+        fundamentals.set("asOf", nullableDateTimeSchema());
+        fundamentals.set("revisionStatus", stringSchema());
+        fundamentals.set("consensusSource", nullableStringSchema());
+        fundamentals.set("consensusAsOf", nullableDateTimeSchema());
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", enumSchema("BLOCKED", "REVIEW_REQUIRED", "ELIGIBLE"));
+        properties.set("reasons", arrayOf(stringSchema()));
+        properties.set("investmentHorizon", stringSchema());
+        properties.set("marketDataStatus", stringSchema());
+        properties.set("marketHealth", stringSchema());
+        properties.set("priceRiskState", stringSchema());
+        properties.set("fundamentalVerification", nullableSchema(closedObject(fundamentals, "status", "reasons",
+                "fundamentalsStatus", "source", "asOf", "revisionStatus", "consensusSource", "consensusAsOf")));
+        properties.set("evaluatedAt", nullableDateTimeSchema());
+        return closedObject(properties, "status", "reasons", "investmentHorizon", "marketDataStatus",
+                "marketHealth", "priceRiskState", "fundamentalVerification", "evaluatedAt");
+    }
+
+    private ObjectNode marketRiskAssessmentSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("policyVersion", stringSchema());
+        properties.set("marketDataStatus", stringSchema());
+        properties.set("marketHealth", stringSchema());
+        properties.set("fundamentalHealth", stringSchema());
+        properties.set("fundamentalHealthReason", stringSchema());
+        properties.set("priceRiskState", stringSchema());
+        properties.set("recommendedAction", stringSchema());
+        properties.set("investmentHorizon", stringSchema());
+        properties.set("riskPriceRole", nullableStringSchema());
+        properties.set("approvedTriggerPrice", nullableNumberSchema());
+        properties.set("currentPrice", nullableNumberSchema());
+        properties.set("currentPriceAsOf", nullableDateTimeSchema());
+        properties.set("marketAsOf", nullableDateSchema());
+        properties.set("marketDataSource", nullableStringSchema());
+        properties.set("maximumDrawdown20", nullableSchema(marketMetricSchema()));
+        properties.set("maximumDrawdown60", nullableSchema(marketMetricSchema()));
+        properties.set("annualizedVolatility20", nullableSchema(marketMetricSchema()));
+        properties.set("return20", nullableSchema(marketMetricSchema()));
+        properties.set("relativeStrength20", nullableSchema(marketMetricSchema()));
+        properties.set("relativeVolume", nullableSchema(marketMetricSchema()));
+        properties.set("ema50", nullableSchema(marketMetricSchema()));
+        properties.set("priceVolumeSignal", stringSchema());
+        properties.set("lowerHighs20", nullableSchema(marketMetricSchema()));
+        properties.set("lowerLows20", nullableSchema(marketMetricSchema()));
+        return closedObject(properties, "policyVersion", "marketDataStatus", "marketHealth",
+                "fundamentalHealth", "fundamentalHealthReason", "priceRiskState", "recommendedAction",
+                "investmentHorizon", "riskPriceRole", "approvedTriggerPrice", "currentPrice",
+                "currentPriceAsOf", "marketAsOf", "marketDataSource", "maximumDrawdown20",
+                "maximumDrawdown60", "annualizedVolatility20", "return20", "relativeStrength20",
+                "relativeVolume", "ema50", "priceVolumeSignal", "lowerHighs20", "lowerLows20");
+    }
+
+    private ObjectNode marketMetricSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("value", nullableNumberSchema());
+        properties.set("status", stringSchema());
+        return closedObject(properties, "value", "status");
     }
 
     private ObjectNode thesisEvidenceSchema() {

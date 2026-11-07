@@ -51,6 +51,11 @@ class ConnectorMcpProtocolTest {
         assertThat(properties.has("approvedTriggerRisk")).isTrue();
         assertThat(properties.has("forwardDownsideRisk")).isTrue();
         assertThat(properties.has("thesisHealth")).isTrue();
+        assertThat(properties.path("investmentBuyGate").toString())
+                .contains("BLOCKED", "REVIEW_REQUIRED", "ELIGIBLE", "fundamentalVerification", "evaluatedAt");
+        assertThat(properties.path("marketRisk").toString())
+                .contains("marketDataStatus", "marketHealth", "fundamentalHealth", "priceRiskState",
+                        "maximumDrawdown20", "annualizedVolatility20", "priceVolumeSignal");
         assertThat(properties.path("thesisEvidence").toString())
                 .contains("mandate", "recordedInvestmentHorizon", "effectiveDate", "revisionId",
                         "fundamentals", "consensusSource", "consensusAsOf");
@@ -59,6 +64,9 @@ class ConnectorMcpProtocolTest {
         assertThat(properties.path("forwardDownsideRisk").toString())
                 .contains("downsideFraction", "reason", "source", "asOf");
         assertThat(properties.path("thesisHealth").toString()).contains("reason", "source", "asOf");
+        var preflightProperties = tool.path("outputSchema").path("anyOf").get(0).path("properties");
+        assertThat(preflightProperties.path("buyGate").toString())
+                .contains("BLOCKED", "REVIEW_REQUIRED", "ELIGIBLE", "fundamentalVerification");
     }
 
     @Test
@@ -88,7 +96,8 @@ class ConnectorMcpProtocolTest {
         assertThat(risk.get(0).path("additionalProperties").asBoolean()).isTrue();
         assertThat(risk.get(0).has("required")).isFalse();
         assertThat(risk.get(0).path("properties").toString())
-                .contains("approvedTriggerRisk", "forwardDownsideRisk", "thesisHealth", "thesisEvidence");
+                .contains("approvedTriggerRisk", "forwardDownsideRisk", "thesisHealth", "thesisEvidence",
+                        "investmentBuyGate");
         var tool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
                 .filter(item -> "upsert_position_mandate".equals(item.path("name").asText()))
                 .findFirst().orElseThrow();

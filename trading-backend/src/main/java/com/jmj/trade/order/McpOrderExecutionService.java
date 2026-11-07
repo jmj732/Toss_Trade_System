@@ -10,6 +10,8 @@ import com.jmj.trade.broker.BrokerOrderLifecycle;
 import com.jmj.trade.broker.BrokerOrderPort;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.Quote;
+import com.jmj.trade.investment.InvestmentBuyRiskGate;
+import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentSellReadinessService;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -39,6 +41,7 @@ public final class McpOrderExecutionService {
     private final UnknownAttemptReconciler reconciler;
     private final OrderSubmissionService submissions;
     private final com.jmj.trade.investment.InvestmentSellReadinessService sellReadiness;
+    private final InvestmentContextService marketRiskContext;
     private final TransactionTemplate transactions;
 
     public McpOrderExecutionService(LiveOrderActivationService activation, PreTradeRiskEngine risk,
@@ -48,7 +51,7 @@ public final class McpOrderExecutionService {
                                     SubmissionAttemptRepository attempts, JdbcTemplate jdbc,
                                     UnknownAttemptReconciler reconciler, OrderSubmissionService submissions) {
         this(activation, risk, portfolios, quotes, orders, safety, intents, brokerOrders, attempts, jdbc,
-                reconciler, submissions, null, null);
+                reconciler, submissions, null, null, null);
     }
 
     public McpOrderExecutionService(LiveOrderActivationService activation, PreTradeRiskEngine risk,
@@ -59,6 +62,18 @@ public final class McpOrderExecutionService {
                                     UnknownAttemptReconciler reconciler, OrderSubmissionService submissions,
                                     com.jmj.trade.investment.InvestmentSellReadinessService sellReadiness,
                                     TransactionTemplate transactions) {
+        this(activation, risk, portfolios, quotes, orders, safety, intents, brokerOrders, attempts, jdbc,
+                reconciler, submissions, sellReadiness, transactions, null);
+    }
+
+    public McpOrderExecutionService(LiveOrderActivationService activation, PreTradeRiskEngine risk,
+                                    FreshPortfolioReadService portfolios, BrokerAdapter quotes,
+                                    BrokerOrderPort orders, LiveOrderSafetyLedger safety,
+                                    OrderIntentRepository intents, BrokerOrderRepository brokerOrders,
+                                    SubmissionAttemptRepository attempts, JdbcTemplate jdbc,
+                                    UnknownAttemptReconciler reconciler, OrderSubmissionService submissions,
+                                    com.jmj.trade.investment.InvestmentSellReadinessService sellReadiness,
+                                    TransactionTemplate transactions, InvestmentContextService marketRiskContext) {
         this.activation = Objects.requireNonNull(activation);
         this.risk = Objects.requireNonNull(risk);
         this.portfolios = Objects.requireNonNull(portfolios);
@@ -73,6 +88,7 @@ public final class McpOrderExecutionService {
         this.submissions = Objects.requireNonNull(submissions);
         this.sellReadiness = sellReadiness;
         this.transactions = transactions;
+        this.marketRiskContext = marketRiskContext;
     }
 
     public PrepareResult prepare(UUID userId, UUID connectionId, PrepareCommand command) {
@@ -107,7 +123,7 @@ public final class McpOrderExecutionService {
             if (linked != 1) throw blocked("defensive proposal audit link could not be persisted");
             return new PrepareResult(proposal.proposalId(), proposal.status(), proposal.order(),
                     proposal.estimatedAmount(), proposal.preTrade(), proposal.expiresAt(),
-                    decisionId, eventId, readiness);
+                    decisionId, eventId, readiness, proposal.investmentBuyGate());
         });
     }
 
@@ -126,9 +142,10 @@ public final class McpOrderExecutionService {
         if (portfolio == null || portfolio.stale() || portfolio.positions() == null
                 || (portfolio.partial() && !accountLocalDefensiveSell))
             throw blocked("portfolio is stale or partial");
-        var reference = verifiedSellReference == null
-                ? referencePrice(quote(connectionId, order.symbol()), order.sideEnum())
-                : verifiedSellReference;
+        var liveQuote = verifiedSellReference == null ? quote(connectionId, order.symbol()) : null;
+        var reference = liveQuote == null ? verifiedSellReference : referencePrice(liveQuote, order.sideEnum());
+        var buyGate = requireMarketRiskForBuy(userId, order.symbol(), order.sideEnum(), marketRiskPrice(liveQuote, reference),
+                liveQuote == null ? null : liveQuote.observedAt());
         var estimatePrice = order.orderTypeEnum() == OrderType.LIMIT ? order.price() : reference;
         var amount = estimatePrice.multiply(order.quantity());
         var buyingPower = buyingPower(portfolio);
@@ -165,7 +182,7 @@ public final class McpOrderExecutionService {
                 new Order(order.symbol(), order.side(), order.orderType(), order.quantity(), order.price()), amount,
                 new PreTrade(buyingPower, current,
                         order.sideEnum() == OrderSide.BUY ? current.add(order.quantity()) : current.subtract(order.quantity()),
-                        "PASS"), intent.getExpiresAt());
+                        "PASS"), intent.getExpiresAt(), null, null, null, buyGate);
     }
 
     private void lockOwnedConnection(UUID userId, UUID connectionId) {
@@ -237,6 +254,7 @@ public final class McpOrderExecutionService {
                 || (portfolio.partial() && !accountLocalDefensiveSell))
             throw blocked("portfolio is stale or partial");
         BigDecimal price;
+        Quote liveQuote = null;
         if (defensive != null) {
             if (intent.getSide() != OrderSide.SELL || intent.getType() != OrderType.LIMIT)
                 throw blocked("risk-linked proposal must be a SELL LIMIT");
@@ -251,20 +269,23 @@ public final class McpOrderExecutionService {
                 throw blocked("risk-linked sell readiness changed since proposal");
             price = readiness.limitPrice();
         } else {
-            price = referencePrice(quote(connectionId, intent.getSymbol()), intent.getSide());
+            liveQuote = quote(connectionId, intent.getSymbol());
+            price = referencePrice(liveQuote, intent.getSide());
         }
         if (price.compareTo(intent.getProposalReferencePrice()) != 0) throw blocked("quote changed since proposal");
+        var buyGate = requireMarketRiskForBuy(userId, intent.getSymbol(), intent.getSide(), marketRiskPrice(liveQuote, price),
+                liveQuote == null ? null : liveQuote.observedAt());
         activation.approveFromMcp(userId, id, "MCP:" + userId);
         var dispatch = defensive == null
                 ? activation.dispatchFromMcp(userId, id, clientOrderId(id), "MCP:" + userId, price)
                 : activation.dispatchFromMcpWithVerifiedReference(userId, id, clientOrderId(id),
                 "MCP:" + userId, price);
         var persisted = brokerOrders.findFirstByOrderIntentIdOrderByIdAsc(id);
-        if (persisted.isPresent()) return submitResult(proposalId, persisted.get());
+        if (persisted.isPresent()) return submitResult(proposalId, persisted.get(), buyGate);
         if (dispatch.attemptStatus() == SubmissionAttemptStatus.UNKNOWN) {
-            return reconcileUnknown(proposalId, dispatch.attemptId(), intent);
+            return reconcileUnknown(proposalId, dispatch.attemptId(), intent, buyGate);
         }
-        return new SubmitResult(proposalId, mapIntentStatus(dispatch.intentStatus()), null);
+        return new SubmitResult(proposalId, mapIntentStatus(dispatch.intentStatus()), null, buyGate);
     }
 
     public CancelResult cancel(UUID userId, UUID connectionId, String brokerOrderId) {
@@ -310,10 +331,20 @@ public final class McpOrderExecutionService {
     }
 
     private SubmitResult submitResult(String proposalId, BrokerOrder order) {
-        return new SubmitResult(proposalId, mapBrokerStatus(order.getStatus()), order.getBrokerOrderId());
+        return submitResult(proposalId, order, null);
+    }
+
+    private SubmitResult submitResult(String proposalId, BrokerOrder order,
+                                      InvestmentBuyRiskGate.Decision buyGate) {
+        return new SubmitResult(proposalId, mapBrokerStatus(order.getStatus()), order.getBrokerOrderId(), buyGate);
     }
 
     private SubmitResult reconcileUnknown(String proposalId, UUID attemptId, OrderIntent intent) {
+        return reconcileUnknown(proposalId, attemptId, intent, null);
+    }
+
+    private SubmitResult reconcileUnknown(String proposalId, UUID attemptId, OrderIntent intent,
+                                         InvestmentBuyRiskGate.Decision buyGate) {
         try {
             var account = safety.resolve(intent.getUserId(), intent.getBrokerConnectionId(), intent.getBrokerAccountId());
             reconciler.reconcile(new UnknownAttemptReconciler.Command(
@@ -322,10 +353,10 @@ public final class McpOrderExecutionService {
             submissions.auditConnector(intent.getId(), "MCP_RECONCILIATION", "MCP:" + intent.getUserId(),
                     "{\"attemptId\":\"" + attemptId + "\"}");
             return brokerOrders.findFirstByOrderIntentIdOrderByIdAsc(intent.getId())
-                    .map(order -> submitResult(proposalId, order))
-                    .orElseGet(() -> new SubmitResult(proposalId, "UNKNOWN", null));
+                    .map(order -> submitResult(proposalId, order, buyGate))
+                    .orElseGet(() -> new SubmitResult(proposalId, "UNKNOWN", null, buyGate));
         } catch (RuntimeException ignored) {
-            return new SubmitResult(proposalId, "UNKNOWN", null);
+            return new SubmitResult(proposalId, "UNKNOWN", null, buyGate);
         }
     }
 
@@ -355,11 +386,30 @@ public final class McpOrderExecutionService {
         return quote;
     }
 
+    private InvestmentBuyRiskGate.Decision requireMarketRiskForBuy(UUID userId, String symbol, OrderSide side,
+                                                                   BigDecimal referencePrice,
+                                                                   Instant quoteObservedAt) {
+        if (side != OrderSide.BUY) return null;
+        if (marketRiskContext == null) throw blocked("Toss market risk assessment is unavailable");
+        var decision = marketRiskContext.investmentBuyRiskGate(userId, symbol, referencePrice, quoteObservedAt);
+        if (decision == null) throw blocked("Investment BUY risk assessment is unavailable");
+        if ("BLOCKED".equals(decision.status())) {
+            throw blocked("Investment BUY risk gate BLOCKED: " + String.join(",", decision.reasons()));
+        }
+        // REVIEW_REQUIRED proposals are visible before the explicit submit_order approval step.
+        return decision;
+    }
+
     private static BigDecimal referencePrice(Quote quote, OrderSide side) {
         var value = side == OrderSide.BUY ? quote.askPrice() : quote.bidPrice();
         if (value == null || value.signum() <= 0) value = quote.lastPrice();
         if (value == null || value.signum() <= 0) throw blocked("quote price is unavailable");
         return value;
+    }
+
+    private static BigDecimal marketRiskPrice(Quote quote, BigDecimal referencePrice) {
+        return quote != null && quote.lastPrice() != null && quote.lastPrice().signum() > 0
+                ? quote.lastPrice() : referencePrice;
     }
 
     private static BigDecimal buyingPower(PortfolioReadService.PortfolioView view) {
@@ -413,13 +463,25 @@ public final class McpOrderExecutionService {
     private record DefensiveLink(UUID decisionId, UUID eventId) {}
     public record PrepareResult(String proposalId, String status, Order order, BigDecimal estimatedAmount,
                                 PreTrade preTrade, Instant expiresAt, UUID decisionId, UUID eventId,
-                                com.jmj.trade.investment.InvestmentSellReadinessService.Readiness readiness) {
+                                com.jmj.trade.investment.InvestmentSellReadinessService.Readiness readiness,
+                                InvestmentBuyRiskGate.Decision investmentBuyGate) {
         public PrepareResult(String proposalId, String status, Order order, BigDecimal estimatedAmount,
                             PreTrade preTrade, Instant expiresAt) {
-            this(proposalId, status, order, estimatedAmount, preTrade, expiresAt, null, null, null);
+            this(proposalId, status, order, estimatedAmount, preTrade, expiresAt, null, null, null, null);
+        }
+
+        public PrepareResult(String proposalId, String status, Order order, BigDecimal estimatedAmount,
+                             PreTrade preTrade, Instant expiresAt, UUID decisionId, UUID eventId,
+                             com.jmj.trade.investment.InvestmentSellReadinessService.Readiness readiness) {
+            this(proposalId, status, order, estimatedAmount, preTrade, expiresAt, decisionId, eventId, readiness, null);
         }
     }
-    public record SubmitResult(String proposalId, String status, String brokerOrderId) {}
+    public record SubmitResult(String proposalId, String status, String brokerOrderId,
+                               InvestmentBuyRiskGate.Decision investmentBuyGate) {
+        public SubmitResult(String proposalId, String status, String brokerOrderId) {
+            this(proposalId, status, brokerOrderId, null);
+        }
+    }
     public record CancelResult(String brokerOrderId, String status) {}
     public record OrderResult(String brokerOrderId, String status) {}
     public record Order(String symbol, String side, String orderType, BigDecimal quantity, BigDecimal price) {}

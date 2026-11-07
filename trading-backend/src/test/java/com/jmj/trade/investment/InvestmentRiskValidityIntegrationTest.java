@@ -75,7 +75,9 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         var result = new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
                 new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
 
-        assertThat(result.buyEligible()).as("blockers=%s cash=%s", result.blockers(), result.cash()).isTrue();
+        assertThat(result.buyEligible()).as("blockers=%s cash=%s", result.blockers(), result.cash()).isFalse();
+        assertThat(result.buyGate().status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(result.buyGate().reasons()).contains("INVESTMENT_HORIZON_UNKNOWN");
         assertThat(result.blockers()).isEmpty();
         assertThat(result.currentRisk().get("AAPL").portfolioWeight()).isEqualByComparingTo("0.25");
         assertThat(result.proFormaRisk().get("AAPL").portfolioWeight()).isEqualByComparingTo("0.35");
@@ -101,7 +103,9 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(result.currentRisk().get("GOOGL").eligibilityReasons()).contains("POSITION_WEIGHT_MISSING");
         assertThat(result.proFormaRisk().get("GOOGL").portfolioWeight()).isEqualByComparingTo("0.10");
         assertThat(result.proFormaRisk().get("GOOGL").sizingEligible()).isTrue();
-        assertThat(result.buyEligible()).as("blockers=%s cash=%s", result.blockers(), result.cash()).isTrue();
+        assertThat(result.proFormaRisk().get("GOOGL").investmentBuyGate().status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(result.buyEligible()).as("blockers=%s cash=%s", result.blockers(), result.cash()).isFalse();
+        assertThat(result.buyGate().status()).isEqualTo("REVIEW_REQUIRED");
     }
 
     @Test
@@ -539,7 +543,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     @Test
     void publishesThreeStateEligibilityWithoutReplacingLegacyBoolean() throws Exception {
         var security = context("OK", "OK").securities().getFirst();
-        assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("YES");
+        assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("CONDITIONAL");
         assertThat(security.risk().sizingEligible()).isTrue();
         var conditional = new InvestmentContextService.SecurityView("AAPL", null, null,
                 null, null, null, null, null, null, null, security.thesis(), null);
