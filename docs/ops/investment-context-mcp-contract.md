@@ -133,9 +133,28 @@ and submission. For each submit, the backend re-evaluates against the current To
 latest saved evidence. It appends an `MCP_SUBMIT_RISK_GATE` audit snapshot with the resulting
 status/reasons, horizon, market state, fundamental evidence, quote price/as-of and `evaluatedAt`
 before either rejecting a `BLOCKED` order or dispatching it. Strategic `REVIEW_REQUIRED` may be
-prepared for inspection; an explicit authenticated `submit_order` is the approval evidence for
-accepting the re-evaluated review state. Existing Hard Risk, account, cash, concentration, and approved-trigger Soft Risk
-Budget checks remain independent. Defensive SELL readiness is unchanged.
+prepared for inspection, but submission requires a separate persisted revalidation record linked
+to the proposal's existing `ADD` Decision, current STRATEGIC PositionMandate, and current confirmed
+Thesis revision. `submit_order` is only the individual order approval; it is never evidence that the
+investment thesis was revalidated. The submission path rechecks the latest review verdict and expiry,
+mandate and thesis revision, market state, allowed price/quantity scope, Hard/Soft Risk preflight,
+account freshness and cash, and the live quote before dispatch. `BLOCKED` remains non-overridable.
+Existing Hard Risk, account, cash, concentration, and approved-trigger Soft Risk Budget checks remain
+independent. Defensive SELL readiness is unchanged.
+
+### Strategic BUY revalidation (V67)
+
+`record_strategic_buy_revalidation` stores a caller-authored review; the backend does not invoke or
+authenticate an AI provider. A record is accepted only for an owned `ADD` Decision, a stored
+STRATEGIC mandate, the current confirmed Thesis revision, and a fresh `REVIEW_REQUIRED` market
+assessment. It records provider/model, rationale, typed source URLs and as-of times, separate results
+for Thesis health, fundamentals/Revision, expectations gap, current-price risk/reward, Hard Risk, and
+Thesis invalidation, plus the reviewed market state, bounded price/quantity scope, and expiry (at most
+30 minutes). Any failed or indeterminate criterion is persisted as `BLOCKED` and cannot authorize a
+BUY. Records are append-only and keyed for idempotent retries. A passing record is not an order
+approval; the user must still approve the specific prepared order. New Thesis or mandate revisions,
+changed market state, stale/expired evidence, or an order outside the recorded scope invalidate the
+record. TACTICAL BUY gates and defensive SELL flow are unchanged.
 
 The portfolio's PositionMandate remains the authoritative horizon: a tactical breach calls
 for an EXIT/REDUCE evaluation, while a strategic breach calls for thesis revalidation and

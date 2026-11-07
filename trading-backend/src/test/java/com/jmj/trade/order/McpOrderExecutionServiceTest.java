@@ -68,6 +68,20 @@ class McpOrderExecutionServiceTest {
     }
 
     @Test
+    void prepareBlocksWhenBuyGateStatusIsUnknown() {
+        var gate = new InvestmentBuyRiskGate.Decision("UNKNOWN", List.of(), "STRATEGIC", "OK",
+                "IMPAIRED", "CLEAR", null, Instant.now());
+        var fixture = prepareFixture(gate);
+
+        assertThatThrownBy(() -> fixture.service().prepare(USER, CONNECTION,
+                new McpOrderExecutionService.PrepareCommand("AAPL", "BUY", "LIMIT", BigDecimal.ONE,
+                        new BigDecimal("180"))))
+                .hasMessageContaining("status is unavailable or unrecognized");
+
+        verify(fixture.activation(), never()).propose(any(), any(), any());
+    }
+
+    @Test
     void strategicMarketDeteriorationProducesReviewProposalInsteadOfBlockingPreparation() {
         var fixture = prepareFixture(buyGate("STRATEGIC", "OK", "IMPAIRED", "CLEAR", true));
 
@@ -129,13 +143,13 @@ class McpOrderExecutionServiceTest {
         verify(submissions).auditConnector(eq(INTENT), eq("MCP_SUBMIT_RISK_GATE"), eq("MCP:" + USER),
                 org.mockito.ArgumentMatchers.<String>argThat(payload ->
                         payload.contains("\"status\":\"BLOCKED\"")
-                                && payload.contains("\"approvalBoundary\":\"EXPLICIT_MCP_SUBMIT\"")));
+                                && payload.contains("\"approvalBoundary\":\"ORDER_APPROVAL_ONLY\"")));
         verify(activation, never()).approveFromMcp(any(), any(), anyString());
         verify(activation, never()).dispatchFromMcp(any(), any(), anyString(), anyString(), any());
     }
 
     @Test
-    void submitPreservesReviewRequiredGateInPersistedOrderResult() throws Exception {
+    void submitBlocksStrategicReviewRequiredWithoutLinkedAiRevalidation() throws Exception {
         var activation = mock(LiveOrderActivationService.class);
         var portfolios = mock(FreshPortfolioReadService.class);
         var quotes = mock(BrokerAdapter.class);
@@ -158,9 +172,7 @@ class McpOrderExecutionServiceTest {
         intent.stampProposal(observedAt, observedAt.plusSeconds(300));
         intent.stampProposalReferencePrice(new BigDecimal("180.1"));
         when(intents.findOwnedById(INTENT, USER, CONNECTION)).thenReturn(Optional.of(intent));
-        when(brokerOrders.findFirstByOrderIntentIdOrderByIdAsc(INTENT)).thenReturn(Optional.empty(),
-                Optional.of(BrokerOrder.confirmed(UUID.randomUUID(), INTENT, ACCOUNT, "toss-review", "mcp-client",
-                        BrokerOrderStatus.PENDING)));
+        when(brokerOrders.findFirstByOrderIntentIdOrderByIdAsc(INTENT)).thenReturn(Optional.empty());
         when(attempts.findTopByOrderIntentIdAndClientOrderIdOrderByAttemptNumberDesc(eq(INTENT), anyString()))
                 .thenReturn(Optional.empty());
         when(jdbc.query(contains("SELECT investment_decision_id"), any(org.springframework.jdbc.core.RowMapper.class),
@@ -174,21 +186,14 @@ class McpOrderExecutionServiceTest {
         });
         when(context.investmentBuyRiskGate(eq(USER), eq("AAPL"), eq(new BigDecimal("180")), eq(observedAt)))
                 .thenReturn(buyGate("STRATEGIC", "OK", "IMPAIRED", "CLEAR", true));
-        when(activation.dispatchFromMcp(eq(USER), eq(INTENT), anyString(), eq("MCP:" + USER),
-                eq(new BigDecimal("180.1"))))
-                .thenReturn(new LiveOrderActivationService.DispatchResult(UUID.randomUUID(),
-                        SubmissionAttemptStatus.ACKNOWLEDGED, OrderIntentStatus.SUBMISSION_PENDING, null));
-
         var service = new McpOrderExecutionService(activation, mock(PreTradeRiskEngine.class), portfolios, quotes,
                 mock(BrokerOrderPort.class), mock(LiveOrderSafetyLedger.class), intents, brokerOrders, attempts,
                 jdbc, mock(UnknownAttemptReconciler.class), submissions, null, null, context);
 
-        var result = service.submit(USER, CONNECTION, "ordp_" + INTENT);
-
-        assertThat(result.status()).isEqualTo("SUBMITTED");
-        assertThat(result.investmentBuyGate().status()).isEqualTo("REVIEW_REQUIRED");
-        assertThat(result.investmentBuyGate().reasons())
-                .contains("STRATEGIC_MARKET_RISK_REVIEW_REQUIRED_IMPAIRED");
+        assertThatThrownBy(() -> service.submit(USER, CONNECTION, "ordp_" + INTENT))
+                .hasMessageContaining("Strategic BUY revalidation is required");
+        verify(activation, never()).approveFromMcp(any(), any(), anyString());
+        verify(activation, never()).dispatchFromMcp(any(), any(), anyString(), anyString(), any());
         verify(submissions).auditConnector(eq(INTENT), eq("MCP_SUBMIT_RISK_GATE"), eq("MCP:" + USER),
                 org.mockito.ArgumentMatchers.<String>argThat(payload -> payload.contains("\"status\":\"REVIEW_REQUIRED\"")
                         && payload.contains("\"investmentHorizon\":\"STRATEGIC\"")

@@ -10,6 +10,7 @@ import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
+import com.jmj.trade.investment.InvestmentStrategicBuyRevalidationService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
 import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessException;
@@ -49,6 +50,7 @@ public final class ConnectorMcpProtocol {
     private final InvestmentRiskPreflightService investmentRiskPreflightService;
     private final InvestmentRiskEventService investmentRiskEventService;
     private final com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService;
+    private final InvestmentStrategicBuyRevalidationService buyRevalidationService;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
@@ -66,12 +68,14 @@ public final class ConnectorMcpProtocol {
                          ObjectProvider<InvestmentRiskPreflightService> investmentRiskPreflightService,
                          ObjectProvider<InvestmentRiskEventService> investmentRiskEventService,
                          ObjectProvider<com.jmj.trade.investment.InvestmentSellReadinessService> sellReadinessService,
+                         ObjectProvider<InvestmentStrategicBuyRevalidationService> buyRevalidationService,
                          ObjectMapper objectMapper) {
         this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(),
                 investmentReviewService.getIfAvailable(), thesisVerificationService.getIfAvailable(),
                 investmentOnboardingService.getIfAvailable(), investmentRiskPreflightService.getIfAvailable(),
                 investmentRiskEventService.getIfAvailable(),
                 sellReadinessService.getIfAvailable(),
+                buyRevalidationService.getIfAvailable(),
                 objectMapper);
     }
 
@@ -133,6 +137,21 @@ public final class ConnectorMcpProtocol {
                                 InvestmentRiskEventService investmentRiskEventService,
                                 com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService,
                                 ObjectMapper objectMapper) {
+        this(service, tradeService, investmentContextService, investmentReviewService, thesisVerificationService,
+                investmentOnboardingService, investmentRiskPreflightService, investmentRiskEventService,
+                sellReadinessService, null, objectMapper);
+    }
+
+    public ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                                InvestmentContextService investmentContextService,
+                                InvestmentReviewService investmentReviewService,
+                                InvestmentThesisVerificationService thesisVerificationService,
+                                InvestmentOnboardingService investmentOnboardingService,
+                                InvestmentRiskPreflightService investmentRiskPreflightService,
+                                InvestmentRiskEventService investmentRiskEventService,
+                                com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService,
+                                InvestmentStrategicBuyRevalidationService buyRevalidationService,
+                                ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
         this.investmentContextService = investmentContextService;
@@ -142,6 +161,7 @@ public final class ConnectorMcpProtocol {
         this.investmentRiskPreflightService = investmentRiskPreflightService;
         this.investmentRiskEventService = investmentRiskEventService;
         this.sellReadinessService = sellReadinessService;
+        this.buyRevalidationService = buyRevalidationService;
         this.objectMapper = objectMapper;
     }
 
@@ -285,6 +305,12 @@ public final class ConnectorMcpProtocol {
                         "Append a caller-authored decision record to PostgreSQL for Context and Sheet mirroring. Uses the supplied decisionId for idempotent retries; a different record with that ID conflicts. Stores supplied fields without generating investment judgments and never prepares or submits orders. Requires existing connector write scope; available even when order execution is disabled.",
                         investmentDecisionSchema(), objectSchema(), false, false, true,
                         ConnectorApiKeyService.TRADE_SCOPE));
+                if (buyRevalidationService != null) {
+                    tools.add(tool("record_strategic_buy_revalidation", "Record strategic BUY revalidation",
+                            "Persist a caller-authored AI review linked to an existing ADD Decision. The server checks the current STRATEGIC mandate, Thesis revision, market state, evidence source shape, expiry and approval scope; it does not call or authenticate a model. A PASS is not an order approval and does not submit an order.",
+                            strategicBuyRevalidationSchema(), objectSchema(), false, false, true,
+                            ConnectorApiKeyService.TRADE_SCOPE));
+                }
             }
             if (thesisVerificationService != null) {
                 tools.add(tool("verify_investment_thesis", "Verify investment thesis",
@@ -366,6 +392,9 @@ public final class ConnectorMcpProtocol {
                         ? forbiddenTrade(request) : putInvestmentThesis(request, userId, arguments);
                 case "append_investment_decision" -> !tradeScopeGranted
                         ? forbiddenTrade(request) : appendInvestmentDecision(request, userId, arguments);
+                case "record_strategic_buy_revalidation" -> !tradeScopeGranted
+                        ? forbiddenTrade(request)
+                        : recordStrategicBuyRevalidation(request, userId, authenticatedApiKeyId, arguments);
                 case "append_investment_review" -> !tradeScopeGranted
                         ? forbiddenTrade(request) : appendInvestmentReview(request, userId, arguments);
                 case "prepare_order" -> !tradeScopeGranted
@@ -605,8 +634,22 @@ public final class ConnectorMcpProtocol {
     }
 
     private ObjectNode prepareOrder(ObjectNode request, UUID userId, UUID connectionId, JsonNode arguments) {
-        if (!arguments.path("decisionId").isMissingNode() || !arguments.path("eventId").isMissingNode()) {
-            if (!arguments.has("decisionId") || !arguments.has("eventId"))
+        var hasDecisionId = arguments.has("decisionId");
+        var hasEventId = arguments.has("eventId");
+        if (hasDecisionId || hasEventId) {
+            if (hasDecisionId && !hasEventId) {
+                if (!"BUY".equalsIgnoreCase(requiredText(arguments, "side")))
+                    return toolError(request, "INVALID_ARGUMENT", "A decision-only link requires BUY", false, false);
+                for (var field : arguments.propertyNames()) {
+                    if (!Set.of("symbol", "side", "orderType", "quantity", "price", "decisionId")
+                            .contains(field))
+                        return toolError(request, "INVALID_ARGUMENT", "Unsupported prepare_order field", false, false);
+                }
+                var proposal = tradeService.prepareWithDecision(userId, connectionId,
+                        requiredUuid(arguments, "decisionId"), prepare(arguments));
+                return toolResult(request, proposal);
+            }
+            if (!hasDecisionId || !hasEventId)
                 return toolError(request, "INVALID_ARGUMENT", "decisionId and eventId must be supplied together",
                         false, false);
             if (!"SELL".equalsIgnoreCase(requiredText(arguments, "side"))
@@ -625,6 +668,40 @@ public final class ConnectorMcpProtocol {
             return toolResult(request, proposal);
         }
         return toolResult(request, tradeService.prepare(userId, connectionId, prepare(arguments)));
+    }
+
+    private ObjectNode recordStrategicBuyRevalidation(ObjectNode request, UUID userId,
+                                                       UUID authenticatedApiKeyId, JsonNode arguments) {
+        if (buyRevalidationService == null) return investmentContextUnavailable(request);
+        var allowed = Set.of("reviewId", "decisionId", "ticker", "thesisRevisionId", "sourceAsOf", "expiresAt",
+                "provider", "model", "rationale", "sources", "assessment", "minPrice", "maxPrice", "maxQuantity");
+        if (arguments == null || !arguments.isObject())
+            return toolError(request, "INVALID_ARGUMENT", "Revalidation fields are invalid", false, false);
+        for (var field : arguments.propertyNames()) {
+            if (!allowed.contains(field))
+                return toolError(request, "INVALID_ARGUMENT", "Unsupported revalidation field", false, false);
+        }
+        try {
+            var input = objectMapper.treeToValue(arguments,
+                    InvestmentStrategicBuyRevalidationService.RevalidationInput.class);
+            return toolResult(request, buyRevalidationService.record(userId, authenticatedApiKeyId, input));
+        } catch (InvestmentException exception) {
+            return switch (exception.code()) {
+                case INVALID_INPUT -> toolError(request, "INVALID_ARGUMENT",
+                        "Strategic BUY revalidation is invalid, stale, or mismatched", false, false);
+                case CONFLICT -> toolError(request, "REVALIDATION_CONFLICT",
+                        "reviewId conflicts with a prior revalidation", false, false);
+                case INVALID_USER -> toolError(request, "AUTHENTICATED_USER_INVALID",
+                        "Authenticated user is unavailable", false, true);
+                case NOT_FOUND -> toolError(request, "INVESTMENT_STATE_NOT_FOUND",
+                        "Required strategic investment state was not found", false, false);
+            };
+        } catch (DataAccessException exception) {
+            return investmentContextUnavailable(request);
+        } catch (tools.jackson.core.JacksonException | IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", "Strategic BUY revalidation fields are invalid",
+                    false, false);
+        }
     }
 
     private ObjectNode riskEventsUnavailable(ObjectNode request) {
@@ -2154,6 +2231,55 @@ public final class ConnectorMcpProtocol {
                 .add("referencePrice").add("priceSession").add("horizon").add("alphaThesis")
                 .add("invalidation").add("nextReviewTrigger").add("confidence");
         return schema;
+    }
+
+    private ObjectNode strategicBuyRevalidationSchema() {
+        var schema = objectMapper.createObjectNode().put("type", "object").put("additionalProperties", false);
+        var fields = schema.putObject("properties");
+        fields.set("reviewId", uuidSchema());
+        fields.set("decisionId", uuidSchema());
+        fields.set("ticker", objectMapper.createObjectNode().put("type", "string")
+                .put("pattern", "^[A-Za-z0-9._-]{1,32}$"));
+        fields.set("thesisRevisionId", uuidSchema());
+        fields.set("sourceAsOf", dateTimeSchema());
+        fields.set("expiresAt", dateTimeSchema());
+        fields.set("provider", boundedStringSchema(120));
+        fields.set("model", boundedStringSchema(160));
+        fields.set("rationale", boundedStringSchema(4000));
+        var sourceProperties = objectMapper.createObjectNode();
+        sourceProperties.set("url", objectMapper.createObjectNode().put("type", "string")
+                .put("format", "uri").put("pattern", "^https://"));
+        sourceProperties.set("asOf", dateTimeSchema());
+        sourceProperties.set("type", enumSchema("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"));
+        var source = closedObject(sourceProperties, "url", "asOf", "type");
+        var sources = objectMapper.createObjectNode().put("type", "array").put("minItems", 5).put("maxItems", 10);
+        sources.set("items", source);
+        fields.set("sources", sources);
+        var assessmentProperties = objectMapper.createObjectNode();
+        assessmentProperties.set("thesisHealth", criterionSchema("INTACT", "IMPAIRED", "INVALIDATED", "NOT_EVALUABLE"));
+        assessmentProperties.set("fundamentalRevision", criterionSchema("SUPPORTED", "CONTRADICTED", "NOT_EVALUABLE"));
+        assessmentProperties.set("expectationsGap", criterionSchema("OPPORTUNITY", "NO_OPPORTUNITY", "NOT_EVALUABLE"));
+        assessmentProperties.set("riskReward", criterionSchema("FAVORABLE", "UNFAVORABLE", "NOT_EVALUABLE"));
+        assessmentProperties.set("hardRisk", criterionSchema("PASS", "FAIL", "NOT_EVALUABLE"));
+        assessmentProperties.set("thesisInvalidation", criterionSchema("CLEAR", "TRIGGERED", "NOT_EVALUABLE"));
+        var assessment = closedObject(assessmentProperties, "thesisHealth", "fundamentalRevision",
+                "expectationsGap", "riskReward", "hardRisk", "thesisInvalidation");
+        fields.set("assessment", assessment);
+        fields.set("minPrice", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        fields.set("maxPrice", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        fields.set("maxQuantity", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        schema.putArray("required").add("reviewId").add("decisionId").add("ticker")
+                .add("thesisRevisionId").add("sourceAsOf").add("expiresAt").add("provider").add("model")
+                .add("rationale").add("sources").add("assessment").add("minPrice").add("maxPrice")
+                .add("maxQuantity");
+        return schema;
+    }
+
+    private ObjectNode criterionSchema(String... statuses) {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", enumSchema(statuses));
+        properties.set("rationale", boundedStringSchema(1000));
+        return closedObject(properties, "status", "rationale");
     }
 
     private ObjectNode investmentReviewSchema() {
