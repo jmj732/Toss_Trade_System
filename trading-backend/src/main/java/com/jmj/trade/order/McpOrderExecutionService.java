@@ -273,8 +273,11 @@ public final class McpOrderExecutionService {
             price = referencePrice(liveQuote, intent.getSide());
         }
         if (price.compareTo(intent.getProposalReferencePrice()) != 0) throw blocked("quote changed since proposal");
-        var buyGate = requireMarketRiskForBuy(userId, intent.getSymbol(), intent.getSide(), marketRiskPrice(liveQuote, price),
-                liveQuote == null ? null : liveQuote.observedAt());
+        var currentMarketPrice = marketRiskPrice(liveQuote, price);
+        var buyGate = requireMarketRiskForBuy(userId, intent.getSymbol(), intent.getSide(), currentMarketPrice,
+                liveQuote == null ? null : liveQuote.observedAt(), id);
+        // An explicit authenticated submit is the approval boundary for REVIEW_REQUIRED. Store the
+        // server-recomputed gate snapshot beside that action before dispatching to the broker.
         activation.approveFromMcp(userId, id, "MCP:" + userId);
         var dispatch = defensive == null
                 ? activation.dispatchFromMcp(userId, id, clientOrderId(id), "MCP:" + userId, price)
@@ -389,15 +392,78 @@ public final class McpOrderExecutionService {
     private InvestmentBuyRiskGate.Decision requireMarketRiskForBuy(UUID userId, String symbol, OrderSide side,
                                                                    BigDecimal referencePrice,
                                                                    Instant quoteObservedAt) {
+        return requireMarketRiskForBuy(userId, symbol, side, referencePrice, quoteObservedAt, null);
+    }
+
+    private InvestmentBuyRiskGate.Decision requireMarketRiskForBuy(UUID userId, String symbol, OrderSide side,
+                                                                   BigDecimal referencePrice,
+                                                                   Instant quoteObservedAt, UUID submitIntentId) {
         if (side != OrderSide.BUY) return null;
         if (marketRiskContext == null) throw blocked("Toss market risk assessment is unavailable");
         var decision = marketRiskContext.investmentBuyRiskGate(userId, symbol, referencePrice, quoteObservedAt);
         if (decision == null) throw blocked("Investment BUY risk assessment is unavailable");
+        if (submitIntentId != null) {
+            submissions.auditConnector(submitIntentId, "MCP_SUBMIT_RISK_GATE", "MCP:" + userId,
+                    investmentBuyGateAuditPayload(decision, referencePrice, quoteObservedAt));
+        }
         if ("BLOCKED".equals(decision.status())) {
             throw blocked("Investment BUY risk gate BLOCKED: " + String.join(",", decision.reasons()));
         }
-        // REVIEW_REQUIRED proposals are visible before the explicit submit_order approval step.
+        // REVIEW_REQUIRED proposals are inspectable; submit_order re-evaluates and records the explicit approval.
         return decision;
+    }
+
+    private static String investmentBuyGateAuditPayload(InvestmentBuyRiskGate.Decision decision,
+                                                          BigDecimal marketPrice, Instant quoteObservedAt) {
+        var fundamentals = decision.fundamentalVerification();
+        return "{\"status\":" + jsonString(decision.status())
+                + ",\"reasons\":" + jsonArray(decision.reasons())
+                + ",\"investmentHorizon\":" + jsonString(decision.investmentHorizon())
+                + ",\"marketDataStatus\":" + jsonString(decision.marketDataStatus())
+                + ",\"marketHealth\":" + jsonString(decision.marketHealth())
+                + ",\"priceRiskState\":" + jsonString(decision.priceRiskState())
+                + ",\"marketPrice\":" + (marketPrice == null ? "null" : marketPrice.toPlainString())
+                + ",\"quoteObservedAt\":" + jsonString(quoteObservedAt == null ? null : quoteObservedAt.toString())
+                + ",\"evaluatedAt\":" + jsonString(decision.evaluatedAt() == null ? null : decision.evaluatedAt().toString())
+                + ",\"approvalBoundary\":\"EXPLICIT_MCP_SUBMIT\""
+                + ",\"fundamentalVerification\":" + (fundamentals == null ? "null"
+                : "{\"status\":" + jsonString(fundamentals.status())
+                + ",\"reasons\":" + jsonArray(fundamentals.reasons())
+                + ",\"fundamentalsStatus\":" + jsonString(fundamentals.fundamentalsStatus())
+                + ",\"source\":" + jsonString(fundamentals.source())
+                + ",\"asOf\":" + jsonString(fundamentals.asOf() == null ? null : fundamentals.asOf().toString())
+                + ",\"revisionStatus\":" + jsonString(fundamentals.revisionStatus())
+                + ",\"consensusSource\":" + jsonString(fundamentals.consensusSource())
+                + ",\"consensusAsOf\":" + jsonString(fundamentals.consensusAsOf() == null
+                        ? null : fundamentals.consensusAsOf().toString()) + "}") + "}";
+    }
+
+    private static String jsonArray(java.util.List<String> values) {
+        if (values == null || values.isEmpty()) return "[]";
+        return values.stream().map(McpOrderExecutionService::jsonString)
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
+    }
+
+    private static String jsonString(String value) {
+        if (value == null) return "null";
+        var result = new StringBuilder("\"");
+        for (int index = 0; index < value.length(); index++) {
+            var character = value.charAt(index);
+            switch (character) {
+                case '"' -> result.append("\\\"");
+                case '\\' -> result.append("\\\\");
+                case '\b' -> result.append("\\b");
+                case '\f' -> result.append("\\f");
+                case '\n' -> result.append("\\n");
+                case '\r' -> result.append("\\r");
+                case '\t' -> result.append("\\t");
+                default -> {
+                    if (character < 0x20) result.append("\\u%04x".formatted((int) character));
+                    else result.append(character);
+                }
+            }
+        }
+        return result.append('"').toString();
     }
 
     private static BigDecimal referencePrice(Quote quote, OrderSide side) {

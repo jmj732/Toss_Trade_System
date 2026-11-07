@@ -93,9 +93,11 @@ public class InvestmentRiskPreflightService {
         if (riskGate == null) {
             blockers.add("BUY_RISK_ASSESSMENT_UNAVAILABLE");
         } else if ("BLOCKED".equals(riskGate.status())) {
-            blockers.addAll(riskGate.reasons());
+            if (riskGate.reasons().isEmpty()) blockers.add("BUY_RISK_GATE_BLOCKED");
+            else blockers.addAll(riskGate.reasons());
         } else if ("REVIEW_REQUIRED".equals(riskGate.status())) {
-            reviewReasons.addAll(riskGate.reasons());
+            if (riskGate.reasons().isEmpty()) reviewReasons.add("BUY_RISK_GATE_REVIEW_REQUIRED");
+            else reviewReasons.addAll(riskGate.reasons());
         } else if (!"ELIGIBLE".equals(riskGate.status())) {
             blockers.add("BUY_RISK_GATE_STATUS_UNRECOGNIZED");
         }
@@ -177,7 +179,7 @@ public class InvestmentRiskPreflightService {
         decisionReasons.addAll(reviewReasons);
         var buyGate = riskGate == null
                 ? new InvestmentBuyRiskGate.Decision("BLOCKED", List.copyOf(decisionReasons), "UNKNOWN",
-                "NOT_EVALUABLE", "NOT_EVALUABLE", "NOT_EVALUABLE", null, java.time.Instant.now())
+                "NOT_EVALUABLE", "NOT_EVALUABLE", "NOT_EVALUABLE", null, data.evaluatedAt())
                 : riskGate.withStatusAndReasons(status, List.copyOf(decisionReasons));
         return new PreflightView(input.ticker(), input.quantity(), "ELIGIBLE".equals(status),
                 List.copyOf(blockers), thesis, portfolioGate, policyGate, cashGate, currentRisk, proFormaRisk, buyGate);
@@ -260,6 +262,10 @@ public class InvestmentRiskPreflightService {
     public record PreflightInput(String ticker, BigDecimal quantity) {
     }
 
+    /**
+     * BLOCKED always has at least one hard blocker; REVIEW_REQUIRED has review reasons and no hard blockers;
+     * ELIGIBLE has neither. buyEligible is true only for ELIGIBLE. Review-only gates remain non-sizing-eligible.
+     */
     public record PreflightView(
             String ticker,
             BigDecimal quantity,

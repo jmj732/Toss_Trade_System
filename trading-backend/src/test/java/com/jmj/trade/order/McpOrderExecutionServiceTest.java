@@ -90,6 +90,7 @@ class McpOrderExecutionServiceTest {
         var attempts = mock(SubmissionAttemptRepository.class);
         var jdbc = mock(JdbcTemplate.class);
         var context = mock(InvestmentContextService.class);
+        var submissions = mock(OrderSubmissionService.class);
         var observedAt = Instant.now();
         var portfolio = new PortfolioReadService.PortfolioView(UUID.randomUUID(), observedAt, false, null, false,
                 List.of(), List.of(), null, List.of(), Map.of());
@@ -121,10 +122,14 @@ class McpOrderExecutionServiceTest {
 
         var service = new McpOrderExecutionService(activation, mock(PreTradeRiskEngine.class), portfolios, quotes,
                 mock(BrokerOrderPort.class), mock(LiveOrderSafetyLedger.class), intents, brokerOrders, attempts,
-                jdbc, mock(UnknownAttemptReconciler.class), mock(OrderSubmissionService.class), null, null, context);
+                jdbc, mock(UnknownAttemptReconciler.class), submissions, null, null, context);
 
         assertThatThrownBy(() -> service.submit(USER, CONNECTION, "ordp_" + INTENT))
                 .hasMessageContaining("Investment BUY risk gate BLOCKED");
+        verify(submissions).auditConnector(eq(INTENT), eq("MCP_SUBMIT_RISK_GATE"), eq("MCP:" + USER),
+                org.mockito.ArgumentMatchers.<String>argThat(payload ->
+                        payload.contains("\"status\":\"BLOCKED\"")
+                                && payload.contains("\"approvalBoundary\":\"EXPLICIT_MCP_SUBMIT\"")));
         verify(activation, never()).approveFromMcp(any(), any(), anyString());
         verify(activation, never()).dispatchFromMcp(any(), any(), anyString(), anyString(), any());
     }
@@ -139,6 +144,7 @@ class McpOrderExecutionServiceTest {
         var attempts = mock(SubmissionAttemptRepository.class);
         var jdbc = mock(JdbcTemplate.class);
         var context = mock(InvestmentContextService.class);
+        var submissions = mock(OrderSubmissionService.class);
         var observedAt = Instant.now();
         var portfolio = new PortfolioReadService.PortfolioView(UUID.randomUUID(), observedAt, false, null, false,
                 List.of(), List.of(), null, List.of(), Map.of());
@@ -175,7 +181,7 @@ class McpOrderExecutionServiceTest {
 
         var service = new McpOrderExecutionService(activation, mock(PreTradeRiskEngine.class), portfolios, quotes,
                 mock(BrokerOrderPort.class), mock(LiveOrderSafetyLedger.class), intents, brokerOrders, attempts,
-                jdbc, mock(UnknownAttemptReconciler.class), mock(OrderSubmissionService.class), null, null, context);
+                jdbc, mock(UnknownAttemptReconciler.class), submissions, null, null, context);
 
         var result = service.submit(USER, CONNECTION, "ordp_" + INTENT);
 
@@ -183,6 +189,11 @@ class McpOrderExecutionServiceTest {
         assertThat(result.investmentBuyGate().status()).isEqualTo("REVIEW_REQUIRED");
         assertThat(result.investmentBuyGate().reasons())
                 .contains("STRATEGIC_MARKET_RISK_REVIEW_REQUIRED_IMPAIRED");
+        verify(submissions).auditConnector(eq(INTENT), eq("MCP_SUBMIT_RISK_GATE"), eq("MCP:" + USER),
+                org.mockito.ArgumentMatchers.<String>argThat(payload -> payload.contains("\"status\":\"REVIEW_REQUIRED\"")
+                        && payload.contains("\"investmentHorizon\":\"STRATEGIC\"")
+                        && payload.contains("STRATEGIC_MARKET_RISK_REVIEW_REQUIRED_IMPAIRED")
+                        && payload.contains("\"evaluatedAt\":")));
     }
 
     @Test

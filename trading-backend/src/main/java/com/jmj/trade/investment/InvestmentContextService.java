@@ -108,6 +108,7 @@ public final class InvestmentContextService {
     @Value("${investment.data.additional-symbols:}")
     private String additionalSymbols = "";
 
+    @Autowired
     public InvestmentContextService(
             JdbcTemplate jdbc,
             ObjectMapper objectMapper,
@@ -122,16 +123,36 @@ public final class InvestmentContextService {
             @Value("${investment.data.fundamental-stale-after:P210D}") Duration fundamentalStaleAfter,
             @Value("${investment.data.consensus-stale-after:P10D}") Duration consensusStaleAfter
     ) {
+        this(jdbc, objectMapper, transactionManager, providers, brokerSurfaceProvider, portfolios, watchlist,
+                riskPolicies, priceStaleAfter, regularCloseStaleAfter, fundamentalStaleAfter,
+                consensusStaleAfter, Clock.systemUTC());
+    }
+
+    InvestmentContextService(
+            JdbcTemplate jdbc,
+            ObjectMapper objectMapper,
+            PlatformTransactionManager transactionManager,
+            StockDataProviderRegistry providers,
+            ObjectProvider<BrokerSurfaceService> brokerSurfaceProvider,
+            PortfolioReadService portfolios,
+            MonitoringWatchlistService watchlist,
+            RiskPolicyService riskPolicies,
+            Duration priceStaleAfter,
+            Duration regularCloseStaleAfter,
+            Duration fundamentalStaleAfter,
+            Duration consensusStaleAfter,
+            Clock clock
+    ) {
         this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
-        this.assembler = new StockAnalysisInputAssembler(Objects.requireNonNull(providers, "providers"), Clock.systemUTC());
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.assembler = new StockAnalysisInputAssembler(Objects.requireNonNull(providers, "providers"), clock);
         this.brokerSurface = brokerSurfaceProvider == null ? null : brokerSurfaceProvider.getIfAvailable();
         this.hasher = new StockAnalysisSnapshotHasher(objectMapper);
         this.portfolios = Objects.requireNonNull(portfolios, "portfolios");
         this.watchlist = Objects.requireNonNull(watchlist, "watchlist");
         this.riskPolicies = Objects.requireNonNull(riskPolicies, "riskPolicies");
         this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
-        this.clock = Clock.systemUTC();
         this.priceStaleAfter = positive(priceStaleAfter, "priceStaleAfter");
         this.regularCloseStaleAfter = positive(regularCloseStaleAfter, "regularCloseStaleAfter");
         this.fundamentalStaleAfter = positive(fundamentalStaleAfter, "fundamentalStaleAfter");
@@ -506,6 +527,7 @@ public final class InvestmentContextService {
 
     public ContextView context(UUID userId) {
         requireUser(userId);
+        var evaluatedAt = clock.instant();
         var inputs = riskInputs(userId);
         var portfolio = inputs.portfolio();
         var watchEntries = inputs.watchEntries();
@@ -518,7 +540,7 @@ public final class InvestmentContextService {
         var theses = inputs.theses();
         var mandates = positionMandates(userId);
         var risks = riskContributions(userId, symbols, positions, inputs.weights(), portfolio, theses, analysis,
-                mandates, tacticalReadModel.securities());
+                mandates, tacticalReadModel.securities(), evaluatedAt);
         var securities = symbols.stream().sorted().map(symbol -> {
             var snapshot = analysis.get(symbol);
             var risk = risks.get(symbol);
@@ -592,6 +614,7 @@ public final class InvestmentContextService {
 
     /** Same-snapshot inputs for the read-only buy preflight. The cash figure is reported cash capacity, not order approval. */
     record RiskPreflightData(
+            Instant evaluatedAt,
             PortfolioView portfolio,
             Map<String, RiskContributionView> currentRisk,
             Map<String, RiskContributionView> proFormaRisk,
@@ -605,6 +628,7 @@ public final class InvestmentContextService {
 
     RiskPreflightData riskPreflightData(UUID userId, String rawTicker, BigDecimal quantity) {
         requireUser(userId);
+        var evaluatedAt = clock.instant();
         var ticker = ticker(rawTicker);
         var inputs = riskInputs(userId);
         var symbols = new LinkedHashSet<>(inputs.symbols());
@@ -618,7 +642,7 @@ public final class InvestmentContextService {
         var tacticalViews = tacticalOverlayService == null ? Map.<String, SecurityTacticalOverlayView>of()
                 : tacticalOverlayService.context(userId, List.copyOf(symbols)).securities();
         var currentRisk = riskContributions(userId, symbols, inputs.positions(), inputs.weights(), portfolio,
-                theses, analysis, positionMandates(userId), tacticalViews);
+                theses, analysis, positionMandates(userId), tacticalViews, evaluatedAt);
         var existing = inputs.positions().get(ticker);
         var priceNode = node(analysis.get(ticker), "price");
         var explicitCurrency = clean(text(priceNode.get("currency")));
@@ -682,11 +706,11 @@ public final class InvestmentContextService {
                 proFormaSymbols.add(ticker);
                 proFormaRisk = riskContributions(userId, proFormaSymbols, proFormaPositionsByTicker,
                         portfolioWeights(proFormaPortfolio), proFormaPortfolio, theses, analysis,
-                        positionMandates(userId), tacticalViews);
+                        positionMandates(userId), tacticalViews, evaluatedAt);
             }
         }
         var cash = preflightCash(userId);
-        return new RiskPreflightData(portfolio, currentRisk, proFormaRisk, thesis, Set.copyOf(held), validatedCurrency,
+        return new RiskPreflightData(evaluatedAt, portfolio, currentRisk, proFormaRisk, thesis, Set.copyOf(held), validatedCurrency,
                 cash.amounts(), cash.source(), riskPolicies.current(userId));
     }
 
@@ -763,8 +787,9 @@ public final class InvestmentContextService {
                 current.exitOrDiscardTrigger(), current.classification(), current.updatedAt()));
         var tacticalViews = tacticalOverlayService == null ? Map.<String, SecurityTacticalOverlayView>of()
                 : tacticalOverlayService.context(userId, List.copyOf(symbols)).securities();
+        var evaluatedAt = clock.instant();
         return riskContributions(userId, symbols, inputs.positions(), inputs.weights(), inputs.portfolio(),
-                theses, analysis, positionMandates(userId), tacticalViews).get(ticker);
+                theses, analysis, positionMandates(userId), tacticalViews, evaluatedAt).get(ticker);
     }
 
     /** Current stored thesis or null; read-only accessor for the approval workflow (same row mapper as context). */
@@ -2196,7 +2221,7 @@ public final class InvestmentContextService {
         requireUser(userId);
         var symbol = ticker(rawTicker);
         var snapshot = latestSecuritySnapshot(userId, symbol);
-        return marketRiskAssessment(userId, symbol, livePrice, livePriceAsOf, snapshot);
+        return marketRiskAssessment(userId, symbol, livePrice, livePriceAsOf, snapshot, clock.instant());
     }
 
     /** Latest market and freshness-checked fundamental evidence for a live BUY decision. */
@@ -2207,23 +2232,23 @@ public final class InvestmentContextService {
         var snapshot = latestSecuritySnapshot(userId, symbol);
         var assessedAt = clock.instant();
         return InvestmentBuyRiskGate.evaluate(
-                marketRiskAssessment(userId, symbol, livePrice, livePriceAsOf, snapshot),
+                marketRiskAssessment(userId, symbol, livePrice, livePriceAsOf, snapshot, assessedAt),
                 fundamentalVerification(snapshot, assessedAt), assessedAt);
     }
 
     private MarketRiskEvaluator.Assessment marketRiskAssessment(UUID userId, String symbol,
                                                                   BigDecimal livePrice, Instant livePriceAsOf,
-                                                                  JsonNode snapshot) {
+                                                                  JsonNode snapshot, Instant evaluatedAt) {
         var thesis = thesisIfPresent(userId, symbol);
         var mandate = positionMandates(userId).stream().filter(item -> symbol.equals(item.ticker()))
                 .findFirst().orElse(null);
         var priceFacts = priceFactsFromNode(node(snapshot, "price"));
-        var mark = priceFacts.riskMark(clock.instant());
+        var mark = priceFacts.riskMark(evaluatedAt);
         var price = livePrice == null ? mark.value() : livePrice;
         var asOf = livePrice == null ? mark.asOf() : livePriceAsOf;
         var tossSource = livePrice != null || mark.source() != null && mark.source().startsWith("TOSS");
-        var trusted = price != null && price.signum() > 0 && asOf != null && !asOf.isAfter(clock.instant())
-                && !asOf.isBefore(clock.instant().minus(priceStaleAfter))
+        var trusted = price != null && price.signum() > 0 && asOf != null && !asOf.isAfter(evaluatedAt)
+                && !asOf.isBefore(evaluatedAt.minus(priceStaleAfter))
                 && tossSource
                 && (livePrice != null || mark.status() == DataStatus.OK);
         var tactical = tacticalOverlayService == null ? null
@@ -2233,7 +2258,7 @@ public final class InvestmentContextService {
                 mandate == null ? null : mandate.riskPriceRole(),
                 thesis != null && "CONFIRMED".equals(thesis.invalidationStatus()) && trusted,
                 thesis == null ? null : thesis.priceRiskTriggerPrice(), trusted ? price : null,
-                trusted ? asOf : null, clock.instant(), regularCloseStaleAfter);
+                trusted ? asOf : null, evaluatedAt, regularCloseStaleAfter);
     }
 
     public PositionMandateView upsertPositionMandate(UUID userId, String rawTicker, PositionMandateInput input) {
@@ -4339,7 +4364,7 @@ public final class InvestmentContextService {
         var tacticalViews = tacticalOverlayService == null ? Map.<String, SecurityTacticalOverlayView>of()
                 : tacticalOverlayService.context(userId, List.copyOf(symbols)).securities();
         return riskContributions(userId, symbols, positions, weights, portfolio, theses, analysis,
-                positionMandates(userId), tacticalViews);
+                positionMandates(userId), tacticalViews, clock.instant());
     }
 
     private Map<String, RiskContributionView> riskContributions(
@@ -4349,14 +4374,14 @@ public final class InvestmentContextService {
         var tacticalViews = tacticalOverlayService == null ? Map.<String, SecurityTacticalOverlayView>of()
                 : tacticalOverlayService.context(userId, List.copyOf(symbols)).securities();
         return riskContributions(userId, symbols, positions, weights, portfolio, theses, analysis,
-                positionMandates, tacticalViews);
+                positionMandates, tacticalViews, clock.instant());
     }
 
     private Map<String, RiskContributionView> riskContributions(
             UUID userId, Set<String> symbols, Map<String, PositionView> positions,
             Map<String, BigDecimal> weights, PortfolioView portfolio, Map<String, ThesisView> theses,
             Map<String, JsonNode> analysis, List<PositionMandateView> positionMandates,
-            Map<String, SecurityTacticalOverlayView> tacticalViews) {
+            Map<String, SecurityTacticalOverlayView> tacticalViews, Instant evaluatedAt) {
         var portfolioDataStatus = dataStatus(portfolio.status());
         var portfolioNumbersAvailable = portfolio.riskNumbersAvailable();
         var portfolioCurrent = portfolioDataStatus == InvestmentDataCalculator.DataStatus.OK;
@@ -4368,7 +4393,7 @@ public final class InvestmentContextService {
             var thesis = theses.get(symbol);
             var position = positions.get(symbol);
             var priceNode = node(analysis.get(symbol), "price");
-            var mark = priceFactsFromNode(priceNode).riskMark(clock.instant());
+            var mark = priceFactsFromNode(priceNode).riskMark(evaluatedAt);
             var price = mark.value();
             var priceAsOf = mark.asOf();
             var weight = portfolioNumbersAvailable ? weights.get(symbol) : null;
@@ -4405,11 +4430,10 @@ public final class InvestmentContextService {
                     marketMetrics, mandate == null ? null : mandate.investmentHorizon(),
                     mandate == null ? null : mandate.riskPriceRole(), confirmed && trustedMark && tossMark,
                     triggerPrice, trustedMark && tossMark ? price : null,
-                    trustedMark && tossMark ? priceAsOf : null, clock.instant(), regularCloseStaleAfter);
-            var assessedAt = clock.instant();
+                    trustedMark && tossMark ? priceAsOf : null, evaluatedAt, regularCloseStaleAfter);
             var buyGate = InvestmentBuyRiskGate.evaluate(marketRisk,
-                    fundamentalVerification(analysis.get(symbol), assessedAt), assessedAt);
-            if ("BLOCKED".equals(buyGate.status())) {
+                    fundamentalVerification(analysis.get(symbol), evaluatedAt), evaluatedAt);
+            if (!"ELIGIBLE".equals(buyGate.status())) {
                 reasons.addAll(buyGate.reasons());
                 eligible = false;
             }

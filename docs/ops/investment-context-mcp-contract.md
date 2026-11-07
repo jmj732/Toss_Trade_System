@@ -129,9 +129,12 @@ reports `fundamentalHealth=NOT_EVALUABLE`; evidence availability is not a findin
 health. Disabling SEC/IR collection does not delete previously stored snapshots: their original
 source and as-of are preserved, and strategic evidence remains available only while its existing
 freshness checks pass. The same gate is re-evaluated against the live Toss quote before preparation
-and submission.
-Strategic `REVIEW_REQUIRED` may be prepared for inspection; `submit_order` remains the explicit
-approval step. Existing Hard Risk, account, cash, concentration, and approved-trigger Soft Risk
+and submission. For each submit, the backend re-evaluates against the current Toss quote and
+latest saved evidence. It appends an `MCP_SUBMIT_RISK_GATE` audit snapshot with the resulting
+status/reasons, horizon, market state, fundamental evidence, quote price/as-of and `evaluatedAt`
+before either rejecting a `BLOCKED` order or dispatching it. Strategic `REVIEW_REQUIRED` may be
+prepared for inspection; an explicit authenticated `submit_order` is the approval evidence for
+accepting the re-evaluated review state. Existing Hard Risk, account, cash, concentration, and approved-trigger Soft Risk
 Budget checks remain independent. Defensive SELL readiness is unchanged.
 
 The portfolio's PositionMandate remains the authoritative horizon: a tactical breach calls
@@ -321,6 +324,6 @@ The proposal tool persists only `AI_PROPOSED`, `UNVERIFIED`, or `INVALIDATION_UN
 | `CONDITIONAL` | Thesis is `CONFIRMED` but the predicate cannot be satisfied with current operational inputs, including missing/stale price, weight, or risk level. |
 | `NO` | Thesis is absent or not `CONFIRMED`. |
 
-`risk.eligibilityReasons` is an additive field of `RiskContributionView`: a deterministic list of codes explaining why a position is not sizing-eligible; older callers keep prior constructor signatures. `investmentBuyGate` carries the horizon-specific `BLOCKED`, `REVIEW_REQUIRED`, or `ELIGIBLE` decision and evidence freshness reasons. `sizingEligible` requires `investmentBuyGate.status = ELIGIBLE` and `softBudgetStatus = WITHIN_SOFT_BUDGET` (portfolio `thesisFailureStress` ≤ `softRiskBudget` with status `OK`). The approved-trigger Soft Risk Budget formula and value are unchanged. The list is a computed-state explanation only and is not an actor/evidence audit history.
+`risk.eligibilityReasons` is an additive field of `RiskContributionView`: a deterministic list of codes explaining why a position is not sizing-eligible; older callers keep prior constructor signatures. `investmentBuyGate` carries the horizon-specific `BLOCKED`, `REVIEW_REQUIRED`, or `ELIGIBLE` decision and evidence freshness reasons. `sizingEligible` requires `investmentBuyGate.status = ELIGIBLE` and `softBudgetStatus = WITHIN_SOFT_BUDGET` (portfolio `thesisFailureStress` ≤ `softRiskBudget` with status `OK`); both `BLOCKED` and `REVIEW_REQUIRED` are non-sizing-eligible. The approved-trigger Soft Risk Budget formula and value are unchanged. The list is a computed-state explanation only and is not an actor/evidence audit history.
 
 These labels do not generate actions or orders. Theme meaning, AVWAP anchors, entry setup, and initial risk price remain caller inputs; thesis confirmation is limited to the authenticated REST route, the Telegram human approval, or the V60 policy-gated verification described above. Existing authenticated tactical REST input routes remain available; this change does not expose them as MCP write tools. It does not add an intraday feed, create Calibration Log, change Notion prompt versions, or update scheduled-task configuration. Actual runtime tool availability and deployment must be checked separately.

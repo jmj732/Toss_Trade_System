@@ -33,6 +33,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -128,7 +129,7 @@ class InvestmentContextMcpIntegrationTest extends PostgresIntegrationTest {
         var contextService = new InvestmentContextService(jdbc, mapper, transactions,
                 new StockDataProviderRegistry(List.of(provider)), surfaceProvider, portfolios,
                 watchlist, risks, Duration.ofMinutes(15), Duration.ofDays(7),
-                Duration.ofDays(210), Duration.ofDays(10));
+                Duration.ofDays(210), Duration.ofDays(10), Clock.fixed(now, ZoneOffset.UTC));
         contextService.setTacticalOverlayService(overlay);
         var connectorService = mock(ConnectorService.class);
         var protocol = new ConnectorMcpProtocol(connectorService, null, contextService, mapper);

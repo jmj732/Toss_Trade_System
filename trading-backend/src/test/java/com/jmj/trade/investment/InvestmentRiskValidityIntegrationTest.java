@@ -87,6 +87,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(result.cash().purchaseCost()).isEqualByComparingTo("100");
         assertThat(result.cash().availableAfter()).isEqualByComparingTo("650");
         assertThat(result.proFormaRisk().get("AAPL").riskMark().value()).isEqualByComparingTo("100");
+        assertThat(result.proFormaRisk().get("AAPL").investmentBuyGate().evaluatedAt())
+                .isEqualTo(result.currentRisk().get("AAPL").investmentBuyGate().evaluatedAt());
         assertThat(context.context(USER_ID)).isEqualTo(before);
     }
 
@@ -102,7 +104,7 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(result.currentRisk().get("GOOGL").portfolioWeight()).isNull();
         assertThat(result.currentRisk().get("GOOGL").eligibilityReasons()).contains("POSITION_WEIGHT_MISSING");
         assertThat(result.proFormaRisk().get("GOOGL").portfolioWeight()).isEqualByComparingTo("0.10");
-        assertThat(result.proFormaRisk().get("GOOGL").sizingEligible()).isTrue();
+        assertThat(result.proFormaRisk().get("GOOGL").sizingEligible()).isFalse();
         assertThat(result.proFormaRisk().get("GOOGL").investmentBuyGate().status()).isEqualTo("REVIEW_REQUIRED");
         assertThat(result.buyEligible()).as("blockers=%s cash=%s", result.blockers(), result.cash()).isFalse();
         assertThat(result.buyGate().status()).isEqualTo("REVIEW_REQUIRED");
@@ -129,6 +131,10 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(result.currentRisk().get("MSFT").thesisFailureStress()).isNull();
         assertThat(result.buyEligible()).isFalse();
         assertThat(result.blockers()).contains("HELD_POSITION_RISK_INCOMPLETE");
+        assertThat(result.currentRisk().values().stream()
+                .map(InvestmentContextService.RiskContributionView::investmentBuyGate)
+                .map(InvestmentBuyRiskGate.Decision::evaluatedAt).distinct())
+                .hasSize(1);
     }
 
     @Test
@@ -139,6 +145,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
 
         assertThat(result.buyEligible()).isFalse();
         assertThat(result.blockers()).contains("INSUFFICIENT_CASH");
+        assertThat(result.buyGate().status()).isEqualTo("BLOCKED");
+        assertThat(result.buyGate().reasons()).contains("INSUFFICIENT_CASH");
         assertThat(result.cash().availableAfter()).isEqualByComparingTo("-50");
         assertThatThrownBy(() -> new InvestmentRiskPreflightService(context, jdbc).preflight(USER_ID,
                 new InvestmentRiskPreflightService.PreflightInput("AAPL", BigDecimal.ZERO)))
@@ -161,6 +169,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
 
             assertThat(result.buyEligible()).isFalse();
             assertThat(result.blockers()).contains("PORTFOLIO_RISK_UNAVAILABLE");
+            assertThat(result.buyGate().status()).isEqualTo("BLOCKED");
+            assertThat(result.buyGate().reasons()).containsAll(result.blockers());
             assertThat(result.portfolio().status()).isEqualTo("BLOCKED");
         }
     }
@@ -216,6 +226,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         var stale = new InvestmentRiskPreflightService(staleContext, jdbc).preflight(USER_ID,
                 new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
         assertThat(stale.blockers()).contains("RISK_MARK_UNAVAILABLE");
+        assertThat(stale.buyGate().status()).isEqualTo("BLOCKED");
+        assertThat(stale.buyGate().reasons()).containsAll(stale.blockers());
         assertThat(stale.buyEligible()).isFalse();
 
         var price = closedGapPrice(true);
@@ -225,8 +237,10 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
                 new InvestmentRiskPreflightService.PreflightInput("AAPL", bd("1")));
         assertThat(regularClose.proFormaRisk().get("AAPL").riskMark().basis())
                 .isEqualTo(InvestmentRiskMarkSelector.REGULAR_CLOSE_BASIS);
-        assertThat(regularClose.buyEligible())
-                .as("blockers=%s cash=%s", regularClose.blockers(), regularClose.cash()).isTrue();
+        assertThat(regularClose.buyEligible()).isFalse();
+        assertThat(regularClose.buyGate().status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(regularClose.blockers()).as("review-only gates have no hard blockers").isEmpty();
+        assertThat(regularClose.buyGate().reasons()).contains("INVESTMENT_HORIZON_UNKNOWN");
     }
 
     @Test
@@ -501,7 +515,9 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.plannedLossContribution()).isEqualByComparingTo("0.05000000");
         assertThat(risk.status()).isEqualTo(InvestmentDataCalculator.DataStatus.OK);
         assertThat(risk.top2CorrelatedStatus()).isEqualTo(InvestmentDataCalculator.DataStatus.NOT_APPLICABLE);
-        assertThat(risk.sizingEligible()).isTrue();
+        assertThat(risk.sizingEligible()).isFalse();
+        assertThat(risk.investmentBuyGate().status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(risk.eligibilityReasons()).contains("INVESTMENT_HORIZON_UNKNOWN", "MARKET_DATA_NOT_EVALUABLE");
         assertThat(risk.softBudgetStatus()).isEqualTo("WITHIN_SOFT_BUDGET");
         assertThat(risk.approvedTriggerRisk().status()).isEqualTo("ABOVE_TRIGGER");
         assertThat(risk.approvedTriggerRisk().breachFraction()).isNull();
@@ -544,7 +560,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     void publishesThreeStateEligibilityWithoutReplacingLegacyBoolean() throws Exception {
         var security = context("OK", "OK").securities().getFirst();
         assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("CONDITIONAL");
-        assertThat(security.risk().sizingEligible()).isTrue();
+        assertThat(security.risk().sizingEligible()).isFalse();
+        assertThat(security.risk().investmentBuyGate().status()).isEqualTo("REVIEW_REQUIRED");
         var conditional = new InvestmentContextService.SecurityView("AAPL", null, null,
                 null, null, null, null, null, null, null, security.thesis(), null);
         assertThat(mapper.valueToTree(conditional)
@@ -573,7 +590,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.thesisFailureStress()).isNull();
         assertThat(risk.sizingEligible()).isFalse();
         assertThat(mapper.valueToTree(security).path("sizingEligibility").asText()).isEqualTo("NO");
-        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_NOT_CONFIRMED", "RISK_BUDGET_UNEVALUATED");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_NOT_CONFIRMED",
+                "INVESTMENT_HORIZON_UNKNOWN", "MARKET_DATA_NOT_EVALUABLE", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.eligibilityReasons().isEmpty()).isEqualTo(risk.sizingEligible());
     }
 
@@ -590,7 +608,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         assertThat(risk.approvedTriggerRisk().breachFraction()).isNull();
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.eligibilityReasons())
-                .containsExactly("INVALIDATION_NOT_CONFIRMED", "INVALIDATION_PRICE_NOT_CONFIGURED", "RISK_BUDGET_UNEVALUATED");
+                .containsExactly("INVALIDATION_NOT_CONFIRMED", "INVALIDATION_PRICE_NOT_CONFIGURED",
+                        "INVESTMENT_HORIZON_UNKNOWN", "MARKET_DATA_NOT_EVALUABLE", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.sizingEligible()).isFalse();
     }
 
@@ -602,7 +621,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
 
         assertThat(risk.invalidationDownside()).isNull();
         assertThat(risk.plannedLossContribution()).isNull();
-        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_PRICE_BREACHED", "RISK_BUDGET_UNEVALUATED");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVALIDATION_PRICE_BREACHED",
+                "INVESTMENT_HORIZON_UNKNOWN", "MARKET_DATA_NOT_EVALUABLE", "RISK_BUDGET_UNEVALUATED");
         assertThat(risk.sizingEligible()).isFalse();
         assertThat(risk.approvedTriggerRisk().status()).isEqualTo("TRIGGER_BREACHED");
         assertThat(risk.approvedTriggerRisk().breachFraction()).isEqualByComparingTo("0.16666667");
@@ -636,11 +656,12 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void confirmedHappyPathHasNoEligibilityReasons() throws Exception {
+    void confirmedRiskWithMissingHorizonAndMarketEvidenceRequiresReview() throws Exception {
         var risk = context("OK", "OK").securities().getFirst().risk();
 
-        assertThat(risk.sizingEligible()).isTrue();
-        assertThat(risk.eligibilityReasons()).isEmpty();
+        assertThat(risk.sizingEligible()).isFalse();
+        assertThat(risk.investmentBuyGate().status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVESTMENT_HORIZON_UNKNOWN", "MARKET_DATA_NOT_EVALUABLE");
         assertThat(risk.eligibilityReasons().isEmpty()).isEqualTo(risk.sizingEligible());
     }
 
@@ -816,7 +837,8 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
         var service = new InvestmentContextService(
                 jdbc, mapper, new DataSourceTransactionManager(jdbc.getDataSource()),
                 new StockDataProviderRegistry(List.of()), mock(ObjectProvider.class), portfolios, watchlist, riskPolicies,
-                Duration.ofMinutes(15), Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10));
+                Duration.ofMinutes(15), Duration.ofDays(7), Duration.ofDays(210), Duration.ofDays(10),
+                Clock.fixed(Instant.now(), ZoneOffset.UTC));
         return service;
     }
 
@@ -914,11 +936,12 @@ class InvestmentRiskValidityIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void withinBudgetKeepsSizingEligible() throws Exception {
-        // Budget 0.10 with stress within limit → eligible with empty reasons
+    void withinBudgetDoesNotOverrideMissingHorizonAndMarketEvidence() throws Exception {
+        // Budget is within limit, but missing mandate and market evidence still require review.
         var risk = context("OK", "OK").securities().getFirst().risk();
-        assertThat(risk.sizingEligible()).isTrue();
-        assertThat(risk.eligibilityReasons()).isEmpty();
+        assertThat(risk.sizingEligible()).isFalse();
+        assertThat(risk.investmentBuyGate().status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(risk.eligibilityReasons()).containsExactly("INVESTMENT_HORIZON_UNKNOWN", "MARKET_DATA_NOT_EVALUABLE");
         assertThat(risk.softBudgetStatus()).isEqualTo("WITHIN_SOFT_BUDGET");
     }
 
