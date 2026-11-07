@@ -22,6 +22,7 @@ import static org.mockito.Mockito.when;
 
 class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrationTest {
     private static final Instant NOW = Instant.parse("2026-11-07T16:00:00Z");
+    private static final UUID CONNECTION = UUID.fromString("018f0000-0000-7000-8000-000000000099");
 
     private JdbcTemplate jdbc;
     private InvestmentContextService context;
@@ -43,6 +44,18 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
         thesisRevisionId = UUID.randomUUID();
         mandateUpdatedAt = NOW.minusSeconds(3600);
         jdbc.update("INSERT INTO users (id) VALUES (?)", userId);
+        jdbc.update("""
+                INSERT INTO broker_connections (
+                    id, user_id, broker_type, status, credential_ciphertext, credential_nonce,
+                    credential_key_version, credential_revision, created_at, updated_at, version
+                ) VALUES (?, ?, 'TOSS_INVEST', 'ACTIVE', ?, ?, 1, 1, ?, ?, 0)
+                """, CONNECTION, userId, new byte[32], new byte[12], timestamp(NOW), timestamp(NOW));
+        jdbc.update("""
+                INSERT INTO connector_api_keys (
+                    id, user_id, connection_id, key_hash, key_prefix, scope, status, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, 'ckey_test0000', 'connector:review', 'ACTIVE', ?, ?)
+                """, apiKeyId, userId, CONNECTION, apiKeyId.toString().replace("-", ""),
+                timestamp(NOW.minusSeconds(60)), timestamp(NOW.plusSeconds(3600)));
         jdbc.update("""
                 INSERT INTO investment_decision_ledger (
                     decision_id, user_id, as_of, asset, action, reference_price, price_session, horizon,
@@ -118,6 +131,110 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
     }
 
     @Test
+    void chatGptReviewRequiresServerRunAndCanBeConsumedOnce() {
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        var completion = new InvestmentStrategicBuyRevalidationService.RunCompletion(
+                run.runId(), run.challenge(), NOW.minusSeconds(300), "ChatGPT reviewed the current thesis.",
+                sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"),
+                assessment("INTACT", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR"),
+                BigDecimal.valueOf(90), BigDecimal.valueOf(110), BigDecimal.valueOf(5));
+
+        var saved = service.completeChatGptRun(userId, CONNECTION, apiKeyId, completion);
+        var submission = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100),
+                new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("STRATEGIC_MARKET_REVIEW"),
+                        "STRATEGIC", "OK", "IMPAIRED", "TRIGGER_BREACHED", null, NOW));
+
+        assertThat(saved.reviewId()).isEqualTo(run.runId());
+        assertThat(saved.runId()).isEqualTo(run.runId());
+        assertThat(saved.reviewOrigin()).isEqualTo("CHATGPT_MCP");
+        assertThat(saved.provider()).isEqualTo("ChatGPT");
+        assertThat(saved.verdict()).isEqualTo("PASS");
+        assertThat(submission.allowed()).isTrue();
+        assertThatThrownBy(() -> service.completeChatGptRun(userId, CONNECTION, apiKeyId, completion))
+                .isInstanceOf(InvestmentException.class)
+                .extracting(error -> ((InvestmentException) error).code())
+                .isEqualTo(InvestmentException.Code.CONFLICT);
+    }
+
+    @Test
+    void rejectsChatGptReviewWithWrongRunChallenge() {
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        var completion = new InvestmentStrategicBuyRevalidationService.RunCompletion(
+                run.runId(), "wrong-challenge", NOW.minusSeconds(300), "Reviewed.",
+                sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"),
+                assessment("INTACT", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR"),
+                BigDecimal.valueOf(90), BigDecimal.valueOf(110), BigDecimal.valueOf(5));
+
+        assertThatThrownBy(() -> service.completeChatGptRun(userId, CONNECTION, apiKeyId, completion))
+                .isInstanceOf(InvestmentException.class)
+                .extracting(error -> ((InvestmentException) error).code())
+                .isEqualTo(InvestmentException.Code.CONFLICT);
+    }
+
+    @Test
+    void expiredChatGptRunCannotBeCompleted() {
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        var completion = completion(run, sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"),
+                assessment("INTACT", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR"));
+        var expiredService = new InvestmentStrategicBuyRevalidationService(jdbc, new ObjectMapper(), context,
+                new DataSourceTransactionManager(pooledTestDataSource()),
+                Clock.fixed(NOW.plusSeconds(16 * 60L), ZoneOffset.UTC));
+
+        assertThatThrownBy(() -> expiredService.completeChatGptRun(userId, CONNECTION, apiKeyId, completion))
+                .isInstanceOf(InvestmentException.class)
+                .extracting(error -> ((InvestmentException) error).code())
+                .isEqualTo(InvestmentException.Code.CONFLICT);
+    }
+
+    @Test
+    void changedThesisRevisionInvalidatesOpenChatGptRun() {
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        var changedRevision = UUID.randomUUID();
+        when(context.currentThesis(userId, "LUNR")).thenReturn(
+                new InvestmentContextService.ThesisView("LUNR", "Changed thesis", "Upside", "Expectations gap",
+                        "Fundamental invalidation", "Revision invalidation", "Price review trigger",
+                        BigDecimal.valueOf(80), "CONFIRMED", "Expansion", "Exit condition", "STRATEGIC",
+                        mandateUpdatedAt, changedRevision, 4L, "USER_SESSION", null, null, null));
+
+        assertThatThrownBy(() -> service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                completion(run, sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"),
+                        assessment("INTACT", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR"))))
+                .isInstanceOf(InvestmentException.class)
+                .extracting(error -> ((InvestmentException) error).code())
+                .isEqualTo(InvestmentException.Code.INVALID_INPUT);
+    }
+
+    @Test
+    void missingEvidenceTypeCannotCreatePassingChatGptReview() {
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+
+        assertThatThrownBy(() -> service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                completion(run, sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS"),
+                        assessment("INTACT", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR"))))
+                .isInstanceOf(InvestmentException.class)
+                .extracting(error -> ((InvestmentException) error).code())
+                .isEqualTo(InvestmentException.Code.INVALID_INPUT);
+    }
+
+    @Test
+    void notEvaluableChatGptAssessmentIsStoredAsBlocked() {
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+
+        var saved = service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                completion(run, sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"),
+                        assessment("NOT_EVALUABLE", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR")));
+
+        assertThat(saved.verdict()).isEqualTo("BLOCKED");
+        var validation = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100),
+                new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("STRATEGIC_MARKET_REVIEW"),
+                        "STRATEGIC", "OK", "IMPAIRED", "TRIGGER_BREACHED", null, NOW));
+        assertThat(validation.allowed()).isFalse();
+        assertThat(validation.reason()).isEqualTo("STRATEGIC_REVALIDATION_NOT_PASSED");
+    }
+
+    @Test
     void differentBodyCannotReuseReviewId() {
         var input = input(UUID.randomUUID(), assessment("INTACT", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR"));
         service.record(userId, apiKeyId, input);
@@ -134,13 +251,25 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
 
     private InvestmentStrategicBuyRevalidationService.RevalidationInput input(
             UUID reviewId, InvestmentStrategicBuyRevalidationService.Assessment assessment) {
-        var sources = List.of("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK").stream()
-                .map(type -> new InvestmentStrategicBuyRevalidationService.EvidenceSource(
-                        "https://example.com/" + type.toLowerCase(), NOW.minusSeconds(600), type)).toList();
+        var sources = sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK");
         return new InvestmentStrategicBuyRevalidationService.RevalidationInput(reviewId, decisionId, "LUNR",
                 thesisRevisionId, NOW.minusSeconds(300), NOW.plusSeconds(600), "provider", "model",
                 "Thesis, expectations, and forward risk were reviewed.", sources, assessment,
                 BigDecimal.valueOf(90), BigDecimal.valueOf(110), BigDecimal.valueOf(5));
+    }
+
+    private InvestmentStrategicBuyRevalidationService.RunCompletion completion(
+            InvestmentStrategicBuyRevalidationService.ReviewRun run,
+            List<InvestmentStrategicBuyRevalidationService.EvidenceSource> sources,
+            InvestmentStrategicBuyRevalidationService.Assessment assessment) {
+        return new InvestmentStrategicBuyRevalidationService.RunCompletion(
+                run.runId(), run.challenge(), NOW.minusSeconds(300), "ChatGPT reviewed the current thesis.",
+                sources, assessment, BigDecimal.valueOf(90), BigDecimal.valueOf(110), BigDecimal.valueOf(5));
+    }
+
+    private static List<InvestmentStrategicBuyRevalidationService.EvidenceSource> sources(String... types) {
+        return java.util.Arrays.stream(types).map(type -> new InvestmentStrategicBuyRevalidationService.EvidenceSource(
+                "https://example.com/" + type.toLowerCase(), NOW.minusSeconds(600), type)).toList();
     }
 
     private static InvestmentStrategicBuyRevalidationService.Assessment assessment(

@@ -109,6 +109,28 @@ class ConnectorApiKeyAuthenticationFilterTest {
     }
 
     @Test
+    void reviewScopedKeyAddsReviewAuthorityWithoutTradeAuthority() throws Exception {
+        var keys = mock(ConnectorApiKeyService.class);
+        var key = new ConnectorApiKeyService.AuthenticatedKey(
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "ckey_review", null, false,
+                ConnectorApiKeyService.REVIEW_SCOPE);
+        when(keys.findActive("ckey_review_secret")).thenReturn(Optional.of(key));
+        when(keys.markUsed(key.id())).thenReturn(true);
+        var filter = new ConnectorApiKeyAuthenticationFilter(keys);
+        var request = new MockHttpServletRequest("POST", "/api/v1/connector/mcp");
+        request.addHeader("Authorization", "Bearer ckey_review_secret");
+        var response = new MockHttpServletResponse();
+        var chain = mock(FilterChain.class);
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(org.springframework.security.core.context.SecurityContextHolder.getContext()
+                .getAuthentication().getAuthorities()).extracting("authority")
+                .containsExactlyInAnyOrder("SCOPE_CONNECTOR_READ", "SCOPE_CONNECTOR_REVIEW");
+        org.springframework.security.core.context.SecurityContextHolder.clearContext();
+    }
+
+    @Test
     void expiredKeyCannotReachConnector() throws Exception {
         var keys = mock(ConnectorApiKeyService.class);
         var key = new ConnectorApiKeyService.AuthenticatedKey(

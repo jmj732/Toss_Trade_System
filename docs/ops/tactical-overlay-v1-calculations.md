@@ -62,10 +62,11 @@ is independent of `marketHealth` and of the stored thesis approval state.
   missing/stale strategic evidence also blocks. Unknown horizons require review. Evidence
   availability does not imply a healthy business thesis. This gate is separate from the unchanged
   10% approved-trigger Soft Risk Budget. Strategic review-required proposals can be prepared for
-  inspection. Submission requires a `SERVER_GENERATED` revalidation record linked to the existing
-  ADD Decision and current Thesis revision; no server-managed reviewer currently creates one, so
-  Strategic `REVIEW_REQUIRED` submissions are blocked. `submit_order` is only individual order
-  approval. Caller-authored claims cannot authorize orders. `BLOCKED` cannot be overridden.
+  inspection. Submission requires a current revalidation record linked to the existing ADD Decision
+  and Thesis revision. A completed `CHATGPT_MCP` review run or future `SERVER_GENERATED` review may
+  satisfy this gate; caller-asserted records cannot. ChatGPT MCP reviews do not attest Scheduled Task
+  identity or source grounding, and all normal order gates and individual approval still apply.
+  `BLOCKED` cannot be overridden.
   TACTICAL BUY gates and defensive SELL readiness are unchanged.
 
 ## Stages and events

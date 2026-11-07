@@ -63,7 +63,8 @@ class ConnectorMcpControllerTest {
                 .set("result", new ObjectMapper().createObjectNode());
         when(protocol.handle(org.mockito.ArgumentMatchers.any(ObjectNode.class),
                 org.mockito.ArgumentMatchers.eq(USER),
-                org.mockito.ArgumentMatchers.eq(CONNECTION))).thenReturn(response);
+                org.mockito.ArgumentMatchers.eq(CONNECTION), any(UUID.class), eq(false), eq(false)))
+                .thenReturn(response);
         MockMvc mvc = standaloneSetup(new ConnectorMcpController(
                 protocol, "https://dashboard.example")).build();
 

@@ -70,6 +70,9 @@ public final class ConnectorApiKeyAuthenticationFilter extends OncePerRequestFil
         if (key.canTrade()) {
             authorities.add(new SimpleGrantedAuthority("SCOPE_CONNECTOR_TRADE"));
         }
+        if (key.canReview()) {
+            authorities.add(new SimpleGrantedAuthority("SCOPE_CONNECTOR_REVIEW"));
+        }
         var authentication = new UsernamePasswordAuthenticationToken(
                 key.userId().toString(), null, authorities);
         authentication.setDetails(key);

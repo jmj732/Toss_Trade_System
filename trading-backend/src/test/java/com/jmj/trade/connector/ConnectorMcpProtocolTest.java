@@ -12,6 +12,7 @@ import com.jmj.trade.investment.InvestmentReviewService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
 import com.jmj.trade.investment.InvestmentSellReadinessService;
 import com.jmj.trade.investment.InvestmentRiskPreflightService;
+import com.jmj.trade.investment.InvestmentStrategicBuyRevalidationService;
 import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
@@ -55,6 +56,52 @@ class ConnectorMcpProtocolTest {
                 USER, CONNECTION, true);
         assertThat(attempted.path("error").path("code").asInt()).isEqualTo(-32601);
         assertThat(attempted.path("error").path("message").asText()).contains("Tool not found");
+    }
+
+    @Test
+    void chatGptReviewScopeCanRunStrategicReviewButCannotTradeOrSetTrustedOrigin() throws Exception {
+        var reviewer = mock(InvestmentStrategicBuyRevalidationService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, null, null, null, null, null,
+                reviewer, new ObjectMapper());
+        var keyId = UUID.randomUUID();
+        var decisionId = UUID.randomUUID();
+        var run = new InvestmentStrategicBuyRevalidationService.ReviewRun(UUID.randomUUID(), "challenge",
+                decisionId, "LUNR", UUID.randomUUID(), BigDecimal.valueOf(100),
+                Instant.parse("2026-11-07T16:00:00Z"), "IMPAIRED", "TRIGGER_BREACHED",
+                Instant.parse("2026-11-07T16:15:00Z"));
+        when(reviewer.beginChatGptRun(USER, CONNECTION, keyId, decisionId)).thenReturn(run);
+
+        var reviewTools = protocol.handle(request("review-tools", "tools/list", "{}"),
+                USER, CONNECTION, keyId, false, true);
+        var toolNames = java.util.stream.StreamSupport.stream(
+                        reviewTools.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText()).toList();
+        assertThat(toolNames).contains("start_strategic_buy_revalidation", "finish_strategic_buy_revalidation")
+                .doesNotContain("prepare_order", "submit_order", "append_investment_decision");
+
+        var denied = protocol.handle(toolCall("review-denied", "start_strategic_buy_revalidation",
+                        "{\"decisionId\":\"" + decisionId + "\"}"), USER, CONNECTION, keyId, false, false);
+        assertThat(denied.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("REVIEW_SCOPE_REQUIRED");
+
+        var started = protocol.handle(toolCall("review-start", "start_strategic_buy_revalidation",
+                        "{\"decisionId\":\"" + decisionId + "\"}"), USER, CONNECTION, keyId, false, true);
+        assertThat(started.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(started.path("result").path("structuredContent").path("runId").asText())
+                .isEqualTo(run.runId().toString());
+        verify(reviewer).beginChatGptRun(USER, CONNECTION, keyId, decisionId);
+
+        var cannotTrade = protocol.handle(toolCall("review-submit", "submit_order",
+                        "{\"proposalId\":\"proposal\"}"), USER, CONNECTION, keyId, false, true);
+        assertThat(cannotTrade.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("TRADE_SCOPE_REQUIRED");
+
+        var injectedOrigin = protocol.handle(toolCall("review-origin", "finish_strategic_buy_revalidation",
+                "{\"runId\":\"" + run.runId() + "\",\"challenge\":\"challenge\","
+                        + "\"reviewOrigin\":\"SERVER_GENERATED\"}"), USER, CONNECTION, keyId, false, true);
+        assertThat(injectedOrigin.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        verifyNoInteractions(service);
     }
 
     @Test

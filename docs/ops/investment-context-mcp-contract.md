@@ -134,17 +134,19 @@ latest saved evidence. It appends an `MCP_SUBMIT_RISK_GATE` audit snapshot with 
 status/reasons, horizon, market state, fundamental evidence, quote price/as-of and `evaluatedAt`
 before either rejecting a `BLOCKED` order or dispatching it. Strategic `REVIEW_REQUIRED` may be
 prepared for inspection, but submission requires a current `SERVER_GENERATED` revalidation record
+or a complete `CHATGPT_MCP` review run
 linked to the proposal's existing `ADD` Decision, current STRATEGIC PositionMandate, and current
-confirmed Thesis revision. V68 removes caller access to the record-write tool, and no server-managed
-reviewer currently produces such a record; therefore Strategic `REVIEW_REQUIRED` submissions are
-currently blocked. `submit_order` is only the individual order approval; it is never evidence that
+confirmed Thesis revision. V69 adds a dedicated `connector:review` scope and short-lived, one-use
+MCP run binding; that scope cannot prepare or submit orders. A completed record is stored with
+`review_origin=CHATGPT_MCP`, `provider=ChatGPT`, and `model=UNATTESTED`; the client cannot supply
+`SERVER_GENERATED`. `submit_order` is only the individual order approval; it is never evidence that
 the investment thesis was revalidated. The submission path rechecks review origin/verdict/expiry,
 mandate and thesis revision, market state, allowed price/quantity scope, Hard/Soft Risk preflight,
 account freshness and cash, and the live quote before dispatch. `BLOCKED` remains non-overridable.
 Existing Hard Risk, account, cash, concentration, and approved-trigger Soft Risk Budget checks remain
 independent. Defensive SELL readiness is unchanged.
 
-### Strategic BUY revalidation (V67–V68)
+### Strategic BUY revalidation (V67–V69)
 
 V67 introduced a caller-authored review record. That record did not prove that the named AI provider
 ran or that its sources supported the supplied conclusions. V68 removes the
@@ -154,14 +156,26 @@ ran or that its sources supported the supplied conclusions. V68 removes the
 `SERVER_GENERATED` before checking the verdict, so caller-supplied review claims cannot authorize a
 BUY.
 
-There is currently no server-managed AI reviewer or trusted source-grounding path that can create a
-`SERVER_GENERATED` record. Therefore a Strategic `REVIEW_REQUIRED` BUY is fail-closed at submission
-until that reviewer exists. This is an availability limitation, not evidence that the Thesis failed.
-Provider/model labels, URLs, dates, and well-formed assessment fields alone are not treated as proof
-of analysis or source support. The append-only record keeps its review origin so a later
-server-managed reviewer can be introduced without trusting caller-authored history. `BLOCKED`
-remains non-overridable; individual order approval, Hard/Soft Risk, account, and quote checks remain
-separate. TACTICAL BUY gates and defensive SELL flow are unchanged.
+V69 lets a ChatGPT Scheduled Task or ChatGPT conversation use the two-step `connector:review` MCP
+flow. `start_strategic_buy_revalidation` requires an existing Strategic ADD decision and returns a
+15-minute run ID, one-time challenge, current Thesis revision, mandate version, price, market state,
+and expiry. `finish_strategic_buy_revalidation` accepts the six required assessments, five source
+types, cited URLs/dates, rationale, and proposed price/quantity bounds. The server rechecks the
+current decision, mandate, Thesis revision, market state, and quote, then derives `CHATGPT_MCP` and
+the run link; callers cannot set the origin or `SERVER_GENERATED`. Only a completed passing review
+within its approved bounds can satisfy the strategic revalidation check. The normal per-order
+approval and every current order/risk/account/quote gate still apply. `BLOCKED` remains
+non-overridable. TACTICAL BUY gates and defensive SELL flow are unchanged.
+
+This is a ChatGPT-run workflow, not a server-side model invocation. The MCP server receives no
+attested Scheduled Task ID and does not independently fetch or semantically verify cited pages;
+URLs and dates receive format/freshness validation only. `CHATGPT_MCP` proves a completed,
+server-bound MCP exchange, not that a Scheduled Task ran or that source content supports the
+assessment. The separate review scope prevents the same connection from trading, but an authorized
+caller can still submit its own assessment. `SERVER_GENERATED` remains reserved for a future
+server-managed and source-grounded reviewer. Until ChatGPT task execution of this custom MCP app is
+observed, task compatibility remains unverified; the ready-to-use prompt and setup notes are in the
+[connector runbook](connector-runbook.md#chatgpt-mcp-app).
 
 The portfolio's PositionMandate remains the authoritative horizon: a tactical breach calls
 for an EXIT/REDUCE evaluation, while a strategic breach calls for thesis revalidation and

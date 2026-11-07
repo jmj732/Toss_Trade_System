@@ -25,10 +25,11 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
-/** Stores review assertions and only trusts reviews produced by a server-managed reviewer. */
+/** Stores caller assertions separately from ChatGPT MCP review runs and server-managed reviews. */
 @Service
 public final class InvestmentStrategicBuyRevalidationService {
     private static final Duration MAX_REVIEW_TTL = Duration.ofMinutes(30);
+    private static final Duration REVIEW_RUN_TTL = Duration.ofMinutes(15);
     private static final Duration MAX_SOURCE_AGE = Duration.ofDays(120);
     private static final Set<String> SOURCE_TYPES = Set.of(
             "THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK");
@@ -54,6 +55,120 @@ public final class InvestmentStrategicBuyRevalidationService {
         this.context = context;
         this.transaction = new TransactionTemplate(transactionManager);
         this.clock = clock;
+    }
+
+    public ReviewRun beginChatGptRun(UUID authenticatedUserId, UUID connectionId,
+                                     UUID authenticatedApiKeyId, UUID decisionId) {
+        if (authenticatedUserId == null || connectionId == null || authenticatedApiKeyId == null
+                || decisionId == null) throw invalid();
+        var target = decision(authenticatedUserId, decisionId);
+        if (target == null || !"ADD".equals(target.action())) throw invalid();
+        var ticker = InvestmentContextService.ticker(target.ticker());
+        var mandate = context.positionMandates(authenticatedUserId).stream()
+                .filter(item -> ticker.equals(item.ticker())).findFirst().orElse(null);
+        var thesis = context.currentThesis(authenticatedUserId, ticker);
+        var gate = context.investmentBuyRiskGate(authenticatedUserId, ticker, null, null);
+        var mark = context.priceFacts(authenticatedUserId, ticker).riskMark(clock.instant());
+        if (mandate == null || !"STRATEGIC".equals(mandate.investmentHorizon())
+                || thesis == null || thesis.revisionId() == null
+                || !"CONFIRMED".equals(thesis.invalidationStatus())
+                || gate == null || !"STRATEGIC".equals(gate.investmentHorizon())
+                || !"REVIEW_REQUIRED".equals(gate.status()) || !"OK".equals(gate.marketDataStatus())
+                || gate.marketHealth() == null || gate.priceRiskState() == null
+                || !mark.available() || mark.value() == null || mark.asOf() == null) throw invalid();
+
+        var now = clock.instant();
+        var runId = UUID.randomUUID();
+        var challenge = UUID.randomUUID() + UUID.randomUUID().toString();
+        var expiresAt = now.plus(REVIEW_RUN_TTL);
+        var view = new ReviewRun(runId, challenge, decisionId, ticker, thesis.revisionId(),
+                mark.value(), mark.asOf(), gate.marketHealth(), gate.priceRiskState(), expiresAt);
+        transaction.execute(ignored -> {
+            jdbc.update("""
+                    INSERT INTO investment_strategic_buy_revalidation_runs (
+                        run_id, user_id, connection_id, api_key_id, decision_id, ticker, thesis_revision_id,
+                        mandate_updated_at, reviewed_market_price, market_observed_at, market_health,
+                        price_risk_state, challenge_hash, status, created_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+                    """, runId, authenticatedUserId, connectionId, authenticatedApiKeyId, decisionId, ticker,
+                    thesis.revisionId(), timestamp(mandate.updatedAt()), mark.value(), timestamp(mark.asOf()),
+                    gate.marketHealth(), gate.priceRiskState(), hashSecret(challenge), timestamp(now),
+                    timestamp(expiresAt));
+            return null;
+        });
+        return view;
+    }
+
+    public RevalidationView completeChatGptRun(UUID authenticatedUserId, UUID connectionId,
+                                                UUID authenticatedApiKeyId, RunCompletion completion) {
+        if (authenticatedUserId == null || connectionId == null || authenticatedApiKeyId == null
+                || completion == null || completion.runId() == null) throw invalid();
+        var now = clock.instant();
+        return transaction.execute(ignored -> {
+            var run = findRunForUpdate(completion.runId());
+            if (run == null || !authenticatedUserId.equals(run.userId())
+                    || !connectionId.equals(run.connectionId())
+                    || !authenticatedApiKeyId.equals(run.apiKeyId())
+                    || !"OPEN".equals(run.status()) || !run.expiresAt().isAfter(now)
+                    || !secureEquals(run.challengeHash(), hashSecret(completion.challenge()))) throw conflict();
+
+            var decision = decision(authenticatedUserId, run.decisionId());
+            var mandate = context.positionMandates(authenticatedUserId).stream()
+                    .filter(item -> run.ticker().equals(item.ticker())).findFirst().orElse(null);
+            var thesis = context.currentThesis(authenticatedUserId, run.ticker());
+            var gate = context.investmentBuyRiskGate(authenticatedUserId, run.ticker(), null, null);
+            var mark = context.priceFacts(authenticatedUserId, run.ticker()).riskMark(now);
+            if (decision == null || !"ADD".equals(decision.action()) || !run.ticker().equals(decision.ticker())
+                    || mandate == null || !"STRATEGIC".equals(mandate.investmentHorizon())
+                    || !timestamp(mandate.updatedAt()).equals(timestamp(run.mandateUpdatedAt()))
+                    || thesis == null || !"CONFIRMED".equals(thesis.invalidationStatus())
+                    || !run.thesisRevisionId().equals(thesis.revisionId())
+                    || gate == null || !"STRATEGIC".equals(gate.investmentHorizon())
+                    || !"REVIEW_REQUIRED".equals(gate.status()) || !"OK".equals(gate.marketDataStatus())
+                    || !run.marketHealth().equals(gate.marketHealth())
+                    || !run.priceRiskState().equals(gate.priceRiskState())
+                    || !mark.available() || mark.value() == null || mark.asOf() == null) throw invalid();
+
+            var input = new RevalidationInput(run.runId(), run.decisionId(), run.ticker(),
+                    run.thesisRevisionId(), completion.sourceAsOf(), run.expiresAt(), "ChatGPT", "UNATTESTED",
+                    completion.rationale(), completion.sources(), completion.assessment(), completion.minPrice(),
+                    completion.maxPrice(), completion.maxQuantity());
+            var normalized = normalize(input, now);
+            if (normalized.minPrice().compareTo(run.reviewedMarketPrice()) > 0
+                    || normalized.maxPrice().compareTo(run.reviewedMarketPrice()) < 0
+                    || normalized.minPrice().compareTo(mark.value()) > 0
+                    || normalized.maxPrice().compareTo(mark.value()) < 0) throw invalid();
+            var bodyHash = hash(normalized);
+            var prior = find(normalized.reviewId());
+            if (prior != null) {
+                if (!authenticatedUserId.equals(prior.userId()) || !bodyHash.equals(prior.bodyHash())) throw conflict();
+                return prior;
+            }
+
+            var verdict = normalized.assessment().passes() ? "PASS" : "BLOCKED";
+            jdbc.update("""
+                    INSERT INTO investment_strategic_buy_revalidations (
+                        review_id, run_id, user_id, decision_id, ticker, investment_horizon, mandate_updated_at,
+                        thesis_revision_id, verdict, review_origin, provider, model, rationale, source_as_of, sources,
+                        assessment, reviewed_market_price, market_observed_at, market_health, price_risk_state,
+                        min_price, max_price, max_quantity, expires_at, authenticated_actor_user_id,
+                        authenticated_actor_key_id, body_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, 'STRATEGIC', ?, ?, ?, 'CHATGPT_MCP', ?, ?, ?, ?, CAST(? AS jsonb),
+                              CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, normalized.reviewId(), run.runId(), authenticatedUserId, run.decisionId(), run.ticker(),
+                    timestamp(mandate.updatedAt()), run.thesisRevisionId(), verdict, normalized.provider(),
+                    normalized.model(), normalized.rationale(), timestamp(normalized.sourceAsOf()),
+                    json(normalized.sources()), json(normalized.assessment()), mark.value(), timestamp(mark.asOf()),
+                    gate.marketHealth(), gate.priceRiskState(), normalized.minPrice(), normalized.maxPrice(),
+                    normalized.maxQuantity(), timestamp(run.expiresAt()), authenticatedUserId, authenticatedApiKeyId,
+                    bodyHash, timestamp(now));
+            jdbc.update("""
+                    UPDATE investment_strategic_buy_revalidation_runs
+                       SET status = 'COMPLETED', completed_at = ?
+                     WHERE run_id = ? AND status = 'OPEN'
+                    """, timestamp(now), run.runId());
+            return find(normalized.reviewId());
+        });
     }
 
     RevalidationView record(UUID authenticatedUserId, UUID authenticatedApiKeyId, RevalidationInput rawInput) {
@@ -130,8 +245,11 @@ public final class InvestmentStrategicBuyRevalidationService {
         var ticker = InvestmentContextService.ticker(rawTicker);
         var latest = latest(userId, decisionId);
         if (latest == null) return Validation.blocked("STRATEGIC_REVALIDATION_MISSING");
+        // CHATGPT_MCP proves a completed, bound MCP flow only. It does not attest task identity or source grounding.
         if (!"SERVER_GENERATED".equals(latest.reviewOrigin()))
-            return Validation.blocked("STRATEGIC_REVALIDATION_UNTRUSTED");
+            if (!"CHATGPT_MCP".equals(latest.reviewOrigin()) || latest.runId() == null
+                    || !completedRun(userId, latest.runId()))
+                return Validation.blocked("STRATEGIC_REVALIDATION_UNTRUSTED");
         var now = clock.instant();
         if (!"PASS".equals(latest.verdict())) return Validation.blocked("STRATEGIC_REVALIDATION_NOT_PASSED");
         if (latest.expiresAt() == null || !now.isBefore(latest.expiresAt()))
@@ -246,7 +364,7 @@ public final class InvestmentStrategicBuyRevalidationService {
 
     private RevalidationView find(UUID reviewId) {
         return jdbc.query("""
-                SELECT review_id, user_id, decision_id, ticker, investment_horizon, mandate_updated_at,
+                SELECT review_id, run_id, user_id, decision_id, ticker, investment_horizon, mandate_updated_at,
                        thesis_revision_id, verdict, review_origin, provider, model, rationale, source_as_of,
                        sources::text, assessment::text, reviewed_market_price, market_observed_at,
                        market_health, price_risk_state, min_price, max_price, max_quantity, expires_at,
@@ -258,7 +376,7 @@ public final class InvestmentStrategicBuyRevalidationService {
     private RevalidationView latest(UUID userId, UUID decisionId) {
         if (userId == null || decisionId == null) return null;
         return jdbc.query("""
-                SELECT review_id, user_id, decision_id, ticker, investment_horizon, mandate_updated_at,
+                SELECT review_id, run_id, user_id, decision_id, ticker, investment_horizon, mandate_updated_at,
                        thesis_revision_id, verdict, review_origin, provider, model, rationale, source_as_of,
                        sources::text, assessment::text, reviewed_market_price, market_observed_at,
                        market_health, price_risk_state, min_price, max_price, max_quantity, expires_at,
@@ -269,9 +387,34 @@ public final class InvestmentStrategicBuyRevalidationService {
                 """, viewRow(), userId, decisionId).stream().findFirst().orElse(null);
     }
 
+    private RunRow findRunForUpdate(UUID runId) {
+        return jdbc.query("""
+                SELECT run_id, user_id, connection_id, api_key_id, decision_id, ticker, thesis_revision_id,
+                       mandate_updated_at, reviewed_market_price, market_observed_at, market_health,
+                       price_risk_state, challenge_hash, status, expires_at
+                  FROM investment_strategic_buy_revalidation_runs WHERE run_id = ? FOR UPDATE
+                """, (rs, row) -> new RunRow(rs.getObject("run_id", UUID.class),
+                rs.getObject("user_id", UUID.class), rs.getObject("connection_id", UUID.class),
+                rs.getObject("api_key_id", UUID.class), rs.getObject("decision_id", UUID.class),
+                rs.getString("ticker"), rs.getObject("thesis_revision_id", UUID.class),
+                instant(rs.getObject("mandate_updated_at", OffsetDateTime.class)),
+                rs.getBigDecimal("reviewed_market_price"),
+                instant(rs.getObject("market_observed_at", OffsetDateTime.class)), rs.getString("market_health"),
+                rs.getString("price_risk_state"), rs.getString("challenge_hash"), rs.getString("status"),
+                instant(rs.getObject("expires_at", OffsetDateTime.class))), runId).stream().findFirst().orElse(null);
+    }
+
+    private boolean completedRun(UUID userId, UUID runId) {
+        return Boolean.TRUE.equals(jdbc.query("""
+                SELECT true FROM investment_strategic_buy_revalidation_runs
+                 WHERE run_id = ? AND user_id = ? AND status = 'COMPLETED'
+                """, (rs, row) -> rs.getBoolean(1), runId, userId).stream().findFirst().orElse(false));
+    }
+
     private RowMapper<RevalidationView> viewRow() {
         return (rs, row) -> new RevalidationView(
-                rs.getObject("review_id", UUID.class), rs.getObject("user_id", UUID.class),
+                rs.getObject("review_id", UUID.class), rs.getObject("run_id", UUID.class),
+                rs.getObject("user_id", UUID.class),
                 rs.getObject("decision_id", UUID.class), rs.getString("ticker"), rs.getString("investment_horizon"),
                 instant(rs.getObject("mandate_updated_at", OffsetDateTime.class)),
                 rs.getObject("thesis_revision_id", UUID.class), rs.getString("verdict"), rs.getString("review_origin"),
@@ -302,12 +445,33 @@ public final class InvestmentStrategicBuyRevalidationService {
         }
     }
 
+    private static String hashSecret(String value) {
+        if (value == null || value.isBlank()) return "";
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
+    private static boolean secureEquals(String expected, String actual) {
+        return expected != null && actual != null && MessageDigest.isEqual(
+                expected.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                actual.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+    }
+
     private static OffsetDateTime timestamp(Instant instant) { return instant.atOffset(java.time.ZoneOffset.UTC); }
     private static Instant instant(OffsetDateTime value) { return value == null ? null : value.toInstant(); }
     private static InvestmentException invalid() { return new InvestmentException(InvestmentException.Code.INVALID_INPUT); }
     private static InvestmentException conflict() { return new InvestmentException(InvestmentException.Code.CONFLICT); }
 
     private record DecisionTarget(String ticker, String action) {}
+
+    private record RunRow(UUID runId, UUID userId, UUID connectionId, UUID apiKeyId, UUID decisionId,
+                          String ticker, UUID thesisRevisionId, Instant mandateUpdatedAt,
+                          BigDecimal reviewedMarketPrice, Instant marketObservedAt, String marketHealth,
+                          String priceRiskState, String challengeHash, String status, Instant expiresAt) {}
 
     public record EvidenceSource(String url, Instant asOf, String type) {}
     public record Criterion(String status, String rationale) {}
@@ -325,7 +489,15 @@ public final class InvestmentStrategicBuyRevalidationService {
                                     String rationale, List<EvidenceSource> sources, Assessment assessment,
                                     BigDecimal minPrice, BigDecimal maxPrice, BigDecimal maxQuantity) {}
 
-    public record RevalidationView(UUID reviewId, UUID userId, UUID decisionId, String ticker,
+    public record ReviewRun(UUID runId, String challenge, UUID decisionId, String ticker, UUID thesisRevisionId,
+                            BigDecimal reviewedMarketPrice, Instant marketObservedAt, String marketHealth,
+                            String priceRiskState, Instant expiresAt) {}
+
+    public record RunCompletion(UUID runId, String challenge, Instant sourceAsOf, String rationale,
+                                List<EvidenceSource> sources, Assessment assessment,
+                                BigDecimal minPrice, BigDecimal maxPrice, BigDecimal maxQuantity) {}
+
+    public record RevalidationView(UUID reviewId, UUID runId, UUID userId, UUID decisionId, String ticker,
                                   String investmentHorizon, Instant mandateUpdatedAt, UUID thesisRevisionId,
                                   String verdict, String reviewOrigin, String provider, String model, String rationale,
                                   Instant sourceAsOf, JsonNode sources, JsonNode assessment,
