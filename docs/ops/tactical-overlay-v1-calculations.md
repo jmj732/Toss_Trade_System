@@ -29,6 +29,46 @@ The calculator is pure: it does not call providers, select inputs, or write data
 - Return 20 and 60 use exactly 20 or 60 prior trading-bar intervals: `currentClose / close[N bars earlier] - 1`.
 - Relative strength is the gross-return ratio on the same two exact stock dates: `(stockCurrent / stockBase) / (SPYCurrent / SPYBase) - 1`. Missing aligned endpoints are `INSUFFICIENT_HISTORY`; a split conflict crossing either interval suppresses that result.
 
+## Toss-only market risk
+
+`MarketRiskEvaluator` adds a market assessment to each TOSS bar snapshot. It does not read SEC, IR,
+consensus, or company financial data. `fundamentalHealth` therefore remains `NOT_EVALUABLE`; this
+is independent of `marketHealth` and of the stored thesis approval state.
+
+- `maximumDrawdown20` and `maximumDrawdown60` are positive peak-to-trough fractions over the last
+  20 or 60 daily closes. `annualizedVolatility20` is sample standard deviation of the last 20
+  simple close-to-close returns multiplied by `sqrt(252)`. Each metric reports its own status;
+  insufficient history and split conflicts are never filled with zero.
+- `lowerHighs20`/`lowerLows20` compare the highest high/lowest low in the latest 20 bars with the
+  preceding 20 bars. `priceVolumeSignal` marks a selling/buying volume spike only when RVOL meets
+  the configured `highRvolThreshold` (default 2.0) and the close moves in that direction.
+- The assessment requires TOSS-sourced EMA50, 20-bar return, and SPY-relative strength. It is
+  `NOT_EVALUABLE` when those inputs are missing or conflicted. `BREAKDOWN` requires close below
+  EMA50, negative 20-bar return, and negative 20-bar relative strength. Otherwise, two or more
+  bearish signals among EMA50, return, relative strength, selling-volume spike, lower highs, and
+  lower lows produce `IMPAIRED`; fewer produce `INTACT`. Metrics and rule version are returned so
+  the classification can be audited.
+- Daily-bar freshness is measured from the labeled New York regular-session close (16:00 ET),
+  not Toss's date-label timestamp. A future session date is `SOURCE_CONFLICT`; a close older than
+  the configured regular-close freshness window is `STALE` and makes market health
+  `NOT_EVALUABLE`.
+- `priceRiskState` uses the existing per-ticker confirmed thesis trigger and the current trusted
+  Toss mark. `TACTICAL` maps a breach to `EXIT_EVALUATION`; `STRATEGIC` maps it to
+  `THESIS_REVALIDATION`. Market deterioration can also request evaluation. These are review
+  signals only; no sell decision or order is created.
+- `investmentBuyGate` distinguishes horizons. TACTICAL market deterioration or trigger breach
+  is `BLOCKED`; STRATEGIC deterioration or trigger breach is `REVIEW_REQUIRED` when fresh
+  fundamental and revision evidence is available. Missing/stale market data blocks either horizon;
+  missing/stale strategic evidence also blocks. Unknown horizons require review. Evidence
+  availability does not imply a healthy business thesis. This gate is separate from the unchanged
+  10% approved-trigger Soft Risk Budget. Strategic review-required proposals can be prepared for
+  inspection. Submission requires a current revalidation record linked to the existing ADD Decision
+  and Thesis revision. A completed `CHATGPT_MCP` review run or future `SERVER_GENERATED` review may
+  satisfy this gate; caller-asserted records cannot. ChatGPT MCP reviews do not attest Scheduled Task
+  identity or source grounding, and all normal order gates and individual approval still apply.
+  `BLOCKED` cannot be overridden.
+  TACTICAL BUY gates and defensive SELL readiness are unchanged.
+
 ## Stages and events
 
 - Stage is null with an explicit `stageStatus` until EMA9, EMA21, EMA50, current close, and prior EMA21 are available. It is also null on missing data, source conflict, or unconfigured input.

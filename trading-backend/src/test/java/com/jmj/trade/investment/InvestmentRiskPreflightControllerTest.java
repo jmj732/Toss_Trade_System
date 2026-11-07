@@ -5,6 +5,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
 import java.security.Principal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -36,7 +37,10 @@ class InvestmentRiskPreflightControllerTest {
                         new BigDecimal("0.1")),
                 new InvestmentRiskPreflightService.CashGate("SUFFICIENT", "USD", new BigDecimal("500"),
                         new BigDecimal("200"), new BigDecimal("300"), "BROKER_REPORTED_BUYING_POWER"),
-                Map.of(), Map.of());
+                Map.of(), Map.of(), new InvestmentBuyRiskGate.Decision("ELIGIBLE", List.of(), "TACTICAL",
+                "OK", "INTACT", "CLEAR", new InvestmentBuyRiskGate.FundamentalVerification("AVAILABLE",
+                List.of(), "OK", "SEC", Instant.parse("2026-11-07T00:00:00Z"), "OK", "CONSENSUS",
+                Instant.parse("2026-11-07T00:00:00Z")), Instant.parse("2026-11-07T01:00:00Z")));
         when(service.preflight(USER_ID, input)).thenReturn(view);
         var mvc = standaloneSetup(new InvestmentRiskPreflightController(service)).build();
 
@@ -45,6 +49,8 @@ class InvestmentRiskPreflightControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ticker").value("AAPL"))
                 .andExpect(jsonPath("$.buyEligible").value(true))
+                .andExpect(jsonPath("$.buyGate.status").value("ELIGIBLE"))
+                .andExpect(jsonPath("$.buyGate.fundamentalVerification.status").value("AVAILABLE"))
                 .andExpect(jsonPath("$.cash.availableAfter").value(300));
 
         verify(service).preflight(USER_ID, input);

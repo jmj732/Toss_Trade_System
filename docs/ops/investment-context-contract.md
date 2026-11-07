@@ -91,6 +91,15 @@ risk-gate result for this preflight only. It is not a buy recommendation, user
 approval, an order proposal, or permission to trade. The tool is read-only and
 does not call a broker order-execution service.
 
+One preflight captures one `evaluatedAt` and uses it for both `currentRisk` and
+`proFormaRisk`; every per-security market gate in those maps shares that time.
+A new request is a new evaluation and can have a later time. The aggregate
+`buyGate` contract is: `BLOCKED` has at least one hard `blocker`,
+`REVIEW_REQUIRED` has review reasons and no hard blockers, and `ELIGIBLE` has
+neither. Its reasons are the ordered union of blockers and review reasons.
+`buyEligible` is true only for `ELIGIBLE`; `REVIEW_REQUIRED` is not eligible
+for sizing or preflight approval.
+
 Business gates such as a missing/stale mark, incomplete portfolio, unconfirmed
 thesis, or policy violation return a successful structured view with blockers;
 they are not converted into MCP transport errors. Structurally invalid ticker

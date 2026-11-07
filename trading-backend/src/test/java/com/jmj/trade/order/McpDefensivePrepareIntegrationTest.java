@@ -147,20 +147,30 @@ class McpDefensivePrepareIntegrationTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void concurrentPrepareCallsPersistOnlyOneProposalForAnOwnedConnectionAndTicker() throws Exception {
+    void concurrentDefensiveSellPrepareCallsPersistOnlyOneProposalForAnOwnedConnectionAndTicker() throws Exception {
         proposalGate = new ProposalGate(new CountDownLatch(1), new CountDownLatch(1), new CountDownLatch(1));
+        var decisionId = UUID.randomUUID();
+        var eventId = UUID.randomUUID();
+        insertDecisionAndEvent(decisionId, eventId);
+        var readiness = new InvestmentSellReadinessService.Readiness(
+                "READY", "READY", "READY", "READY", decisionId, eventId, TICKER, "REDUCE", NOW,
+                UUID.randomUUID(), QUANTITY, new BigDecimal("8"), NOW, LIMIT.subtract(new BigDecimal("0.01")),
+                LIMIT, LIMIT.subtract(new BigDecimal("0.01")), new BigDecimal("0.01"), new BigDecimal("0.55"),
+                "LIVE_REGULAR", "TOSS", "USD", NOW.minusSeconds(2), NOW.minusSeconds(1),
+                "TOSS/api/v1/market-calendar/US", "https://example.test/increments", new BigDecimal("0.01"),
+                List.of(), NOW);
+        when(readinessService.evaluate(userId, connectionId, decisionId, eventId)).thenReturn(readiness);
+        when(portfolios.read(userId, connectionId)).thenReturn(freshPortfolioWithPosition());
         try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
             var start = new CountDownLatch(1);
             Future<PrepareOutcome> first = executor.submit(() -> {
                 start.await();
-                return tryPrepare(new McpOrderExecutionService.PrepareCommand(
-                        TICKER, "BUY", "LIMIT", QUANTITY, LIMIT));
+                return tryPrepareDefensive(decisionId, eventId);
             });
             Future<PrepareOutcome> second = executor.submit(() -> {
                 start.await();
                 proposalGate.secondStarted().countDown();
-                return tryPrepare(new McpOrderExecutionService.PrepareCommand(
-                        TICKER, "BUY", "LIMIT", QUANTITY, LIMIT));
+                return tryPrepareDefensive(decisionId, eventId);
             });
 
             start.countDown();
@@ -498,6 +508,15 @@ class McpDefensivePrepareIntegrationTest extends PostgresIntegrationTest {
     private PrepareOutcome tryPrepare(McpOrderExecutionService.PrepareCommand command) {
         try {
             return new PrepareOutcome(service.prepare(userId, connectionId, command), null);
+        } catch (RuntimeException failure) {
+            return new PrepareOutcome(null, failure);
+        }
+    }
+
+    private PrepareOutcome tryPrepareDefensive(UUID decisionId, UUID eventId) {
+        try {
+            return new PrepareOutcome(service.prepareDefensive(userId, connectionId, decisionId, eventId,
+                    TICKER, QUANTITY, LIMIT.subtract(new BigDecimal("0.01"))), null);
         } catch (RuntimeException failure) {
             return new PrepareOutcome(null, failure);
         }

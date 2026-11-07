@@ -30,27 +30,27 @@ grep -q 'financialmodelingprep.com/stable' compose.staging.credentialed.yaml ||
 grep -q 'api.stlouisfed.org' compose.staging.credentialed.yaml &&
 grep -q '"path":"/fred/series/observations"' compose.staging.credentialed.yaml ||
   fail "missing FRED observations endpoint"
-grep -q 'data.sec.gov' compose.staging.credentialed.yaml ||
-  fail "missing SEC data endpoint"
-grep -q '"sec":{"enabled":true,' compose.staging.credentialed.yaml ||
-  fail "SEC fundamentals provider must be enabled"
-grep -q '"base-url":"${SEC_BASE_URL:-https://data.sec.gov}"' compose.staging.credentialed.yaml ||
-  fail "missing SEC base URL configuration"
-grep -q '"user-agent":"${SEC_USER_AGENT:?set SEC_USER_AGENT in Doppler}"' compose.staging.credentialed.yaml ||
-  fail "missing SEC User-Agent configuration"
+grep -Fq '"sec":{"enabled":false}' compose.staging.credentialed.yaml ||
+  fail "SEC fundamentals provider must be disabled"
+grep -Fq '"ir":{"enabled":false}' compose.staging.credentialed.yaml ||
+  fail "IR market-events provider must be disabled"
+test "$(grep -Fc '"sec":{"enabled":false}' compose.staging.credentialed.yaml)" -eq 2 ||
+  fail "both SEC providers must be disabled"
+grep -q '^      STOCK_ANALYSIS_SEC_ENABLED: "false"$' compose.staging.credentialed.yaml ||
+  fail "SEC stock-analysis environment flag must be disabled"
+grep -q '^      MARKET_EVENTS_SEC_ENABLED: "false"$' compose.staging.credentialed.yaml ||
+  fail "SEC market-events environment flag must be disabled"
+grep -q '^      MARKET_EVENTS_IR_ENABLED: "false"$' compose.staging.credentialed.yaml ||
+  fail "IR market-events environment flag must be disabled"
+if grep -Eq 'data\.sec\.gov|SEC_BASE_URL|SEC_USER_AGENT' compose.staging.credentialed.yaml; then
+  fail "disabled SEC collection must not require endpoint credentials"
+fi
 grep -q 'generativelanguage.googleapis.com/v1beta' compose.staging.credentialed.yaml ||
   fail "missing Gemini endpoint"
 grep -q '"as-of-path":"/0/timestamp"' compose.staging.credentialed.yaml ||
   fail "missing FMP freshness field"
 grep -q '"fields":{"macro.value":"/observations/0/value"}' compose.staging.credentialed.yaml ||
   fail "missing FRED value field"
-grep -q '"requests-per-window":2' compose.staging.credentialed.yaml &&
-grep -q '"rate-limit-window":"PT1S"' compose.staging.credentialed.yaml &&
-grep -q '"max-retries":3,"retry-backoff":"PT1S"' compose.staging.credentialed.yaml ||
-  fail "missing SEC request policy"
-if grep -q '/submissions/CIK0000320193.json' compose.staging.credentialed.yaml; then
-  fail "SEC fundamentals must not pin the Apple CIK"
-fi
 grep -q '"api-key-query-parameter":"apikey"' compose.staging.credentialed.yaml ||
   fail "missing FMP API-key query configuration"
 grep -q '"requests-per-window":1,"rate-limit-window":"PT1S","max-retries":0' compose.staging.credentialed.yaml ||

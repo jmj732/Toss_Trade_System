@@ -148,9 +148,8 @@ public final class ConnectorMcpController {
     }
 
     private ObjectNode handle(ObjectNode request, ConnectorApiKeyService.AuthenticatedKey key) {
-        return key.canTrade()
-                ? protocol.handle(request, key.userId(), key.connectionId(), key.id(), true)
-                : protocol.handle(request, key.userId(), key.connectionId());
+        return protocol.handle(request, key.userId(), key.connectionId(), key.id(),
+                key.canTrade(), key.canReview());
     }
 
     private record Session(UUID userId, UUID connectionId, SseEmitter emitter) {

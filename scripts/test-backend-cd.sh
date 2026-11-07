@@ -83,7 +83,7 @@ grep -q 'BACKEND_DEPLOY_SSH_KEY' "$workflow" || fail "SSH key must come from Git
 grep -q 'BACKEND_DEPLOY_KNOWN_HOSTS' "$workflow" ||
   fail "known hosts must come from GitHub Secrets"
 
-if rg -n 'BEGIN (RSA|OPENSSH) PRIVATE KEY|ghp_[A-Za-z0-9]|DOPPLER_TOKEN=' \
+if grep -En 'BEGIN (RSA|OPENSSH) PRIVATE KEY|ghp_[A-Za-z0-9]|DOPPLER_TOKEN=' \
   "$workflow" docs/ops/backend-cd.md docs/superpowers/specs/2026-08-03-backend-cd-delta.md >/dev/null; then
   fail "credential-like value found in CD configuration"
 fi
@@ -129,7 +129,7 @@ fi
 grep -q 'VERCEL_TOKEN' "$workflow" || fail "Vercel token must come from GitHub Secrets"
 grep -q 'VERCEL_ORG_ID' "$workflow" || fail "Vercel org ID must be configured"
 grep -q 'VERCEL_PROJECT_ID' "$workflow" || fail "Vercel project ID must be configured"
-if rg -n 'vercel@58.5.1 (link|pull|build)' "$workflow" >/dev/null; then
+if grep -En 'vercel@58.5.1 (link|pull|build)' "$workflow" >/dev/null; then
   fail "Vercel project tokens must deploy without project-settings or local-build CLI calls"
 fi
 grep -q 'vercel@58.5.1 deploy --yes --prod' "$workflow" ||
