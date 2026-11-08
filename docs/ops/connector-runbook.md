@@ -89,7 +89,32 @@ should not be reused for this purpose. Reauthorize the ChatGPT app with `connect
 its tools, then enable that app for the dedicated review task.
 
 Use the [Strategic BUY Revalidation task draft](position-mandate-prompts/schedules/STRATEGIC_BUY_REVALIDATION.md)
-as the scheduled-task prompt.
+as the trial prompt. First connect a separate ChatGPT app instance with only `connector:review` and
+run the prompt in a regular chat. Confirm the two review tools are listed and that no order tools are
+available. Complete one review, then verify its database record before integrating the prompt into
+one existing schedule (prefer OPENING). Do not create a sixth schedule; leave the other four
+unchanged. Verify an actual scheduled run before relying on it.
+
+To inspect a trial immediately after `finish_strategic_buy_revalidation`, query its returned
+`runId`:
+
+```sql
+SELECT r.run_id, r.status AS run_status, r.created_at AS run_created_at,
+       r.expires_at AS run_expires_at, v.review_origin, v.verdict, v.provider, v.model,
+       v.decision_id, v.ticker, v.thesis_revision_id, v.source_as_of, v.sources, v.assessment,
+       v.reviewed_market_price, v.market_health, v.price_risk_state,
+       v.min_price, v.max_price, v.max_quantity, v.expires_at AS review_expires_at
+  FROM investment_strategic_buy_revalidation_runs r
+  LEFT JOIN investment_strategic_buy_revalidations v USING (run_id)
+ WHERE r.run_id = '<run-id>'::uuid;
+```
+
+Check `run_status=COMPLETED`, `review_origin=CHATGPT_MCP`, `provider=ChatGPT`, and
+`model=UNATTESTED`; compare decision, Thesis revision, market snapshot, source types, assessment,
+and expiry with the tool responses. A missing joined review row or mismatched stored data fails the
+technical trial. `BLOCKED` can be a valid saved result when evidence or a criterion fails; it is not
+a passing investment review. The record still does not attest Scheduled Task identity or source
+contents.
 
 `CHATGPT_MCP` records prove only that a short-lived MCP review flow completed against the stored
 decision, mandate, thesis revision, and market snapshot. The server does not receive an attested
