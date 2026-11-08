@@ -58,6 +58,7 @@ public class InvestmentRiskPreflightService {
         var currentRisk = data.currentRisk();
         var proFormaRisk = data.proFormaRisk();
         var blockers = new LinkedHashSet<String>();
+        var reviewReasons = new LinkedHashSet<String>();
 
         var portfolio = data.portfolio();
         var manualFresh = !portfolio.manualStale()
@@ -87,6 +88,18 @@ public class InvestmentRiskPreflightService {
         if (mark == null || mark.status() != InvestmentDataCalculator.DataStatus.OK
                 || mark.value() == null || mark.value().signum() <= 0 || mark.asOf() == null) {
             blockers.add("RISK_MARK_UNAVAILABLE");
+        }
+        var riskGate = targetCurrent == null ? null : targetCurrent.investmentBuyGate();
+        if (riskGate == null) {
+            blockers.add("BUY_RISK_ASSESSMENT_UNAVAILABLE");
+        } else if ("BLOCKED".equals(riskGate.status())) {
+            if (riskGate.reasons().isEmpty()) blockers.add("BUY_RISK_GATE_BLOCKED");
+            else blockers.addAll(riskGate.reasons());
+        } else if ("REVIEW_REQUIRED".equals(riskGate.status())) {
+            if (riskGate.reasons().isEmpty()) reviewReasons.add("BUY_RISK_GATE_REVIEW_REQUIRED");
+            else reviewReasons.addAll(riskGate.reasons());
+        } else if (!"ELIGIBLE".equals(riskGate.status())) {
+            blockers.add("BUY_RISK_GATE_STATUS_UNRECOGNIZED");
         }
 
         var held = data.heldTickers();
@@ -160,8 +173,16 @@ public class InvestmentRiskPreflightService {
         var cashGate = new CashGate(cashBefore == null || purchaseCost == null ? "UNAVAILABLE"
                 : cashAfter.signum() < 0 ? "INSUFFICIENT" : "SUFFICIENT",
                 data.currency(), cashBefore, purchaseCost, cashAfter, data.cashSource());
-        return new PreflightView(input.ticker(), input.quantity(), blockers.isEmpty(), List.copyOf(blockers),
-                thesis, portfolioGate, policyGate, cashGate, currentRisk, proFormaRisk);
+        var status = !blockers.isEmpty() ? "BLOCKED"
+                : !reviewReasons.isEmpty() ? "REVIEW_REQUIRED" : "ELIGIBLE";
+        var decisionReasons = new LinkedHashSet<String>(blockers);
+        decisionReasons.addAll(reviewReasons);
+        var buyGate = riskGate == null
+                ? new InvestmentBuyRiskGate.Decision("BLOCKED", List.copyOf(decisionReasons), "UNKNOWN",
+                "NOT_EVALUABLE", "NOT_EVALUABLE", "NOT_EVALUABLE", null, data.evaluatedAt())
+                : riskGate.withStatusAndReasons(status, List.copyOf(decisionReasons));
+        return new PreflightView(input.ticker(), input.quantity(), "ELIGIBLE".equals(status),
+                List.copyOf(blockers), thesis, portfolioGate, policyGate, cashGate, currentRisk, proFormaRisk, buyGate);
     }
 
     private ThesisReceipt thesisReceipt(UUID userId, String ticker, InvestmentContextService.ThesisView thesis) {
@@ -241,6 +262,10 @@ public class InvestmentRiskPreflightService {
     public record PreflightInput(String ticker, BigDecimal quantity) {
     }
 
+    /**
+     * BLOCKED always has at least one hard blocker; REVIEW_REQUIRED has review reasons and no hard blockers;
+     * ELIGIBLE has neither. buyEligible is true only for ELIGIBLE. Review-only gates remain non-sizing-eligible.
+     */
     public record PreflightView(
             String ticker,
             BigDecimal quantity,
@@ -251,8 +276,17 @@ public class InvestmentRiskPreflightService {
             PolicyGate policy,
             CashGate cash,
             Map<String, InvestmentContextService.RiskContributionView> currentRisk,
-            Map<String, InvestmentContextService.RiskContributionView> proFormaRisk
+            Map<String, InvestmentContextService.RiskContributionView> proFormaRisk,
+            InvestmentBuyRiskGate.Decision buyGate
     ) {
+        public PreflightView(String ticker, BigDecimal quantity, boolean buyEligible, List<String> blockers,
+                             ThesisReceipt thesis, PortfolioGate portfolio, PolicyGate policy, CashGate cash,
+                             Map<String, InvestmentContextService.RiskContributionView> currentRisk,
+                             Map<String, InvestmentContextService.RiskContributionView> proFormaRisk) {
+            this(ticker, quantity, buyEligible, blockers, thesis, portfolio, policy, cash, currentRisk, proFormaRisk,
+                    null);
+        }
+
         public PreflightView {
             blockers = blockers == null ? List.of() : List.copyOf(blockers);
             currentRisk = currentRisk == null ? Map.of() : Map.copyOf(currentRisk);

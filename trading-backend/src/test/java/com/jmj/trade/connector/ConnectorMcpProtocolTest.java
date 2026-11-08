@@ -12,6 +12,7 @@ import com.jmj.trade.investment.InvestmentReviewService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
 import com.jmj.trade.investment.InvestmentSellReadinessService;
 import com.jmj.trade.investment.InvestmentRiskPreflightService;
+import com.jmj.trade.investment.InvestmentStrategicBuyRevalidationService;
 import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.junit.jupiter.api.Test;
@@ -38,6 +39,72 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 class ConnectorMcpProtocolTest {
     @Test
+    void callerCannotRegisterStrategicBuyRevalidationThroughMcp() throws Exception {
+        var context = mock(InvestmentContextService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, context, null, null, null, null, null,
+                null, new ObjectMapper());
+
+        var readOnly = protocol.handle(request("revalidation-read-only", "tools/list", "{}"), USER, CONNECTION);
+        assertThat(java.util.stream.StreamSupport.stream(readOnly.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText())).doesNotContain("record_strategic_buy_revalidation");
+
+        var trade = protocol.handle(request("revalidation-trade", "tools/list", "{}"), USER, CONNECTION, true);
+        assertThat(java.util.stream.StreamSupport.stream(trade.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText())).doesNotContain("record_strategic_buy_revalidation");
+
+        var attempted = protocol.handle(toolCall("caller-review", "record_strategic_buy_revalidation", "{}"),
+                USER, CONNECTION, true);
+        assertThat(attempted.path("error").path("code").asInt()).isEqualTo(-32601);
+        assertThat(attempted.path("error").path("message").asText()).contains("Tool not found");
+    }
+
+    @Test
+    void chatGptReviewScopeCanRunStrategicReviewButCannotTradeOrSetTrustedOrigin() throws Exception {
+        var reviewer = mock(InvestmentStrategicBuyRevalidationService.class);
+        var protocol = new ConnectorMcpProtocol(service, null, null, null, null, null, null, null, null,
+                reviewer, new ObjectMapper());
+        var keyId = UUID.randomUUID();
+        var decisionId = UUID.randomUUID();
+        var run = new InvestmentStrategicBuyRevalidationService.ReviewRun(UUID.randomUUID(), "challenge",
+                decisionId, "LUNR", UUID.randomUUID(), BigDecimal.valueOf(100),
+                Instant.parse("2026-11-07T16:00:00Z"), "IMPAIRED", "TRIGGER_BREACHED",
+                Instant.parse("2026-11-07T16:15:00Z"));
+        when(reviewer.beginChatGptRun(USER, CONNECTION, keyId, decisionId)).thenReturn(run);
+
+        var reviewTools = protocol.handle(request("review-tools", "tools/list", "{}"),
+                USER, CONNECTION, keyId, false, true);
+        var toolNames = java.util.stream.StreamSupport.stream(
+                        reviewTools.path("result").path("tools").spliterator(), false)
+                .map(tool -> tool.path("name").asText()).toList();
+        assertThat(toolNames).contains("start_strategic_buy_revalidation", "finish_strategic_buy_revalidation")
+                .doesNotContain("prepare_order", "submit_order", "append_investment_decision");
+
+        var denied = protocol.handle(toolCall("review-denied", "start_strategic_buy_revalidation",
+                        "{\"decisionId\":\"" + decisionId + "\"}"), USER, CONNECTION, keyId, false, false);
+        assertThat(denied.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("REVIEW_SCOPE_REQUIRED");
+
+        var started = protocol.handle(toolCall("review-start", "start_strategic_buy_revalidation",
+                        "{\"decisionId\":\"" + decisionId + "\"}"), USER, CONNECTION, keyId, false, true);
+        assertThat(started.path("result").path("isError").asBoolean()).isFalse();
+        assertThat(started.path("result").path("structuredContent").path("runId").asText())
+                .isEqualTo(run.runId().toString());
+        verify(reviewer).beginChatGptRun(USER, CONNECTION, keyId, decisionId);
+
+        var cannotTrade = protocol.handle(toolCall("review-submit", "submit_order",
+                        "{\"proposalId\":\"proposal\"}"), USER, CONNECTION, keyId, false, true);
+        assertThat(cannotTrade.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("TRADE_SCOPE_REQUIRED");
+
+        var injectedOrigin = protocol.handle(toolCall("review-origin", "finish_strategic_buy_revalidation",
+                "{\"runId\":\"" + run.runId() + "\",\"challenge\":\"challenge\","
+                        + "\"reviewOrigin\":\"SERVER_GENERATED\"}"), USER, CONNECTION, keyId, false, true);
+        assertThat(injectedOrigin.path("result").path("structuredContent").path("errorCode").asText())
+                .isEqualTo("INVALID_ARGUMENT");
+        verifyNoInteractions(service);
+    }
+
+    @Test
     void preflightRiskSchemaExposesSeparateThesisAndDownsideEvidence() throws Exception {
         var preflight = mock(InvestmentRiskPreflightService.class);
         var protocol = new ConnectorMcpProtocol(service, null, null, null, null, null, preflight,
@@ -51,6 +118,11 @@ class ConnectorMcpProtocolTest {
         assertThat(properties.has("approvedTriggerRisk")).isTrue();
         assertThat(properties.has("forwardDownsideRisk")).isTrue();
         assertThat(properties.has("thesisHealth")).isTrue();
+        assertThat(properties.path("investmentBuyGate").toString())
+                .contains("BLOCKED", "REVIEW_REQUIRED", "ELIGIBLE", "fundamentalVerification", "evaluatedAt");
+        assertThat(properties.path("marketRisk").toString())
+                .contains("marketDataStatus", "marketHealth", "fundamentalHealth", "priceRiskState",
+                        "maximumDrawdown20", "annualizedVolatility20", "priceVolumeSignal");
         assertThat(properties.path("thesisEvidence").toString())
                 .contains("mandate", "recordedInvestmentHorizon", "effectiveDate", "revisionId",
                         "fundamentals", "consensusSource", "consensusAsOf");
@@ -59,6 +131,9 @@ class ConnectorMcpProtocolTest {
         assertThat(properties.path("forwardDownsideRisk").toString())
                 .contains("downsideFraction", "reason", "source", "asOf");
         assertThat(properties.path("thesisHealth").toString()).contains("reason", "source", "asOf");
+        var preflightProperties = tool.path("outputSchema").path("anyOf").get(0).path("properties");
+        assertThat(preflightProperties.path("buyGate").toString())
+                .contains("BLOCKED", "REVIEW_REQUIRED", "ELIGIBLE", "fundamentalVerification");
     }
 
     @Test
@@ -88,7 +163,8 @@ class ConnectorMcpProtocolTest {
         assertThat(risk.get(0).path("additionalProperties").asBoolean()).isTrue();
         assertThat(risk.get(0).has("required")).isFalse();
         assertThat(risk.get(0).path("properties").toString())
-                .contains("approvedTriggerRisk", "forwardDownsideRisk", "thesisHealth", "thesisEvidence");
+                .contains("approvedTriggerRisk", "forwardDownsideRisk", "thesisHealth", "thesisEvidence",
+                        "investmentBuyGate");
         var tool = java.util.stream.StreamSupport.stream(listed.path("result").path("tools").spliterator(), false)
                 .filter(item -> "upsert_position_mandate".equals(item.path("name").asText()))
                 .findFirst().orElseThrow();

@@ -10,6 +10,8 @@ import com.jmj.trade.investment.tactical.TacticalOverlayCalculator.PriceAdjustme
 import com.jmj.trade.investment.tactical.TacticalOverlayCalculator.Result;
 import com.jmj.trade.investment.tactical.TacticalOverlayCalculator.Stage;
 import com.jmj.trade.investment.tactical.TacticalOverlayCalculator.VwapMethod;
+import com.jmj.trade.investment.tactical.MarketRiskEvaluator.MarketMetrics;
+import com.jmj.trade.investment.tactical.MarketRiskEvaluator.PriceVolumeSignal;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
@@ -82,6 +84,25 @@ class TacticalOverlayJsonContractTest {
                 .isEqualByComparingTo("12.34");
         assertThat(json.path("anchoredVwaps").path(0).path("value").path("value").decimalValue())
                 .isEqualByComparingTo("12.34");
+    }
+
+    @Test
+    void tossMarketRiskMetricsRoundTripWithStatusesAndSource() throws Exception {
+        var metric = MetricValue.available(new BigDecimal("0.125"));
+        var metrics = new MarketMetrics(OverlayStatus.OK, LocalDate.parse("2026-11-06"), "TOSS",
+                metric, metric, metric, metric, metric, metric, metric,
+                PriceVolumeSignal.SELLING_VOLUME_SPIKE, metric, metric, new BigDecimal("42.50"));
+
+        var payload = mapper.readTree(mapper.writeValueAsString(metrics));
+        var restored = mapper.treeToValue(payload, MarketMetrics.class);
+
+        assertThat(restored.status()).isEqualTo(metrics.status());
+        assertThat(restored.asOf()).isEqualTo(metrics.asOf());
+        assertThat(restored.source()).isEqualTo(metrics.source());
+        assertThat(restored.maximumDrawdown60()).isEqualTo(metrics.maximumDrawdown60());
+        assertThat(restored.latestClose()).isEqualByComparingTo(metrics.latestClose());
+        assertThat(payload.path("source").asText()).isEqualTo("TOSS");
+        assertThat(payload.path("maximumDrawdown60").path("status").asText()).isEqualTo("OK");
     }
 
     private static IndicatorBar indicator(MetricValue dailyVwap) {

@@ -25,6 +25,7 @@ public final class ConnectorMcpOAuthService {
 
     public static final String READ_SCOPE = "connector:read";
     public static final String TRADE_SCOPE = "connector:trade";
+    public static final String REVIEW_SCOPE = "connector:review";
     public static final String RESOURCE_PATH = "/api/v1/connector/mcp";
     public static final String AUTHORIZE_PATH = "/api/v1/connector/oauth/authorize";
     public static final String TOKEN_PATH = "/api/v1/connector/oauth/token";
@@ -180,9 +181,9 @@ public final class ConnectorMcpOAuthService {
 
     private TokenResponse issueTokens(String clientId, UUID userId, UUID connectionId, String scope, String resource) {
         var now = clock.instant();
-        var issued = TRADE_SCOPE.equals(scope)
-                ? keys.issue(userId, connectionId, now.plus(ACCESS_TOKEN_TTL), scope)
-                : keys.issue(userId, connectionId, now.plus(ACCESS_TOKEN_TTL));
+        var issued = READ_SCOPE.equals(scope)
+                ? keys.issue(userId, connectionId, now.plus(ACCESS_TOKEN_TTL))
+                : keys.issue(userId, connectionId, now.plus(ACCESS_TOKEN_TTL), scope);
         var rawRefreshToken = opaque("mcp_refresh_");
         refreshTokens.save(new ConnectorOAuthRefreshTokenStore.Grant(hash(rawRefreshToken), clientId,
                 userId, connectionId, scope, resource == null || resource.isBlank() ? resourceUrl() : resource,
@@ -268,7 +269,7 @@ public final class ConnectorMcpOAuthService {
             throw oauthError("invalid_request", "code_challenge_method=S256 is required", request);
         }
         if (request.scope() != null && !request.scope().isBlank() && !supportedScope(request.scope())) {
-            throw oauthError("invalid_scope", "only connector:read or connector:trade is supported", request);
+            throw oauthError("invalid_scope", "only connector:read, connector:review or connector:trade is supported", request);
         }
         if (request.resource() != null && !request.resource().isBlank()
                 && !resourceUrl().equals(request.resource())) {
@@ -362,13 +363,15 @@ public final class ConnectorMcpOAuthService {
 
     private static String normalizedScope(String scope, String fallback) {
         if (scope == null || scope.isBlank()) return fallback;
-        return java.util.Arrays.stream(scope.trim().split("\\s+"))
-                .anyMatch(TRADE_SCOPE::equals) ? TRADE_SCOPE : READ_SCOPE;
+        var scopes = java.util.Arrays.asList(scope.trim().split("\\s+"));
+        if (scopes.contains(TRADE_SCOPE)) return TRADE_SCOPE;
+        if (scopes.contains(REVIEW_SCOPE)) return REVIEW_SCOPE;
+        return READ_SCOPE;
     }
 
     private static boolean supportedScope(String scope) {
         for (var token : scope.trim().split("\\s+")) {
-            if (!READ_SCOPE.equals(token) && !TRADE_SCOPE.equals(token)) return false;
+            if (!READ_SCOPE.equals(token) && !TRADE_SCOPE.equals(token) && !REVIEW_SCOPE.equals(token)) return false;
         }
         return true;
     }

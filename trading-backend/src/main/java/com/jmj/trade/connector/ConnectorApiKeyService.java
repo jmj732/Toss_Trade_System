@@ -21,6 +21,7 @@ public final class ConnectorApiKeyService {
     private static final int DISPLAY_PREFIX_LENGTH = 13;
     public static final String READ_SCOPE = "connector:read";
     public static final String TRADE_SCOPE = "connector:trade";
+    public static final String REVIEW_SCOPE = "connector:review";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -154,7 +155,7 @@ public final class ConnectorApiKeyService {
     }
 
     private static void requireScope(String scope) {
-        if (!READ_SCOPE.equals(scope) && !TRADE_SCOPE.equals(scope)) {
+        if (!READ_SCOPE.equals(scope) && !TRADE_SCOPE.equals(scope) && !REVIEW_SCOPE.equals(scope)) {
             throw new ApiKeyException(Code.INVALID_INPUT);
         }
     }
@@ -183,6 +184,7 @@ public final class ConnectorApiKeyService {
         }
         public boolean expired() { return expired; }
         public boolean canTrade() { return TRADE_SCOPE.equals(scope); }
+        public boolean canReview() { return REVIEW_SCOPE.equals(scope); }
     }
 
     public enum Code { INVALID_INPUT, CONNECTION_NOT_FOUND, NOT_FOUND }

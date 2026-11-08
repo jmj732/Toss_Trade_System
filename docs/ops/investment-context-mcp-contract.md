@@ -110,6 +110,73 @@ is reported with `EFFECTIVE_DATE_POLICY_UNSPECIFIED`: its recorded values are no
 that it is effective, because the effective-date timezone contract is not specified. A missing
 mandate is `NOT_CONFIGURED`. This evidence does not automatically determine `thesisHealth`.
 
+`risk.marketRisk` is the Toss-only market assessment. It returns `policyVersion`, market data
+status/as-of/source, `marketHealth` (`INTACT`, `IMPAIRED`, `BREAKDOWN`, or `NOT_EVALUABLE`),
+`fundamentalHealth` (always `NOT_EVALUABLE` because Toss does not supply company financials),
+`priceRiskState`, horizon-specific `recommendedAction`, and metric values with individual statuses
+for 20/60-bar maximum drawdown, 20-bar annualized volatility, return, SPY-relative strength, RVOL,
+EMA50, lower highs/lows, and price-volume signal. The daily bar date is checked against its labeled
+16:00 New York close; stale bars become `STALE` and future bar dates become `SOURCE_CONFLICT`.
+Existing confirmed thesis triggers and Position Mandates remain the saved per-ticker rules.
+Market-only signals never invalidate business thesis or create sell orders. The additive
+`investmentBuyGate` reports `BLOCKED`, `REVIEW_REQUIRED`, or `ELIGIBLE` with reason codes,
+market state, horizon, and separately freshness-checked fundamental/revision evidence. Unknown
+horizons require review. Missing/stale Toss market data blocks both known horizons. TACTICAL
+market impairment or an approved-trigger breach blocks the BUY. STRATEGIC market impairment or
+trigger breach requires review when current fundamentals and revision/consensus data are available;
+missing, conflicting, or stale strategic evidence blocks the BUY. The market assessment still
+reports `fundamentalHealth=NOT_EVALUABLE`; evidence availability is not a finding of business
+health. Disabling SEC/IR collection does not delete previously stored snapshots: their original
+source and as-of are preserved, and strategic evidence remains available only while its existing
+freshness checks pass. The same gate is re-evaluated against the live Toss quote before preparation
+and submission. For each submit, the backend re-evaluates against the current Toss quote and
+latest saved evidence. It appends an `MCP_SUBMIT_RISK_GATE` audit snapshot with the resulting
+status/reasons, horizon, market state, fundamental evidence, quote price/as-of and `evaluatedAt`
+before either rejecting a `BLOCKED` order or dispatching it. Strategic `REVIEW_REQUIRED` may be
+prepared for inspection, but submission requires a current `SERVER_GENERATED` revalidation record
+or a complete `CHATGPT_MCP` review run
+linked to the proposal's existing `ADD` Decision, current STRATEGIC PositionMandate, and current
+confirmed Thesis revision. V69 adds a dedicated `connector:review` scope and short-lived, one-use
+MCP run binding; that scope cannot prepare or submit orders. A completed record is stored with
+`review_origin=CHATGPT_MCP`, `provider=ChatGPT`, and `model=UNATTESTED`; the client cannot supply
+`SERVER_GENERATED`. `submit_order` is only the individual order approval; it is never evidence that
+the investment thesis was revalidated. The submission path rechecks review origin/verdict/expiry,
+mandate and thesis revision, market state, allowed price/quantity scope, Hard/Soft Risk preflight,
+account freshness and cash, and the live quote before dispatch. `BLOCKED` remains non-overridable.
+Existing Hard Risk, account, cash, concentration, and approved-trigger Soft Risk Budget checks remain
+independent. Defensive SELL readiness is unchanged.
+
+### Strategic BUY revalidation (V67–V69)
+
+V67 introduced a caller-authored review record. That record did not prove that the named AI provider
+ran or that its sources supported the supplied conclusions. V68 removes the
+`record_strategic_buy_revalidation` MCP write tool. New caller assertions are stored as
+`verdict=UNTRUSTED` and `review_origin=CALLER_ASSERTED`; all existing rows default to
+`CALLER_ASSERTED`, including historical `PASS` rows. `validateForSubmit` rejects every origin except
+`SERVER_GENERATED` before checking the verdict, so caller-supplied review claims cannot authorize a
+BUY.
+
+V69 lets a ChatGPT Scheduled Task or ChatGPT conversation use the two-step `connector:review` MCP
+flow. `start_strategic_buy_revalidation` requires an existing Strategic ADD decision and returns a
+15-minute run ID, one-time challenge, current Thesis revision, mandate version, price, market state,
+and expiry. `finish_strategic_buy_revalidation` accepts the six required assessments, five source
+types, cited URLs/dates, rationale, and proposed price/quantity bounds. The server rechecks the
+current decision, mandate, Thesis revision, market state, and quote, then derives `CHATGPT_MCP` and
+the run link; callers cannot set the origin or `SERVER_GENERATED`. Only a completed passing review
+within its approved bounds can satisfy the strategic revalidation check. The normal per-order
+approval and every current order/risk/account/quote gate still apply. `BLOCKED` remains
+non-overridable. TACTICAL BUY gates and defensive SELL flow are unchanged.
+
+This is a ChatGPT-run workflow, not a server-side model invocation. The MCP server receives no
+attested Scheduled Task ID and does not independently fetch or semantically verify cited pages;
+URLs and dates receive format/freshness validation only. `CHATGPT_MCP` proves a completed,
+server-bound MCP exchange, not that a Scheduled Task ran or that source content supports the
+assessment. The separate review scope prevents the same connection from trading, but an authorized
+caller can still submit its own assessment. `SERVER_GENERATED` remains reserved for a future
+server-managed and source-grounded reviewer. Until ChatGPT task execution of this custom MCP app is
+observed, task compatibility remains unverified; the ready-to-use prompt and setup notes are in the
+[connector runbook](connector-runbook.md#chatgpt-mcp-app).
+
 The portfolio's PositionMandate remains the authoritative horizon: a tactical breach calls
 for an EXIT/REDUCE evaluation, while a strategic breach calls for thesis revalidation and
 can result in HOLD. Hard Risk remains independent of horizon. Account freshness and trusted
@@ -297,6 +364,6 @@ The proposal tool persists only `AI_PROPOSED`, `UNVERIFIED`, or `INVALIDATION_UN
 | `CONDITIONAL` | Thesis is `CONFIRMED` but the predicate cannot be satisfied with current operational inputs, including missing/stale price, weight, or risk level. |
 | `NO` | Thesis is absent or not `CONFIRMED`. |
 
-`risk.eligibilityReasons` is an additive field of `RiskContributionView`: a deterministic, ordered list of codes explaining why a position is not sizing-eligible, empty exactly when `sizingEligible` is true. Older callers keep the prior constructor signature. Codes separately distinguish missing inputs, missing approval, and stale data: `THESIS_MISSING`, `INVALIDATION_NOT_CONFIRMED`, `INVALIDATION_PRICE_NOT_CONFIGURED`, `INVALIDATION_PRICE_BREACHED`, `PORTFOLIO_STALE`, `PORTFOLIO_PARTIAL`, `PORTFOLIO_UNAVAILABLE`, `PRICE_STALE`, `PRICE_MISSING`, `PRICE_SOURCE_CONFLICT`, `PRICE_UNVERIFIED`, `POSITION_WEIGHT_MISSING`, then the portfolio budget codes `RISK_BUDGET_NOT_CONFIGURED`, `RISK_BUDGET_UNEVALUATED`, `RISK_BUDGET_EXCEEDED`. `sizingEligible` additionally requires `softBudgetStatus = WITHIN_SOFT_BUDGET` (portfolio `thesisFailureStress` ≤ `softRiskBudget` with status `OK`). All applicable codes are emitted in that fixed order; an `AI_PROPOSED` thesis with no trigger reports both `INVALIDATION_NOT_CONFIRMED` and `INVALIDATION_PRICE_NOT_CONFIGURED`. This list is a computed-state explanation only and is not an actor/evidence audit history.
+`risk.eligibilityReasons` is an additive field of `RiskContributionView`: a deterministic list of codes explaining why a position is not sizing-eligible; older callers keep prior constructor signatures. `investmentBuyGate` carries the horizon-specific `BLOCKED`, `REVIEW_REQUIRED`, or `ELIGIBLE` decision and evidence freshness reasons. `sizingEligible` requires `investmentBuyGate.status = ELIGIBLE` and `softBudgetStatus = WITHIN_SOFT_BUDGET` (portfolio `thesisFailureStress` ≤ `softRiskBudget` with status `OK`); both `BLOCKED` and `REVIEW_REQUIRED` are non-sizing-eligible. The approved-trigger Soft Risk Budget formula and value are unchanged. The list is a computed-state explanation only and is not an actor/evidence audit history.
 
 These labels do not generate actions or orders. Theme meaning, AVWAP anchors, entry setup, and initial risk price remain caller inputs; thesis confirmation is limited to the authenticated REST route, the Telegram human approval, or the V60 policy-gated verification described above. Existing authenticated tactical REST input routes remain available; this change does not expose them as MCP write tools. It does not add an intraday feed, create Calibration Log, change Notion prompt versions, or update scheduled-task configuration. Actual runtime tool availability and deployment must be checked separately.

@@ -47,6 +47,7 @@ user. No connector key needs to be copied into ChatGPT.
 The requested OAuth scope determines the MCP tools:
 
 - `connector:read`: `get_portfolio`, `get_orders`, `get_recent_fills`, `get_order`, `get_investment_context`, and `get_investment_risk_events`.
+- `connector:review`: the read tools plus `start_strategic_buy_revalidation` and `finish_strategic_buy_revalidation`. It cannot write decisions or theses, prepare orders, submit orders, or cancel orders.
 - `connector:trade`: the six read tools plus `upsert_position_mandate`, `upsert_investment_theme`, `put_investment_thesis`, `append_investment_decision`, `append_investment_review`, `prepare_order`, `submit_order`, and `cancel_order`. Position mandates, theme inputs, thesis proposals, decision records, and review notes reuse this existing write scope; no new scope is introduced.
 
 `upsert_position_mandate` requires exactly `ticker`, `investmentHorizon` (`TACTICAL` or `STRATEGIC`), and `effectiveDate`. The authenticated principal supplies the owner. Spring derives `riskPriceRole` (`EXIT_EVALUATION` for TACTICAL, `REVIEW_TRIGGER` for STRATEGIC), stores `source=USER_CONFIRMED`, and returns the saved row. `source` and `riskPriceRole` cannot be set by the caller. Identical retries preserve the original `updatedAt`. Read the result through `get_investment_context.positionMandates`. The tool does not change Thesis classification or `priceRiskTriggerPrice`, and it does not create or submit an order. Initial user-confirmed mappings and their one-time write examples are in [Position Mandate prompt drafts](position-mandate-prompts/README.md).
@@ -81,12 +82,48 @@ the tool list.
 Read tools are headless: they do not ask for account selection, confirmation, or input. Their
 OAuth access token is short-lived; the server issues and rotates opaque 30-day refresh tokens,
 so the ChatGPT connection can refresh without exposing a Toss credential. A failed reauthorization
-is returned as an authentication failure, never as a tool-side prompt. Scheduled tasks must use
-only the read scope; trade tools are intentionally excluded. OpenAI's task documentation describes
-Apps as selectable through a plugin and Team Tasks as using the Plugins selector and workspace
-connections, but does not explicitly guarantee that a custom MCP connection to this Toss connector
-is callable by a personal Scheduled Task. Treat scheduled custom-MCP support as unverified until an
-existing supported plugin is selected and an actual task run succeeds. See the
+is returned as an authentication failure, never as a tool-side prompt. A scheduled Strategic BUY
+review can request `connector:review`, which permits the two bounded review tools but exposes no
+trade tools. Existing read-scoped schedules cannot call these tools; existing trade-scoped schedules
+should not be reused for this purpose. Reauthorize the ChatGPT app with `connector:review`, refresh
+its tools, then enable that app for the dedicated review task.
+
+Use the [Strategic BUY Revalidation task draft](position-mandate-prompts/schedules/STRATEGIC_BUY_REVALIDATION.md)
+as the trial prompt. First connect a separate ChatGPT app instance with only `connector:review` and
+run the prompt in a regular chat. Confirm the two review tools are listed and that no order tools are
+available. Complete one review, then verify its database record before integrating the prompt into
+one existing schedule (prefer OPENING). Do not create a sixth schedule; leave the other four
+unchanged. Verify an actual scheduled run before relying on it.
+
+To inspect a trial immediately after `finish_strategic_buy_revalidation`, query its returned
+`runId`:
+
+```sql
+SELECT r.run_id, r.status AS run_status, r.created_at AS run_created_at,
+       r.expires_at AS run_expires_at, v.review_origin, v.verdict, v.provider, v.model,
+       v.decision_id, v.ticker, v.thesis_revision_id, v.source_as_of, v.sources, v.assessment,
+       v.reviewed_market_price, v.market_health, v.price_risk_state,
+       v.min_price, v.max_price, v.max_quantity, v.expires_at AS review_expires_at
+  FROM investment_strategic_buy_revalidation_runs r
+  LEFT JOIN investment_strategic_buy_revalidations v USING (run_id)
+ WHERE r.run_id = '<run-id>'::uuid;
+```
+
+Check `run_status=COMPLETED`, `review_origin=CHATGPT_MCP`, `provider=ChatGPT`, and
+`model=UNATTESTED`; compare decision, Thesis revision, market snapshot, source types, assessment,
+and expiry with the tool responses. A missing joined review row or mismatched stored data fails the
+technical trial. `BLOCKED` can be a valid saved result when evidence or a criterion fails; it is not
+a passing investment review. The record still does not attest Scheduled Task identity or source
+contents.
+
+`CHATGPT_MCP` records prove only that a short-lived MCP review flow completed against the stored
+decision, mandate, thesis revision, and market snapshot. The server does not receive an attested
+Scheduled Task ID and does not fetch or semantically verify cited pages. A caller holding
+`connector:review` can still submit its own assessment; the scope prevents that same connection
+from trading, but it does not prove who authored the assessment. Use the review task as a ChatGPT
+research workflow, not as cryptographic AI/source attestation. `SERVER_GENERATED` remains reserved
+for a future server-managed reviewer. Scheduled custom-MCP support must be confirmed by an actual
+task run before relying on it. See the
 [Scheduled Tasks guide](https://help.openai.com/en/articles/10291617-scheduled-tasks-in-chatgpt) and
 [Team Tasks guide](https://help.openai.com/en/articles/20001540-creating-and-managing-team-tasks-in-chatgpt).
 

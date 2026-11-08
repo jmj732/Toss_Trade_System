@@ -10,6 +10,7 @@ import com.jmj.trade.order.McpOrderExecutionService;
 import com.jmj.trade.investment.InvestmentContextService;
 import com.jmj.trade.investment.InvestmentException;
 import com.jmj.trade.investment.InvestmentReviewService;
+import com.jmj.trade.investment.InvestmentStrategicBuyRevalidationService;
 import com.jmj.trade.investment.InvestmentThesisVerificationService;
 import com.jmj.trade.monitoring.InvestmentRiskEventService;
 import org.springframework.dao.DataAccessException;
@@ -27,6 +28,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -49,6 +51,7 @@ public final class ConnectorMcpProtocol {
     private final InvestmentRiskPreflightService investmentRiskPreflightService;
     private final InvestmentRiskEventService investmentRiskEventService;
     private final com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService;
+    private final InvestmentStrategicBuyRevalidationService strategicBuyRevalidationService;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
@@ -66,12 +69,14 @@ public final class ConnectorMcpProtocol {
                          ObjectProvider<InvestmentRiskPreflightService> investmentRiskPreflightService,
                          ObjectProvider<InvestmentRiskEventService> investmentRiskEventService,
                          ObjectProvider<com.jmj.trade.investment.InvestmentSellReadinessService> sellReadinessService,
+                         ObjectProvider<InvestmentStrategicBuyRevalidationService> strategicBuyRevalidationService,
                          ObjectMapper objectMapper) {
         this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(),
                 investmentReviewService.getIfAvailable(), thesisVerificationService.getIfAvailable(),
                 investmentOnboardingService.getIfAvailable(), investmentRiskPreflightService.getIfAvailable(),
                 investmentRiskEventService.getIfAvailable(),
                 sellReadinessService.getIfAvailable(),
+                strategicBuyRevalidationService.getIfAvailable(),
                 objectMapper);
     }
 
@@ -133,6 +138,21 @@ public final class ConnectorMcpProtocol {
                                 InvestmentRiskEventService investmentRiskEventService,
                                 com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService,
                                 ObjectMapper objectMapper) {
+        this(service, tradeService, investmentContextService, investmentReviewService, thesisVerificationService,
+                investmentOnboardingService, investmentRiskPreflightService, investmentRiskEventService,
+                sellReadinessService, null, objectMapper);
+    }
+
+    ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                         InvestmentContextService investmentContextService,
+                         InvestmentReviewService investmentReviewService,
+                         InvestmentThesisVerificationService thesisVerificationService,
+                         InvestmentOnboardingService investmentOnboardingService,
+                         InvestmentRiskPreflightService investmentRiskPreflightService,
+                         InvestmentRiskEventService investmentRiskEventService,
+                         com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService,
+                         InvestmentStrategicBuyRevalidationService strategicBuyRevalidationService,
+                         ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
         this.investmentContextService = investmentContextService;
@@ -142,6 +162,7 @@ public final class ConnectorMcpProtocol {
         this.investmentRiskPreflightService = investmentRiskPreflightService;
         this.investmentRiskEventService = investmentRiskEventService;
         this.sellReadinessService = sellReadinessService;
+        this.strategicBuyRevalidationService = strategicBuyRevalidationService;
         this.objectMapper = objectMapper;
     }
 
@@ -155,7 +176,13 @@ public final class ConnectorMcpProtocol {
 
     ObjectNode handle(ObjectNode request, UUID userId, UUID connectionId,
                       UUID authenticatedApiKeyId, boolean canTrade) {
+        return handle(request, userId, connectionId, authenticatedApiKeyId, canTrade, false);
+    }
+
+    ObjectNode handle(ObjectNode request, UUID userId, UUID connectionId, UUID authenticatedApiKeyId,
+                      boolean canTrade, boolean canReview) {
         var tradeScopeGranted = canTrade;
+        var reviewScopeGranted = canReview;
         var liveExecutionAvailable = tradeScopeGranted && tradeService != null;
         if (request == null || !"2.0".equals(request.path("jsonrpc").asText(null))) {
             return error(request, -32600, "Invalid Request");
@@ -165,31 +192,39 @@ public final class ConnectorMcpProtocol {
         if (method == null) return error(request, -32600, "Invalid Request");
 
         var response = switch (method) {
-            case "initialize" -> initialize(request, tradeScopeGranted, liveExecutionAvailable);
+            case "initialize" -> initialize(request, tradeScopeGranted, reviewScopeGranted, liveExecutionAvailable);
             case "notifications/initialized" -> null;
             case "ping" -> result(request, objectMapper.createObjectNode());
-            case "tools/list" -> toolsList(request, tradeScopeGranted);
+            case "tools/list" -> toolsList(request, tradeScopeGranted, reviewScopeGranted);
             case "tools/call" -> toolsCall(request, userId, connectionId, authenticatedApiKeyId,
-                    tradeScopeGranted, liveExecutionAvailable);
+                    tradeScopeGranted, reviewScopeGranted, liveExecutionAvailable);
             default -> error(request, -32601, "Method not found: " + method);
         };
         return request.has("id") ? response : null;
     }
 
-    private ObjectNode initialize(ObjectNode request, boolean tradeScopeGranted, boolean liveExecutionAvailable) {
+    private ObjectNode initialize(ObjectNode request, boolean tradeScopeGranted, boolean reviewScopeGranted,
+                                  boolean liveExecutionAvailable) {
         var result = objectMapper.createObjectNode();
         result.put("protocolVersion", negotiatedProtocolVersion(request));
         var capabilities = objectMapper.createObjectNode();
         capabilities.set("tools", objectMapper.createObjectNode().put("listChanged", false));
         result.set("capabilities", capabilities);
-        result.put("instructions", instructions(tradeScopeGranted, liveExecutionAvailable));
+        result.put("instructions", instructions(tradeScopeGranted, reviewScopeGranted, liveExecutionAvailable));
         result.set("serverInfo", objectMapper.createObjectNode()
                 .put("name", "investment-os-toss")
                 .put("version", "1.0.0"));
         return result(request, result);
     }
 
-    private static String instructions(boolean tradeScopeGranted, boolean liveExecutionAvailable) {
+    private static String instructions(boolean tradeScopeGranted, boolean reviewScopeGranted,
+                                       boolean liveExecutionAvailable) {
+        if (reviewScopeGranted && !tradeScopeGranted) {
+            return "Use read tools to inspect current Investment OS evidence. ChatGPT review tools create a short-lived "
+                    + "server-bound review run; they cannot prepare or submit orders. This connection does not prove a "
+                    + "Scheduled Task identity or verify source contents. Treat missing or stale evidence as NOT_EVALUABLE "
+                    + "and never claim that a citation was verified unless the source itself supports it.";
+        }
         if (!tradeScopeGranted) {
             return "Use these read-only tools to inspect the authenticated Toss Invest account. "
                     + "Treat stale or partial portfolio data as uncertain and never infer a trade from it.";
@@ -211,7 +246,7 @@ public final class ConnectorMcpProtocol {
         };
     }
 
-    private ObjectNode toolsList(ObjectNode request, boolean canTrade) {
+    private ObjectNode toolsList(ObjectNode request, boolean canTrade, boolean canReview) {
         var result = objectMapper.createObjectNode();
         var tools = result.putArray("tools");
         tools.add(tool(
@@ -266,6 +301,21 @@ public final class ConnectorMcpProtocol {
             tools.add(tool("preflight_investment_risk", "Preflight investment risk",
                     "Compute current and proposed-quantity risk gates for one ticker using server-selected risk inputs. Accepts no execution price, does not approve an investment, and does not prepare or submit an order.",
                     riskPreflightSchema(), riskPreflightOutputSchema()));
+        }
+        if (canReview && strategicBuyRevalidationService != null) {
+            tools.add(tool("start_strategic_buy_revalidation", "Start ChatGPT strategic BUY review",
+                    "Start a short-lived server-bound ChatGPT review run for one existing Strategic ADD decision. "
+                            + "The server returns the run ID, one-time challenge, and current snapshot. Requires connector:review; "
+                            + "this scope cannot prepare or submit orders. The MCP server cannot attest that the caller is a "
+                            + "Scheduled Task or that cited source content supports its claims.",
+                    strategicBuyRevalidationStartSchema(), objectSchema(), false, false, false,
+                    ConnectorApiKeyService.REVIEW_SCOPE));
+            tools.add(tool("finish_strategic_buy_revalidation", "Finish ChatGPT strategic BUY review",
+                    "Record ChatGPT's cited assessment for a started run. The server binds it to the current decision, "
+                            + "mandate, thesis revision and market snapshot, and derives the review origin. URLs and timestamps "
+                            + "are syntax-checked; source contents are not independently verified. Does not place orders.",
+                    strategicBuyRevalidationFinishSchema(), objectSchema(), false, false, false,
+                    ConnectorApiKeyService.REVIEW_SCOPE));
         }
         if (canTrade) {
             if (investmentContextService != null) {
@@ -324,7 +374,8 @@ public final class ConnectorMcpProtocol {
     }
 
     private ObjectNode toolsCall(ObjectNode request, UUID userId, UUID connectionId, UUID authenticatedApiKeyId,
-                                 boolean tradeScopeGranted, boolean liveExecutionAvailable) {
+                                 boolean tradeScopeGranted, boolean reviewScopeGranted,
+                                 boolean liveExecutionAvailable) {
         var params = request.path("params");
         var name = params.path("name").asText(null);
         if (name == null) return error(request, -32602, "Tool name is required");
@@ -342,6 +393,14 @@ public final class ConnectorMcpProtocol {
                         optionalText(arguments, "brokerOrderId", null),
                         optionalText(arguments, "clientOrderId", null)));
                 case "get_investment_context" -> investmentContext(request, userId, arguments);
+                case "start_strategic_buy_revalidation" -> !reviewScopeGranted
+                        ? forbiddenReview(request)
+                        : startStrategicBuyRevalidation(request, userId, connectionId,
+                                authenticatedApiKeyId, arguments);
+                case "finish_strategic_buy_revalidation" -> !reviewScopeGranted
+                        ? forbiddenReview(request)
+                        : finishStrategicBuyRevalidation(request, userId, connectionId,
+                                authenticatedApiKeyId, arguments);
                 case "get_investment_risk_events" -> getInvestmentRiskEvents(request, userId, arguments);
                 case "get_investment_sell_readiness" -> getInvestmentSellReadiness(
                         request, userId, connectionId, arguments);
@@ -408,6 +467,9 @@ public final class ConnectorMcpProtocol {
             builder.log("MCP tool failed");
             if (exception instanceof LiveOrderActivationException activationException) {
                 return toolError(request, "ORDER_BLOCKED", activationException.getMessage(), false, false);
+            }
+            if (exception instanceof InvestmentException investmentException) {
+                return investmentException(request, investmentException);
             }
             if (exception instanceof BrokerException brokerException) {
                 var response = toolError(request, "TOSS_API_ERROR", "Toss API request failed",
@@ -502,6 +564,92 @@ public final class ConnectorMcpProtocol {
                     .log("Investment context read failed");
             return toolError(request, "INTERNAL_ERROR", "Investment context could not be read", false, false);
         }
+    }
+
+    private ObjectNode startStrategicBuyRevalidation(ObjectNode request, UUID userId, UUID connectionId,
+                                                      UUID authenticatedApiKeyId, JsonNode arguments) {
+        if (strategicBuyRevalidationService == null) return strategicRevalidationUnavailable(request);
+        try {
+            requireOnlyFields(arguments, Set.of("decisionId"));
+            var run = strategicBuyRevalidationService.beginChatGptRun(userId, connectionId,
+                    authenticatedApiKeyId, requiredUuid(arguments, "decisionId"));
+            return toolResult(request, run);
+        } catch (IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
+        } catch (InvestmentException exception) {
+            return investmentException(request, exception);
+        } catch (DataAccessException exception) {
+            return strategicRevalidationUnavailable(request);
+        }
+    }
+
+    private ObjectNode finishStrategicBuyRevalidation(ObjectNode request, UUID userId, UUID connectionId,
+                                                       UUID authenticatedApiKeyId, JsonNode arguments) {
+        if (strategicBuyRevalidationService == null) return strategicRevalidationUnavailable(request);
+        try {
+            requireOnlyFields(arguments, Set.of("runId", "challenge", "sourceAsOf", "rationale", "sources",
+                    "assessment", "minPrice", "maxPrice", "maxQuantity"));
+            var completion = new InvestmentStrategicBuyRevalidationService.RunCompletion(
+                    requiredUuid(arguments, "runId"), requiredText(arguments, "challenge"),
+                    requiredInstant(arguments, "sourceAsOf"), requiredText(arguments, "rationale"),
+                    revalidationSources(arguments.path("sources")), revalidationAssessment(arguments.path("assessment")),
+                    decimal(arguments, "minPrice"), decimal(arguments, "maxPrice"),
+                    decimal(arguments, "maxQuantity"));
+            return toolResult(request, strategicBuyRevalidationService.completeChatGptRun(
+                    userId, connectionId, authenticatedApiKeyId, completion));
+        } catch (IllegalArgumentException exception) {
+            return toolError(request, "INVALID_ARGUMENT", exception.getMessage(), false, false);
+        } catch (InvestmentException exception) {
+            return investmentException(request, exception);
+        } catch (DataAccessException exception) {
+            return strategicRevalidationUnavailable(request);
+        }
+    }
+
+    private List<InvestmentStrategicBuyRevalidationService.EvidenceSource> revalidationSources(JsonNode value) {
+        if (value == null || !value.isArray() || value.isEmpty() || value.size() > 10)
+            throw new IllegalArgumentException("sources must contain 1 to 10 items");
+        var sources = new ArrayList<InvestmentStrategicBuyRevalidationService.EvidenceSource>();
+        for (var source : value) {
+            requireOnlyFields(source, Set.of("url", "asOf", "type"));
+            sources.add(new InvestmentStrategicBuyRevalidationService.EvidenceSource(
+                    requiredText(source, "url"), requiredInstant(source, "asOf"),
+                    requiredText(source, "type")));
+        }
+        return List.copyOf(sources);
+    }
+
+    private InvestmentStrategicBuyRevalidationService.Assessment revalidationAssessment(JsonNode value) {
+        var fields = Set.of("thesisHealth", "fundamentalRevision", "expectationsGap", "riskReward",
+                "hardRisk", "thesisInvalidation");
+        requireOnlyFields(value, fields);
+        if (value.size() != fields.size()) throw new IllegalArgumentException("assessment is incomplete");
+        return new InvestmentStrategicBuyRevalidationService.Assessment(
+                revalidationCriterion(value.path("thesisHealth")),
+                revalidationCriterion(value.path("fundamentalRevision")),
+                revalidationCriterion(value.path("expectationsGap")),
+                revalidationCriterion(value.path("riskReward")),
+                revalidationCriterion(value.path("hardRisk")),
+                revalidationCriterion(value.path("thesisInvalidation")));
+    }
+
+    private static InvestmentStrategicBuyRevalidationService.Criterion revalidationCriterion(JsonNode value) {
+        requireOnlyFields(value, Set.of("status", "rationale"));
+        if (value.size() != 2) throw new IllegalArgumentException("assessment criterion is incomplete");
+        return new InvestmentStrategicBuyRevalidationService.Criterion(
+                requiredText(value, "status"), requiredText(value, "rationale"));
+    }
+
+    private static void requireOnlyFields(JsonNode value, Set<String> allowed) {
+        if (value == null || !value.isObject()) throw new IllegalArgumentException("arguments must be an object");
+        for (var field : value.propertyNames()) {
+            if (!allowed.contains(field)) throw new IllegalArgumentException("unsupported argument: " + field);
+        }
+    }
+
+    private ObjectNode strategicRevalidationUnavailable(ObjectNode request) {
+        return toolError(request, "STRATEGIC_REVALIDATION_UNAVAILABLE",
+                "Strategic BUY review is temporarily unavailable", true, false);
     }
 
     private ObjectNode getInvestmentRiskEvents(ObjectNode request, UUID userId, JsonNode arguments) {
@@ -605,8 +753,22 @@ public final class ConnectorMcpProtocol {
     }
 
     private ObjectNode prepareOrder(ObjectNode request, UUID userId, UUID connectionId, JsonNode arguments) {
-        if (!arguments.path("decisionId").isMissingNode() || !arguments.path("eventId").isMissingNode()) {
-            if (!arguments.has("decisionId") || !arguments.has("eventId"))
+        var hasDecisionId = arguments.has("decisionId");
+        var hasEventId = arguments.has("eventId");
+        if (hasDecisionId || hasEventId) {
+            if (hasDecisionId && !hasEventId) {
+                if (!"BUY".equalsIgnoreCase(requiredText(arguments, "side")))
+                    return toolError(request, "INVALID_ARGUMENT", "A decision-only link requires BUY", false, false);
+                for (var field : arguments.propertyNames()) {
+                    if (!Set.of("symbol", "side", "orderType", "quantity", "price", "decisionId")
+                            .contains(field))
+                        return toolError(request, "INVALID_ARGUMENT", "Unsupported prepare_order field", false, false);
+                }
+                var proposal = tradeService.prepareWithDecision(userId, connectionId,
+                        requiredUuid(arguments, "decisionId"), prepare(arguments));
+                return toolResult(request, proposal);
+            }
+            if (!hasDecisionId || !hasEventId)
                 return toolError(request, "INVALID_ARGUMENT", "decisionId and eventId must be supplied together",
                         false, false);
             if (!"SELL".equalsIgnoreCase(requiredText(arguments, "side"))
@@ -1354,6 +1516,47 @@ public final class ConnectorMcpProtocol {
         return schema;
     }
 
+    private ObjectNode strategicBuyRevalidationStartSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("decisionId", uuidSchema());
+        return closedObject(properties, "decisionId");
+    }
+
+    private ObjectNode strategicBuyRevalidationFinishSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("runId", uuidSchema());
+        properties.set("challenge", boundedStringSchema(80));
+        properties.set("sourceAsOf", dateTimeSchema());
+        properties.set("rationale", boundedStringSchema(4000));
+        var evidence = objectMapper.createObjectNode();
+        evidence.set("url", objectMapper.createObjectNode().put("type", "string")
+                .put("format", "uri").put("pattern", "^https://.+").put("maxLength", 2000));
+        evidence.set("asOf", dateTimeSchema());
+        evidence.set("type", enumSchema("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"));
+        properties.set("sources", objectMapper.createObjectNode().put("type", "array")
+                .put("minItems", 1).put("maxItems", 10).set("items", closedObject(evidence, "url", "asOf", "type")));
+        var assessment = objectMapper.createObjectNode();
+        assessment.set("thesisHealth", revalidationCriterionSchema("INTACT", "IMPAIRED", "INVALIDATED", "NOT_EVALUABLE"));
+        assessment.set("fundamentalRevision", revalidationCriterionSchema("SUPPORTED", "CONTRADICTED", "NOT_EVALUABLE"));
+        assessment.set("expectationsGap", revalidationCriterionSchema("OPPORTUNITY", "NO_OPPORTUNITY", "NOT_EVALUABLE"));
+        assessment.set("riskReward", revalidationCriterionSchema("FAVORABLE", "UNFAVORABLE", "NOT_EVALUABLE"));
+        assessment.set("hardRisk", revalidationCriterionSchema("PASS", "FAIL", "NOT_EVALUABLE"));
+        assessment.set("thesisInvalidation", revalidationCriterionSchema("CLEAR", "TRIGGERED", "NOT_EVALUABLE"));
+        properties.set("assessment", closedObject(assessment, "thesisHealth", "fundamentalRevision",
+                "expectationsGap", "riskReward", "hardRisk", "thesisInvalidation"));
+        properties.set("minPrice", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        properties.set("maxPrice", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        properties.set("maxQuantity", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        return closedObject(properties, "runId", "challenge", "sourceAsOf", "rationale", "sources", "assessment",
+                "minPrice", "maxPrice", "maxQuantity");
+    }
+
+    private ObjectNode revalidationCriterionSchema(String... statuses) {
+        return closedObject(objectMapper.createObjectNode()
+                .set("status", enumSchema(statuses))
+                .set("rationale", boundedStringSchema(1000)), "status", "rationale");
+    }
+
     private ObjectNode sellReadinessOutputSchema() {
         var properties = objectMapper.createObjectNode();
         properties.set("actionStatus", enumSchema("READY", "BLOCKED", "NOT_EVALUATED"));
@@ -1643,8 +1846,9 @@ public final class ConnectorMcpProtocol {
         properties.set("cash", nullableSchema(cashGateSchema()));
         properties.set("currentRisk", mapSchema(riskContributionSchema()));
         properties.set("proFormaRisk", mapSchema(riskContributionSchema()));
+        properties.set("buyGate", investmentBuyGateSchema());
         var success = closedObject(properties, "ticker", "quantity", "buyEligible", "blockers", "thesis",
-                "portfolio", "policy", "cash", "currentRisk", "proFormaRisk");
+                "portfolio", "policy", "cash", "currentRisk", "proFormaRisk", "buyGate");
         return outputSchema(success, "INVALID_ARGUMENT", "AUTHENTICATED_USER_INVALID",
                 "INVESTMENT_STATE_NOT_FOUND", "INVESTMENT_STATE_CONFLICT",
                 "INVESTMENT_CONTEXT_UNAVAILABLE", "INTERNAL_ERROR");
@@ -1726,11 +1930,78 @@ public final class ConnectorMcpProtocol {
         properties.set("forwardDownsideRisk", nullableSchema(forwardDownsideRiskSchema()));
         properties.set("thesisHealth", nullableSchema(thesisHealthSchema()));
         properties.set("thesisEvidence", nullableSchema(thesisEvidenceSchema()));
+        properties.set("marketRisk", nullableSchema(marketRiskAssessmentSchema()));
+        properties.set("investmentBuyGate", nullableSchema(investmentBuyGateSchema()));
         return closedObject(properties, "portfolioWeight", "invalidationDownside", "plannedLossContribution",
                 "status", "thesisFailureStress", "thesisFailureStressStatus", "top2CorrelatedStress",
                 "top2CorrelatedAssets", "top2Correlation", "top2CorrelatedStatus", "sizingEligible",
                 "softBudgetStatus", "eligibilityReasons", "riskMark", "approvedTriggerRisk",
-                "forwardDownsideRisk", "thesisHealth", "thesisEvidence");
+                "forwardDownsideRisk", "thesisHealth", "thesisEvidence", "marketRisk", "investmentBuyGate");
+    }
+
+    private ObjectNode investmentBuyGateSchema() {
+        var fundamentals = objectMapper.createObjectNode();
+        fundamentals.set("status", enumSchema("AVAILABLE", "UNAVAILABLE"));
+        fundamentals.set("reasons", arrayOf(stringSchema()));
+        fundamentals.set("fundamentalsStatus", stringSchema());
+        fundamentals.set("source", nullableStringSchema());
+        fundamentals.set("asOf", nullableDateTimeSchema());
+        fundamentals.set("revisionStatus", stringSchema());
+        fundamentals.set("consensusSource", nullableStringSchema());
+        fundamentals.set("consensusAsOf", nullableDateTimeSchema());
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", enumSchema("BLOCKED", "REVIEW_REQUIRED", "ELIGIBLE"));
+        properties.set("reasons", arrayOf(stringSchema()));
+        properties.set("investmentHorizon", stringSchema());
+        properties.set("marketDataStatus", stringSchema());
+        properties.set("marketHealth", stringSchema());
+        properties.set("priceRiskState", stringSchema());
+        properties.set("fundamentalVerification", nullableSchema(closedObject(fundamentals, "status", "reasons",
+                "fundamentalsStatus", "source", "asOf", "revisionStatus", "consensusSource", "consensusAsOf")));
+        properties.set("evaluatedAt", nullableDateTimeSchema());
+        return closedObject(properties, "status", "reasons", "investmentHorizon", "marketDataStatus",
+                "marketHealth", "priceRiskState", "fundamentalVerification", "evaluatedAt");
+    }
+
+    private ObjectNode marketRiskAssessmentSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("policyVersion", stringSchema());
+        properties.set("marketDataStatus", stringSchema());
+        properties.set("marketHealth", stringSchema());
+        properties.set("fundamentalHealth", stringSchema());
+        properties.set("fundamentalHealthReason", stringSchema());
+        properties.set("priceRiskState", stringSchema());
+        properties.set("recommendedAction", stringSchema());
+        properties.set("investmentHorizon", stringSchema());
+        properties.set("riskPriceRole", nullableStringSchema());
+        properties.set("approvedTriggerPrice", nullableNumberSchema());
+        properties.set("currentPrice", nullableNumberSchema());
+        properties.set("currentPriceAsOf", nullableDateTimeSchema());
+        properties.set("marketAsOf", nullableDateSchema());
+        properties.set("marketDataSource", nullableStringSchema());
+        properties.set("maximumDrawdown20", nullableSchema(marketMetricSchema()));
+        properties.set("maximumDrawdown60", nullableSchema(marketMetricSchema()));
+        properties.set("annualizedVolatility20", nullableSchema(marketMetricSchema()));
+        properties.set("return20", nullableSchema(marketMetricSchema()));
+        properties.set("relativeStrength20", nullableSchema(marketMetricSchema()));
+        properties.set("relativeVolume", nullableSchema(marketMetricSchema()));
+        properties.set("ema50", nullableSchema(marketMetricSchema()));
+        properties.set("priceVolumeSignal", stringSchema());
+        properties.set("lowerHighs20", nullableSchema(marketMetricSchema()));
+        properties.set("lowerLows20", nullableSchema(marketMetricSchema()));
+        return closedObject(properties, "policyVersion", "marketDataStatus", "marketHealth",
+                "fundamentalHealth", "fundamentalHealthReason", "priceRiskState", "recommendedAction",
+                "investmentHorizon", "riskPriceRole", "approvedTriggerPrice", "currentPrice",
+                "currentPriceAsOf", "marketAsOf", "marketDataSource", "maximumDrawdown20",
+                "maximumDrawdown60", "annualizedVolatility20", "return20", "relativeStrength20",
+                "relativeVolume", "ema50", "priceVolumeSignal", "lowerHighs20", "lowerLows20");
+    }
+
+    private ObjectNode marketMetricSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("value", nullableNumberSchema());
+        properties.set("status", stringSchema());
+        return closedObject(properties, "value", "status");
     }
 
     private ObjectNode thesisEvidenceSchema() {
@@ -2302,6 +2573,10 @@ public final class ConnectorMcpProtocol {
 
     private ObjectNode forbiddenTrade(ObjectNode request) {
         return toolError(request, "TRADE_SCOPE_REQUIRED", "Connector trade scope required", false, false);
+    }
+
+    private ObjectNode forbiddenReview(ObjectNode request) {
+        return toolError(request, "REVIEW_SCOPE_REQUIRED", "Connector review scope required", false, false);
     }
 
     private ObjectNode liveOrderExecutionDisabled(ObjectNode request) {

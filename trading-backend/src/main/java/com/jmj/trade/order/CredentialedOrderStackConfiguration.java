@@ -1,7 +1,10 @@
 package com.jmj.trade.order;
 
-import com.jmj.trade.account.PortfolioReadService;
 import com.jmj.trade.account.FreshPortfolioReadService;
+import com.jmj.trade.account.PortfolioReadService;
+import com.jmj.trade.investment.InvestmentContextService;
+import com.jmj.trade.investment.InvestmentRiskPreflightService;
+import com.jmj.trade.investment.InvestmentStrategicBuyRevalidationService;
 import com.jmj.trade.investment.InvestmentSellReadinessService;
 import com.jmj.trade.broker.BrokerAdapter;
 import com.jmj.trade.broker.BrokerOrderPort;
@@ -192,11 +195,15 @@ public class CredentialedOrderStackConfiguration {
             UnknownAttemptReconciler reconciler,
             OrderSubmissionService submissions,
             InvestmentSellReadinessService sellReadiness,
+            InvestmentContextService investmentContextService,
+            InvestmentRiskPreflightService riskPreflight,
+            InvestmentStrategicBuyRevalidationService buyRevalidation,
             PlatformTransactionManager transactionManager
     ) {
         return new McpOrderExecutionService(
                 activation, risk, portfolios, brokerAdapter, orderPort, safety,
                 intents, brokerOrders, attempts, jdbc, reconciler, submissions, sellReadiness,
-                new TransactionTemplate(transactionManager));
+                new TransactionTemplate(transactionManager), investmentContextService, riskPreflight,
+                buyRevalidation);
     }
 }

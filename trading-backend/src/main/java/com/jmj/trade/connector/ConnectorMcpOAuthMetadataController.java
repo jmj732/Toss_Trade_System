@@ -30,7 +30,7 @@ final class ConnectorMcpOAuthMetadataController {
                 "resource", oauth.publicUrl(ConnectorMcpOAuthService.RESOURCE_PATH),
                 "authorization_servers", List.of(oauth.publicUrl("/.well-known/oauth-authorization-server")),
                 "scopes_supported", List.of(ConnectorMcpOAuthService.READ_SCOPE,
-                        ConnectorMcpOAuthService.TRADE_SCOPE));
+                        ConnectorMcpOAuthService.REVIEW_SCOPE, ConnectorMcpOAuthService.TRADE_SCOPE));
     }
 
     @GetMapping(value = "/oauth-authorization-server", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -44,7 +44,7 @@ final class ConnectorMcpOAuthMetadataController {
                 "grant_types_supported", List.of("authorization_code", "refresh_token"),
                 "code_challenge_methods_supported", List.of("S256"),
                 "scopes_supported", List.of(ConnectorMcpOAuthService.READ_SCOPE,
-                        ConnectorMcpOAuthService.TRADE_SCOPE),
+                        ConnectorMcpOAuthService.REVIEW_SCOPE, ConnectorMcpOAuthService.TRADE_SCOPE),
                 "token_endpoint_auth_methods_supported", List.of("none"));
     }
 }

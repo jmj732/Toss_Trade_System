@@ -11,6 +11,7 @@ public final class TacticalOverlayCalculator {
     private static final int SCALE = 10;
 
     private final TacticalOverlayProperties properties;
+    private final MarketRiskEvaluator marketRiskEvaluator = new MarketRiskEvaluator();
 
     public TacticalOverlayCalculator(TacticalOverlayProperties properties) {
         this.properties = java.util.Objects.requireNonNull(properties, "properties");
@@ -31,9 +32,10 @@ public final class TacticalOverlayCalculator {
         var stageStatus = stage == null ? stageUnavailableStatus(input, bars) : OverlayStatus.OK;
         var anchoredVwaps = calculateAnchoredVwaps(input, bars);
         var performance = calculatePerformance(input, bars);
+        var marketRisk = marketRiskEvaluator.calculate(input, bars, series.indicators(), properties.highRvolThreshold());
         return new Result(input.symbol(), bars.getLast().date(), input.source(), status,
                 input.priceAdjustmentStatus(), stage, stageStatus, VwapMethod.DAILY_ROLLING_20,
-                emaSeeds(bars), series.indicators(), events, cohorts, anchoredVwaps, performance);
+                emaSeeds(bars), series.indicators(), events, cohorts, anchoredVwaps, performance, marketRisk);
     }
 
     private static OverlayStatus overallStatus(Input input, List<Bar> bars) {
@@ -44,11 +46,12 @@ public final class TacticalOverlayCalculator {
         return input.historyComplete() ? OverlayStatus.OK : OverlayStatus.PARTIAL;
     }
 
-    private static Result emptyResult(Input input, List<Bar> bars, OverlayStatus status) {
+    private Result emptyResult(Input input, List<Bar> bars, OverlayStatus status) {
         var performance = unavailablePerformance(input.performanceEntry(), status);
+        var marketRisk = marketRiskEvaluator.calculate(input, bars, List.of(), properties.highRvolThreshold());
         return new Result(input.symbol(), bars.isEmpty() ? null : bars.getLast().date(), input.source(), status,
                 input.priceAdjustmentStatus(), null, status, VwapMethod.DAILY_ROLLING_20, List.of(), List.of(),
-                List.of(), List.of(), List.of(), performance);
+                List.of(), List.of(), List.of(), performance, marketRisk);
     }
 
     private IndicatorSeries calculateIndicators(Input input, List<Bar> bars) {
@@ -745,14 +748,25 @@ public final class TacticalOverlayCalculator {
     public record Result(String symbol, LocalDate asOf, String source, OverlayStatus status,
                          PriceAdjustmentStatus priceAdjustmentStatus, Stage stage, OverlayStatus stageStatus,
                          VwapMethod vwapMethod, List<EmaSeed> emaSeeds, List<IndicatorBar> indicators,
-                         List<Event> events,
-                         List<Cohort> cohorts, List<AnchoredVwap> anchoredVwaps, Performance performance) {
+                         List<Event> events, List<Cohort> cohorts, List<AnchoredVwap> anchoredVwaps,
+                         Performance performance, MarketRiskEvaluator.MarketMetrics marketRisk) {
+        public Result(String symbol, LocalDate asOf, String source, OverlayStatus status,
+                      PriceAdjustmentStatus priceAdjustmentStatus, Stage stage, OverlayStatus stageStatus,
+                      VwapMethod vwapMethod, List<EmaSeed> emaSeeds, List<IndicatorBar> indicators,
+                      List<Event> events, List<Cohort> cohorts, List<AnchoredVwap> anchoredVwaps,
+                      Performance performance) {
+            this(symbol, asOf, source, status, priceAdjustmentStatus, stage, stageStatus, vwapMethod,
+                    emaSeeds, indicators, events, cohorts, anchoredVwaps, performance,
+                    emptyMarketRisk(asOf, source));
+        }
+
         public Result {
             emaSeeds = List.copyOf(emaSeeds);
             indicators = List.copyOf(indicators);
             events = List.copyOf(events);
             cohorts = List.copyOf(cohorts);
             anchoredVwaps = List.copyOf(anchoredVwaps);
+            marketRisk = marketRisk == null ? emptyMarketRisk(asOf, source) : marketRisk;
         }
 
         public boolean sourcePricesAdjusted() {
@@ -761,6 +775,13 @@ public final class TacticalOverlayCalculator {
 
         public List<AnchoredVwap> getDailyAvwaps() {
             return anchoredVwaps;
+        }
+
+        private static MarketRiskEvaluator.MarketMetrics emptyMarketRisk(LocalDate asOf, String source) {
+            var unavailable = MetricValue.unavailable(MetricStatus.NOT_CONFIGURED);
+            return new MarketRiskEvaluator.MarketMetrics(OverlayStatus.NOT_CONFIGURED, asOf, source,
+                    unavailable, unavailable, unavailable, unavailable, unavailable, unavailable, unavailable,
+                    MarketRiskEvaluator.PriceVolumeSignal.NOT_EVALUABLE, unavailable, unavailable, null);
         }
     }
 
