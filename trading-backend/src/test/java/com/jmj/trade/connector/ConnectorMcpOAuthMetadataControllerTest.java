@@ -8,8 +8,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.mockito.Mockito.mock;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup;
@@ -47,5 +49,15 @@ class ConnectorMcpOAuthMetadataControllerTest {
                 .andExpect(jsonPath("$.grant_types_supported").value(org.hamcrest.Matchers.hasItems(
                         "authorization_code", "refresh_token")))
                 .andExpect(jsonPath("$.code_challenge_methods_supported[0]").value("S256"));
+    }
+
+    @Test
+    void advertisesReviewEndpointAsItsOwnProtectedResource() throws Exception {
+        mvc.perform(get("/.well-known/oauth-protected-resource/api/v1/connector/mcp/review"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resource")
+                        .value("https://dashboard.example/api/v1/connector/mcp/review"))
+                .andExpect(content().string(containsString(
+                        "\"scopes_supported\":[\"connector:review\"]")));
     }
 }
