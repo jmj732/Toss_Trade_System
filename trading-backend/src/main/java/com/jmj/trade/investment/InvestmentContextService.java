@@ -4285,7 +4285,18 @@ public final class InvestmentContextService {
         }
         if (consensus.revenueConsensus() == null) missing.add("consensus.revenueConsensus");
         if (consensus.epsConsensus() == null) missing.add("consensus.epsConsensus");
-        if (consensusCurrencyUnverified(consensus)) missing.add("consensus.currency");
+        if (consensus.ebitdaConsensus() == null) missing.add("consensus.ebitdaConsensus");
+        if (consensus.fcfConsensus() == null) missing.add("consensus.fcfConsensus");
+        if (consensusCurrencyUnverified(consensus)) {
+            missing.add("consensus.currency");
+            input.observations().stream()
+                    .filter(observation -> observation.provider() == StockDataProviderId.ALPHA_VANTAGE
+                            && "consensus.currency".equals(observation.field()))
+                    .flatMap(observation -> observation.missingData().stream())
+                    .filter("CURRENCY_UNAVAILABLE"::equals)
+                    .map(reason -> "consensus.currency." + reason)
+                    .forEach(missing::add);
+        }
         if (consensus.missingReason() != null) missing.add("consensus.provider." + consensus.missingReason());
         if (revision.revenue30().value() == null) missing.add("revision.revenueRevision30D");
         if (revision.revenue90().value() == null) missing.add("revision.revenueRevision90D");

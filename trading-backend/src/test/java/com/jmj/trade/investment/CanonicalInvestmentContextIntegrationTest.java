@@ -1035,6 +1035,9 @@ class CanonicalInvestmentContextIntegrationTest extends PostgresIntegrationTest 
                 .isEqualTo("CONSENSUS_CURRENCY_UNVERIFIED");
         assertThat(contextService.context(USER_ID).securities().getFirst().consensus().path("currency").isNull())
                 .isTrue();
+        assertThat(contextService.context(USER_ID).securities().getFirst().readiness().path("missingFields").toString())
+                .contains("consensus.ebitdaConsensus", "consensus.fcfConsensus",
+                        "consensus.currency.CURRENCY_UNAVAILABLE");
     }
 
     @Test

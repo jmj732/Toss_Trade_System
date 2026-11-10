@@ -26,11 +26,23 @@ final class ConnectorMcpOAuthMetadataController {
             "/oauth-protected-resource/api/v1/connector/mcp/sse"
     }, produces = MediaType.APPLICATION_JSON_VALUE)
     Map<String, Object> protectedResource() {
-        return Map.of(
-                "resource", oauth.publicUrl(ConnectorMcpOAuthService.RESOURCE_PATH),
-                "authorization_servers", List.of(oauth.publicUrl("/.well-known/oauth-authorization-server")),
-                "scopes_supported", List.of(ConnectorMcpOAuthService.READ_SCOPE,
+        return protectedResource(ConnectorMcpOAuthService.RESOURCE_PATH,
+                List.of(ConnectorMcpOAuthService.READ_SCOPE,
                         ConnectorMcpOAuthService.REVIEW_SCOPE, ConnectorMcpOAuthService.TRADE_SCOPE));
+    }
+
+    @GetMapping(value = "/oauth-protected-resource/api/v1/connector/mcp/review",
+            produces = MediaType.APPLICATION_JSON_VALUE)
+    Map<String, Object> reviewProtectedResource() {
+        return protectedResource(ConnectorMcpOAuthService.REVIEW_RESOURCE_PATH,
+                List.of(ConnectorMcpOAuthService.REVIEW_SCOPE));
+    }
+
+    private Map<String, Object> protectedResource(String resourcePath, List<String> scopes) {
+        return Map.of(
+                "resource", oauth.publicUrl(resourcePath),
+                "authorization_servers", List.of(oauth.publicUrl("/.well-known/oauth-authorization-server")),
+                "scopes_supported", scopes);
     }
 
     @GetMapping(value = "/oauth-authorization-server", produces = MediaType.APPLICATION_JSON_VALUE)

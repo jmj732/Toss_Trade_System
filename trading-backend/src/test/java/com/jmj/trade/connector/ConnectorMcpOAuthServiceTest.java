@@ -175,6 +175,8 @@ class ConnectorMcpOAuthServiceTest {
         var client = service.register(List.of(REDIRECT));
         var params = authorizationParams(client.clientId(), REDIRECT);
         params.set("scope", "connector:review");
+        var reviewResource = "https://dashboard.example/api/v1/connector/mcp/review";
+        params.set("resource", reviewResource);
         var loginLocation = service.beginAuthorization(params, null);
         var returnTo = org.springframework.web.util.UriComponentsBuilder.fromUriString(loginLocation)
                 .build().getQueryParams().getFirst("returnTo");
@@ -193,11 +195,29 @@ class ConnectorMcpOAuthServiceTest {
                 new TestingAuthenticationToken(USER.toString(), null, "ROLE_USER"));
         var code = org.springframework.web.util.UriComponentsBuilder.fromUriString(callback)
                 .build().getQueryParams().getFirst("code");
-        var token = service.exchangeCode(client.clientId(), code, REDIRECT, "verifier");
+        var token = service.exchangeCode(client.clientId(), code, REDIRECT, "verifier", reviewResource);
 
         assertThat(token.scope()).isEqualTo("connector:review");
-        verify(keys).issue(org.mockito.ArgumentMatchers.eq(USER), org.mockito.ArgumentMatchers.eq(CONNECTION),
+        assertThat(service.exchangeRefreshToken(client.clientId(), token.refreshToken(), reviewResource).scope())
+                .isEqualTo("connector:review");
+        verify(keys, org.mockito.Mockito.times(2)).issue(org.mockito.ArgumentMatchers.eq(USER), org.mockito.ArgumentMatchers.eq(CONNECTION),
                 org.mockito.ArgumentMatchers.any(Instant.class), org.mockito.ArgumentMatchers.eq("connector:review"));
+    }
+
+    @Test
+    void reviewResourceRejectsReadAndTradeScopes() {
+        var client = service.register(List.of(REDIRECT));
+        var reviewResource = "https://dashboard.example/api/v1/connector/mcp/review";
+
+        for (var scope : List.of("connector:read", "connector:trade")) {
+            var params = authorizationParams(client.clientId(), REDIRECT);
+            params.set("scope", scope);
+            params.set("resource", reviewResource);
+
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.beginAuthorization(params, null))
+                    .isInstanceOf(ConnectorMcpOAuthService.OAuthException.class)
+                    .hasMessage("review MCP resource requires connector:review");
+        }
     }
 
     @Test

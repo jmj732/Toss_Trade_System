@@ -2,6 +2,7 @@ package com.jmj.trade.security;
 
 import com.jmj.trade.connector.ConnectorApiKeyAuthenticationFilter;
 import com.jmj.trade.connector.ConnectorApiKeyService;
+import com.jmj.trade.connector.ConnectorMcpOAuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.security.autoconfigure.SecurityAutoConfiguration;
@@ -20,12 +21,15 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.hamcrest.Matchers.containsString;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class ConnectorSecurityChainTest {
@@ -81,14 +85,59 @@ class ConnectorSecurityChainTest {
                 });
     }
 
+    @Test
+    void mcpAuthenticationChallengeRequestsReviewScopeOnlyOnReviewEndpoint() throws Exception {
+        var keys = mock(ConnectorApiKeyService.class);
+        var accessTokens = mock(AccessTokenService.class);
+        var mcpOAuth = mock(ConnectorMcpOAuthService.class);
+        var readKey = new ConnectorApiKeyService.AuthenticatedKey(
+                UUID.randomUUID(), USER, CONNECTION, "ckey_read", null, false,
+                ConnectorApiKeyService.READ_SCOPE);
+        when(keys.findActive("ckey_read")).thenReturn(Optional.of(readKey));
+        when(keys.markUsed(readKey.id())).thenReturn(true);
+        when(accessTokens.parse("ckey_read")).thenThrow(new AccessTokenService.InvalidAccessTokenException());
+        when(mcpOAuth.publicUrl(anyString())).thenAnswer(invocation ->
+                "https://dashboard.example" + invocation.getArgument(0));
+        TestBeans.configure(keys, accessTokens, mcpOAuth);
+
+        contextRunner.withUserConfiguration(TestBeans.class).run(context -> {
+            MockMvc mvc = MockMvcBuilders.webAppContextSetup(context)
+                    .apply(SecurityMockMvcConfigurers.springSecurity())
+                    .build();
+
+            mvc.perform(post("/api/v1/connector/mcp"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(header().string("WWW-Authenticate", containsString("scope=\"connector:read\"")));
+            mvc.perform(post("/api/v1/connector/mcp/review"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(header().string("WWW-Authenticate", containsString("scope=\"connector:review\"")))
+                    .andExpect(header().string("WWW-Authenticate", containsString(
+                            "oauth-protected-resource/api/v1/connector/mcp/review")));
+            mvc.perform(post("/api/v1/connector/mcp/review")
+                            .header("Authorization", "Bearer ckey_read"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(header().string("WWW-Authenticate", containsString("scope=\"connector:review\"")));
+        });
+    }
+
     @TestConfiguration(proxyBeanMethods = false)
     static class TestBeans {
         private static ConnectorApiKeyService keys;
         private static AccessTokenService accessTokens;
+        private static ConnectorMcpOAuthService mcpOAuth;
 
         static void configure(ConnectorApiKeyService keys, AccessTokenService accessTokens) {
+            var oauth = mock(ConnectorMcpOAuthService.class);
+            when(oauth.publicUrl(anyString())).thenAnswer(invocation ->
+                    "https://dashboard.example" + invocation.getArgument(0));
+            configure(keys, accessTokens, oauth);
+        }
+
+        static void configure(ConnectorApiKeyService keys, AccessTokenService accessTokens,
+                              ConnectorMcpOAuthService mcpOAuth) {
             TestBeans.keys = keys;
             TestBeans.accessTokens = accessTokens;
+            TestBeans.mcpOAuth = mcpOAuth;
         }
 
         @Bean
@@ -104,6 +153,11 @@ class ConnectorSecurityChainTest {
         @Bean
         AccessTokenService accessTokenService() {
             return accessTokens;
+        }
+
+        @Bean
+        ConnectorMcpOAuthService connectorMcpOAuthService() {
+            return mcpOAuth;
         }
 
         @Bean

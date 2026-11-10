@@ -27,6 +27,7 @@ public final class ConnectorMcpOAuthService {
     public static final String TRADE_SCOPE = "connector:trade";
     public static final String REVIEW_SCOPE = "connector:review";
     public static final String RESOURCE_PATH = "/api/v1/connector/mcp";
+    public static final String REVIEW_RESOURCE_PATH = RESOURCE_PATH + "/review";
     public static final String AUTHORIZE_PATH = "/api/v1/connector/oauth/authorize";
     public static final String TOKEN_PATH = "/api/v1/connector/oauth/token";
     public static final String REGISTER_PATH = "/api/v1/connector/oauth/register";
@@ -103,6 +104,24 @@ public final class ConnectorMcpOAuthService {
 
     private String resourceUrl() {
         return publicUrl(RESOURCE_PATH);
+    }
+
+    private String reviewResourceUrl() {
+        return publicUrl(REVIEW_RESOURCE_PATH);
+    }
+
+    private String authorizationScope(AuthorizationRequest request) {
+        var fallback = reviewResourceUrl().equals(request.resource()) ? REVIEW_SCOPE : defaultScope;
+        return normalizedScope(request.scope(), fallback);
+    }
+
+    private String authorizationResource(AuthorizationRequest request, String scope) {
+        if (request.resource() != null && !request.resource().isBlank()) return request.resource();
+        return REVIEW_SCOPE.equals(scope) ? reviewResourceUrl() : resourceUrl();
+    }
+
+    private String defaultResource(String scope) {
+        return REVIEW_SCOPE.equals(scope) ? reviewResourceUrl() : resourceUrl();
     }
 
     RegisteredClient register(List<String> redirectUris) {
@@ -186,7 +205,8 @@ public final class ConnectorMcpOAuthService {
                 : keys.issue(userId, connectionId, now.plus(ACCESS_TOKEN_TTL), scope);
         var rawRefreshToken = opaque("mcp_refresh_");
         refreshTokens.save(new ConnectorOAuthRefreshTokenStore.Grant(hash(rawRefreshToken), clientId,
-                userId, connectionId, scope, resource == null || resource.isBlank() ? resourceUrl() : resource,
+                userId, connectionId, scope,
+                resource == null || resource.isBlank() ? defaultResource(scope) : resource,
                 now, now.plus(REFRESH_TOKEN_TTL)));
         return new TokenResponse(issued.apiKey(), "Bearer", ACCESS_TOKEN_TTL.toSeconds(), scope, rawRefreshToken);
     }
@@ -217,6 +237,7 @@ public final class ConnectorMcpOAuthService {
             throw oauthError("access_denied", "exactly one active broker connection is required", request);
         }
         var code = opaque("mcp_code_");
+        var scope = authorizationScope(request);
         codes.put(code, new AuthorizationCode(
                 code,
                 request.clientId(),
@@ -224,8 +245,8 @@ public final class ConnectorMcpOAuthService {
                 userId,
                 active.getFirst().id(),
                 request.codeChallenge(),
-                normalizedScope(request.scope(), defaultScope),
-                request.resource(),
+                scope,
+                authorizationResource(request, scope),
                 clock.instant().plus(AUTHORIZATION_CODE_TTL)));
         trimExpiredCodes();
         return errorOrCodeRedirect(request.redirectUri(), code, request.state());
@@ -272,8 +293,13 @@ public final class ConnectorMcpOAuthService {
             throw oauthError("invalid_scope", "only connector:read, connector:review or connector:trade is supported", request);
         }
         if (request.resource() != null && !request.resource().isBlank()
-                && !resourceUrl().equals(request.resource())) {
+                && !resourceUrl().equals(request.resource())
+                && !reviewResourceUrl().equals(request.resource())) {
             throw oauthError("invalid_target", "resource does not match this MCP server", request);
+        }
+        if (reviewResourceUrl().equals(request.resource())
+                && !REVIEW_SCOPE.equals(authorizationScope(request))) {
+            throw oauthError("invalid_scope", "review MCP resource requires connector:review", request);
         }
     }
 

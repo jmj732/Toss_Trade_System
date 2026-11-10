@@ -79,6 +79,27 @@ class ConnectorMcpControllerTest {
     }
 
     @Test
+    void reviewResourceRouteUsesTheSameMcpProtocol() throws Exception {
+        var protocol = mock(ConnectorMcpProtocol.class);
+        var mapper = new ObjectMapper();
+        var response = mapper.createObjectNode().put("jsonrpc", "2.0").put("id", 1)
+                .set("result", mapper.createObjectNode());
+        when(protocol.handle(any(ObjectNode.class), eq(USER), eq(CONNECTION), any(UUID.class),
+                eq(false), eq(true))).thenReturn(response);
+        var mvc = standaloneSetup(new ConnectorMcpController(protocol, "https://dashboard.example")).build();
+
+        mvc.perform(post("/api/v1/connector/mcp/review")
+                        .principal(authentication(ConnectorApiKeyService.REVIEW_SCOPE))
+                        .contentType("application/json")
+                        .content("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result").exists());
+
+        verify(protocol).handle(any(ObjectNode.class), eq(USER), eq(CONNECTION), any(UUID.class),
+                eq(false), eq(true));
+    }
+
+    @Test
     void streamableHttpPreservesExactDecimalScaleAndMaximumQuantity() throws Exception {
         var mapper = new ObjectMapper();
         var preflight = mock(InvestmentRiskPreflightService.class);
@@ -150,9 +171,16 @@ class ConnectorMcpControllerTest {
     }
 
     private static TestingAuthenticationToken authentication() {
-        var token = new TestingAuthenticationToken(USER, null, "SCOPE_CONNECTOR_READ");
+        return authentication(ConnectorApiKeyService.READ_SCOPE);
+    }
+
+    private static TestingAuthenticationToken authentication(String scope) {
+        var authorities = scope.equals(ConnectorApiKeyService.REVIEW_SCOPE)
+                ? new String[]{"SCOPE_CONNECTOR_READ", "SCOPE_CONNECTOR_REVIEW"}
+                : new String[]{"SCOPE_CONNECTOR_READ"};
+        var token = new TestingAuthenticationToken(USER, null, authorities);
         token.setDetails(new ConnectorApiKeyService.AuthenticatedKey(
-                UUID.randomUUID(), USER, CONNECTION, null));
+                UUID.randomUUID(), USER, CONNECTION, "ckey_test", null, false, scope));
         return token;
     }
 }

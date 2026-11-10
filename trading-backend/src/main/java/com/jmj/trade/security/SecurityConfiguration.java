@@ -1,7 +1,10 @@
 package com.jmj.trade.security;
 
 import com.jmj.trade.connector.ConnectorApiKeyAuthenticationFilter;
+import com.jmj.trade.connector.ConnectorMcpOAuthService;
 import com.jmj.trade.prediction.PredictionIngestionApiKeyAuthenticationFilter;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -10,17 +13,17 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.authentication.AuthenticationFailureHandler;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
-import org.springframework.security.web.authentication.HttpStatusEntryPoint;
-import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.context.NullSecurityContextRepository;
 
-import java.time.Instant;
+import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -44,6 +47,9 @@ public class SecurityConfiguration {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/api/v1/auth/refresh", "/api/v1/auth/logout").permitAll()
                 .requestMatchers("/.well-known/**", "/api/v1/connector/oauth/**").permitAll()
+                .requestMatchers(ConnectorMcpOAuthService.REVIEW_RESOURCE_PATH,
+                        ConnectorMcpOAuthService.REVIEW_RESOURCE_PATH + "/**")
+                .hasAuthority("SCOPE_CONNECTOR_REVIEW")
                 .requestMatchers("/api/v1/connector/**").hasAuthority("SCOPE_CONNECTOR_READ")
                 .requestMatchers("/investment/**").authenticated()
                 // Telegram webhook authenticates by its secret_token header inside the controller.
@@ -75,15 +81,14 @@ public class SecurityConfiguration {
         http.logout(logout -> logout.disable());
         http.exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint((request, response, ignored) -> {
-                    if (mcpOAuth != null && isMcpRequest(request.getRequestURI())) {
-                        response.setHeader("WWW-Authenticate",
-                                "Bearer resource_metadata=\""
-                                        + mcpOAuth.publicUrl("/.well-known/oauth-protected-resource"
-                                        + com.jmj.trade.connector.ConnectorMcpOAuthService.RESOURCE_PATH)
-                                        + "\", scope=\""
-                                        + com.jmj.trade.connector.ConnectorMcpOAuthService.READ_SCOPE + "\"");
+                    connectorMcpChallenge(request, response, mcpOAuth);
+                })
+                .accessDeniedHandler((request, response, ignored) -> {
+                    if (mcpOAuth != null && isReviewMcpRequest(request.getRequestURI())) {
+                        connectorMcpChallenge(request, response, mcpOAuth);
+                    } else {
+                        response.sendError(HttpStatus.FORBIDDEN.value());
                     }
-                    response.setStatus(HttpStatus.UNAUTHORIZED.value());
                 }));
         var registrationRepository = registrations.getIfAvailable();
         if (registrationRepository != null) {
@@ -106,6 +111,32 @@ public class SecurityConfiguration {
     private static boolean isMcpRequest(String path) {
         return "/api/v1/connector/mcp".equals(path)
                 || path.startsWith("/api/v1/connector/mcp/");
+    }
+
+    private static boolean isReviewMcpRequest(String path) {
+        return ConnectorMcpOAuthService.REVIEW_RESOURCE_PATH.equals(path)
+                || path.startsWith(ConnectorMcpOAuthService.REVIEW_RESOURCE_PATH + "/");
+    }
+
+    private static void connectorMcpChallenge(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            ConnectorMcpOAuthService mcpOAuth
+    ) throws IOException {
+        if (mcpOAuth != null && isMcpRequest(request.getRequestURI())) {
+            var review = isReviewMcpRequest(request.getRequestURI());
+            var resourcePath = review
+                    ? ConnectorMcpOAuthService.REVIEW_RESOURCE_PATH
+                    : ConnectorMcpOAuthService.RESOURCE_PATH;
+            var scope = review
+                    ? ConnectorMcpOAuthService.REVIEW_SCOPE
+                    : ConnectorMcpOAuthService.READ_SCOPE;
+            response.setHeader("WWW-Authenticate",
+                    "Bearer resource_metadata=\""
+                            + mcpOAuth.publicUrl("/.well-known/oauth-protected-resource" + resourcePath)
+                            + "\", scope=\"" + scope + "\"");
+        }
+        response.setStatus(HttpStatus.UNAUTHORIZED.value());
     }
 
     static Consumer<org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest.Builder>

@@ -38,6 +38,18 @@ transport used by current ChatGPT custom-app connections:
 https://web-dashboard-phi-lac.vercel.app/api/v1/connector/mcp
 ```
 
+For a separate read-and-review-only ChatGPT app, use the dedicated resource:
+
+```text
+https://web-dashboard-phi-lac.vercel.app/api/v1/connector/mcp/review
+```
+
+That resource advertises and challenges only for `connector:review`; the
+standard endpoint keeps its existing `connector:read` challenge. After this
+server change is deployed, update the Toss Review app URL to the review path
+and reconnect it so OAuth issues a review-scoped token. The review scope still
+cannot prepare or execute orders.
+
 In the app setup dialog, select `OAuth` (or `혼합` if the UI presents both
 choices). The server publishes MCP protected-resource and authorization-server
 metadata, then redirects the browser through the existing OIDC login. OAuth

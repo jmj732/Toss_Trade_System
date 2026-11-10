@@ -65,7 +65,8 @@ public final class ConnectorMcpController {
      * The connector key binds every request to the user's active broker connection,
      * so the endpoint can remain stateless and does not need an MCP session id.
      */
-    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    @PostMapping(value = {"", "/review"}, consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE)
     ResponseEntity<ObjectNode> mcp(
             @RequestBody byte[] requestBody,
             Authentication authentication
