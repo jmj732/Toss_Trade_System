@@ -1,0 +1,268 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "version": "1.2.28"
+  },
+  "source": "Toss OpenAPI 1.2.28 openapi.json, checked 2026-11-11; reduced to paths and fields read by the client",
+  "paths": {
+    "/oauth2/token": {
+      "post": {
+        "operationId": "issueOAuth2Token"
+      }
+    },
+    "/api/v1/accounts": {
+      "get": {
+        "operationId": "getAccounts"
+      }
+    },
+    "/api/v1/holdings": {
+      "get": {
+        "operationId": "getHoldings"
+      }
+    },
+    "/api/v1/prices": {
+      "get": {
+        "operationId": "getPrices"
+      }
+    },
+    "/api/v1/orderbook": {
+      "get": {
+        "operationId": "getOrderbook"
+      }
+    },
+    "/api/v1/candles": {
+      "get": {
+        "operationId": "getCandles"
+      }
+    },
+    "/api/v1/exchange-rate": {
+      "get": {
+        "operationId": "getExchangeRate"
+      }
+    },
+    "/api/v1/market-calendar/KR": {
+      "get": {
+        "operationId": "getKrMarketCalendar"
+      }
+    },
+    "/api/v1/market-calendar/US": {
+      "get": {
+        "operationId": "getUsMarketCalendar"
+      }
+    },
+    "/api/v1/rankings": {
+      "get": {
+        "operationId": "getRankings"
+      }
+    },
+    "/api/v1/buying-power": {
+      "get": {
+        "operationId": "getBuyingPower"
+      }
+    },
+    "/api/v1/sellable-quantity": {
+      "get": {
+        "operationId": "getSellableQuantity"
+      }
+    },
+    "/api/v1/orders": {
+      "get": {
+        "operationId": "getOrders"
+      },
+      "post": {
+        "operationId": "createOrder"
+      }
+    },
+    "/api/v1/orders/{orderId}": {
+      "get": {
+        "operationId": "getOrder"
+      }
+    },
+    "/api/v1/orders/{orderId}/modify": {
+      "post": {
+        "operationId": "modifyOrder"
+      }
+    },
+    "/api/v1/orders/{orderId}/cancel": {
+      "post": {
+        "operationId": "cancelOrder"
+      }
+    },
+    "/api/v1/stocks": {
+      "get": {
+        "operationId": "getStocks"
+      }
+    },
+    "/api/v1/stocks/{symbol}/warnings": {
+      "get": {
+        "operationId": "getStockWarnings"
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "StockInfo": {
+        "required": [
+          "symbol",
+          "name",
+          "englishName",
+          "isinCode",
+          "market",
+          "securityType",
+          "isCommonShare",
+          "status",
+          "currency",
+          "sharesOutstanding"
+        ],
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "format": null,
+            "enum": null
+          },
+          "name": {
+            "type": "string",
+            "format": null,
+            "enum": null
+          },
+          "englishName": {
+            "type": "string",
+            "format": null,
+            "enum": null
+          },
+          "isinCode": {
+            "type": "string",
+            "format": null,
+            "enum": null
+          },
+          "market": {
+            "type": "string",
+            "format": null,
+            "enum": [
+              "KOSPI",
+              "KOSDAQ",
+              "NYSE",
+              "NASDAQ",
+              "AMEX",
+              "KR_ETC",
+              "US_ETC"
+            ]
+          },
+          "securityType": {
+            "type": "string",
+            "format": null,
+            "enum": [
+              "STOCK",
+              "FOREIGN_STOCK",
+              "DEPOSITARY_RECEIPT",
+              "INFRASTRUCTURE_FUND",
+              "REIT",
+              "ETF",
+              "FOREIGN_ETF",
+              "ETN",
+              "STOCK_WARRANTS"
+            ]
+          },
+          "isCommonShare": {
+            "type": "boolean",
+            "format": null,
+            "enum": null
+          },
+          "status": {
+            "type": "string",
+            "format": null,
+            "enum": [
+              "SCHEDULED",
+              "ACTIVE",
+              "DELISTED"
+            ]
+          },
+          "currency": {
+            "type": "string",
+            "format": null,
+            "enum": null
+          },
+          "listDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "enum": null
+          },
+          "delistDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "enum": null
+          },
+          "sharesOutstanding": {
+            "type": "string",
+            "format": "decimal",
+            "enum": null
+          },
+          "leverageFactor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "decimal",
+            "enum": null
+          },
+          "koreanMarketDetail": {
+            "type": null,
+            "format": null,
+            "enum": null
+          }
+        }
+      },
+      "StockWarning": {
+        "required": [
+          "warningType"
+        ],
+        "properties": {
+          "warningType": {
+            "type": "string",
+            "format": null,
+            "enum": [
+              "LIQUIDATION_TRADING",
+              "OVERHEATED",
+              "INVESTMENT_WARNING",
+              "INVESTMENT_RISK",
+              "VI_STATIC_AND_DYNAMIC",
+              "VI_STATIC",
+              "VI_DYNAMIC",
+              "STOCK_WARRANTS"
+            ]
+          },
+          "exchange": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": null,
+            "enum": null
+          },
+          "startDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "enum": null
+          },
+          "endDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "enum": null
+          }
+        }
+      }
+    }
+  }
+}

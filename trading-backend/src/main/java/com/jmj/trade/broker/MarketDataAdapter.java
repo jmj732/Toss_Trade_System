@@ -30,6 +30,11 @@ public interface MarketDataAdapter {
             String market,
             LocalDate date);
 
+    /** Reference data for one US symbol. Status and securityType stay as provider strings (open enums). */
+    BrokerResponse<StockInfo> getStockInfo(BrokerConnectionRef connection, String symbol);
+
+    BrokerResponse<List<StockWarning>> getStockWarnings(BrokerConnectionRef connection, String symbol);
+
     BrokerResponse<Ranking> getRanking(
             BrokerConnectionRef connection,
             String type,
@@ -50,6 +55,21 @@ public interface MarketDataAdapter {
     }
 
     record Level(BigDecimal price, BigDecimal volume) {
+    }
+
+    record StockInfo(
+            String symbol,
+            String status,
+            String securityType,
+            Boolean isCommonShare,
+            LocalDate delistDate,
+            BigDecimal leverageFactor,
+            BigDecimal sharesOutstanding,
+            String currency) {
+    }
+
+    /** Warning code is kept verbatim; consumers must treat unknown codes as warnings. */
+    record StockWarning(String warningType) {
     }
 
     record CandleSeries(

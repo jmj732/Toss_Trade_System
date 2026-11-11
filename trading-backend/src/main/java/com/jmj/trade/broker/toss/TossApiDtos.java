@@ -173,6 +173,23 @@ final class TossApiDtos {
     record SellableQuantity(String sellableQuantity) {
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record StocksEnvelope(List<StockInfo> result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record StockInfo(String symbol, String securityType, Boolean isCommonShare, String status, String currency,
+                     String delistDate, String leverageFactor, String sharesOutstanding) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record StockWarningsEnvelope(List<StockWarning> result) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record StockWarning(String warningType) {
+    }
+
     @JsonInclude(JsonInclude.Include.NON_NULL)
     record OrderCreateRequest(
             String clientOrderId,
