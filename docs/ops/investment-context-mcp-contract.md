@@ -146,7 +146,7 @@ account freshness and cash, and the live quote before dispatch. `BLOCKED` remain
 Existing Hard Risk, account, cash, concentration, and approved-trigger Soft Risk Budget checks remain
 independent. Defensive SELL readiness is unchanged.
 
-### Strategic BUY revalidation (V67–V69)
+### Strategic BUY revalidation (V67–V70)
 
 V67 introduced a caller-authored review record. That record did not prove that the named AI provider
 ran or that its sources supported the supplied conclusions. V68 removes the
@@ -166,6 +166,47 @@ the run link; callers cannot set the origin or `SERVER_GENERATED`. Only a comple
 within its approved bounds can satisfy the strategic revalidation check. The normal per-order
 approval and every current order/risk/account/quote gate still apply. `BLOCKED` remains
 non-overridable. TACTICAL BUY gates and defensive SELL flow are unchanged.
+
+### TOSS_ONLY BUY evidence policy (delta 2026-11-11)
+
+`investment.data.fundamental-source-policy` (`INVESTMENT_FUNDAMENTAL_SOURCE_POLICY`) is `PROVIDERS`
+by default, which keeps the provider-data gate. Any value other than `PROVIDERS` or `TOSS_ONLY`, and
+`TOSS_ONLY` while `stock-analysis.providers.{sec,alpha-vantage,fmp}` is enabled, fails application
+startup. Under `TOSS_ONLY`, an absent fundamental, consensus, or revision group reports
+`TOSS_SOURCE_UNSUPPORTED`. A stored value that is stale, conflicting, unverified, future-dated, or
+missing its source still blocks.
+
+Every BUY prepare and submit also reads Toss `GET /api/v1/stocks?symbols=` and
+`GET /api/v1/stocks/{symbol}/warnings` (OpenAPI 1.2.28). The BUY is blocked for any of: status not
+`ACTIVE`, delist date on or before today (KST), any warning (`TOSS_STOCK_WARNING_<CODE>`, or
+`_UNKNOWN` for an unrecognized code), a leverage factor other than 1, `STOCK_WARRANTS`, or a failed,
+timed-out, or unparsable read (`TOSS_STOCK_HAZARD_UNAVAILABLE`). Quote sanity (positive price, not
+future-dated, within `price-stale-after`) failures report `MARKET_DATA_UNVERIFIED`. These checks
+apply to both horizons.
+
+Under `TOSS_ONLY`, a STRATEGIC BUY whose only fundamental gap is `TOSS_SOURCE_UNSUPPORTED` and whose
+hazards are clear returns `REVIEW_REQUIRED` with reason `FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED` and
+`evidenceMode=EXTERNAL_CITED`. Every buy-gate payload, and every submit audit row, records
+`evidenceMode` (`PROVIDERS`, `TOSS_ONLY`, or `EXTERNAL_CITED`).
+
+For `EXTERNAL_CITED` runs, `finish_strategic_buy_revalidation` requires `structuredEvidence`:
+`fundamental` (10-K/10-Q/20-F/40-F, accession number, period end, filing time, shares outstanding,
+an SEC URL containing the accession number), `consensus` (USD, analyst count of at least 1, horizon
+after now, freshness within `consensus-stale-after`, URL on an allow-listed domain), and `revision`
+(90-day EPS and revenue change, a baseline 80 to 100 days before `asOf`, allow-listed URL). Any
+structural violation rejects the request and stores nothing. A revision that contradicts a
+`SUPPORTED` assessment, or a claimed share count outside ±15% of Toss `sharesOutstanding`, is stored
+as `BLOCKED` with `verdict_reasons`. The server does not verify cited page contents.
+
+External-evidence bounds: review TTL is capped by `investment.revalidation.external-evidence-max-ttl`
+(default `PT15M`). Order notional (`limitPrice × quantity`) is capped by
+`external-evidence-max-notional` (default 1000 USD). Submit re-checks the evidence mode, that the
+policy is still `TOSS_ONLY`, and the stored TTL, then re-evaluates Toss hazards from the live gate.
+
+The local WireMock Toss stub echoes the requested symbol as `ACTIVE` with no warnings. It does not
+exercise hazard blocks. Portfolio risk views still use the provider-only gate, so under `TOSS_ONLY`
+they show `BLOCKED` with `TOSS_SOURCE_UNSUPPORTED`. The authoritative BUY decision is the prepare,
+submit, and review-start evaluation.
 
 This is a ChatGPT-run workflow, not a server-side model invocation. The MCP server receives no
 attested Scheduled Task ID and does not independently fetch or semantically verify cited pages;
