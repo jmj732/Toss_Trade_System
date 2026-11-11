@@ -402,7 +402,7 @@ final class TossResponseMapper {
             throw contract();
         }
         return new MarketDataAdapter.RankingItem(
-                nullableInteger(source.rank()),
+                source.rank(),
                 optionalText(source.symbol()),
                 optionalCurrency(source.currency()),
                 source.price() == null ? null : nullableDecimal(source.price().lastPrice()),

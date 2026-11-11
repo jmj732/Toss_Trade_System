@@ -46,7 +46,7 @@ final class BrokerOrderPortReconciliationProbe implements ReconciliationBrokerPr
             return new ReconciliationGroupOutcome.Unavailable(group.name() + " query unavailable");
         }
         if (views.stream().anyMatch(view -> view.idempotencyKey() == null)) {
-            // Toss OpenAPI 1.2.5 order list/detail responses do not echo clientOrderId. A complete
+            // Toss OpenAPI 1.2.28 order list/detail responses do not echo clientOrderId. A complete
             // list without that field cannot prove absence, so never turn it into retry permission.
             return new ReconciliationGroupOutcome.Unavailable(group.name() + " query lacks client order ids");
         }

@@ -142,7 +142,7 @@ final class TossApiDtos {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record RankingItem(
-            String rank,
+            Integer rank,
             String symbol,
             String currency,
             RankingPrice price,
