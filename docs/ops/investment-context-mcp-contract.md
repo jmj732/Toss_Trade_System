@@ -170,43 +170,59 @@ non-overridable. TACTICAL BUY gates and defensive SELL flow are unchanged.
 ### TOSS_ONLY BUY evidence policy (delta 2026-11-11)
 
 `investment.data.fundamental-source-policy` (`INVESTMENT_FUNDAMENTAL_SOURCE_POLICY`) is `PROVIDERS`
-by default, which keeps the provider-data gate. Any value other than `PROVIDERS` or `TOSS_ONLY`, and
-`TOSS_ONLY` while `stock-analysis.providers.{sec,alpha-vantage,fmp}` is enabled, fails application
-startup. Under `TOSS_ONLY`, an absent fundamental, consensus, or revision group reports
-`TOSS_SOURCE_UNSUPPORTED`. A stored value that is stale, conflicting, unverified, future-dated, or
-missing its source still blocks.
+by default. `PROVIDERS` keeps the existing fundamentals behaviour: stale, conflicting, or unverified stored values
+still block. Any value other than `PROVIDERS` or `TOSS_ONLY` fails application startup. So does `TOSS_ONLY` while
+`stock-analysis.providers.{sec,alpha-vantage,fmp}` is enabled.
 
-Every BUY prepare and submit also reads Toss `GET /api/v1/stocks?symbols=` and
-`GET /api/v1/stocks/{symbol}/warnings` (OpenAPI 1.2.28). The BUY is blocked for any of: status not
-`ACTIVE`, delist date on or before today (KST), any warning (`TOSS_STOCK_WARNING_<CODE>`, or
-`_UNKNOWN` for an unrecognized code), a leverage factor other than 1, `STOCK_WARRANTS`, or a failed,
-timed-out, or unparsable read (`TOSS_STOCK_HAZARD_UNAVAILABLE`). Quote sanity (positive price, not
-future-dated, within `price-stale-after`) failures report `MARKET_DATA_UNVERIFIED`. These checks
-apply to both horizons.
+**Toss hard-risk checks apply under every policy.** Every BUY prepare and submit reads Toss
+`GET /api/v1/stocks?symbols=` and `GET /api/v1/stocks/{symbol}/warnings` (OpenAPI 1.2.28), for both horizons. The
+BUY is blocked for any of: status not `ACTIVE`, delist date on or before today (KST), any warning
+(`TOSS_STOCK_WARNING_<CODE>`, or `_UNKNOWN` for an unrecognized code), a leverage factor other than 1,
+`STOCK_WARRANTS`, or a failed, timed-out, or unparsable read (`TOSS_STOCK_HAZARD_UNAVAILABLE`). A Toss outage
+therefore blocks every BUY until it recovers. Quote sanity (positive price, not future-dated, within
+`price-stale-after`) failures report `MARKET_DATA_UNVERIFIED`.
 
-Under `TOSS_ONLY`, a STRATEGIC BUY whose only fundamental gap is `TOSS_SOURCE_UNSUPPORTED` and whose
-hazards are clear returns `REVIEW_REQUIRED` with reason `FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED` and
-`evidenceMode=EXTERNAL_CITED`. Every buy-gate payload, and every submit audit row, records
-`evidenceMode` (`PROVIDERS`, `TOSS_ONLY`, or `EXTERNAL_CITED`).
+Under `TOSS_ONLY`, Toss supplies no fundamentals, consensus, or revision data. Each such group is classified as follows:
 
-For `EXTERNAL_CITED` runs, `finish_strategic_buy_revalidation` requires `structuredEvidence`:
-`fundamental` (10-K/10-Q/20-F/40-F, accession number, period end, filing time, shares outstanding,
-an SEC URL containing the accession number), `consensus` (USD, analyst count of at least 1, horizon
-after now, freshness within `consensus-stale-after`, URL on an allow-listed domain), and `revision`
-(90-day EPS and revenue change, a baseline 80 to 100 days before `asOf`, allow-listed URL). Any
-structural violation rejects the request and stores nothing. A revision that contradicts a
-`SUPPORTED` assessment, or a claimed share count outside ±15% of Toss `sharesOutstanding`, is stored
-as `BLOCKED` with `verdict_reasons`. The server does not verify cited page contents.
+| Stored state | Gate treatment |
+|---|---|
+| Absent (`DATA_MISSING`/`NOT_CONFIGURED`, no as-of, no source) | `TOSS_SOURCE_UNSUPPORTED` |
+| Stored by a non-Toss provider (SEC, Alpha Vantage, FMP) | `TOSS_SOURCE_UNSUPPORTED`; the value is listed under `legacyProviderData` with `flag=LEGACY_PROVIDER_EXCLUDED` and is never evidence |
+| Any revision value | Legacy by definition (Toss never supplies revisions); same as above |
+| Toss-sourced stale, conflicting, unverified, future-dated, or source-missing value | Existing reason, still `BLOCKED` |
+
+When the only fundamental gap is `TOSS_SOURCE_UNSUPPORTED` and the hazard and quote checks pass, a STRATEGIC BUY
+returns `REVIEW_REQUIRED` with reason `FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED` and `evidenceMode=EXTERNAL_CITED`.
+That result allows ChatGPT revalidation. A legacy stale consensus is therefore a review candidate under
+`TOSS_ONLY` and still blocks under `PROVIDERS`. Every buy-gate payload and submit audit row records `evidenceMode`
+(`PROVIDERS`, `TOSS_ONLY`, or `EXTERNAL_CITED`).
+
+**ChatGPT-cited fundamentals are accepted without server-side content verification.** For `EXTERNAL_CITED`
+runs, `finish_strategic_buy_revalidation` requires `structuredEvidence`: `fundamental` (10-K, 10-Q, 20-F, or
+40-F; accession number; period end; filing time; shares outstanding; an SEC URL containing the accession number),
+`consensus` (USD, analyst count of at least 1, horizon after now, freshness within `consensus-stale-after`,
+allow-listed URL), and `revision` (90-day EPS and revenue change, a baseline 80 to 100 days before `asOf`,
+allow-listed URL). Any structural violation rejects the request and stores nothing. A revision that contradicts a
+`SUPPORTED` assessment, or a claimed share count outside ±15% of Toss `sharesOutstanding`, is stored as
+`BLOCKED` with `verdict_reasons`. Every `EXTERNAL_CITED` review is stored with `verificationStatus=SOURCE_NOT_VERIFIED`,
+along with the source URLs, values, and as-of dates. That status appears in the finish result, the submit audit
+payload (`MCP_SUBMIT_STRATEGIC_REVALIDATION`), and the approval preview.
 
 External-evidence bounds: review TTL is capped by `investment.revalidation.external-evidence-max-ttl`
 (default `PT15M`). Order notional (`limitPrice × quantity`) is capped by
-`external-evidence-max-notional` (default 1000 USD). Submit re-checks the evidence mode, that the
-policy is still `TOSS_ONLY`, and the stored TTL, then re-evaluates Toss hazards from the live gate.
+`external-evidence-max-notional` (default 1000 USD). Submit re-checks the evidence mode, that the policy is still
+`TOSS_ONLY`, and the stored TTL, then re-evaluates Toss hazards from the live gate. **Per-order approval and the
+live risk checks at submit are unchanged and mandatory.**
 
-The local WireMock Toss stub echoes the requested symbol as `ACTIVE` with no warnings. It does not
-exercise hazard blocks. Portfolio risk views still use the provider-only gate, so under `TOSS_ONLY`
-they show `BLOCKED` with `TOSS_SOURCE_UNSUPPORTED`. The authoritative BUY decision is the prepare,
-submit, and review-start evaluation.
+Display: `get_investment_context` security readiness shows `sourcePolicy`, `tossSourceUnsupported`, and
+`legacyProviderData`. Portfolio risk views under `TOSS_ONLY` use the same buy mapping as prepare, with Toss
+hazards cached for 5 minutes. Failed reads are not cached. The approval preview (`GET /api/v1/paper-orders/{id}/approval-preview`,
+used by the dashboard approval panel) includes a read-only `buyEvidence` block for the linked ADD decision's latest
+review: evidence mode, verification status, cited sources, and structured values.
+
+Local WireMock: symbol-specific hazard scenarios live in `mocks/toss` (`INVW`, `UNKW`, `DLST`, `PAST`, `LEVR`,
+`WRNT`, `NF404`, `ERR500`). The expected block reason for each is listed in `mocks/README.md`. Any other symbol
+returns ACTIVE with no warnings.
 
 This is a ChatGPT-run workflow, not a server-side model invocation. The MCP server receives no
 attested Scheduled Task ID and does not independently fetch or semantically verify cited pages;
