@@ -430,6 +430,82 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
                         "STRATEGIC", "OK", "IMPAIRED", "TRIGGER_BREACHED", null, NOW));
     }
 
+    @Test
+    void externalReviewWithinNotionalCapIsAllowedAndLargerOrdersAreBlocked() {
+        enableExternalPolicy();
+        createExternalPassingReview(BigDecimal.valueOf(50));
+
+        var within = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.valueOf(5),
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), externalGate());
+        var tooLarge = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.valueOf(20),
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), externalGate());
+
+        assertThat(within.allowed()).isTrue();
+        assertThat(within.reason()).isEqualTo("STRATEGIC_REVALIDATION_PASS");
+        assertThat(tooLarge.allowed()).isFalse();
+        assertThat(tooLarge.reason()).isEqualTo("STRATEGIC_EXTERNAL_EVIDENCE_NOTIONAL_EXCEEDED");
+    }
+
+    @Test
+    void externalReviewStoredBeforeTtlCapWasLoweredCannotSubmit() {
+        enableExternalPolicy();
+        createExternalPassingReview(BigDecimal.valueOf(5));
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "externalMaxTtl",
+                java.time.Duration.ofMinutes(5));
+
+        var result = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), externalGate());
+
+        assertThat(result.allowed()).isFalse();
+        assertThat(result.reason()).isEqualTo("STRATEGIC_EXTERNAL_EVIDENCE_TTL_EXCEEDED");
+    }
+
+    @Test
+    void policyFlipToProvidersAfterExternalReviewBlocksSubmitInBothDirections() {
+        enableExternalPolicy();
+        createExternalPassingReview(BigDecimal.valueOf(5));
+
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "fundamentalSourcePolicy", "PROVIDERS");
+        var gateFlippedToProviders = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), externalGate());
+        var providersGate = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), providersGate());
+
+        assertThat(gateFlippedToProviders.reason()).isEqualTo("STRATEGIC_EXTERNAL_EVIDENCE_POLICY_CHANGED");
+        assertThat(providersGate.reason()).isEqualTo("STRATEGIC_EVIDENCE_MODE_CHANGED");
+    }
+
+    @Test
+    void tossHazardAppearingAfterExternalReviewBlocksSubmit() {
+        enableExternalPolicy();
+        createExternalPassingReview(BigDecimal.valueOf(5));
+        var hazard = new InvestmentBuyRiskGate.Decision("BLOCKED", List.of("TOSS_STOCK_WARNING_VI_STATIC"),
+                "STRATEGIC", "OK", "INTACT", "CLEAR", null, NOW, "EXTERNAL_CITED");
+
+        var result = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), hazard);
+
+        assertThat(result.allowed()).isFalse();
+        assertThat(result.reason()).isEqualTo("STRATEGIC_REVIEW_STATE_CHANGED");
+    }
+
+    private InvestmentStrategicBuyRevalidationService.RevalidationView createExternalPassingReview(
+            BigDecimal maxQuantity) {
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        return service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                externalCompletion(run, validEvidence(), passAssessment(), maxQuantity));
+    }
+
+    private static InvestmentBuyRiskGate.Decision externalGate() {
+        return new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED"),
+                "STRATEGIC", "OK", "INTACT", "CLEAR", null, NOW, "EXTERNAL_CITED");
+    }
+
+    private static InvestmentBuyRiskGate.Decision providersGate() {
+        return new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("STRATEGIC_MARKET_REVIEW"),
+                "STRATEGIC", "OK", "INTACT", "CLEAR", null, NOW, "PROVIDERS");
+    }
+
     private static void assertInvalid(Runnable call) {
         assertThatThrownBy(call::run)
                 .isInstanceOf(InvestmentException.class)

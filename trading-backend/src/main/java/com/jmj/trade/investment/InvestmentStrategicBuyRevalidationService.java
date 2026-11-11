@@ -325,6 +325,17 @@ public final class InvestmentStrategicBuyRevalidationService {
         if (!latest.marketHealth().equals(currentGate.marketHealth())
                 || !latest.priceRiskState().equals(currentGate.priceRiskState()))
             return Validation.blocked("STRATEGIC_MARKET_STATE_CHANGED");
+        var evidenceMode = evidenceModeOf(latest.evidenceMode());
+        if (!evidenceMode.equals(evidenceModeOf(currentGate.evidenceMode())))
+            return Validation.blocked("STRATEGIC_EVIDENCE_MODE_CHANGED");
+        if (InvestmentBuyRiskGate.EVIDENCE_EXTERNAL_CITED.equals(evidenceMode)) {
+            if (!InvestmentBuyRiskGate.POLICY_TOSS_ONLY.equals(
+                    InvestmentBuyRiskGate.parsePolicy(fundamentalSourcePolicy)))
+                return Validation.blocked("STRATEGIC_EXTERNAL_EVIDENCE_POLICY_CHANGED");
+            if (latest.createdAt() == null || latest.expiresAt() == null
+                    || Duration.between(latest.createdAt(), latest.expiresAt()).compareTo(externalMaxTtl) > 0)
+                return Validation.blocked("STRATEGIC_EXTERNAL_EVIDENCE_TTL_EXCEEDED");
+        }
         if (quantity == null || quantity.signum() <= 0 || quantity.compareTo(latest.maxQuantity()) > 0)
             return Validation.blocked("STRATEGIC_APPROVED_QUANTITY_EXCEEDED");
         if (currentMarketPrice == null || orderLimitPrice == null
@@ -333,6 +344,9 @@ public final class InvestmentStrategicBuyRevalidationService {
                 || orderLimitPrice.compareTo(latest.minPrice()) < 0
                 || orderLimitPrice.compareTo(latest.maxPrice()) > 0)
             return Validation.blocked("STRATEGIC_APPROVED_PRICE_RANGE_EXCEEDED");
+        if (InvestmentBuyRiskGate.EVIDENCE_EXTERNAL_CITED.equals(evidenceMode)
+                && orderLimitPrice.multiply(quantity).compareTo(externalMaxNotional) > 0)
+            return Validation.blocked("STRATEGIC_EXTERNAL_EVIDENCE_NOTIONAL_EXCEEDED");
         return new Validation(true, "STRATEGIC_REVALIDATION_PASS", latest.reviewId());
     }
 
@@ -425,6 +439,10 @@ public final class InvestmentStrategicBuyRevalidationService {
 
     private JsonNode readNullableJson(String value) {
         return value == null ? null : readJson(value);
+    }
+
+    private static String evidenceModeOf(String value) {
+        return value == null ? InvestmentBuyRiskGate.POLICY_PROVIDERS : value;
     }
 
     private RevalidationInput normalize(RevalidationInput input, Instant now) {

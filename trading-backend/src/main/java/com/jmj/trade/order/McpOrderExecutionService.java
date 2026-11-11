@@ -498,6 +498,7 @@ public final class McpOrderExecutionService {
         submissions.auditConnector(intent.getId(), "MCP_SUBMIT_STRATEGIC_REVALIDATION", "MCP:" + userId,
                 "{\"decisionId\":" + jsonString(buyDecisionId.toString())
                         + ",\"reviewId\":" + jsonString(validation.reviewId().toString())
+                        + ",\"evidenceMode\":" + jsonString(gate.evidenceMode())
                         + ",\"outcome\":\"PASS\",\"approvalBoundary\":\"SEPARATE_ORDER_APPROVAL_REQUIRED\"}");
     }
 
@@ -513,6 +514,7 @@ public final class McpOrderExecutionService {
                 + ",\"marketPrice\":" + (marketPrice == null ? "null" : marketPrice.toPlainString())
                 + ",\"quoteObservedAt\":" + jsonString(quoteObservedAt == null ? null : quoteObservedAt.toString())
                 + ",\"evaluatedAt\":" + jsonString(decision.evaluatedAt() == null ? null : decision.evaluatedAt().toString())
+                + ",\"evidenceMode\":" + jsonString(decision.evidenceMode())
                 + ",\"approvalBoundary\":\"ORDER_APPROVAL_ONLY\""
                 + ",\"fundamentalVerification\":" + (fundamentals == null ? "null"
                 : "{\"status\":" + jsonString(fundamentals.status())
