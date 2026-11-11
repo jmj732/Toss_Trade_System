@@ -141,6 +141,22 @@ test -f mocks/toss/mappings/read-only.json || fail "missing Toss read-only mappi
 if grep -RiqE '/(orders?|trades?)(/|")' mocks/toss; then
   fail "Toss mock must not expose order/trade endpoints"
 fi
+for symbol in INVW UNKW DLST PAST LEVR WRNT NF404 ERR500; do
+  lower="$(printf '%s' "$symbol" | tr '[:upper:]' '[:lower:]')"
+  test -f "mocks/toss/mappings/hazard-$lower-info.json" || fail "missing Toss hazard info stub for $symbol"
+  test -f "mocks/toss/mappings/hazard-$lower-warnings.json" || fail "missing Toss hazard warnings stub for $symbol"
+  grep -q "| \`$symbol\` |" mocks/README.md || fail "mocks/README.md must document hazard symbol $symbol"
+done
+python3 -I - <<'PY' || fail "Toss mock mappings must be valid WireMock stubs with a request and response"
+import glob, json, sys
+bad = []
+for path in sorted(glob.glob("mocks/toss/mappings/*.json")):
+    with open(path, encoding="utf-8") as handle:
+        stub = json.load(handle)
+    if "request" not in stub or "response" not in stub:
+        bad.append(path)
+sys.exit(1 if bad else 0)
+PY
 
 for context in trading-backend analysis-service web-dashboard; do
   test -f "$context/.dockerignore" || fail "missing $context/.dockerignore"

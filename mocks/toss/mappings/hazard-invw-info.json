@@ -1,0 +1,41 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/stocks",
+    "queryParameters": {
+      "symbols": {
+        "equalTo": "INVW"
+      }
+    }
+  },
+  "priority": 1,
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": [
+        {
+          "symbol": "INVW",
+          "name": "Hazard Scenario INVW",
+          "englishName": "Hazard INVW",
+          "isinCode": "US0000000000",
+          "market": "NASDAQ",
+          "securityType": "STOCK",
+          "isCommonShare": true,
+          "status": "ACTIVE",
+          "currency": "USD",
+          "listDate": null,
+          "delistDate": null,
+          "sharesOutstanding": "1000000000",
+          "leverageFactor": null
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock-hazard"
+    }
+  },
+  "metadata": {
+    "scenario": "investment warning present"
+  }
+}
