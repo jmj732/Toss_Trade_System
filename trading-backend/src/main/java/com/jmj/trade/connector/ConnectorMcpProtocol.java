@@ -313,7 +313,9 @@ public final class ConnectorMcpProtocol {
             tools.add(tool("finish_strategic_buy_revalidation", "Finish ChatGPT strategic BUY review",
                     "Record ChatGPT's cited assessment for a started run. The server binds it to the current decision, "
                             + "mandate, thesis revision and market snapshot, and derives the review origin. URLs and timestamps "
-                            + "are syntax-checked; source contents are not independently verified. Does not place orders.",
+                            + "are syntax-checked; source contents are not independently verified. When the run reports "
+                            + "evidenceMode EXTERNAL_CITED, structuredEvidence (SEC filing, consensus and revision citations) "
+                            + "is required. Does not place orders.",
                     strategicBuyRevalidationFinishSchema(), objectSchema(), false, false, false,
                     ConnectorApiKeyService.REVIEW_SCOPE));
         }
@@ -588,13 +590,13 @@ public final class ConnectorMcpProtocol {
         if (strategicBuyRevalidationService == null) return strategicRevalidationUnavailable(request);
         try {
             requireOnlyFields(arguments, Set.of("runId", "challenge", "sourceAsOf", "rationale", "sources",
-                    "assessment", "minPrice", "maxPrice", "maxQuantity"));
+                    "assessment", "minPrice", "maxPrice", "maxQuantity", "structuredEvidence"));
             var completion = new InvestmentStrategicBuyRevalidationService.RunCompletion(
                     requiredUuid(arguments, "runId"), requiredText(arguments, "challenge"),
                     requiredInstant(arguments, "sourceAsOf"), requiredText(arguments, "rationale"),
                     revalidationSources(arguments.path("sources")), revalidationAssessment(arguments.path("assessment")),
                     decimal(arguments, "minPrice"), decimal(arguments, "maxPrice"),
-                    decimal(arguments, "maxQuantity"));
+                    decimal(arguments, "maxQuantity"), revalidationStructuredEvidence(arguments.get("structuredEvidence")));
             return toolResult(request, strategicBuyRevalidationService.completeChatGptRun(
                     userId, connectionId, authenticatedApiKeyId, completion));
         } catch (IllegalArgumentException exception) {
@@ -604,6 +606,52 @@ public final class ConnectorMcpProtocol {
         } catch (DataAccessException exception) {
             return strategicRevalidationUnavailable(request);
         }
+    }
+
+    private static InvestmentStrategicBuyRevalidationService.StructuredEvidence revalidationStructuredEvidence(
+            JsonNode value) {
+        if (value == null || value.isNull()) return null;
+        requireOnlyFields(value, Set.of("fundamental", "consensus", "revision"));
+        var fundamental = value.path("fundamental");
+        requireOnlyFields(fundamental, Set.of("form", "accessionNumber", "periodEnd", "filedAt",
+                "sharesOutstanding", "url"));
+        var consensus = value.path("consensus");
+        requireOnlyFields(consensus, Set.of("horizon", "revenueConsensus", "epsConsensus", "analystCount",
+                "currency", "asOf", "url"));
+        var revision = value.path("revision");
+        requireOnlyFields(revision, Set.of("eps90dChangePct", "revenue90dChangePct", "asOf", "baselineAsOf", "url"));
+        return new InvestmentStrategicBuyRevalidationService.StructuredEvidence(
+                new InvestmentStrategicBuyRevalidationService.FundamentalEvidence(
+                        requiredText(fundamental, "form"), requiredText(fundamental, "accessionNumber"),
+                        requiredDate(fundamental, "periodEnd"), requiredInstant(fundamental, "filedAt"),
+                        decimal(fundamental, "sharesOutstanding"), requiredText(fundamental, "url")),
+                new InvestmentStrategicBuyRevalidationService.ConsensusEvidence(
+                        requiredDate(consensus, "horizon"), decimal(consensus, "revenueConsensus"),
+                        decimal(consensus, "epsConsensus"), requiredInteger(consensus, "analystCount"),
+                        requiredText(consensus, "currency"), requiredInstant(consensus, "asOf"),
+                        requiredText(consensus, "url")),
+                new InvestmentStrategicBuyRevalidationService.RevisionEvidence(
+                        decimal(revision, "eps90dChangePct"), decimal(revision, "revenue90dChangePct"),
+                        requiredInstant(revision, "asOf"), requiredInstant(revision, "baselineAsOf"),
+                        requiredText(revision, "url")));
+    }
+
+    private static java.time.LocalDate requiredDate(JsonNode arguments, String field) {
+        var value = arguments.path(field);
+        if (!value.isTextual()) throw new IllegalArgumentException(field + " must be an ISO-8601 date");
+        try {
+            return java.time.LocalDate.parse(value.asText());
+        } catch (DateTimeParseException exception) {
+            throw new IllegalArgumentException(field + " must be an ISO-8601 date");
+        }
+    }
+
+    private static int requiredInteger(JsonNode arguments, String field) {
+        var value = arguments.path(field);
+        if (!value.canConvertToInt() || !value.isIntegralNumber()) {
+            throw new IllegalArgumentException(field + " must be an integer");
+        }
+        return value.intValue();
     }
 
     private List<InvestmentStrategicBuyRevalidationService.EvidenceSource> revalidationSources(JsonNode value) {
@@ -1547,8 +1595,47 @@ public final class ConnectorMcpProtocol {
         properties.set("minPrice", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
         properties.set("maxPrice", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
         properties.set("maxQuantity", objectMapper.createObjectNode().put("type", "number").put("exclusiveMinimum", 0));
+        properties.set("structuredEvidence", structuredEvidenceSchema());
         return closedObject(properties, "runId", "challenge", "sourceAsOf", "rationale", "sources", "assessment",
                 "minPrice", "maxPrice", "maxQuantity");
+    }
+
+    /** Required when the run was started under EXTERNAL_CITED; the service enforces that binding. */
+    private ObjectNode structuredEvidenceSchema() {
+        var fundamental = objectMapper.createObjectNode();
+        fundamental.set("form", enumSchema("10-K", "10-Q", "20-F", "40-F"));
+        fundamental.set("accessionNumber", objectMapper.createObjectNode().put("type", "string")
+                .put("pattern", "^\\d{10}-\\d{2}-\\d{6}$"));
+        fundamental.set("periodEnd", objectMapper.createObjectNode().put("type", "string").put("format", "date"));
+        fundamental.set("filedAt", dateTimeSchema());
+        fundamental.set("sharesOutstanding", objectMapper.createObjectNode().put("type", "number")
+                .put("exclusiveMinimum", 0));
+        fundamental.set("url", objectMapper.createObjectNode().put("type", "string").put("format", "uri")
+                .put("pattern", "^https://.+").put("maxLength", 2000));
+        var consensus = objectMapper.createObjectNode();
+        consensus.set("horizon", objectMapper.createObjectNode().put("type", "string").put("format", "date"));
+        consensus.set("revenueConsensus", numberSchema());
+        consensus.set("epsConsensus", numberSchema());
+        consensus.set("analystCount", objectMapper.createObjectNode().put("type", "integer").put("minimum", 1));
+        consensus.set("currency", enumSchema("USD"));
+        consensus.set("asOf", dateTimeSchema());
+        consensus.set("url", objectMapper.createObjectNode().put("type", "string").put("format", "uri")
+                .put("pattern", "^https://.+").put("maxLength", 2000));
+        var revision = objectMapper.createObjectNode();
+        revision.set("eps90dChangePct", numberSchema());
+        revision.set("revenue90dChangePct", numberSchema());
+        revision.set("asOf", dateTimeSchema());
+        revision.set("baselineAsOf", dateTimeSchema());
+        revision.set("url", objectMapper.createObjectNode().put("type", "string").put("format", "uri")
+                .put("pattern", "^https://.+").put("maxLength", 2000));
+        var properties = objectMapper.createObjectNode();
+        properties.set("fundamental", closedObject(fundamental, "form", "accessionNumber", "periodEnd", "filedAt",
+                "sharesOutstanding", "url"));
+        properties.set("consensus", closedObject(consensus, "horizon", "revenueConsensus", "epsConsensus",
+                "analystCount", "currency", "asOf", "url"));
+        properties.set("revision", closedObject(revision, "eps90dChangePct", "revenue90dChangePct", "asOf",
+                "baselineAsOf", "url"));
+        return closedObject(properties, "fundamental", "consensus", "revision");
     }
 
     private ObjectNode revalidationCriterionSchema(String... statuses) {
@@ -1956,11 +2043,25 @@ public final class ConnectorMcpProtocol {
         properties.set("marketDataStatus", stringSchema());
         properties.set("marketHealth", stringSchema());
         properties.set("priceRiskState", stringSchema());
+        fundamentals.set("legacyProviderData", arrayOf(legacyProviderDataSchema()));
         properties.set("fundamentalVerification", nullableSchema(closedObject(fundamentals, "status", "reasons",
-                "fundamentalsStatus", "source", "asOf", "revisionStatus", "consensusSource", "consensusAsOf")));
+                "fundamentalsStatus", "source", "asOf", "revisionStatus", "consensusSource", "consensusAsOf",
+                "legacyProviderData")));
         properties.set("evaluatedAt", nullableDateTimeSchema());
+        properties.set("evidenceMode", enumSchema("PROVIDERS", "TOSS_ONLY", "EXTERNAL_CITED"));
         return closedObject(properties, "status", "reasons", "investmentHorizon", "marketDataStatus",
-                "marketHealth", "priceRiskState", "fundamentalVerification", "evaluatedAt");
+                "marketHealth", "priceRiskState", "fundamentalVerification", "evaluatedAt", "evidenceMode");
+    }
+
+    /** Non-Toss values kept for review under TOSS_ONLY; never evidence. */
+    private ObjectNode legacyProviderDataSchema() {
+        var item = objectMapper.createObjectNode();
+        item.set("group", enumSchema("fundamentals", "consensus", "revision"));
+        item.set("status", stringSchema());
+        item.set("source", nullableStringSchema());
+        item.set("asOf", nullableDateTimeSchema());
+        item.set("flag", enumSchema("LEGACY_PROVIDER_EXCLUDED"));
+        return closedObject(item, "group", "status", "source", "asOf", "flag");
     }
 
     private ObjectNode marketRiskAssessmentSchema() {

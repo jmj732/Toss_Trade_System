@@ -202,6 +202,57 @@ class McpOrderExecutionServiceTest {
     }
 
     @Test
+    void submitAuditRecordsExternalEvidenceModeOfTheBuyGate() throws Exception {
+        var activation = mock(LiveOrderActivationService.class);
+        var portfolios = mock(FreshPortfolioReadService.class);
+        var quotes = mock(BrokerAdapter.class);
+        var intents = mock(OrderIntentRepository.class);
+        var brokerOrders = mock(BrokerOrderRepository.class);
+        var attempts = mock(SubmissionAttemptRepository.class);
+        var jdbc = mock(JdbcTemplate.class);
+        var context = mock(InvestmentContextService.class);
+        var submissions = mock(OrderSubmissionService.class);
+        var observedAt = Instant.now();
+        var portfolio = new PortfolioReadService.PortfolioView(UUID.randomUUID(), observedAt, false, null, false,
+                List.of(), List.of(), null, List.of(), Map.of());
+        when(portfolios.read(USER, CONNECTION)).thenReturn(portfolio);
+        when(quotes.getQuote(any(BrokerConnectionRef.class), eq("AAPL"))).thenReturn(new BrokerResponse<>(
+                new Quote(new BrokerConnectionRef(CONNECTION), "AAPL", Currency.USD,
+                        new BigDecimal("180"), new BigDecimal("179.9"), new BigDecimal("180.1"), null, observedAt),
+                BrokerOrderPort.localMetadata()));
+        var intent = OrderIntent.proposedLive(INTENT, ACCOUNT, USER, CONNECTION,
+                OrderSide.BUY, OrderType.LIMIT, "AAPL", BigDecimal.ONE, new BigDecimal("180"), Currency.USD);
+        intent.stampProposal(observedAt, observedAt.plusSeconds(300));
+        intent.stampProposalReferencePrice(new BigDecimal("180.1"));
+        when(intents.findOwnedById(INTENT, USER, CONNECTION)).thenReturn(Optional.of(intent));
+        when(brokerOrders.findFirstByOrderIntentIdOrderByIdAsc(INTENT)).thenReturn(Optional.empty());
+        when(attempts.findTopByOrderIntentIdAndClientOrderIdOrderByAttemptNumberDesc(eq(INTENT), anyString()))
+                .thenReturn(Optional.empty());
+        when(jdbc.query(contains("SELECT investment_decision_id"), any(org.springframework.jdbc.core.RowMapper.class),
+                eq(INTENT), eq(USER), eq(CONNECTION))).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            var rowMapper = (org.springframework.jdbc.core.RowMapper<Object>) invocation.getArgument(1);
+            var row = mock(ResultSet.class);
+            when(row.getObject("investment_decision_id")).thenReturn(null);
+            when(row.getObject("investment_risk_event_id")).thenReturn(null);
+            return List.of(rowMapper.mapRow(row, 0));
+        });
+        when(context.investmentBuyRiskGate(eq(USER), eq("AAPL"), eq(new BigDecimal("180")), eq(observedAt)))
+                .thenReturn(new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED",
+                        List.of("FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED"), "STRATEGIC", "OK", "INTACT", "CLEAR",
+                        null, observedAt, "EXTERNAL_CITED"));
+        var service = new McpOrderExecutionService(activation, mock(PreTradeRiskEngine.class), portfolios, quotes,
+                mock(BrokerOrderPort.class), mock(LiveOrderSafetyLedger.class), intents, brokerOrders, attempts,
+                jdbc, mock(UnknownAttemptReconciler.class), submissions, null, null, context);
+
+        assertThatThrownBy(() -> service.submit(USER, CONNECTION, "ordp_" + INTENT))
+                .hasMessageContaining("Strategic BUY revalidation is required");
+        verify(submissions).auditConnector(eq(INTENT), eq("MCP_SUBMIT_RISK_GATE"), eq("MCP:" + USER),
+                org.mockito.ArgumentMatchers.<String>argThat(payload ->
+                        payload.contains("\"evidenceMode\":\"EXTERNAL_CITED\"")));
+    }
+
+    @Test
     void prepareRejectsMarketPriceBeforeAnyAccountLookup() {
         var service = new McpOrderExecutionService(mock(LiveOrderActivationService.class), mock(PreTradeRiskEngine.class),
                 mock(FreshPortfolioReadService.class), mock(BrokerAdapter.class), mock(BrokerOrderPort.class),

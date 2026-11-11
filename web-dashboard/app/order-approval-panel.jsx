@@ -15,6 +15,78 @@ import {
 
 const SIDE_LABELS = { BUY: "매수", SELL: "매도" };
 
+const EVIDENCE_MODE_LABELS = {
+  PROVIDERS: "제공자 데이터 근거",
+  TOSS_ONLY: "Toss 전용 근거",
+  EXTERNAL_CITED: "외부 인용 근거 (ChatGPT 제시)"
+};
+
+const VERIFICATION_LABELS = {
+  SOURCE_NOT_VERIFIED: "원문 미검증 (SOURCE_NOT_VERIFIED) · 서버가 인용 원문의 내용을 확인하지 않았습니다"
+};
+
+const STRUCTURED_VALUE_LABELS = [
+  ["consensus", "revenueConsensus", "컨센서스 매출"],
+  ["consensus", "epsConsensus", "컨센서스 EPS"],
+  ["consensus", "asOf", "컨센서스 기준 시각"],
+  ["revision", "eps90dChangePct", "EPS 90일 변화율(%)"],
+  ["revision", "revenue90dChangePct", "매출 90일 변화율(%)"],
+  ["fundamental", "sharesOutstanding", "SEC 발행 주식 수"],
+  ["fundamental", "filedAt", "SEC 제출 시각"]
+];
+
+/**
+ * Evidence the BUY relies on, shown before approval. EXTERNAL_CITED values are ChatGPT-cited and are labelled
+ * as not verified; they are displayed as stored, never as confirmed facts.
+ */
+export function BuyEvidenceSummary({ evidence }) {
+  if (!evidence) return null;
+  const structured = evidence.structuredEvidence ?? {};
+  const values = STRUCTURED_VALUE_LABELS
+    .map(([group, field, label]) => ({ label, value: structured?.[group]?.[field] }))
+    .filter(item => item.value !== undefined && item.value !== null && item.value !== "");
+  const sources = Array.isArray(evidence.citedSources) ? evidence.citedSources : [];
+  return (
+    <section className="approval-evidence" aria-label="매수 근거" data-evidence-mode={evidence.evidenceMode ?? ""}>
+      <p className="eyebrow">매수 근거</p>
+      <dl className="approval-preview">
+        <div>
+          <dt>근거 모드</dt>
+          <dd>{EVIDENCE_MODE_LABELS[evidence.evidenceMode] ?? evidence.evidenceMode ?? UNKNOWN_TEXT}</dd>
+        </div>
+        {evidence.verificationStatus ? (
+          <div>
+            <dt>검증 상태</dt>
+            <dd data-verification-status={evidence.verificationStatus}>
+              {VERIFICATION_LABELS[evidence.verificationStatus] ?? evidence.verificationStatus}
+            </dd>
+          </div>
+        ) : null}
+        {values.map(item => (
+          <div key={item.label}>
+            <dt>{item.label}</dt>
+            <dd>{String(item.value)}</dd>
+          </div>
+        ))}
+      </dl>
+      {sources.length > 0 ? (
+        <ul className="approval-evidence-sources">
+          {sources.map((source, index) => (
+            <li key={`${source.url ?? "source"}-${index}`}>
+              <span>{source.type ?? UNKNOWN_TEXT}</span>{" "}
+              {typeof source.url === "string" && source.url.startsWith("https://")
+                ? <a href={source.url} rel="noreferrer noopener" target="_blank">{source.url}</a>
+                : <span>{source.url ?? UNKNOWN_TEXT}</span>}
+              {source.asOf ? <span> · 기준 {formatInstant(source.asOf)}</span> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+
 function sideText(side) {
   return SIDE_LABELS[side] ?? (side ?? UNKNOWN_TEXT);
 }
@@ -228,6 +300,8 @@ export function OrderApprovalPanel({
       ) : (
         !loadError ? <p className="busy">미리보기를 불러오는 중…</p> : null
       )}
+
+      {preview?.buyEvidence ? <BuyEvidenceSummary evidence={preview.buyEvidence} /> : null}
 
       <div className="actions">
         <button

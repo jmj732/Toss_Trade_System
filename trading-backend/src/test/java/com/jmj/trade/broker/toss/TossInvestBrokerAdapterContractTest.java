@@ -6,6 +6,7 @@ import com.jmj.trade.broker.BrokerConnectionRef;
 import com.jmj.trade.broker.BrokerErrorCategory;
 import com.jmj.trade.broker.BrokerException;
 import com.jmj.trade.broker.CashBalanceStatus;
+import com.jmj.trade.broker.MarketDataAdapter;
 import com.jmj.trade.broker.Currency;
 import com.jmj.trade.broker.SellableQuantitySnapshot;
 import org.junit.jupiter.api.AfterEach;
@@ -472,6 +473,63 @@ class TossInvestBrokerAdapterContractTest {
                 return new TossCredentials("client-id", "client-secret");
             }
         };
+    }
+
+    @Test
+    void mapsStockInfoAndKeepsProviderStatusAndWarningCodesAsOpenValues() {
+        server.stubFor(get(urlEqualTo("/api/v1/stocks?symbols=AAPL")).willReturn(json("""
+                {"result":[{"symbol":"AAPL","name":"Apple","englishName":"Apple","isinCode":"US0378331005",
+                  "market":"NASDAQ","securityType":"STOCK","isCommonShare":true,"status":"SCHEDULED",
+                  "currency":"USD","listDate":"2026-01-02","delistDate":"2026-12-31",
+                  "sharesOutstanding":"14776353000","leverageFactor":"2.0","koreanMarketDetail":null}]}
+                """)));
+        server.stubFor(get(urlEqualTo("/api/v1/stocks/AAPL/warnings")).willReturn(json("""
+                {"result":[{"warningType":"BRAND_NEW_CODE","exchange":null,"startDate":null,"endDate":null}]}
+                """)));
+
+        var info = adapter().getStockInfo(CONNECTION, "aapl").value();
+        var warnings = adapter().getStockWarnings(CONNECTION, "aapl").value();
+
+        assertThat(info.symbol()).isEqualTo("AAPL");
+        assertThat(info.status()).isEqualTo("SCHEDULED");
+        assertThat(info.securityType()).isEqualTo("STOCK");
+        assertThat(info.isCommonShare()).isTrue();
+        assertThat(info.delistDate()).isEqualTo(LocalDate.parse("2026-12-31"));
+        assertThat(info.leverageFactor()).isEqualByComparingTo("2.0");
+        assertThat(info.sharesOutstanding()).isEqualByComparingTo("14776353000");
+        assertThat(info.currency()).isEqualTo("USD");
+        assertThat(warnings).extracting(MarketDataAdapter.StockWarning::warningType)
+                .containsExactly("BRAND_NEW_CODE");
+    }
+
+    @Test
+    void stockInfoRequiresExactlyOneMatchingSymbolAndParsableNumbers() {
+        server.stubFor(get(urlEqualTo("/api/v1/stocks?symbols=AAPL")).willReturn(json("""
+                {"result":[{"symbol":"MSFT","status":"ACTIVE","securityType":"STOCK","currency":"USD",
+                  "sharesOutstanding":"1","leverageFactor":null}]}
+                """)));
+        assertThatThrownBy(() -> adapter().getStockInfo(CONNECTION, "AAPL"))
+                .isInstanceOfSatisfying(BrokerException.class, exception ->
+                        assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT));
+
+        server.resetRequests();
+        server.stubFor(get(urlEqualTo("/api/v1/stocks?symbols=AAPL")).willReturn(json("""
+                {"result":[{"symbol":"AAPL","status":"ACTIVE","securityType":"STOCK","currency":"USD",
+                  "sharesOutstanding":"1","leverageFactor":"not-a-number"}]}
+                """)));
+        assertThatThrownBy(() -> adapter().getStockInfo(CONNECTION, "AAPL"))
+                .isInstanceOfSatisfying(BrokerException.class, exception ->
+                        assertThat(exception.category()).isEqualTo(BrokerErrorCategory.CONTRACT));
+    }
+
+    @Test
+    void stockWarningsFailClosedWhenStockIsNotFound() {
+        server.stubFor(get(urlEqualTo("/api/v1/stocks/ZZZZ/warnings")).willReturn(aResponse().withStatus(404)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"error\":{\"code\":\"stock-not-found\"}}")));
+
+        assertThatThrownBy(() -> adapter().getStockWarnings(CONNECTION, "ZZZZ"))
+                .isInstanceOf(BrokerException.class);
     }
 
     private void stubToken() {
