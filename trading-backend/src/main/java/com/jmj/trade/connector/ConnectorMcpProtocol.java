@@ -1959,8 +1959,9 @@ public final class ConnectorMcpProtocol {
         properties.set("fundamentalVerification", nullableSchema(closedObject(fundamentals, "status", "reasons",
                 "fundamentalsStatus", "source", "asOf", "revisionStatus", "consensusSource", "consensusAsOf")));
         properties.set("evaluatedAt", nullableDateTimeSchema());
+        properties.set("evidenceMode", enumSchema("PROVIDERS", "TOSS_ONLY", "EXTERNAL_CITED"));
         return closedObject(properties, "status", "reasons", "investmentHorizon", "marketDataStatus",
-                "marketHealth", "priceRiskState", "fundamentalVerification", "evaluatedAt");
+                "marketHealth", "priceRiskState", "fundamentalVerification", "evaluatedAt", "evidenceMode");
     }
 
     private ObjectNode marketRiskAssessmentSchema() {
