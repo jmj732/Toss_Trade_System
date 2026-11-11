@@ -2253,6 +2253,12 @@ public final class InvestmentContextService {
                 fundamentalVerification(snapshot, assessedAt, policy), assessedAt, buyEvidence);
     }
 
+    /** Current Toss hazards for one ticker, used when a strategic review records its identity cross-check. */
+    public InvestmentBuyRiskGate.TossStockHazards currentTossStockHazards(UUID userId, String rawTicker) {
+        requireUser(userId);
+        return tossStockHazards(userId, ticker(rawTicker), clock.instant());
+    }
+
     /** Live Toss hazards for the user's active Toss connection. Any failure is UNAVAILABLE, never CLEAR. */
     private InvestmentBuyRiskGate.TossStockHazards tossStockHazards(UUID userId, String symbol, Instant now) {
         if (stockReference == null) return InvestmentBuyRiskGate.TossStockHazards.unavailable();
