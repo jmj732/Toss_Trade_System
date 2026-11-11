@@ -116,6 +116,8 @@ public final class InvestmentContextService {
     private String fundamentalSourcePolicy = InvestmentBuyRiskGate.POLICY_PROVIDERS;
 
     private MarketDataAdapter stockReference;
+    private final Map<String, CachedHazards> hazardViewCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Duration HAZARD_VIEW_TTL = Duration.ofMinutes(5);
 
     @Autowired
     public InvestmentContextService(
@@ -571,6 +573,7 @@ public final class InvestmentContextService {
                         dataStatus(text(readiness.get("balanceSheetStatus"))),
                         risk.status());
                 readiness.put("overallDataStatus", overall(statuses).name());
+                annotateSourcePolicy(readiness, risk.investmentBuyGate());
             }
             return new SecurityView(
                     symbol,
@@ -2251,6 +2254,18 @@ public final class InvestmentContextService {
         return InvestmentBuyRiskGate.evaluate(
                 marketRiskAssessment(userId, symbol, livePrice, livePriceAsOf, snapshot, assessedAt),
                 fundamentalVerification(snapshot, assessedAt, policy), assessedAt, buyEvidence);
+    }
+
+    /** Short-lived hazard cache for portfolio views only. Prepare, submit and review start always read live. */
+    InvestmentBuyRiskGate.TossStockHazards cachedTossStockHazards(UUID userId, String symbol, Instant now) {
+        var key = userId + ":" + symbol;
+        var cached = hazardViewCache.get(key);
+        if (cached != null && now.isBefore(cached.expiresAt())) return cached.hazards();
+        var hazards = tossStockHazards(userId, symbol, now);
+        if (!InvestmentBuyRiskGate.HAZARD_UNAVAILABLE.equals(hazards.status())) {
+            hazardViewCache.put(key, new CachedHazards(hazards, now.plus(HAZARD_VIEW_TTL)));
+        }
+        return hazards;
     }
 
     /** Current Toss hazards for one ticker, used when a strategic review records its identity cross-check. */
@@ -4398,6 +4413,22 @@ public final class InvestmentContextService {
                 "PARSE_FAILED", "REFERENCE_REJECTED").contains(reason));
     }
 
+    /**
+     * Readiness annotations for the source policy. Under TOSS_ONLY, an absent or non-Toss group is shown as
+     * TOSS_SOURCE_UNSUPPORTED, and legacy provider values are listed with LEGACY_PROVIDER_EXCLUDED.
+     */
+    void annotateSourcePolicy(ObjectNode readiness,
+                                      InvestmentBuyRiskGate.Decision buyGate) {
+        var policy = InvestmentBuyRiskGate.parsePolicy(fundamentalSourcePolicy);
+        readiness.put("sourcePolicy", policy);
+        var verification = buyGate == null ? null : buyGate.fundamentalVerification();
+        var unsupported = verification != null
+                && verification.reasons().contains(InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED);
+        readiness.put("tossSourceUnsupported", unsupported);
+        readiness.set("legacyProviderData", objectMapper.valueToTree(
+                verification == null ? List.of() : verification.legacyProviderData()));
+    }
+
     private static InvestmentDataCalculator.DataStatus dataStatus(String value) {
         if (value == null) return InvestmentDataCalculator.DataStatus.DATA_MISSING;
         try {
@@ -4488,8 +4519,13 @@ public final class InvestmentContextService {
                     mandate == null ? null : mandate.riskPriceRole(), confirmed && trustedMark && tossMark,
                     triggerPrice, trustedMark && tossMark ? price : null,
                     trustedMark && tossMark ? priceAsOf : null, evaluatedAt, regularCloseStaleAfter);
-            var buyGate = InvestmentBuyRiskGate.evaluate(marketRisk,
-                    fundamentalVerification(analysis.get(symbol), evaluatedAt, sourcePolicy), evaluatedAt);
+            var fundamentalGate = fundamentalVerification(analysis.get(symbol), evaluatedAt, sourcePolicy);
+            // Under TOSS_ONLY the view uses the same buy mapping as prepare, with cached live Toss hazards.
+            var buyGate = InvestmentBuyRiskGate.POLICY_TOSS_ONLY.equals(sourcePolicy)
+                    ? InvestmentBuyRiskGate.evaluate(marketRisk, fundamentalGate, evaluatedAt,
+                    new InvestmentBuyRiskGate.BuyEvidence(sourcePolicy, priceStaleAfter,
+                            cachedTossStockHazards(userId, symbol, evaluatedAt)))
+                    : InvestmentBuyRiskGate.evaluate(marketRisk, fundamentalGate, evaluatedAt);
             if (!"ELIGIBLE".equals(buyGate.status())) {
                 reasons.addAll(buyGate.reasons());
                 eligible = false;
@@ -5712,6 +5748,9 @@ public final class InvestmentContextService {
                     "metricProvenance", metricProvenance,
                     "status", status.name());
         }
+    }
+
+    private record CachedHazards(InvestmentBuyRiskGate.TossStockHazards hazards, Instant expiresAt) {
     }
 
     private record ReadinessData(
