@@ -2043,12 +2043,25 @@ public final class ConnectorMcpProtocol {
         properties.set("marketDataStatus", stringSchema());
         properties.set("marketHealth", stringSchema());
         properties.set("priceRiskState", stringSchema());
+        fundamentals.set("legacyProviderData", arrayOf(legacyProviderDataSchema()));
         properties.set("fundamentalVerification", nullableSchema(closedObject(fundamentals, "status", "reasons",
-                "fundamentalsStatus", "source", "asOf", "revisionStatus", "consensusSource", "consensusAsOf")));
+                "fundamentalsStatus", "source", "asOf", "revisionStatus", "consensusSource", "consensusAsOf",
+                "legacyProviderData")));
         properties.set("evaluatedAt", nullableDateTimeSchema());
         properties.set("evidenceMode", enumSchema("PROVIDERS", "TOSS_ONLY", "EXTERNAL_CITED"));
         return closedObject(properties, "status", "reasons", "investmentHorizon", "marketDataStatus",
                 "marketHealth", "priceRiskState", "fundamentalVerification", "evaluatedAt", "evidenceMode");
+    }
+
+    /** Non-Toss values kept for review under TOSS_ONLY; never evidence. */
+    private ObjectNode legacyProviderDataSchema() {
+        var item = objectMapper.createObjectNode();
+        item.set("group", enumSchema("fundamentals", "consensus", "revision"));
+        item.set("status", stringSchema());
+        item.set("source", nullableStringSchema());
+        item.set("asOf", nullableDateTimeSchema());
+        item.set("flag", enumSchema("LEGACY_PROVIDER_EXCLUDED"));
+        return closedObject(item, "group", "status", "source", "asOf", "flag");
     }
 
     private ObjectNode marketRiskAssessmentSchema() {

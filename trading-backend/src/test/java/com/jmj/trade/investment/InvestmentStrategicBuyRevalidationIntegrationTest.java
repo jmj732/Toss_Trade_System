@@ -503,6 +503,28 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
         assertThat(saved.verificationStatus()).isNull();
     }
 
+    @Test
+    void reviewStartSnapshotShowsLegacyProviderDataWithoutCountingItAsEvidence() {
+        enableExternalPolicy();
+        var legacy = new InvestmentBuyRiskGate.LegacyProviderData("consensus", "STALE", "ALPHA_VANTAGE",
+                NOW.minusSeconds(60L * 86400), InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED);
+        when(context.investmentBuyRiskGate(userId, "LUNR", null, null)).thenReturn(
+                new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED"),
+                        "STRATEGIC", "OK", "INTACT", "CLEAR",
+                        new InvestmentBuyRiskGate.FundamentalVerification("UNAVAILABLE",
+                                List.of(InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED), "DATA_MISSING", null, null,
+                                "DATA_MISSING", "ALPHA_VANTAGE", NOW.minusSeconds(60L * 86400), List.of(legacy)),
+                        NOW, "EXTERNAL_CITED"));
+
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+
+        assertThat(run.legacyProviderData()).singleElement().satisfies(item -> {
+            assertThat(item.source()).isEqualTo("ALPHA_VANTAGE");
+            assertThat(item.flag()).isEqualTo("LEGACY_PROVIDER_EXCLUDED");
+        });
+        assertThat(run.evidenceMode()).isEqualTo("EXTERNAL_CITED");
+    }
+
     private InvestmentStrategicBuyRevalidationService.RevalidationView createExternalPassingReview(
             BigDecimal maxQuantity) {
         var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);

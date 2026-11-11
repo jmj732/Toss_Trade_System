@@ -203,6 +203,28 @@ class InvestmentBuyRiskGateTest {
     }
 
     @Test
+    void legacyStaleConsensusUnderTossOnlyNeedsExternalReviewWhileTheSameRowBlocksUnderProviders() {
+        var legacyConsensus = new InvestmentBuyRiskGate.FundamentalVerification("UNAVAILABLE",
+                List.of(InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED), "DATA_MISSING", null, null,
+                "DATA_MISSING", "ALPHA_VANTAGE", NOW.minusSeconds(60L * 86400),
+                List.of(new InvestmentBuyRiskGate.LegacyProviderData("consensus", "STALE", "ALPHA_VANTAGE",
+                        NOW.minusSeconds(60L * 86400), InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED)));
+        var providersRow = new InvestmentBuyRiskGate.FundamentalVerification("UNAVAILABLE",
+                List.of("CONSENSUS_STALE"), "DATA_MISSING", null, null, "DATA_MISSING", "ALPHA_VANTAGE",
+                NOW.minusSeconds(60L * 86400));
+
+        var tossOnly = buyGate("STRATEGIC", "OK", "INTACT", "CLEAR", legacyConsensus,
+                InvestmentBuyRiskGate.POLICY_TOSS_ONLY, clearHazards());
+        var providers = buyGate("STRATEGIC", "OK", "INTACT", "CLEAR", providersRow,
+                InvestmentBuyRiskGate.POLICY_PROVIDERS, clearHazards());
+
+        assertThat(tossOnly.status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(tossOnly.evidenceMode()).isEqualTo(InvestmentBuyRiskGate.EVIDENCE_EXTERNAL_CITED);
+        assertThat(providers.status()).isEqualTo("BLOCKED");
+        assertThat(providers.reasons()).contains("CONSENSUS_STALE");
+    }
+
+    @Test
     void sourcePolicyParsingRejectsUnknownValuesAndDefaultsBlank() {
         assertThat(InvestmentBuyRiskGate.parsePolicy(null)).isEqualTo("PROVIDERS");
         assertThat(InvestmentBuyRiskGate.parsePolicy(" ")).isEqualTo("PROVIDERS");

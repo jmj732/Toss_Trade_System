@@ -4537,8 +4537,13 @@ public final class InvestmentContextService {
         return Map.copyOf(risks);
     }
 
-    private InvestmentBuyRiskGate.FundamentalVerification fundamentalVerification(JsonNode snapshot, Instant now,
-                                                                                 String policy) {
+    /**
+     * Gate inputs for fundamentals, consensus and revision. Under TOSS_ONLY, Toss supplies none of these, so an absent
+     * group and any group stored by a non-Toss provider both report TOSS_SOURCE_UNSUPPORTED. Legacy values are returned
+     * separately with LEGACY_PROVIDER_EXCLUDED and never count as evidence. Toss-sourced values keep their checks.
+     */
+    InvestmentBuyRiskGate.FundamentalVerification fundamentalVerification(JsonNode snapshot, Instant now,
+                                                                          String policy) {
         var fundamentals = node(snapshot, "fundamentals");
         var revision = node(snapshot, "revision");
         var consensus = node(snapshot, "consensus");
@@ -4551,9 +4556,14 @@ public final class InvestmentContextService {
         var consensusSource = clean(text(consensus.get("source")));
         var tossOnly = InvestmentBuyRiskGate.POLICY_TOSS_ONLY.equals(policy);
         var reasons = new ArrayList<String>();
-        // Under TOSS_ONLY an absent group is an unsupported source, not a stale or failed stored value.
+        var legacy = new ArrayList<InvestmentBuyRiskGate.LegacyProviderData>();
+        var unsupported = InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED;
         if (tossOnly && isAbsent(fundamentals, fundamentalStatus)) {
-            reasons.add(InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED);
+            reasons.add(unsupported);
+        } else if (tossOnly && isLegacy(fundamentalSource)) {
+            reasons.add(unsupported);
+            legacy.add(new InvestmentBuyRiskGate.LegacyProviderData("fundamentals", fundamentalStatus,
+                    fundamentalSource, fundamentalAsOf, InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED));
         } else {
             if (!"OK".equals(fundamentalStatus)) reasons.add("FUNDAMENTALS_" + fundamentalStatus);
             else if (fundamentalSource == null) reasons.add("FUNDAMENTAL_SOURCE_MISSING");
@@ -4562,12 +4572,21 @@ public final class InvestmentContextService {
             else if (fundamentalAsOf.isBefore(now.minus(fundamentalStaleAfter))) reasons.add("FUNDAMENTALS_STALE");
         }
         if (tossOnly && isAbsent(revision, revisionStatus)) {
-            reasons.add(InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED);
+            reasons.add(unsupported);
+        } else if (tossOnly) {
+            // Toss never supplies revisions, so any stored revision value is legacy provider data.
+            reasons.add(unsupported);
+            legacy.add(new InvestmentBuyRiskGate.LegacyProviderData("revision", revisionStatus,
+                    consensusSource, null, InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED));
         } else if (!"OK".equals(revisionStatus)) {
             reasons.add("REVISION_" + revisionStatus);
         }
         if (tossOnly && isAbsent(consensus, consensusStatus)) {
-            reasons.add(InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED);
+            reasons.add(unsupported);
+        } else if (tossOnly && isLegacy(consensusSource)) {
+            reasons.add(unsupported);
+            legacy.add(new InvestmentBuyRiskGate.LegacyProviderData("consensus", consensusStatus,
+                    consensusSource, consensusAsOf, InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED));
         } else {
             if (!"OK".equals(consensusStatus)) reasons.add("CONSENSUS_" + consensusStatus);
             if (consensusSource == null) reasons.add("CONSENSUS_SOURCE_MISSING");
@@ -4578,7 +4597,12 @@ public final class InvestmentContextService {
         var distinctReasons = reasons.stream().distinct().toList();
         return new InvestmentBuyRiskGate.FundamentalVerification(
                 distinctReasons.isEmpty() ? "AVAILABLE" : "UNAVAILABLE", distinctReasons, fundamentalStatus,
-                fundamentalSource, fundamentalAsOf, revisionStatus, consensusSource, consensusAsOf);
+                fundamentalSource, fundamentalAsOf, revisionStatus, consensusSource, consensusAsOf, legacy);
+    }
+
+    /** Toss never sources fundamentals or consensus, so any non-Toss source names legacy provider data. */
+    private static boolean isLegacy(String source) {
+        return source != null && !source.startsWith("TOSS");
     }
 
     private static boolean isAbsent(JsonNode group, String status) {

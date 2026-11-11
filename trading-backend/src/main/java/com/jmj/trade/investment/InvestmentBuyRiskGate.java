@@ -16,6 +16,7 @@ public final class InvestmentBuyRiskGate {
     public static final String POLICY_TOSS_ONLY = "TOSS_ONLY";
     public static final String EVIDENCE_EXTERNAL_CITED = "EXTERNAL_CITED";
     public static final String TOSS_SOURCE_UNSUPPORTED = "TOSS_SOURCE_UNSUPPORTED";
+    public static final String LEGACY_PROVIDER_EXCLUDED = "LEGACY_PROVIDER_EXCLUDED";
     public static final String HAZARD_CLEAR = "CLEAR";
     public static final String HAZARD_BLOCKED = "BLOCKED";
     public static final String HAZARD_UNAVAILABLE = "UNAVAILABLE";
@@ -166,11 +167,30 @@ public final class InvestmentBuyRiskGate {
         }
     }
 
+    /**
+     * A value stored by a non-Toss provider before TOSS_ONLY. It is shown for review and never counted as evidence
+     * or as a stale block under TOSS_ONLY.
+     */
+    public record LegacyProviderData(String group, String status, String source, Instant asOf, String flag) {
+        public LegacyProviderData {
+            flag = flag == null ? LEGACY_PROVIDER_EXCLUDED : flag;
+        }
+    }
+
     public record FundamentalVerification(String status, List<String> reasons,
                                           String fundamentalsStatus, String source, Instant asOf,
-                                          String revisionStatus, String consensusSource, Instant consensusAsOf) {
+                                          String revisionStatus, String consensusSource, Instant consensusAsOf,
+                                          List<LegacyProviderData> legacyProviderData) {
         public FundamentalVerification {
             reasons = reasons == null ? List.of() : List.copyOf(reasons);
+            legacyProviderData = legacyProviderData == null ? List.of() : List.copyOf(legacyProviderData);
+        }
+
+        public FundamentalVerification(String status, List<String> reasons,
+                                       String fundamentalsStatus, String source, Instant asOf,
+                                       String revisionStatus, String consensusSource, Instant consensusAsOf) {
+            this(status, reasons, fundamentalsStatus, source, asOf, revisionStatus, consensusSource, consensusAsOf,
+                    List.of());
         }
     }
 

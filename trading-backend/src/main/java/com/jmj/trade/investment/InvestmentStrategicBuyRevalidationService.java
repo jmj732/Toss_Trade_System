@@ -108,8 +108,11 @@ public final class InvestmentStrategicBuyRevalidationService {
         var runId = UUID.randomUUID();
         var challenge = UUID.randomUUID() + UUID.randomUUID().toString();
         var expiresAt = now.plus(runTtl(evidenceMode));
+        var legacy = gate.fundamentalVerification() == null ? List.<InvestmentBuyRiskGate.LegacyProviderData>of()
+                : gate.fundamentalVerification().legacyProviderData();
         var view = new ReviewRun(runId, challenge, decisionId, ticker, thesis.revisionId(),
-                mark.value(), mark.asOf(), gate.marketHealth(), gate.priceRiskState(), expiresAt, evidenceMode);
+                mark.value(), mark.asOf(), gate.marketHealth(), gate.priceRiskState(), expiresAt, evidenceMode,
+                legacy);
         transaction.execute(ignored -> {
             jdbc.update("""
                     INSERT INTO investment_strategic_buy_revalidation_runs (
@@ -671,7 +674,19 @@ public final class InvestmentStrategicBuyRevalidationService {
 
     public record ReviewRun(UUID runId, String challenge, UUID decisionId, String ticker, UUID thesisRevisionId,
                             BigDecimal reviewedMarketPrice, Instant marketObservedAt, String marketHealth,
-                            String priceRiskState, Instant expiresAt, String evidenceMode) {
+                            String priceRiskState, Instant expiresAt, String evidenceMode,
+                            List<InvestmentBuyRiskGate.LegacyProviderData> legacyProviderData) {
+        public ReviewRun {
+            legacyProviderData = legacyProviderData == null ? List.of() : List.copyOf(legacyProviderData);
+        }
+
+        public ReviewRun(UUID runId, String challenge, UUID decisionId, String ticker, UUID thesisRevisionId,
+                         BigDecimal reviewedMarketPrice, Instant marketObservedAt, String marketHealth,
+                         String priceRiskState, Instant expiresAt, String evidenceMode) {
+            this(runId, challenge, decisionId, ticker, thesisRevisionId, reviewedMarketPrice, marketObservedAt,
+                    marketHealth, priceRiskState, expiresAt, evidenceMode, List.of());
+        }
+
         public ReviewRun(UUID runId, String challenge, UUID decisionId, String ticker, UUID thesisRevisionId,
                          BigDecimal reviewedMarketPrice, Instant marketObservedAt, String marketHealth,
                          String priceRiskState, Instant expiresAt) {
