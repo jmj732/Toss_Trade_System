@@ -499,6 +499,7 @@ public final class McpOrderExecutionService {
                 "{\"decisionId\":" + jsonString(buyDecisionId.toString())
                         + ",\"reviewId\":" + jsonString(validation.reviewId().toString())
                         + ",\"evidenceMode\":" + jsonString(gate.evidenceMode())
+                        + ",\"verificationStatus\":" + jsonString(validation.verificationStatus())
                         + ",\"outcome\":\"PASS\",\"approvalBoundary\":\"SEPARATE_ORDER_APPROVAL_REQUIRED\"}");
     }
 

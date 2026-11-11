@@ -42,6 +42,8 @@ public final class InvestmentStrategicBuyRevalidationService {
     private static final Set<String> SEC_HOSTS = Set.of("sec.gov", "www.sec.gov");
     private static final Pattern ACCESSION_NUMBER = Pattern.compile("^\\d{10}-\\d{2}-\\d{6}$");
     private static final BigDecimal SHARES_TOLERANCE = new BigDecimal("0.15");
+    /** Every EXTERNAL_CITED review is stored with this status: cited content is not verified by the server. */
+    public static final String VERIFICATION_SOURCE_NOT_VERIFIED = "SOURCE_NOT_VERIFIED";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -200,9 +202,9 @@ public final class InvestmentStrategicBuyRevalidationService {
                         assessment, reviewed_market_price, market_observed_at, market_health, price_risk_state,
                         min_price, max_price, max_quantity, expires_at, authenticated_actor_user_id,
                         authenticated_actor_key_id, body_hash, created_at, evidence_mode, structured_evidence,
-                        verdict_reasons
+                        verdict_reasons, verification_status
                     ) VALUES (?, ?, ?, ?, ?, 'STRATEGIC', ?, ?, ?, 'CHATGPT_MCP', ?, ?, ?, ?, CAST(? AS jsonb),
-                              CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))
+                              CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?)
                     """, normalized.reviewId(), run.runId(), authenticatedUserId, run.decisionId(), run.ticker(),
                     timestamp(mandate.updatedAt()), run.thesisRevisionId(), verdict, normalized.provider(),
                     normalized.model(), normalized.rationale(), timestamp(normalized.sourceAsOf()),
@@ -210,7 +212,7 @@ public final class InvestmentStrategicBuyRevalidationService {
                     gate.marketHealth(), gate.priceRiskState(), normalized.minPrice(), normalized.maxPrice(),
                     normalized.maxQuantity(), timestamp(run.expiresAt()), authenticatedUserId, authenticatedApiKeyId,
                     bodyHash, timestamp(now), run.evidenceMode(), evidence == null ? null : json(evidence),
-                    json(verdictReasons));
+                    json(verdictReasons), evidence == null ? null : VERIFICATION_SOURCE_NOT_VERIFIED);
             jdbc.update("""
                     UPDATE investment_strategic_buy_revalidation_runs
                        SET status = 'COMPLETED', completed_at = ?
@@ -347,7 +349,7 @@ public final class InvestmentStrategicBuyRevalidationService {
         if (InvestmentBuyRiskGate.EVIDENCE_EXTERNAL_CITED.equals(evidenceMode)
                 && orderLimitPrice.multiply(quantity).compareTo(externalMaxNotional) > 0)
             return Validation.blocked("STRATEGIC_EXTERNAL_EVIDENCE_NOTIONAL_EXCEEDED");
-        return new Validation(true, "STRATEGIC_REVALIDATION_PASS", latest.reviewId());
+        return new Validation(true, "STRATEGIC_REVALIDATION_PASS", latest.reviewId(), latest.verificationStatus());
     }
 
     private String expectedEvidenceMode() {
@@ -526,7 +528,8 @@ public final class InvestmentStrategicBuyRevalidationService {
                        thesis_revision_id, verdict, review_origin, provider, model, rationale, source_as_of,
                        sources::text, assessment::text, reviewed_market_price, market_observed_at,
                        market_health, price_risk_state, min_price, max_price, max_quantity, expires_at,
-                       body_hash, created_at, evidence_mode, structured_evidence::text, verdict_reasons::text
+                       body_hash, created_at, evidence_mode, structured_evidence::text, verdict_reasons::text,
+                       verification_status
                   FROM investment_strategic_buy_revalidations WHERE review_id = ?
                 """, viewRow(), reviewId).stream().findFirst().orElse(null);
     }
@@ -538,7 +541,8 @@ public final class InvestmentStrategicBuyRevalidationService {
                        thesis_revision_id, verdict, review_origin, provider, model, rationale, source_as_of,
                        sources::text, assessment::text, reviewed_market_price, market_observed_at,
                        market_health, price_risk_state, min_price, max_price, max_quantity, expires_at,
-                       body_hash, created_at, evidence_mode, structured_evidence::text, verdict_reasons::text
+                       body_hash, created_at, evidence_mode, structured_evidence::text, verdict_reasons::text,
+                       verification_status
                   FROM investment_strategic_buy_revalidations
                  WHERE user_id = ? AND decision_id = ?
                  ORDER BY created_at DESC, review_id DESC LIMIT 1
@@ -586,7 +590,7 @@ public final class InvestmentStrategicBuyRevalidationService {
                 instant(rs.getObject("expires_at", OffsetDateTime.class)), rs.getString("body_hash"),
                 instant(rs.getObject("created_at", OffsetDateTime.class)),
                 evidenceMode(rs.getString("evidence_mode")), readNullableJson(rs.getString("structured_evidence")),
-                readNullableJson(rs.getString("verdict_reasons")));
+                readNullableJson(rs.getString("verdict_reasons")), rs.getString("verification_status"));
     }
 
     private static String evidenceMode(String value) {
@@ -695,12 +699,13 @@ public final class InvestmentStrategicBuyRevalidationService {
                                   String marketHealth, String priceRiskState,
                                   BigDecimal minPrice, BigDecimal maxPrice, BigDecimal maxQuantity,
                                   Instant expiresAt, String bodyHash, Instant createdAt,
-                                  String evidenceMode, JsonNode structuredEvidence, JsonNode verdictReasons) {}
+                                  String evidenceMode, JsonNode structuredEvidence, JsonNode verdictReasons,
+                                  String verificationStatus) {}
 
     private record ExternalReviewBody(RevalidationInput normalized, String evidenceMode,
                                       StructuredEvidence structuredEvidence, List<String> verdictReasons) {}
 
-    public record Validation(boolean allowed, String reason, UUID reviewId) {
-        static Validation blocked(String reason) { return new Validation(false, reason, null); }
+    public record Validation(boolean allowed, String reason, UUID reviewId, String verificationStatus) {
+        static Validation blocked(String reason) { return new Validation(false, reason, null, null); }
     }
 }

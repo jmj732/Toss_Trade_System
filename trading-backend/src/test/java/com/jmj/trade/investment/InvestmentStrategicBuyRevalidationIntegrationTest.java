@@ -261,6 +261,7 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
         assertThat(run.expiresAt()).isBeforeOrEqualTo(NOW.plusSeconds(15 * 60L));
         assertThat(saved.verdict()).isEqualTo("PASS");
         assertThat(saved.evidenceMode()).isEqualTo("EXTERNAL_CITED");
+        assertThat(saved.verificationStatus()).isEqualTo("SOURCE_NOT_VERIFIED");
         assertThat(saved.structuredEvidence().path("fundamental").path("accessionNumber").asText())
                 .isEqualTo("0000320193-26-000100");
         assertThat(saved.verdictReasons().size()).isZero();
@@ -442,6 +443,7 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
 
         assertThat(within.allowed()).isTrue();
         assertThat(within.reason()).isEqualTo("STRATEGIC_REVALIDATION_PASS");
+        assertThat(within.verificationStatus()).isEqualTo("SOURCE_NOT_VERIFIED");
         assertThat(tooLarge.allowed()).isFalse();
         assertThat(tooLarge.reason()).isEqualTo("STRATEGIC_EXTERNAL_EVIDENCE_NOTIONAL_EXCEEDED");
     }
@@ -487,6 +489,18 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
 
         assertThat(result.allowed()).isFalse();
         assertThat(result.reason()).isEqualTo("STRATEGIC_REVIEW_STATE_CHANGED");
+    }
+
+    @Test
+    void providersReviewIsNotMarkedSourceNotVerified() {
+        resetToProvidersPolicy();
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+
+        var saved = service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                completion(run, sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"), passAssessment()));
+
+        assertThat(saved.evidenceMode()).isEqualTo("PROVIDERS");
+        assertThat(saved.verificationStatus()).isNull();
     }
 
     private InvestmentStrategicBuyRevalidationService.RevalidationView createExternalPassingReview(
