@@ -43,7 +43,8 @@ Result:
     NONE_DETECTED       SPY present, no collection error, integrity holds, and every symbol has
                         ratio_change_count == 0 (adjusted == raw)
     UNVERIFIED          anything else
-The result is stored in manifest["adjustment_classification"] and copied to manifest["adjustment_basis"].
+The result is stored in manifest["adjustment_classification"]. manifest["adjustment_basis"] (the field the
+engine reads) is SPLIT_AND_DIVIDEND only when the result is SPLIT_AND_DIVIDEND, otherwise UNVERIFIED.
 
 Environment:
     TRADE_BACKEND_URL           e.g. http://127.0.0.1:8080
