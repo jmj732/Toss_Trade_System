@@ -12,6 +12,7 @@ import pytest
 from research_fixtures import weekdays
 
 from app.research import leadlag, validation
+from app.research.backtest import simulate
 from app.research.data import Bar
 from app.research.leadlag import (
     BENCHMARK,
@@ -466,3 +467,169 @@ def test_stray_off_calendar_bars_are_counted_and_ignored() -> None:
     assert panel.off_calendar["MSFT"] == 1
     assert panel.off_calendar["AAPL"] == 0
     assert len(panel.dates) == len(calendar)
+
+
+# ---------------------------------------------------------------- point-in-time universe rule
+
+
+TEST_END = leadlag.RULE_TEST_END_COMPLETE
+PIT = leadlag.RULE_POINT_IN_TIME
+
+
+def _drop_bar(world: dict[str, list[Bar]], symbol: str, day: date) -> dict[str, list[Bar]]:
+    world[symbol] = [bar for bar in world[symbol] if bar.date != day]
+    return world
+
+
+def test_original_rule_reproduces_the_old_fold_universe_and_is_the_default() -> None:
+    world = _drop_bar(make_world(BARS, 91, 0.0), "MSFT", make_world(BARS, 91, 0.0)[BENCHMARK][800].date)
+    panel = panel_of(world)
+    fold0 = tile_folds(BARS)[0]
+    assert fold_universe(panel, fold0) == fold_universe(panel, fold0, universe_rule=TEST_END)
+    # A gap inside the test window removes the stock under the original rule.
+    assert "MSFT" not in fold_universe(panel, fold0, universe_rule=TEST_END)
+    with pytest.raises(leadlag.LeadLagError):
+        fold_universe(panel, fold0, universe_rule="unknown")
+
+
+def test_point_in_time_includes_a_stock_with_a_later_test_window_gap() -> None:
+    gap_day = make_world(BARS, 91, 0.0)[BENCHMARK][800].date
+    world = _drop_bar(make_world(BARS, 91, 0.0), "MSFT", gap_day)
+    panel = panel_of(world)
+    fold0 = tile_folds(BARS)[0]
+    assert gap_day > panel.dates[fold0.test_start - 1]
+    pit = fold_universe(panel, fold0, universe_rule=PIT)
+    assert "MSFT" in pit
+    assert "MSFT" not in fold_universe(panel, fold0, universe_rule=TEST_END)
+    # Only the test-window gap changes membership; the other stocks stay in both rules.
+    assert set(pit) - set(fold_universe(panel, fold0, universe_rule=TEST_END)) == {"MSFT"}
+
+
+def test_point_in_time_membership_does_not_read_bars_from_the_test_window() -> None:
+    full = make_world(BARS, 92, 0.0)
+    calendar = [bar.date for bar in full[BENCHMARK]]
+    fold0 = tile_folds(BARS)[0]
+    cut = calendar[fold0.test_start]
+    truncated = {symbol: [bar for bar in bars if bar.date < cut] for symbol, bars in full.items()}
+    full_panel = build_panel(full, full, calendar=calendar)
+    cut_panel = build_panel(truncated, truncated, calendar=calendar)
+    assert fold_universe(cut_panel, fold0, universe_rule=PIT) == fold_universe(full_panel, fold0, universe_rule=PIT)
+    assert len(fold_universe(full_panel, fold0, universe_rule=PIT)) == len(STOCKS)
+    # The original rule reads the test window, so truncating it empties the universe.
+    assert fold_universe(cut_panel, fold0, universe_rule=TEST_END) == []
+    assert len(fold_universe(full_panel, fold0, universe_rule=TEST_END)) == len(STOCKS)
+
+
+def _two_symbol_panel():
+    days = weekdays(date(2020, 1, 1), 4)
+    stock = [Bar(days[0], 100.0, 100.0, 100.0, 100.0, 1.0), Bar(days[1], 101.0, 101.0, 101.0, 101.0, 1.0),
+             Bar(days[3], 104.0, 104.0, 104.0, 104.0, 1.0)]  # days[2] is a data gap
+    spy = [Bar(day, 50.0, 50.0, 50.0, 50.0, 1.0) for day in days]
+    return days, build_panel({BENCHMARK: spy, "XX": stock}, calendar=days)
+
+
+def test_flat_bar_valuation_carries_the_last_close_and_stays_out_of_the_panel() -> None:
+    days, panel = _two_symbol_panel()
+    bars, flat = leadlag._valued_bars(panel, ["XX"], days)
+    assert flat == 1
+    gap = bars["XX"][2]
+    assert (gap.date, gap.open, gap.high, gap.low, gap.close, gap.volume) == (days[2], 101.0, 101.0, 101.0, 101.0, 0.0)
+    assert bars["XX"][3].close == 104.0
+    assert panel.close["XX"][2] is None and panel.open["XX"][2] is None
+
+
+def test_hold_through_a_gap_realizes_the_return_on_the_next_real_bar() -> None:
+    # Hand-made carry check through the engine: the gap day is flat at 100, so the whole move appears on the
+    # next real bar. Equity from close 100 on day 0 to close 103 on day 2 is 1.03.
+    days = weekdays(date(2020, 1, 1), 4)
+    stock = [Bar(days[0], 100.0, 100.0, 100.0, 100.0, 1.0), Bar(days[2], 102.0, 103.0, 102.0, 103.0, 1.0),
+             Bar(days[3], 103.0, 104.0, 103.0, 104.0, 1.0)]
+    panel = build_panel({"XX": stock}, calendar=days)
+    bars, flat = leadlag._valued_bars(panel, ["XX"], days)
+    assert flat == 1
+    result = simulate(bars, days, {0: {"XX": 1.0}, 1: {"XX": 1.0}, 2: {"XX": 1.0}}, 0.0)
+    assert result.returns[0] == pytest.approx(0.0)  # flat gap day
+    assert result.returns[1] == pytest.approx(103.0 / 102.0 * 1.02 - 1.0)
+    assert result.equity[2] == pytest.approx(1.03)
+
+
+def test_exit_into_a_gap_sells_at_the_last_close_without_a_move() -> None:
+    days = weekdays(date(2020, 1, 1), 4)
+    stock = [Bar(days[0], 100.0, 100.0, 100.0, 100.0, 1.0), Bar(days[1], 100.0, 101.0, 100.0, 101.0, 1.0),
+             Bar(days[3], 105.0, 106.0, 105.0, 106.0, 1.0)]  # days[2] is a gap
+    panel = build_panel({"XX": stock}, calendar=days)
+    bars, _ = leadlag._valued_bars(panel, ["XX"], days)
+    # Buy at the day-1 open, then a decision on day 1 selects nothing, so the sale executes at the
+    # day-2 open. That open is the flat bar at the day-1 close (101), so the sale adds no move.
+    result = simulate(bars, days, {0: {"XX": 1.0}, 1: {}}, 0.0)
+    assert result.returns[0] == pytest.approx(0.01)
+    assert result.returns[1] == pytest.approx(0.0)
+    assert result.trades[-1].date == days[2] and result.trades[-1].to_weight == 0.0
+
+
+def test_unfilled_pick_is_dropped_without_backfill_and_its_slot_stays_cash() -> None:
+    days = weekdays(date(2020, 1, 1), 3)
+    panel = leadlag.Panel(
+        dates=tuple(days),
+        open={"AAA": [1.0, None, 1.0], "BBB": [1.0, 1.0, 1.0], "CCC": [1.0, 1.0, 1.0]},
+        close={"AAA": [1.0, None, 1.0], "BBB": [1.0, 1.0, 1.0], "CCC": [1.0, 1.0, 1.0]},
+        dollar_volume={}, bars={},
+    )
+    forecasts = {("AAA", 0): Forecast(0.05, 0.05, False), ("BBB", 0): Forecast(0.04, 0.04, False),
+                 ("CCC", 0): Forecast(0.03, 0.03, False)}
+    universe = ["AAA", "BBB", "CCC"]
+    assert decisions_for(forecasts, "M0", 2, universe, [0], origin=0)[0] == pytest.approx(
+        {"AAA": 0.5, "BBB": 0.5})
+    pit = decisions_for(forecasts, "M0", 2, universe, [0], origin=0, panel=panel)
+    assert pit[0] == pytest.approx({"BBB": 0.5})  # CCC (rank 3) is not promoted into AAA's slot
+    assert sum(pit[0].values()) == pytest.approx(0.5)
+
+
+def test_point_in_time_run_on_a_world_with_a_test_window_gap_completes_and_reports_the_gap() -> None:
+    world = make_world(BARS, 93, 0.0)
+    gap_day = world[BENCHMARK][800].date
+    world = _drop_bar(world, "MSFT", gap_day)
+    panel = panel_of(world)
+    body = leadlag.run_experiment(panel, adjustment_basis="SPLIT_AND_DIVIDEND", prior_variance=0.000128,
+                                  prior_trial_count=54, universe_rule=PIT)
+    assert body["config"]["universe_rule"] == PIT
+    assert body["trials"]["count"] == leadlag.TOTAL_TRIALS == 58
+    assert "MSFT" in body["folds"][0]["universe"]
+    assert body["universe_rule"]["flat_bars_total"] >= 1
+    assert set(body["universe_rule"]["unfilled_orders_total"]) == {"M0_k3", "M0_k5", "M1_k3", "M1_k5"}
+    assert body["folds"][0]["point_in_time"]["flat_bars"] >= 1
+
+
+def test_point_in_time_matches_the_original_rule_when_no_bars_are_missing() -> None:
+    panel = panel_of(make_world(BARS, 94, 0.0))
+    original = leadlag.run_experiment(panel, adjustment_basis="SPLIT_AND_DIVIDEND", prior_variance=0.000128,
+                                      prior_trial_count=54)
+    pit = leadlag.run_experiment(panel, adjustment_basis="SPLIT_AND_DIVIDEND", prior_variance=0.000128,
+                                 prior_trial_count=54, universe_rule=PIT)
+    assert pit["models"] == original["models"]
+    assert pit["tests"] == original["tests"]
+    assert [{k: v for k, v in f.items() if k != "point_in_time"} for f in pit["folds"]] == original["folds"]
+    assert pit["config_hash"] != original["config_hash"]
+    assert "universe_rule" not in original["config"]
+    assert pit["config"]["universe_rule"] == PIT
+
+
+def test_original_rule_still_refuses_a_spy_gap_inside_the_oos_range() -> None:
+    world = make_world(BARS, 95, 0.0)
+    world = _drop_bar(world, BENCHMARK, world[BENCHMARK][800].date)
+    panel = panel_of(world)
+    with pytest.raises(leadlag.LeadLagError):
+        leadlag.run_experiment(panel, adjustment_basis="SPLIT_AND_DIVIDEND", prior_variance=0.000128,
+                               prior_trial_count=54)
+
+
+def test_cli_accepts_the_point_in_time_rule_and_writes_a_separate_artifact(tmp_path: Path) -> None:
+    derived = tmp_path / "derived"
+    write_derived(derived, cached_world(BARS, 96, 0.0))
+    prior = write_prior(tmp_path / "prior.json", 54)
+    out = tmp_path / "pit.json"
+    assert leadlag.main(["--data", str(derived), "--prior-report", str(prior), "--out", str(out),
+                         "--universe-rule", PIT]) == 0
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["config"]["universe_rule"] == PIT
+    assert report["trials"]["count"] == 58

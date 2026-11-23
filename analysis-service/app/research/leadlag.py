@@ -20,6 +20,30 @@ Fold returns are concatenated (the folds tile the OOS range). Each fold's entry 
 full target turnover, and the overnight move from a fold's last close to the next fold's first open
 is not captured. Both effects are documented in the report. The walk-forward start is placed after
 the first complete bar of SPY and all seven sector ETFs.
+
+Universe rules (``--universe-rule``):
+
+- ``test_end_complete`` (default, original LL-1). A stock is a member when its own, sector ETF and SPY
+  bars are complete over [train_start-1, test_end). Membership therefore reads bars inside the test
+  window, i.e. it depends on future data availability. The committed report is produced with this rule.
+- ``point_in_time`` (data-handling correction; same 58 trials, not new trials). Membership reads only
+  [train_start-1, test_start), which is known at fold start. Inside the test window:
+
+  1. Valuation. A missing bar in the simulation is a flat bar: open = high = low = close = the last
+     observed close, volume 0. A return across a data gap is therefore realized on the next real bar.
+     Flat bars exist only in the simulation bar lookup. They never enter ``Panel``, so forecasts,
+     leaders and the Clark-West tests see only real bars.
+  2. Forecast. A stock whose own bar on day t is missing gets no forecast on t (already true through
+     the features).
+  3. Unfilled orders. After ranking, a pick at t whose execution bar (open t+1) is missing is removed
+     from the top-k list. Its 1/k slot stays cash and no pick is back-filled from rank k+1. This is
+     the only use of day t+1 availability. It approximates an unfilled order, not a fill model.
+  4. Exits. Targets are full daily targets. A held stock that is not re-selected is sold at the next
+     open. Rule 3 keeps a stock with a missing open from being bought or held into the gap, so a
+     stock on a gap day is sold at that open. If that open is a flat bar, the sale happens at the last
+     close. Holding across a gap (return realized on the next real bar) is exercised only by unit tests.
+
+  Per fold, the report records the flat bars valued and the unfilled orders per trial.
 """
 
 from __future__ import annotations
@@ -90,6 +114,10 @@ REQUIRED_SYMBOLS = tuple(sorted((BENCHMARK,) + SECTOR_ETFS + STOCKS))
 SECTOR_OF = {stock: etf for etf, stocks in SECTOR_STOCKS.items() for stock in stocks}
 REQUIRED_BASIS = validation.REQUIRED_ADJUSTMENT_BASIS
 MODELS = ("M0", "M1")
+RULE_TEST_END_COMPLETE = "test_end_complete"
+RULE_POINT_IN_TIME = "point_in_time"
+UNIVERSE_RULES = (RULE_TEST_END_COMPLETE, RULE_POINT_IN_TIME)
+TRIAL_GRID = tuple((model, k) for model in MODELS for k in TOP_K_VALUES)
 OUTCOME_G1_FAILED = "G1_FAILED"
 OUTCOME_G1_PASSED_G2_FAILED = "G1_PASSED_G2_FAILED"
 OUTCOME_PASSED = "G1_G2_PASSED"
@@ -352,9 +380,18 @@ def tile_folds(calendar_length: int, first_train_start: int = 1) -> list[Fold]:
     return folds
 
 
-def fold_universe(panel: Panel, fold: Fold) -> list[str]:
-    """Stocks whose own bars, sector ETF bars and SPY bars are complete over [train_start-1, test_end)."""
-    lo, hi = fold.train_start - 1, fold.test_end
+def fold_universe(panel: Panel, fold: Fold, *, universe_rule: str = RULE_TEST_END_COMPLETE) -> list[str]:
+    """Stocks whose own bars, sector ETF bars and SPY bars are complete over the rule's window.
+
+    ``test_end_complete``: [train_start-1, test_end) (original LL-1, reads test-window bars).
+    ``point_in_time``: [train_start-1, test_start) (known at fold start).
+    """
+    if universe_rule == RULE_TEST_END_COMPLETE:
+        lo, hi = fold.train_start - 1, fold.test_end
+    elif universe_rule == RULE_POINT_IN_TIME:
+        lo, hi = fold.train_start - 1, fold.test_start
+    else:
+        raise LeadLagError(f"unknown universe rule: {universe_rule}")
     members = []
     for stock in STOCKS:
         etf = SECTOR_OF[stock]
@@ -472,21 +509,39 @@ def forecasts_for_fold(panel: Panel, fold: Fold, universe: Sequence[str],
 # ---------------------------------------------------------------- portfolio
 
 
+def ranked_picks(forecasts: Mapping[tuple[str, int], Forecast], model: str, k: int,
+                 universe: Sequence[str], t: int) -> list[str]:
+    """Top-k stocks above THRESHOLD on day t, before any fill filter."""
+    ranked: list[tuple[float, str]] = []
+    for stock in universe:
+        forecast = forecasts.get((stock, t))
+        if forecast is None:
+            continue
+        value = forecast.m0 if model == "M0" else forecast.m1
+        if value is not None and value > THRESHOLD:
+            ranked.append((-value, stock))
+    ranked.sort()
+    return [stock for _, stock in ranked[:k]]
+
+
+def _fillable(panel: Panel, stock: str, t: int) -> bool:
+    """Point-in-time rule: the execution bar (open t+1) must exist for the order to fill."""
+    return t + 1 < len(panel.dates) and panel.open[stock][t + 1] is not None
+
+
 def decisions_for(forecasts: Mapping[tuple[str, int], Forecast], model: str, k: int,
-                  universe: Sequence[str], days: Sequence[int], origin: int) -> dict[int, dict[str, float]]:
-    """Top-k long-only decisions keyed by local simulation index (calendar index - origin)."""
+                  universe: Sequence[str], days: Sequence[int], origin: int, *,
+                  panel: Panel | None = None) -> dict[int, dict[str, float]]:
+    """Top-k long-only decisions keyed by local simulation index (calendar index - origin).
+
+    With ``panel`` (point-in-time rule), a top-k pick whose open t+1 is missing is dropped after
+    ranking. Its 1/k slot stays cash and no lower-ranked stock is promoted into it.
+    """
     decisions: dict[int, dict[str, float]] = {}
     for t in days:
-        ranked: list[tuple[float, str]] = []
-        for stock in universe:
-            forecast = forecasts.get((stock, t))
-            if forecast is None:
-                continue
-            value = forecast.m0 if model == "M0" else forecast.m1
-            if value is not None and value > THRESHOLD:
-                ranked.append((-value, stock))
-        ranked.sort()
-        picks = [stock for _, stock in ranked[:k]]
+        picks = ranked_picks(forecasts, model, k, universe, t)
+        if panel is not None:
+            picks = [stock for stock in picks if _fillable(panel, stock, t)]
         decisions[t - origin] = {stock: 1.0 / k for stock in picks}
     return decisions
 
@@ -525,6 +580,44 @@ def _bars_for(panel: Panel, symbols: Sequence[str], dates: Sequence[date]) -> di
     return {symbol: [panel.bars[symbol][day] for day in dates] for symbol in symbols}
 
 
+def _last_observed_close(panel: Panel, symbol: str, index: int) -> float:
+    for j in range(index, -1, -1):
+        close = panel.close[symbol][j]
+        if close is not None:
+            return close
+    raise LeadLagError(f"{symbol} has no observed close at or before {panel.dates[index]}")
+
+
+def _valued_bars(panel: Panel, symbols: Sequence[str], dates: Sequence[date]) -> tuple[dict[str, list[Bar]], int]:
+    """Point-in-time simulation bars: a missing bar becomes a flat bar at the last observed close.
+
+    Returns the bars and the number of flat bars created. Flat bars are created here only; ``Panel``
+    keeps None for missing bars.
+    """
+    position = {day: i for i, day in enumerate(panel.dates)}
+    out: dict[str, list[Bar]] = {}
+    flat = 0
+    for symbol in symbols:
+        table = panel.bars[symbol]
+        bars: list[Bar] = []
+        for day in dates:
+            real = table.get(day)
+            if real is not None:
+                bars.append(real)
+                continue
+            last = _last_observed_close(panel, symbol, position[day])
+            bars.append(Bar(day, last, last, last, last, 0.0))
+            flat += 1
+        out[symbol] = bars
+    return out, flat
+
+
+def _sim_bars(panel: Panel, symbols: Sequence[str], dates: Sequence[date], *, pit: bool) -> dict[str, list[Bar]]:
+    if pit:
+        return _valued_bars(panel, symbols, dates)[0]
+    return _bars_for(panel, symbols, dates)
+
+
 def run_experiment(
     panel: Panel,
     *,
@@ -533,14 +626,19 @@ def run_experiment(
     prior_trial_count: int,
     symbols_missing: Sequence[str] = (),
     dataset_hash: str | None = None,
+    universe_rule: str = RULE_TEST_END_COMPLETE,
 ) -> dict[str, Any]:
     """Pre-registered experiment. Returns the report body (no timestamps).
 
     Folds start after every factor series (SPY and the seven sector ETFs) has its first complete bar.
     Each fold is simulated on its own calendar window [test_start-1, test_end) with that fold's
     universe and SPY, starting from cash. Fold returns are concatenated, and the folds tile the OOS
-    range. SPY is one buy-and-hold over the same range.
+    range. SPY is one buy-and-hold over the same range. ``universe_rule`` is described in the module
+    docstring.
     """
+    if universe_rule not in UNIVERSE_RULES:
+        raise LeadLagError(f"unknown universe rule: {universe_rule}")
+    pit = universe_rule == RULE_POINT_IN_TIME
     if BENCHMARK not in panel.open:
         raise LeadLagError(f"{BENCHMARK} is required and was not found")
     factor_first: list[int] = []
@@ -557,17 +655,18 @@ def run_experiment(
         raise LeadLagError("calendar too short for one walk-forward fold after factor warm-up")
     oos_start = folds[0].test_start
     oos_end = folds[-1].test_end
-    if not panel.coverage_complete(BENCHMARK, oos_start - 1, oos_end):
+    if not pit and not panel.coverage_complete(BENCHMARK, oos_start - 1, oos_end):
+        # Point-in-time valuation handles SPY gaps with flat bars; the original rule refuses them.
         raise LeadLagError(f"{BENCHMARK} has missing bars inside the OOS range")
 
-    universes = {fold.index: fold_universe(panel, fold) for fold in folds}
+    universes = {fold.index: fold_universe(panel, fold, universe_rule=universe_rule) for fold in folds}
     forecasts: dict[tuple[str, int], Forecast] = {}
     fold_records: list[dict[str, Any]] = []
     for fold in folds:
         days = list(range(fold.test_start - 1, fold.test_end - 1))
         fc, stats = forecasts_for_fold(panel, fold, universes[fold.index], rets, leaders, days)
         forecasts.update(fc)
-        fold_records.append({
+        record: dict[str, Any] = {
             "fold": fold.index,
             "train_realization_range": [fold.train_start, fold.train_end],
             "test_realization_range": [fold.test_start, fold.test_end],
@@ -576,11 +675,14 @@ def run_experiment(
             "universe": sorted(universes[fold.index]),
             "universe_size": len(universes[fold.index]),
             **stats,
-        })
+        }
+        if pit:
+            record["point_in_time"] = _pit_fold_stats(panel, fold, universes[fold.index], forecasts)
+        fold_records.append(record)
 
     cost_rate = cost_rate_from_bps(COMMISSION_BPS, SLIPPAGE_BPS)
     oos_dates = panel.dates[oos_start:oos_end]
-    bench_bars = _bars_for(panel, [BENCHMARK], panel.dates[oos_start - 1:oos_end])
+    bench_bars = _sim_bars(panel, [BENCHMARK], panel.dates[oos_start - 1:oos_end], pit=pit)
     bench_path = simulate(bench_bars, panel.dates[oos_start - 1:oos_end], {0: {BENCHMARK: 1.0}}, cost_rate)
     bench_returns = list(bench_path.returns)
 
@@ -598,9 +700,10 @@ def run_experiment(
                 origin = fold.test_start - 1
                 universe = universes[fold.index]
                 local_dates = panel.dates[origin:fold.test_end]
-                bars = _bars_for(panel, list(universe) + [BENCHMARK], local_dates)
+                bars = _sim_bars(panel, list(universe) + [BENCHMARK], local_dates, pit=pit)
                 decisions = decisions_for(forecasts, model, k, universe,
-                                          list(range(origin, fold.test_end - 1)), origin)
+                                          list(range(origin, fold.test_end - 1)), origin,
+                                          panel=panel if pit else None)
                 returns.extend(simulate(bars, local_dates, decisions, cost_rate).returns)
                 stress.extend(simulate(bars, local_dates, decisions,
                                        cost_rate * validation.STRESS_COST_MULTIPLIER).returns)
@@ -674,7 +777,9 @@ def run_experiment(
              if outcome == OUTCOME_G1_PASSED_G2_FAILED else None)
 
     config = _config()
-    return {
+    if pit:
+        config["universe_rule"] = RULE_POINT_IN_TIME
+    body: dict[str, Any] = {
         "label": LABEL,
         "generated_by": GENERATED_BY,
         "prereg": {"id": PREREG_ID, "commit": PREREG_COMMIT, "path": PREREG_PATH},
@@ -717,6 +822,38 @@ def run_experiment(
                     "recommendation": RECOMMENDATION[outcome]},
         "folds": fold_records,
     }
+    if pit:
+        trial_names = [f"{model}_k{k}" for model, k in TRIAL_GRID]
+        body["universe_rule"] = {
+            "rule": RULE_POINT_IN_TIME,
+            "membership": "own, sector ETF and SPY bars complete over [train_start-1, test_start)",
+            "valuation": "missing bar in simulation = flat bar at last observed close, volume 0 (not in Panel)",
+            "unfilled_orders": "top-k pick dropped when open t+1 is missing; slot stays cash; no backfill",
+            "trial_count_note": (f"시도 {TOTAL_TRIALS}개 유지: 동일한 사전 등록 {len(TRIAL_GRID)}개 시도의 "
+                                 "데이터 처리 정정이며 신규 시도가 아님"),
+            "flat_bars_total": sum(r["point_in_time"]["flat_bars"] for r in fold_records),
+            "unfilled_orders_total": {
+                name: sum(r["point_in_time"]["unfilled_orders"][name] for r in fold_records)
+                for name in trial_names
+            },
+        }
+    return body
+
+
+def _pit_fold_stats(panel: Panel, fold: Fold, universe: Sequence[str],
+                    forecasts: Mapping[tuple[str, int], Forecast]) -> dict[str, Any]:
+    origin = fold.test_start - 1
+    local_dates = panel.dates[origin:fold.test_end]
+    _, flat = _valued_bars(panel, list(universe) + [BENCHMARK], local_dates)
+    days = list(range(origin, fold.test_end - 1))
+    unfilled = {}
+    for model, k in TRIAL_GRID:
+        count = 0
+        for t in days:
+            count += sum(1 for stock in ranked_picks(forecasts, model, k, universe, t)
+                         if not _fillable(panel, stock, t))
+        unfilled[f"{model}_k{k}"] = count
+    return {"flat_bars": flat, "unfilled_orders": unfilled}
 
 
 def _gate_g2(run: Mapping[str, Any], *, bench_summary: Mapping[str, Any], adjustment_basis: str) -> dict[str, Any]:
@@ -840,7 +977,8 @@ def _load_raw(root: Path, manifest: Mapping[str, Any], symbols: Sequence[str]) -
     return raw, missing
 
 
-def run_from_directory(data: str | Path, prior_report: str | Path) -> dict[str, Any]:
+def run_from_directory(data: str | Path, prior_report: str | Path, *,
+                       universe_rule: str = RULE_TEST_END_COMPLETE) -> dict[str, Any]:
     root = Path(data)
     dataset: Dataset = load_dataset(root)
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
@@ -873,6 +1011,7 @@ def run_from_directory(data: str | Path, prior_report: str | Path) -> dict[str, 
         prior_trial_count=PRIOR_TRIAL_COUNT,
         symbols_missing=missing + raw_missing,
         dataset_hash=dataset.dataset_hash,
+        universe_rule=universe_rule,
     )
     body["prior_report"] = {"sha256": sha256_hex(prior_bytes), "config_hash": prior.get("config_hash"),
                             "trial_count": trials.get("count")}
@@ -893,6 +1032,15 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- OOS 구간: {report['dataset']['oos_range'][0]} ~ {report['dataset']['oos_range'][1]}, "
         f"관측 {report['dataset']['oos_observations']}, fold {report['dataset']['folds']}",
         f"- 누락 심볼: {', '.join(report['dataset']['symbols_missing']) or '없음'}",
+    ]
+    if "universe_rule" in report:
+        rule = report["universe_rule"]
+        lines += [
+            f"- 유니버스 규칙: {rule['rule']} (설정 키 universe_rule). {rule['trial_count_note']}",
+            f"- 유니버스 규칙 집계: 보정 평가 바(flat bar) {rule['flat_bars_total']}개, "
+            f"미체결 주문 {rule['unfilled_orders_total']}",
+        ]
+    lines += [
         "",
         "## 시도(trial) 결과",
         "",
@@ -945,9 +1093,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="existing 54-trial report JSON (e.g. research-data/full-report.json)")
     parser.add_argument("--out", required=True, type=Path, help="canonical JSON report path")
     parser.add_argument("--markdown", type=Path, help="markdown summary path")
+    parser.add_argument("--universe-rule", choices=UNIVERSE_RULES, default=RULE_TEST_END_COMPLETE,
+                        help="test_end_complete (default, original LL-1) or point_in_time (data-handling "
+                             "correction; see module docstring)")
     args = parser.parse_args(argv)
     try:
-        report = run_from_directory(args.data, args.prior_report)
+        report = run_from_directory(args.data, args.prior_report, universe_rule=args.universe_rule)
     except (ResearchError, OSError, json.JSONDecodeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
