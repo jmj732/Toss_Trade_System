@@ -90,7 +90,9 @@ Toss candles (기존 REST, 읽기 전용)
 - analysis-service 전체 `133 passed` (기존 56 + 신규 77).
 - 핵심 테스트: 54개 설정 전부 look-ahead 불변성, 손계산 체결·비용, 2자산 드리프트, 지표 손계산, PSR 단조성·DSR<PSR(0), 무결성 실패, fold 시간순·비중첩, holdout 비사용, CLI 바이트 동일 재현, import 격리.
 - 수집 스크립트: 로컬 mock 백엔드로 E2E 검증(450봉 3페이지, sha 일치, 뉴욕 날짜 변환, 배당 조정 2건 탐지, 토큰 미기록, 불가 종목 격리·exit 1, 토큰 누락 exit 2).
-- 수집 결과 → 엔진 E2E: 450봉 데이터에서 세 전략 모두 `INSUFFICIENT_DATA`로 정상 판정, 재실행 JSON 바이트 동일.
+- 수집기 페이징 중단 사유(`stop_reason`: `NO_CURSOR`/`EMPTY_PAGE`/`NO_PROGRESS`/`MAX_PAGES`)를 시계열별 기록, 의심 중단은 manifest `warnings`에 남김 — "Toss 과거가 짧음"과 "페이징이 깨짐"을 구분하기 위함. `adjustment_audit`는 O/H/L/C 조정 비율 일치 여부(`ohlc_ratio_mismatch_count`)도 검사 — 엔진이 시가로 체결하므로 시가 조정이 틀리면 수익률이 틀림.
+- 수집 결과 → 엔진 E2E: mock 수집 데이터(450봉)에서 세 전략 모두 `INSUFFICIENT_DATA`로 정상 판정, 재실행 JSON 바이트 동일.
+- CI: `scripts/ci-change-filter.py` 분류상 `analysis-service/` 변경은 analysis lane(pytest), `scripts/` 변경은 stack lane을 트리거.
 - **실데이터 성과·위험 지표: 없음.** 수집을 실행해야 산출된다(아래 9).
 
 ### 엔진 설계상 명세 편차 (implementer 보고, 검토 후 수용)
@@ -116,12 +118,18 @@ Toss candles (기존 REST, 읽기 전용)
 5. **DSR 독립시행 가정** — 설정 간 상관이 높아 보수적/부정확할 수 있음.
 6. 휴장일 정렬로 날짜가 빠지면 월말 결정 위치가 한 칸 밀릴 수 있음(보고서 `dropped_dates`로 노출).
 7. rf=0 — 현금 보유 전략의 실제 성과를 과소평가.
+8. **전역 날짜 정렬** — 모든 전략이 8개 ETF+SPY 날짜 교집합에서 평가된다. 한 ETF의 Toss 이력이 짧으면 SPY 단일 전략(추세·평균회귀)도 그만큼 잘린다. 결과의 `aligned_first`와 manifest 종목별 `first_date`를 비교해 확인.
+9. **미모델링 비용·실패** — KRW 계좌의 환전 스프레드, 매도 시 SEC fee/FINRA TAF, 수집 중 429 rate limit(재시도 없음, 해당 종목 오류 처리).
 
 ## 9. 다음 단계 (기대효과순)
 
 1. **실데이터 수집·실행** (사용자 실행, 운영 Toss 연결 읽기 전용):
+   - 토큰: 대시보드 로그인 후 브라우저 개발자 도구에서 백엔드 API 요청의 `Authorization: Bearer …` 값(또는 `POST /api/v1/auth/refresh` 응답의 access token). 기본 TTL **20분**(`ACCESS_TOKEN_TTL`). 만료 시 수집기는 HTTP 401 힌트와 함께 해당 종목을 오류로 남긴다 — 새 토큰으로 재실행.
+   - compose는 백엔드를 `127.0.0.1`에 바인딩하므로 원격 호스트면 SSH 터널 필요.
+   - **스모크 먼저:** `--symbols SPY --max-pages 2` → manifest에서 `pages`=2, `rows`≈400, `stop_reason`=`MAX_PAGES`, `first_date`가 약 400거래일 전인지, `adjustment_audit` 확인. 여기서 `NO_PROGRESS`면 페이징 커서 형식 문제이므로 전체 실행 금지.
    ```sh
-   export TRADE_BACKEND_URL=... TRADE_BROKER_CONNECTION_ID=... TRADE_ACCESS_TOKEN=...
+   export TRADE_BACKEND_URL=http://127.0.0.1:8080 TRADE_BROKER_CONNECTION_ID=... TRADE_ACCESS_TOKEN=...
+   python3 scripts/collect-toss-candles.py --out research-data/smoke --symbols SPY --max-pages 2
    python3 scripts/collect-toss-candles.py --out research-data/toss-etf-$(date +%Y%m%d)
    cd analysis-service && python -m app.research --data ../research-data/toss-etf-YYYYMMDD \
        --out ../research-data/report.json --markdown ../research-data/report.md
