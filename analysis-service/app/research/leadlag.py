@@ -14,12 +14,12 @@ sector's leader, M1 equals M0 and the M1 training rows exclude that day.
 Portfolio: each day, long-only, top-k stocks with forecast > 0.30 % (round-trip cost), weight 1/k,
 executed at the next open through backtest.simulate. Costs 10 bp commission + 5 bp slippage, 2x stress.
 
-Two consequences of reusing backtest.simulate, both documented in the report:
-  * Each simulation calendar is the stitched OOS calendar. A stock is tradable only when it has
-    complete data over that whole calendar. Folds still use their own per-fold universe for fitting
-    and forecasting, so this can only remove names from trading, never add them.
-  * The execution calendar is the union of calendar dates, restricted to the OOS range, and holds
-    no lookahead: a decision at t is executed at open t+1.
+Simulation: each walk-forward fold is simulated separately with backtest.simulate on its own
+calendar window [test_start-1, test_end), using that fold's universe and SPY, starting from cash.
+Fold returns are concatenated (the folds tile the OOS range). Each fold's entry from cash costs the
+full target turnover, and the overnight move from a fold's last close to the next fold's first open
+is not captured. Both effects are documented in the report. The walk-forward start is placed after
+the first complete bar of SPY and all seven sector ETFs.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import math
 import statistics
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -206,13 +206,14 @@ def _dot(a: Sequence[float], b: Sequence[float]) -> float:
 
 @dataclass
 class Panel:
-    """Calendar-indexed series. None marks a missing bar. Dates are the union of all loaded series."""
+    """Series on one calendar (the benchmark's trading dates). None marks a missing bar."""
 
     dates: tuple[date, ...]
     open: dict[str, list[float | None]]
     close: dict[str, list[float | None]]
     dollar_volume: dict[str, list[float | None]]
-    bars: dict[str, Sequence[Bar]]
+    bars: dict[str, dict[date, Bar]]
+    off_calendar: dict[str, int] = field(default_factory=dict)
 
     def coverage_complete(self, symbol: str, lo: int, hi: int) -> bool:
         if symbol not in self.open:
@@ -224,32 +225,52 @@ class Panel:
 def build_panel(
     adjusted: Mapping[str, Sequence[Bar]],
     raw: Mapping[str, Sequence[Bar]] | None = None,
+    *,
+    calendar: Sequence[date] | None = None,
 ) -> Panel:
-    """Adjusted bars give returns and targets. Raw close x raw volume gives the leader ranking."""
+    """Adjusted bars give returns and targets. Raw close x raw volume gives the leader ranking.
+
+    Bars dated off the calendar are not used and are counted per symbol. Missing bars stay None.
+    Without a calendar, the union of all dates is used.
+    """
     raw = raw or {}
-    calendar = sorted({bar.date for bars in adjusted.values() for bar in bars})
-    index = {day: i for i, day in enumerate(calendar)}
+    if calendar is None:
+        calendar = sorted({bar.date for bars in adjusted.values() for bar in bars})
+    dates = tuple(calendar)
+    index = {day: i for i, day in enumerate(dates)}
     opens: dict[str, list[float | None]] = {}
     closes: dict[str, list[float | None]] = {}
     dollar: dict[str, list[float | None]] = {}
+    lookup: dict[str, dict[date, Bar]] = {}
+    off_calendar: dict[str, int] = {}
     for symbol, bars in adjusted.items():
-        o = [None] * len(calendar)
-        c = [None] * len(calendar)
+        o: list[float | None] = [None] * len(dates)
+        c: list[float | None] = [None] * len(dates)
+        table: dict[date, Bar] = {}
+        off = 0
         for bar in bars:
-            o[index[bar.date]] = bar.open
-            c[index[bar.date]] = bar.close
+            table[bar.date] = bar
+            i = index.get(bar.date)
+            if i is None:
+                off += 1
+                continue
+            o[i] = bar.open
+            c[i] = bar.close
         opens[symbol] = o
         closes[symbol] = c
+        lookup[symbol] = table
+        off_calendar[symbol] = off
+        d: list[float | None] = [None] * len(dates)
         raw_bars = raw.get(symbol)
-        d = [None] * len(calendar)
         if raw_bars is not None:
-            raw_dates = {bar.date for bar in raw_bars}
-            if raw_dates != {bar.date for bar in bars}:
+            if {bar.date for bar in raw_bars} != {bar.date for bar in bars}:
                 raise LeadLagError(f"{symbol}: raw and adjusted dates differ")
             for bar in raw_bars:
-                d[index[bar.date]] = bar.close * bar.volume
+                i = index.get(bar.date)
+                if i is not None:
+                    d[i] = bar.close * bar.volume
         dollar[symbol] = d
-    return Panel(tuple(calendar), opens, closes, dollar, {symbol: list(bars) for symbol, bars in adjusted.items()})
+    return Panel(dates, opens, closes, dollar, lookup, off_calendar)
 
 
 def _returns(prices: Sequence[float | None]) -> list[float | None]:
@@ -493,6 +514,17 @@ def _trial_summary(returns: Sequence[float], benchmark: Sequence[float]) -> dict
     }
 
 
+def _first_complete_index(panel: Panel, symbol: str) -> int | None:
+    for i, (o, c) in enumerate(zip(panel.open[symbol], panel.close[symbol])):
+        if o is not None and c is not None:
+            return i
+    return None
+
+
+def _bars_for(panel: Panel, symbols: Sequence[str], dates: Sequence[date]) -> dict[str, list[Bar]]:
+    return {symbol: [panel.bars[symbol][day] for day in dates] for symbol in symbols}
+
+
 def run_experiment(
     panel: Panel,
     *,
@@ -502,74 +534,82 @@ def run_experiment(
     symbols_missing: Sequence[str] = (),
     dataset_hash: str | None = None,
 ) -> dict[str, Any]:
-    """Pre-registered experiment. Returns the report body (no timestamps)."""
+    """Pre-registered experiment. Returns the report body (no timestamps).
+
+    Folds start after every factor series (SPY and the seven sector ETFs) has its first complete bar.
+    Each fold is simulated on its own calendar window [test_start-1, test_end) with that fold's
+    universe and SPY, starting from cash. Fold returns are concatenated, and the folds tile the OOS
+    range. SPY is one buy-and-hold over the same range.
+    """
     if BENCHMARK not in panel.open:
         raise LeadLagError(f"{BENCHMARK} is required and was not found")
+    factor_first: list[int] = []
+    for symbol in (BENCHMARK,) + SECTOR_ETFS:
+        first = _first_complete_index(panel, symbol)
+        if first is None:
+            raise LeadLagError(f"factor {symbol} has no complete bars")
+        factor_first.append(first)
+    first_train_start = max(factor_first) + 1
     rets = {symbol: _returns(panel.close[symbol]) for symbol in panel.close}
     leaders = leader_table(panel)
-    n_cal = len(panel.dates)
-    folds = tile_folds(n_cal)
+    folds = tile_folds(len(panel.dates), first_train_start=first_train_start)
     if not folds:
-        raise LeadLagError("calendar too short for one walk-forward fold")
-
+        raise LeadLagError("calendar too short for one walk-forward fold after factor warm-up")
     oos_start = folds[0].test_start
     oos_end = folds[-1].test_end
-    origin = oos_start - 1
-    sim_lo, sim_hi = origin, oos_end
-    if not panel.coverage_complete(BENCHMARK, sim_lo, sim_hi):
-        raise LeadLagError(f"{BENCHMARK} has missing bars inside the OOS calendar")
-    sim_stocks = [s for s in STOCKS if panel.coverage_complete(s, sim_lo, sim_hi)
-                  and panel.coverage_complete(SECTOR_OF[s], sim_lo, sim_hi)]
-    sim_dates = panel.dates[sim_lo:sim_hi]
-    sim_bars = {symbol: [panel.bars[symbol][i] for i in _bar_positions(panel, symbol, sim_dates)]
-                for symbol in sim_stocks + [BENCHMARK]}
+    if not panel.coverage_complete(BENCHMARK, oos_start - 1, oos_end):
+        raise LeadLagError(f"{BENCHMARK} has missing bars inside the OOS range")
 
+    universes = {fold.index: fold_universe(panel, fold) for fold in folds}
     forecasts: dict[tuple[str, int], Forecast] = {}
     fold_records: list[dict[str, Any]] = []
-    fold_universe_by_index: dict[int, list[str]] = {}
     for fold in folds:
-        universe = fold_universe(panel, fold)
-        fold_universe_by_index[fold.index] = universe
         days = list(range(fold.test_start - 1, fold.test_end - 1))
-        fc, stats = forecasts_for_fold(panel, fold, universe, rets, leaders, days)
-        for key, value in fc.items():
-            if fold.test_start - 1 <= key[1] < fold.test_end - 1:
-                forecasts[(key[0], key[1])] = value
+        fc, stats = forecasts_for_fold(panel, fold, universes[fold.index], rets, leaders, days)
+        forecasts.update(fc)
         fold_records.append({
             "fold": fold.index,
             "train_realization_range": [fold.train_start, fold.train_end],
             "test_realization_range": [fold.test_start, fold.test_end],
             "test_start": panel.dates[fold.test_start].isoformat(),
             "test_end": panel.dates[fold.test_end - 1].isoformat(),
-            "universe_size": len(universe),
-            "tradable_universe_size": len([s for s in universe if s in sim_stocks]),
+            "universe": sorted(universes[fold.index]),
+            "universe_size": len(universes[fold.index]),
             **stats,
         })
 
-    # Walk-forward forecasts are stored per fold. Each decision day uses the fold whose test window
-    # starts after it, so keys for the same (stock, day) never collide. Last writer wins only at the
-    # shared boundary day, which the decision split below prevents.
+    cost_rate = cost_rate_from_bps(COMMISSION_BPS, SLIPPAGE_BPS)
+    oos_dates = panel.dates[oos_start:oos_end]
+    bench_bars = _bars_for(panel, [BENCHMARK], panel.dates[oos_start - 1:oos_end])
+    bench_path = simulate(bench_bars, panel.dates[oos_start - 1:oos_end], {0: {BENCHMARK: 1.0}}, cost_rate)
+    bench_returns = list(bench_path.returns)
+
     trials: dict[str, dict[str, Any]] = {}
     returns_by: dict[str, list[float]] = {}
     stress_by: dict[str, list[float]] = {}
     gross_by: dict[str, list[float]] = {}
-    cost_rate = cost_rate_from_bps(COMMISSION_BPS, SLIPPAGE_BPS)
-    bench_path = simulate(sim_bars, sim_dates, {0: {BENCHMARK: 1.0}}, cost_rate)
-    bench_returns = list(bench_path.returns)
     for model in MODELS:
         for k in TOP_K_VALUES:
-            decisions: dict[int, dict[str, float]] = {}
-            for fold in folds:
-                universe = [s for s in fold_universe_by_index[fold.index] if s in sim_stocks]
-                days = list(range(fold.test_start - 1, fold.test_end - 1))
-                decisions.update(decisions_for(forecasts, model, k, universe, days, origin))
             name = f"{model}_k{k}"
-            path = simulate(sim_bars, sim_dates, decisions, cost_rate)
-            stress = simulate(sim_bars, sim_dates, decisions, cost_rate * validation.STRESS_COST_MULTIPLIER)
-            gross = simulate(sim_bars, sim_dates, decisions, 0.0)
-            returns_by[name] = list(path.returns)
-            stress_by[name] = list(stress.returns)
-            gross_by[name] = list(gross.returns)
+            returns: list[float] = []
+            stress: list[float] = []
+            gross: list[float] = []
+            for fold in folds:
+                origin = fold.test_start - 1
+                universe = universes[fold.index]
+                local_dates = panel.dates[origin:fold.test_end]
+                bars = _bars_for(panel, list(universe) + [BENCHMARK], local_dates)
+                decisions = decisions_for(forecasts, model, k, universe,
+                                          list(range(origin, fold.test_end - 1)), origin)
+                returns.extend(simulate(bars, local_dates, decisions, cost_rate).returns)
+                stress.extend(simulate(bars, local_dates, decisions,
+                                       cost_rate * validation.STRESS_COST_MULTIPLIER).returns)
+                gross.extend(simulate(bars, local_dates, decisions, 0.0).returns)
+            if len(returns) != len(bench_returns):
+                raise LeadLagError("fold returns do not tile the OOS range")
+            returns_by[name] = returns
+            stress_by[name] = stress
+            gross_by[name] = gross
             trials[name] = {"model": model, "k": k}
 
     research_sharpes = [sharpe_per_period(returns_by[name]) for name in returns_by]
@@ -589,16 +629,16 @@ def run_experiment(
 
     benchmark_summary = _trial_summary(bench_returns, bench_returns)
 
-    # Tests and diagnostics use the OOS evaluation days: targets fully inside a test window.
+    # Tests and diagnostics use OOS evaluation days: targets fully inside a test window.
     eval_days = [t for fold in folds for t in range(fold.test_start, fold.test_end - 2)]
-    t1 = _clark_west_block(panel, forecasts, fold_universe_by_index, folds, eval_days, outcome="target")
+    t1 = _clark_west_block(panel, forecasts, universes, folds, eval_days, outcome="target")
     diagnostics = {
-        "clark_west_close_to_close": _clark_west_block(panel, forecasts, fold_universe_by_index, folds,
-                                                       eval_days, outcome="close_to_close"),
-        "clark_west_overnight_gap_close_to_open": _clark_west_block(
-            panel, forecasts, fold_universe_by_index, folds, eval_days, outcome="gap"),
-        "clark_west_intraday_open_to_close": _clark_west_block(
-            panel, forecasts, fold_universe_by_index, folds, eval_days, outcome="intraday"),
+        "clark_west_close_to_close": _clark_west_block(panel, forecasts, universes, folds, eval_days,
+                                                       outcome="close_to_close"),
+        "clark_west_overnight_gap_close_to_open": _clark_west_block(panel, forecasts, universes, folds,
+                                                                    eval_days, outcome="gap"),
+        "clark_west_intraday_open_to_close": _clark_west_block(panel, forecasts, universes, folds,
+                                                               eval_days, outcome="intraday"),
     }
     t2_values = [a - b for a, b in zip(returns_by[f"M1_k{PRIMARY_K}"], returns_by[f"M0_k{PRIMARY_K}"])]
     t2 = newey_west_mean_test(t2_values)
@@ -608,11 +648,10 @@ def run_experiment(
     diag_cc = diagnostics["clark_west_close_to_close"]
     cc_signal = bool(diag_cc and diag_cc["mean"] > 0.0 and diag_cc["p_one_sided"] < ALPHA)
 
-    primary = trials[f"M1_k{PRIMARY_K}"]
     oos_obs = len(bench_returns)
     fold_count = len(folds)
     sample_ok = oos_obs >= validation.MIN_OOS_OBSERVATIONS and fold_count >= validation.MIN_FOLDS
-    g2 = _gate_g2(primary, bench_summary=benchmark_summary, adjustment_basis=adjustment_basis)
+    g2 = _gate_g2(trials[f"M1_k{PRIMARY_K}"], bench_summary=benchmark_summary, adjustment_basis=adjustment_basis)
     g2_secondary = _gate_g2(trials["M1_k3"], bench_summary=benchmark_summary, adjustment_basis=adjustment_basis)
 
     if not sample_ok:
@@ -623,6 +662,7 @@ def run_experiment(
         outcome = OUTCOME_G1_PASSED_G2_FAILED
     else:
         outcome = OUTCOME_PASSED
+    classification: str | None = None
     if outcome == OUTCOME_G1_FAILED:
         if cc_signal and not t1_pass:
             classification = CLASS_SIGNAL_NO_EXECUTION
@@ -630,12 +670,8 @@ def run_experiment(
             classification = CLASS_SIGNAL_COST_SHORTFALL
         else:
             classification = CLASS_NONE
-    else:
-        classification = None
-    if outcome == OUTCOME_G1_PASSED_G2_FAILED:
-        cause = "UNCLASSIFIED: 사전 등록에 자동 분류 규칙이 없음 (사람 판단 필요)"
-    else:
-        cause = None
+    cause = ("UNCLASSIFIED: 사전 등록에 자동 분류 규칙이 없음 (사람 판단 필요)"
+             if outcome == OUTCOME_G1_PASSED_G2_FAILED else None)
 
     config = _config()
     return {
@@ -649,11 +685,14 @@ def run_experiment(
             "adjustment_basis": adjustment_basis,
             "calendar_first": panel.dates[0].isoformat(),
             "calendar_last": panel.dates[-1].isoformat(),
-            "calendar_length": n_cal,
+            "calendar_length": len(panel.dates),
+            "first_train_index": first_train_start,
+            "first_train_date": panel.dates[first_train_start].isoformat(),
+            "factor_first_complete_index": dict(zip((BENCHMARK,) + SECTOR_ETFS, factor_first)),
             "symbols_missing": list(symbols_missing),
             "stocks_loaded": [s for s in STOCKS if s in panel.open],
-            "stocks_tradable": sim_stocks,
-            "oos_range": [panel.dates[oos_start].isoformat(), panel.dates[oos_end - 1].isoformat()],
+            "off_calendar_bars": {s: n for s, n in sorted(panel.off_calendar.items()) if n},
+            "oos_range": [oos_dates[0].isoformat(), oos_dates[-1].isoformat()],
             "oos_observations": oos_obs,
             "folds": fold_count,
         },
@@ -666,7 +705,7 @@ def run_experiment(
             "new_sharpe_per_period": {name: sharpe_per_period(returns_by[name]) for name in returns_by},
         },
         "benchmark": {"symbol": BENCHMARK, "out_of_sample": benchmark_summary},
-        "models": {name: info for name, info in trials.items()},
+        "models": trials,
         "tests": {"T1_clark_west_target": t1, "T1_pass": t1_pass,
                   "T2_nw_return_diff_M1k5_minus_M0k5": t2, "T2_pass": t2_pass},
         "diagnostics": diagnostics,
@@ -678,12 +717,6 @@ def run_experiment(
                     "recommendation": RECOMMENDATION[outcome]},
         "folds": fold_records,
     }
-
-
-def _bar_positions(panel: Panel, symbol: str, dates: Sequence[date]) -> list[int]:
-    """Index into the symbol's own bar list for each calendar date in `dates`."""
-    lookup = {bar.date: i for i, bar in enumerate(panel.bars[symbol])}
-    return [lookup[day] for day in dates]
 
 
 def _gate_g2(run: Mapping[str, Any], *, bench_summary: Mapping[str, Any], adjustment_basis: str) -> dict[str, Any]:
@@ -774,6 +807,21 @@ def _config() -> dict[str, Any]:
                   "prior_trials": PRIOR_TRIAL_COUNT, "new_trials": NEW_TRIAL_COUNT,
                   "primary_k": PRIMARY_K},
         "sample": {"min_oos_observations": validation.MIN_OOS_OBSERVATIONS, "min_folds": validation.MIN_FOLDS},
+        "simulation": {
+            "mode": "per-fold calendar window [test_start-1, test_end), universe of that fold, start from cash",
+            "fold_boundary": "entry from cash each fold (full turnover charged); overnight move from fold last close "
+                             "to next fold first open not captured",
+            "walk_forward_start": "after first complete bar of SPY and all sector ETFs",
+            "stress": "same decisions at 2x cost",
+            "zero_cost": "same decisions at 0 cost (diagnostic only)",
+        },
+        "conventions": {
+            "clark_west_average": "cross-sectional mean over the fold universe, leader rows (f = 0) included",
+            "newey_west": "Bartlett weights, lag 5, normal approximation for one-sided p",
+            "ties": "by symbol name (top-k and leader)",
+            "m1_self_leader": "M1 equals M0 on self-leader days; excluded from M1 training",
+            "m1_singular": "M1 falls back to M0 for that stock and fold",
+        },
     }
 
 
@@ -806,7 +854,8 @@ def run_from_directory(data: str | Path, prior_report: str | Path) -> dict[str, 
     present = [s for s in REQUIRED_SYMBOLS if s in dataset.bars]
     missing = [s for s in REQUIRED_SYMBOLS if s not in dataset.bars]
     raw, raw_missing = _load_raw(root, manifest, present)
-    panel = build_panel({s: dataset.bars[s] for s in present}, raw)
+    calendar = [bar.date for bar in dataset.bars[BENCHMARK]]
+    panel = build_panel({s: dataset.bars[s] for s in present}, raw, calendar=calendar)
 
     prior_path = Path(prior_report)
     prior_bytes = prior_path.read_bytes()

@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import random
+from collections.abc import Mapping
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -38,8 +39,8 @@ BARS = 1520  # three walk-forward folds (756 OOS bars) plus the warm-up bar
 LEADER_OF = {etf: stocks[0] for etf, stocks in SECTOR_STOCKS.items()}
 
 
-def make_world(count: int, seed: int, beta: float = 0.0, late_listing: str | None = None,
-               late_start: int = 0) -> dict[str, list[Bar]]:
+def make_world(count: int, seed: int, beta: float = 0.0,
+               late_starts: Mapping[str, int] | None = None) -> dict[str, list[Bar]]:
     """Deterministic 43-symbol world. Leaders (first stock per sector) carry 10x dollar volume.
 
     beta > 0 plants a lead-lag effect: every follower's open-to-open gap at t+2 includes
@@ -76,8 +77,8 @@ def make_world(count: int, seed: int, beta: float = 0.0, late_listing: str | Non
         gap_extra = [beta * leader_returns[t - 2] if t >= 2 else 0.0 for t in range(count)]
         for stock in stocks[1:]:
             path(stock, [0.4 * m + s for m, s in zip(market, sectors[etf])], gap_extra, 1e6)
-    if late_listing is not None:
-        world[late_listing] = world[late_listing][late_start:]
+    for symbol, start in (late_starts or {}).items():
+        world[symbol] = world[symbol][start:]
     return world
 
 
@@ -207,7 +208,7 @@ def test_tile_folds_has_no_holdout_and_uses_756_252_252() -> None:
 
 
 def test_fold_universe_excludes_a_late_listed_symbol_whose_windows_are_incomplete() -> None:
-    world = make_world(BARS, 7, late_listing="AAPL", late_start=900)
+    world = make_world(BARS, 7, late_starts={"AAPL": 900})
     panel = panel_of(world)
     folds = tile_folds(BARS)
     # Every fold window starts before bar 900, so AAPL lacks complete data in all three folds.
@@ -419,7 +420,7 @@ def test_cli_reports_missing_symbols_without_fabricating_them(tmp_path: Path) ->
     report = leadlag.run_from_directory(derived, write_prior(tmp_path / "prior.json", 54))
     assert "CSCO" in report["dataset"]["symbols_missing"]
     assert "CSCO" not in report["dataset"]["stocks_loaded"]
-    assert "CSCO" not in report["dataset"]["stocks_tradable"]
+    assert all("CSCO" not in fold["universe"] for fold in report["folds"])
 
 
 def test_cli_stops_when_a_sector_factor_is_missing(tmp_path: Path) -> None:
@@ -429,3 +430,39 @@ def test_cli_stops_when_a_sector_factor_is_missing(tmp_path: Path) -> None:
     write_derived(derived, world)
     with pytest.raises(leadlag.LeadLagError, match="XLK"):
         leadlag.run_from_directory(derived, write_prior(tmp_path / "prior.json", 54))
+
+
+def test_folds_start_only_after_every_sector_etf_has_its_first_bar() -> None:
+    late_etfs = {etf: 300 for etf in SECTOR_ETFS}
+    world = make_world(1900, 71, 0.0, late_starts=late_etfs)
+    report = leadlag.run_experiment(build_panel(world, world, calendar=[b.date for b in world[BENCHMARK]]),
+                                    adjustment_basis="SPLIT_AND_DIVIDEND", prior_variance=0.000128,
+                                    prior_trial_count=54)
+    assert report["dataset"]["first_train_index"] == 301
+    assert report["folds"][0]["train_realization_range"][0] == 301
+    assert report["folds"][0]["test_realization_range"][0] == 1057
+    assert report["dataset"]["oos_observations"] == 756
+    assert report["outcome"]["status"] in {"G1_FAILED", "G1_PASSED_G2_FAILED", "G1_G2_PASSED"}
+    # Every trial trades (or holds cash) on a fully defined return path: no undefined Sharpe.
+    assert all(info["summary"]["sharpe_per_period"] is not None for info in report["models"].values())
+
+
+def test_late_listed_stock_is_absent_from_early_fold_universes_and_present_in_later_ones() -> None:
+    world = make_world(1900, 72, 0.0, late_starts={**{etf: 300 for etf in SECTOR_ETFS}, "AAPL": 400})
+    report = leadlag.run_experiment(build_panel(world, world, calendar=[b.date for b in world[BENCHMARK]]),
+                                    adjustment_basis="SPLIT_AND_DIVIDEND", prior_variance=0.000128,
+                                    prior_trial_count=54)
+    assert "AAPL" not in report["folds"][0]["universe"]
+    assert "AAPL" in report["folds"][1]["universe"]
+    assert "MSFT" in report["folds"][0]["universe"]
+
+
+def test_stray_off_calendar_bars_are_counted_and_ignored() -> None:
+    world = make_world(60, 73)
+    calendar = [b.date for b in world[BENCHMARK]]
+    stray = Bar(date(2030, 1, 1), 1.0, 1.0, 1.0, 1.0, 1.0)
+    world["MSFT"] = list(world["MSFT"]) + [stray]
+    panel = build_panel(world, world, calendar=calendar)
+    assert panel.off_calendar["MSFT"] == 1
+    assert panel.off_calendar["AAPL"] == 0
+    assert len(panel.dates) == len(calendar)
