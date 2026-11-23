@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from research_fixtures import Row, synthetic_rows, weekdays, write_dataset
@@ -13,7 +14,11 @@ from app.research.data import (
     align,
     canonical_json,
     load_dataset,
+    sha256_hex,
 )
+
+NEW_YORK = ZoneInfo("America/New_York")
+COLLECTION_DAY = date(2026, 11, 23)  # Monday, Eastern Standard Time
 
 
 def _series(count: int = 300) -> dict[str, list[Row]]:
@@ -21,6 +26,50 @@ def _series(count: int = 300) -> dict[str, list[Row]]:
         "SPY": synthetic_rows(11, count),
         "TLT": synthetic_rows(12, count),
     }
+
+
+def _rows_ending_on(seed: int, count: int, last: date) -> list[Row]:
+    """Synthetic weekday rows whose final bar is ``last``."""
+    days: list[date] = []
+    day = last
+    while len(days) < count:
+        if day.weekday() < 5:
+            days.append(day)
+        day -= timedelta(days=1)
+    days.reverse()
+    template = synthetic_rows(seed, count)
+    return [(new_day, o, h, low, c, v) for new_day, (_, o, h, low, c, v) in zip(days, template)]
+
+
+def _utc_at_new_york(day: date, hour: int, minute: int) -> str:
+    """UTC ``Z`` timestamp for a New York wall-clock time (DST-correct)."""
+    local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=NEW_YORK)
+    return local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _collection_dataset(
+    tmp_path: Path,
+    *,
+    collected_at: str | None,
+    resumed_at: list[str] | None = None,
+    last: date = COLLECTION_DAY,
+    count: int = 300,
+) -> Path:
+    series = {
+        "SPY": _rows_ending_on(11, count, last),
+        "TLT": _rows_ending_on(12, count, last),
+    }
+    root = write_dataset(tmp_path / "ds", series)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if collected_at is None:
+        manifest.pop("collected_at")
+    else:
+        manifest["collected_at"] = collected_at
+    if resumed_at is not None:
+        manifest["resumed_at"] = resumed_at
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return root
 
 
 def test_clean_dataset_loads_with_provenance_and_hash(tmp_path: Path) -> None:
@@ -178,3 +227,125 @@ def test_weekday_helper_skips_weekends() -> None:
     days = weekdays(date(2024, 1, 5), 6)
     assert all(day.weekday() < 5 for day in days)
     assert days[0] == date(2024, 1, 5)
+
+
+def test_collection_day_bar_before_close_is_excluded(tmp_path: Path) -> None:
+    root = _collection_dataset(tmp_path, collected_at="2026-11-23T11:06:27Z")
+    dataset = load_dataset(root)
+    previous_day = date(2026, 11, 20)
+    assert dataset.bars["SPY"][-1].date == previous_day
+    assert dataset.bars["TLT"][-1].date == previous_day
+    assert len(dataset.bars["SPY"]) == 299
+    assert dataset.provenance["excluded_incomplete_bars"] == {
+        "SPY": ["2026-11-23"],
+        "TLT": ["2026-11-23"],
+    }
+    assert any(
+        "excluded possibly incomplete bar(s) dated 2026-11-23 (collected 06:06 ET, before 16:30 close)"
+        in warning
+        for warning in dataset.warnings
+    )
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "excluded"),
+    [(16, 29, True), (16, 30, False), (17, 0, False)],
+)
+def test_collection_day_close_boundary(tmp_path: Path, hour: int, minute: int, excluded: bool) -> None:
+    root = _collection_dataset(tmp_path, collected_at=_utc_at_new_york(COLLECTION_DAY, hour, minute))
+    dataset = load_dataset(root)
+    if excluded:
+        assert dataset.bars["SPY"][-1].date == date(2026, 11, 20)
+        assert dataset.provenance["excluded_incomplete_bars"]["SPY"] == ["2026-11-23"]
+    else:
+        assert dataset.bars["SPY"][-1].date == COLLECTION_DAY
+        assert dataset.provenance["excluded_incomplete_bars"] == {}
+        assert dataset.warnings == ()
+
+
+def test_future_dated_bar_is_excluded(tmp_path: Path) -> None:
+    collected_day = date(2026, 11, 20)
+    root = _collection_dataset(tmp_path, collected_at=_utc_at_new_york(collected_day, 17, 0))
+    dataset = load_dataset(root)
+    assert dataset.bars["SPY"][-1].date == collected_day
+    assert dataset.provenance["excluded_incomplete_bars"] == {
+        "SPY": ["2026-11-23"],
+        "TLT": ["2026-11-23"],
+    }
+    assert any("dated after collection on 2026-11-20" in warning for warning in dataset.warnings)
+
+
+def test_resumed_at_latest_timestamp_is_used(tmp_path: Path) -> None:
+    before_close = _utc_at_new_york(COLLECTION_DAY, 9, 30)
+    after_close = _utc_at_new_york(COLLECTION_DAY, 17, 0)
+    earlier_resume = _utc_at_new_york(COLLECTION_DAY, 10, 0)
+
+    without_resume = load_dataset(_collection_dataset(tmp_path / "a", collected_at=before_close))
+    assert without_resume.provenance["excluded_incomplete_bars"]["SPY"] == ["2026-11-23"]
+
+    # The latest instant is the first list entry and the last entry is before the close,
+    # so only a true maximum (not the last element) keeps the collection-day bar.
+    with_resume = load_dataset(
+        _collection_dataset(
+            tmp_path / "b",
+            collected_at=before_close,
+            resumed_at=[after_close, earlier_resume],
+        )
+    )
+    assert with_resume.bars["SPY"][-1].date == COLLECTION_DAY
+    assert with_resume.provenance["excluded_incomplete_bars"] == {}
+    assert with_resume.warnings == ()
+
+
+def test_missing_collected_at_drops_nothing_and_warns(tmp_path: Path) -> None:
+    root = _collection_dataset(tmp_path, collected_at=None)
+    dataset = load_dataset(root)
+    assert len(dataset.bars["SPY"]) == 300
+    assert dataset.bars["SPY"][-1].date == COLLECTION_DAY
+    assert dataset.provenance["excluded_incomplete_bars"] == {}
+    assert len(dataset.warnings) == 1
+    assert "no collected_at" in dataset.warnings[0]
+
+
+def test_dataset_hash_unchanged_by_exclusion(tmp_path: Path) -> None:
+    root = _collection_dataset(tmp_path, collected_at="2026-11-23T11:06:27Z")
+    files = sorted(root.iterdir())
+    before = {path.name: path.read_bytes() for path in files}
+
+    dataset = load_dataset(root)
+
+    assert dataset.provenance["excluded_incomplete_bars"]  # exclusion really happened
+    assert {path.name: path.read_bytes() for path in files} == before
+    manifest = json.loads(before["manifest.json"].decode("utf-8"))
+    file_hashes = {symbol: entry["sha256"] for symbol, entry in manifest["symbols"].items()}
+    expected = sha256_hex(canonical_json({"manifest": manifest, "files": file_hashes}).encode("utf-8"))
+    assert dataset.dataset_hash == expected
+
+
+def test_exclusion_is_deterministic(tmp_path: Path) -> None:
+    root = _collection_dataset(tmp_path, collected_at="2026-11-23T11:06:27Z")
+    assert load_dataset(root) == load_dataset(root)
+
+
+@pytest.mark.parametrize(
+    ("collected_at", "message"),
+    [
+        ("2026-11-23T11:06:27", "UTC offset"),
+        ("not-a-time", "ISO-8601"),
+        (1_700_000_000, "ISO-8601 UTC timestamp string"),
+    ],
+)
+def test_malformed_collected_at_raises(tmp_path: Path, collected_at: object, message: str) -> None:
+    root = _collection_dataset(tmp_path, collected_at=collected_at)  # type: ignore[arg-type]
+    with pytest.raises(DataIntegrityError, match=message):
+        load_dataset(root)
+
+
+def test_exclusion_leaving_no_bars_raises(tmp_path: Path) -> None:
+    root = _collection_dataset(
+        tmp_path,
+        collected_at=_utc_at_new_york(COLLECTION_DAY, 9, 30),
+        count=1,
+    )
+    with pytest.raises(DataIntegrityError, match="no bars left"):
+        load_dataset(root)

@@ -12,9 +12,10 @@ import io
 import json
 import math
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 CSV_HEADER = ("date", "open", "high", "low", "close", "volume")
 REQUIRED_INTERVAL = "1d"
@@ -22,6 +23,8 @@ ALLOWED_ADJUSTMENT_BASIS = ("UNVERIFIED", "SPLIT_ONLY", "SPLIT_AND_DIVIDEND")
 GAP_WARNING_CALENDAR_DAYS = 5
 EXTREME_MOVE_THRESHOLD = 0.4
 FLOAT_DECIMALS = 10
+NEW_YORK = ZoneInfo("America/New_York")
+COLLECTION_CLOSE_NY = time(16, 30)
 
 
 class ResearchError(ValueError):
@@ -185,7 +188,61 @@ def _series_warnings(symbol: str, bars: Sequence[Bar]) -> list[str]:
     return warnings
 
 
-def _load_symbol(root: Path, symbol: str, entry: Mapping[str, Any]) -> tuple[list[Bar], list[str]]:
+def _parse_utc_timestamp(value: Any, where: str) -> datetime:
+    if not isinstance(value, str):
+        raise DataIntegrityError(f"{where} must be an ISO-8601 UTC timestamp string")
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise DataIntegrityError(f"{where} is not an ISO-8601 timestamp ({error})") from error
+    if parsed.tzinfo is None:
+        raise DataIntegrityError(f"{where} must include a UTC offset")
+    return parsed.astimezone(NEW_YORK)
+
+
+def _collection_cutoff(manifest: Mapping[str, Any]) -> datetime | None:
+    """Latest collection instant (New York time), or None when collected_at is absent."""
+    collected = manifest.get("collected_at")
+    if collected is None:
+        return None
+    instants = [_parse_utc_timestamp(collected, "manifest.collected_at")]
+    resumed = manifest.get("resumed_at")
+    if resumed is not None:
+        if not isinstance(resumed, list):
+            raise DataIntegrityError("manifest.resumed_at must be a list")
+        instants.extend(
+            _parse_utc_timestamp(item, f"manifest.resumed_at[{index}]")
+            for index, item in enumerate(resumed)
+        )
+    return max(instants)
+
+
+def _split_incomplete(bars: Sequence[Bar], cutoff: datetime) -> tuple[list[Bar], list[Bar]]:
+    """Split bars into (kept, possibly incomplete) relative to the collection cutoff."""
+    cutoff_date = cutoff.date()
+    before_close = cutoff.time() < COLLECTION_CLOSE_NY
+    kept: list[Bar] = []
+    incomplete: list[Bar] = []
+    for bar in bars:
+        if bar.date > cutoff_date or (bar.date == cutoff_date and before_close):
+            incomplete.append(bar)
+        else:
+            kept.append(bar)
+    return kept, incomplete
+
+
+def _exclusion_warning(symbol: str, dropped: Sequence[Bar], cutoff: datetime) -> str:
+    dates = ", ".join(bar.date.isoformat() for bar in dropped)
+    reasons: list[str] = []
+    if any(bar.date == cutoff.date() for bar in dropped):
+        reasons.append(f"collected {cutoff:%H:%M} ET, before 16:30 close")
+    if any(bar.date > cutoff.date() for bar in dropped):
+        reasons.append(f"dated after collection on {cutoff.date().isoformat()}")
+    return f"{symbol}: excluded possibly incomplete bar(s) dated {dates} ({'; '.join(reasons)})"
+
+
+def _load_symbol(root: Path, symbol: str, entry: Mapping[str, Any]) -> list[Bar]:
     file_name = entry["file"]
     if not isinstance(file_name, str) or Path(file_name).name != file_name:
         raise DataIntegrityError(f"{symbol}: file must be a bare file name")
@@ -201,10 +258,13 @@ def _load_symbol(root: Path, symbol: str, entry: Mapping[str, Any]) -> tuple[lis
         raise DataIntegrityError(f"{symbol}: row count {len(bars)} != manifest {entry['rows']}")
     if bars[0].date.isoformat() != entry["first_date"] or bars[-1].date.isoformat() != entry["last_date"]:
         raise DataIntegrityError(f"{symbol}: first/last date disagree with manifest")
-    return bars, _series_warnings(symbol, bars)
+    return bars
 
 
-def _provenance(manifest: Mapping[str, Any], bars: Mapping[str, Sequence[Bar]]) -> dict[str, Any]:
+def _provenance(
+    manifest: Mapping[str, Any],
+    excluded: Mapping[str, Sequence[str]],
+) -> dict[str, Any]:
     symbols = {
         symbol: {
             "sha256": str(entry["sha256"]).lower(),
@@ -222,12 +282,19 @@ def _provenance(manifest: Mapping[str, Any], bars: Mapping[str, Sequence[Bar]]) 
         "adjusted": manifest["adjusted"],
         "adjustment_basis": manifest["adjustment_basis"],
         "collected_at": manifest.get("collected_at"),
+        "excluded_incomplete_bars": {symbol: list(dates) for symbol, dates in sorted(excluded.items())},
         "symbols": symbols,
     }
 
 
 def load_dataset(directory: str | Path) -> Dataset:
-    """Load and verify a dataset directory. Raises DataIntegrityError on any violation."""
+    """Load and verify a dataset directory. Raises DataIntegrityError on any violation.
+
+    Files are verified in full first. Bars that may still be forming at collection
+    time are then excluded from the loaded series: any bar dated after the latest
+    collection's New York date, and the collection day's own bar when collection
+    happened before the 16:30 New York close. Files and dataset_hash are not affected.
+    """
     root = Path(directory)
     manifest_path = root / "manifest.json"
     if not manifest_path.is_file():
@@ -237,19 +304,35 @@ def load_dataset(directory: str | Path) -> Dataset:
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise DataIntegrityError(f"manifest.json is not valid JSON ({error})") from error
     _validate_manifest(manifest)
+    cutoff = _collection_cutoff(manifest)
 
     bars: dict[str, list[Bar]] = {}
+    excluded: dict[str, list[str]] = {}
     warnings: list[str] = []
     for symbol in sorted(manifest["symbols"]):
-        series, series_warnings = _load_symbol(root, symbol, manifest["symbols"][symbol])
+        series = _load_symbol(root, symbol, manifest["symbols"][symbol])
+        if cutoff is not None:
+            series, dropped = _split_incomplete(series, cutoff)
+            if dropped:
+                if not series:
+                    raise DataIntegrityError(
+                        f"{symbol}: no bars left after excluding possibly incomplete bars"
+                    )
+                excluded[symbol] = [bar.date.isoformat() for bar in dropped]
+                warnings.append(_exclusion_warning(symbol, dropped, cutoff))
         bars[symbol] = series
-        warnings.extend(series_warnings)
+        warnings.extend(_series_warnings(symbol, series))
+    if cutoff is None:
+        warnings.append(
+            "manifest has no collected_at: possibly incomplete collection-day bars cannot be "
+            "detected; none were excluded"
+        )
 
     file_hashes = {symbol: str(entry["sha256"]).lower() for symbol, entry in manifest["symbols"].items()}
     dataset_hash = sha256_hex(canonical_json({"manifest": manifest, "files": file_hashes}).encode("utf-8"))
     return Dataset(
         bars=bars,
-        provenance=_provenance(manifest, bars),
+        provenance=_provenance(manifest, excluded),
         dataset_hash=dataset_hash,
         warnings=tuple(warnings),
     )
