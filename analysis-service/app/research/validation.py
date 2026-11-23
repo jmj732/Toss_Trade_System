@@ -54,6 +54,8 @@ STRESS_COST_MULTIPLIER = 2.0
 VERDICT_VALIDATED = "VALIDATED_EDGE"
 VERDICT_NOT_VALIDATED = "NOT_VALIDATED"
 VERDICT_INSUFFICIENT = "INSUFFICIENT_DATA"
+VERDICT_HELD = "HELD_UNVERIFIED_ADJUSTMENT"
+REQUIRED_ADJUSTMENT_BASIS = "SPLIT_AND_DIVIDEND"
 CRITERION_DSR = "DSR_AT_LEAST_0.95"
 CRITERION_OOS_VS_BENCHMARK = "OOS_SHARPE_ABOVE_BENCHMARK"
 CRITERION_ACTIVE_PSR = "ACTIVE_PSR_AT_LEAST_0.95"
@@ -184,8 +186,14 @@ def decide_verdict(
     active_psr: float | None,
     holdout_sharpe: float | None,
     stress_oos_sharpe: float | None,
+    adjustment_basis: str,
 ) -> Verdict:
-    """Pre-declared verdict. An undefined metric counts as a failed criterion."""
+    """Pre-declared verdict. An undefined metric counts as a failed criterion.
+
+    Precedence: INSUFFICIENT_DATA, then HELD when the dataset's adjustment basis is not
+    REQUIRED_ADJUSTMENT_BASIS (failed criteria are still returned for information), then
+    VALIDATED_EDGE or NOT_VALIDATED.
+    """
     if (
         oos_observations < MIN_OOS_OBSERVATIONS
         or holdout_observations < MIN_HOLDOUT_OBSERVATIONS
@@ -203,6 +211,8 @@ def decide_verdict(
         (CRITERION_STRESS, stress_oos_sharpe is not None and stress_oos_sharpe > 0.0),
     )
     failed = tuple(name for name, passed in checks if not passed)
+    if adjustment_basis != REQUIRED_ADJUSTMENT_BASIS:
+        return Verdict(VERDICT_HELD, failed)
     return Verdict(VERDICT_NOT_VALIDATED if failed else VERDICT_VALIDATED, failed)
 
 
@@ -238,8 +248,9 @@ def _select_folds(family_runs: Sequence[ConfigRun], split: Split) -> list[tuple[
     return choices
 
 
-def _fold_record(fold: FoldWindow, chosen: ConfigRun) -> dict[str, Any]:
+def _fold_record(fold: FoldWindow, chosen: ConfigRun, benchmark_path: BacktestResult) -> dict[str, Any]:
     test_window = path_window(chosen.path, fold.test_start, fold.test_end)
+    benchmark_window = path_window(benchmark_path, fold.test_start, fold.test_end)
     return {
         "fold": fold.index,
         "train_realization_range": [fold.train_start, fold.train_end],
@@ -251,6 +262,9 @@ def _fold_record(fold: FoldWindow, chosen: ConfigRun) -> dict[str, Any]:
             chosen.path.window_returns(fold.train_start, fold.train_end)
         ),
         "test_total_return": _summary(test_window, None)["total_return"] if test_window.returns else None,
+        "benchmark_test_total_return": (
+            _summary(benchmark_window, None)["total_return"] if benchmark_window.returns else None
+        ),
     }
 
 
@@ -345,6 +359,7 @@ def _family_result(
     dates: Sequence[date],
     benchmark_path: BacktestResult,
     cost_rate: float,
+    adjustment_basis: str,
 ) -> dict[str, Any]:
     choices = _select_folds(family_runs, split)
     oos_start, oos_end = _oos_range(choices)
@@ -369,9 +384,10 @@ def _family_result(
         active_psr=oos_block["active_probabilistic_sharpe_vs_zero"],
         holdout_sharpe=holdout_block["sharpe_annualized"],
         stress_oos_sharpe=oos_block["stress_sharpe_annualized"],
+        adjustment_basis=adjustment_basis,
     )
     return {
-        "folds": [_fold_record(fold, chosen) for fold, chosen in choices],
+        "folds": [_fold_record(fold, chosen, benchmark_path) for fold, chosen in choices],
         "holdout_config": holdout_choice.config_id,
         "out_of_sample": oos_block,
         "holdout": holdout_block,
@@ -453,6 +469,7 @@ def run_validation(dataset: Dataset, *, commission_bps: float, slippage_bps: flo
             dates=aligned.dates,
             benchmark_path=benchmark_path,
             cost_rate=cost_rate,
+            adjustment_basis=dataset.provenance["adjustment_basis"],
         )
 
     full = path_window(benchmark_path, 1, len(aligned.dates))

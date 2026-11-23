@@ -17,6 +17,8 @@ from app.research.validation import (
     CRITERION_STRESS,
     DSR_MINIMUM,
     PSR_MINIMUM,
+    REQUIRED_ADJUSTMENT_BASIS,
+    VERDICT_HELD,
     VERDICT_INSUFFICIENT,
     VERDICT_NOT_VALIDATED,
     VERDICT_VALIDATED,
@@ -125,6 +127,7 @@ def test_pick_best_prefers_highest_score_then_grid_order_and_ranks_none_last() -
 
 def test_verdict_insufficient_when_oos_is_short() -> None:
     verdict = decide_verdict(
+        adjustment_basis=REQUIRED_ADJUSTMENT_BASIS,
         oos_observations=500,
         holdout_observations=400,
         folds=2,
@@ -141,6 +144,7 @@ def test_verdict_insufficient_when_oos_is_short() -> None:
 
 def test_verdict_validated_only_when_every_criterion_passes() -> None:
     verdict = decide_verdict(
+        adjustment_basis=REQUIRED_ADJUSTMENT_BASIS,
         oos_observations=1000,
         holdout_observations=300,
         folds=3,
@@ -157,6 +161,7 @@ def test_verdict_validated_only_when_every_criterion_passes() -> None:
 
 def test_verdict_lists_each_failed_criterion_by_name() -> None:
     verdict = decide_verdict(
+        adjustment_basis=REQUIRED_ADJUSTMENT_BASIS,
         oos_observations=1000,
         holdout_observations=300,
         folds=3,
@@ -173,6 +178,7 @@ def test_verdict_lists_each_failed_criterion_by_name() -> None:
 
 def test_undefined_metric_counts_as_failed_criterion() -> None:
     verdict = decide_verdict(
+        adjustment_basis=REQUIRED_ADJUSTMENT_BASIS,
         oos_observations=1000,
         holdout_observations=300,
         folds=3,
@@ -187,6 +193,64 @@ def test_undefined_metric_counts_as_failed_criterion() -> None:
     assert CRITERION_DSR in verdict.failed_criteria
     assert CRITERION_ACTIVE_PSR in verdict.failed_criteria
     assert CRITERION_STRESS not in verdict.failed_criteria
+
+
+def _passing_inputs(**overrides) -> dict:
+    inputs = dict(
+        oos_observations=1000,
+        holdout_observations=300,
+        folds=3,
+        dsr=0.97,
+        oos_sharpe=1.2,
+        benchmark_oos_sharpe=0.8,
+        active_psr=0.96,
+        holdout_sharpe=0.5,
+        stress_oos_sharpe=0.3,
+    )
+    inputs.update(overrides)
+    return inputs
+
+
+def test_insufficient_data_takes_precedence_over_held_adjustment() -> None:
+    verdict = decide_verdict(
+        **_passing_inputs(oos_observations=500),
+        adjustment_basis="UNVERIFIED",
+    )
+    assert verdict.name == VERDICT_INSUFFICIENT
+    assert verdict.failed_criteria == ()
+
+
+@pytest.mark.parametrize("basis", ["UNVERIFIED", "SPLIT_ONLY", "NONE_DETECTED"])
+def test_held_when_adjustment_unconfirmed_even_if_every_criterion_passes(basis: str) -> None:
+    verdict = decide_verdict(**_passing_inputs(), adjustment_basis=basis)
+    assert verdict.name == VERDICT_HELD == "HELD_UNVERIFIED_ADJUSTMENT"
+    assert verdict.failed_criteria == ()
+
+
+def test_held_still_lists_failed_criteria_for_information() -> None:
+    verdict = decide_verdict(
+        **_passing_inputs(dsr=0.5, holdout_sharpe=-0.1),
+        adjustment_basis="UNVERIFIED",
+    )
+    assert verdict.name == VERDICT_HELD
+    assert verdict.failed_criteria == (CRITERION_DSR, CRITERION_HOLDOUT)
+
+
+def test_validated_requires_split_and_dividend_basis() -> None:
+    validated = decide_verdict(**_passing_inputs(), adjustment_basis=REQUIRED_ADJUSTMENT_BASIS)
+    assert validated.name == VERDICT_VALIDATED
+    not_validated = decide_verdict(**_passing_inputs(dsr=0.5), adjustment_basis=REQUIRED_ADJUSTMENT_BASIS)
+    assert not_validated.name == VERDICT_NOT_VALIDATED
+
+
+def test_run_validation_withholds_verdicts_when_adjustment_unconfirmed(tmp_path: Path) -> None:
+    root = write_dataset(tmp_path / "unverified", universe_series(FULL_COUNT), adjustment_basis="UNVERIFIED")
+    result = run_validation(load_dataset(root), commission_bps=10.0, slippage_bps=5.0)
+    for family in result.families.values():
+        assert family["verdict"]["name"] == VERDICT_HELD
+        assert len(family["folds"]) == 3
+        for fold in family["folds"]:
+            assert "benchmark_test_total_return" in fold
 
 
 

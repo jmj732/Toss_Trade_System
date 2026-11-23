@@ -61,6 +61,7 @@ def build_config(commission_bps: float, slippage_bps: float) -> dict[str, Any]:
             "min_folds": validation.MIN_FOLDS,
             "dsr_minimum": validation.DSR_MINIMUM,
             "psr_minimum": validation.PSR_MINIMUM,
+            "required_adjustment_basis": validation.REQUIRED_ADJUSTMENT_BASIS,
         },
         "periods_per_year": PERIODS_PER_YEAR,
         "risk_free_rate": RISK_FREE_RATE,
@@ -158,7 +159,85 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+def _pct(value: Any) -> str:
+    """Fraction in, percent out (0.1234 -> 12.34%)."""
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.2f}%"
+
+
+MAIN_TABLE_HEADER = (
+    "| Strategy | Verdict | OOS Sharpe | Benchmark OOS Sharpe | DSR | Active PSR | "
+    "Holdout Sharpe | 2x-cost OOS Sharpe | OOS CAGR | SPY OOS CAGR | OOS MaxDD | SPY OOS MaxDD | "
+    "OOS turnover/yr | est. cost drag/yr | Holdout CAGR | SPY holdout CAGR | Failed criteria |"
+)
+FOLD_TABLE_HEADER = "| Fold | Test window | Selected config | Test total return | SPY test total return |"
+
+
+def _cost_drag(turnover_annualized: float | None, cost_rate: float) -> float | None:
+    return None if turnover_annualized is None else turnover_annualized * cost_rate
+
+
+def _main_table_row(family: str, data: dict[str, Any], cost_rate: float) -> str:
+    oos = data["out_of_sample"]
+    holdout = data["holdout"]
+    verdict = data["verdict"]
+    failed = ", ".join(verdict["failed_criteria"]) or "-"
+    strategy = oos["strategy"]
+    benchmark = oos["benchmark"]
+    cells = [
+        family,
+        verdict["name"],
+        _fmt(oos["sharpe_annualized"]),
+        _fmt(oos["benchmark_sharpe_annualized"]),
+        _fmt(oos["deflated_sharpe"]),
+        _fmt(oos["active_probabilistic_sharpe_vs_zero"]),
+        _fmt(holdout["sharpe_annualized"]),
+        _fmt(oos["strategy_2x_cost"]["sharpe_annualized"]),
+        _pct(strategy["cagr"]),
+        _pct(benchmark["cagr"]),
+        _pct(strategy["max_drawdown"]),
+        _pct(benchmark["max_drawdown"]),
+        _pct(strategy["turnover_annualized"]),
+        _pct(_cost_drag(strategy["turnover_annualized"], cost_rate)),
+        _pct(holdout["strategy"]["cagr"]),
+        _pct(holdout["benchmark"]["cagr"]),
+        failed,
+    ]
+    return "| " + " | ".join(cells) + " |"
+
+
+def _fold_rows(folds: list[dict[str, Any]]) -> list[str]:
+    if not folds:
+        return ["- no folds (insufficient data)"]
+    rows = [FOLD_TABLE_HEADER, "|---|---|---|---|---|"]
+    for fold in folds:
+        window = (
+            f"{fold['test_start']} to {fold['test_end']}"
+            if fold["test_start"] is not None
+            else "n/a"
+        )
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    str(fold["fold"]),
+                    window,
+                    fold["selected_config"],
+                    _pct(fold["test_total_return"]),
+                    _pct(fold["benchmark_test_total_return"]),
+                ]
+            )
+            + " |"
+        )
+    return rows
+
+
 def render_markdown(report: dict[str, Any]) -> str:
+    basis = report["dataset"]["provenance"]["adjustment_basis"]
+    cost_rate = report["config"]["costs"]["cost_rate_per_unit_traded"]
+    required = report["config"]["verdict_thresholds"]["required_adjustment_basis"]
+    held = any(data["verdict"]["name"] == validation.VERDICT_HELD for data in report["strategies"].values())
     lines = [
         "# Quant research summary",
         "",
@@ -169,32 +248,26 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- trials (N): {report['trials']['count']}",
         f"- aligned dates: {report['dataset']['aligned_dates']} "
         f"({report['dataset']['aligned_first']} to {report['dataset']['aligned_last']})",
-        "",
-        "| Strategy | Verdict | OOS Sharpe | Benchmark OOS Sharpe | DSR | Active PSR | "
-        "Holdout Sharpe | 2x-cost OOS Sharpe | Failed criteria |",
-        "|---|---|---|---|---|---|---|---|---|",
+        f"- adjustment_basis: `{basis}` (verdicts require `{required}`)",
     ]
-    for family, data in report["strategies"].items():
-        oos = data["out_of_sample"]
-        verdict = data["verdict"]
-        failed = ", ".join(verdict["failed_criteria"]) or "-"
+    if held:
         lines.append(
-            "| "
-            + " | ".join(
-                [
-                    family,
-                    verdict["name"],
-                    _fmt(oos["sharpe_annualized"]),
-                    _fmt(oos["benchmark_sharpe_annualized"]),
-                    _fmt(oos["deflated_sharpe"]),
-                    _fmt(oos["active_probabilistic_sharpe_vs_zero"]),
-                    _fmt(data["holdout"]["sharpe_annualized"]),
-                    _fmt(oos["strategy_2x_cost"]["sharpe_annualized"]),
-                    failed,
-                ]
-            )
-            + " |"
+            "- Verdicts withheld (HELD_UNVERIFIED_ADJUSTMENT): dividend/split adjustment is unconfirmed. "
+            "Failed criteria below are informational only."
         )
+    lines.extend(
+        [
+            "",
+            MAIN_TABLE_HEADER,
+            "|" + "---|" * 17,
+        ]
+    )
+    for family, data in report["strategies"].items():
+        lines.append(_main_table_row(family, data, cost_rate))
+    lines.extend(["", "## Walk-forward folds"])
+    for family, data in report["strategies"].items():
+        lines.extend(["", f"### {family}", ""])
+        lines.extend(_fold_rows(data["folds"]))
     warnings = report["dataset"]["warnings"] + report["bias_controls"]["warnings"]
     missing = report["dataset"]["missing_momentum_universe"]
     if missing:
