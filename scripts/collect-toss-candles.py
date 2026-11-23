@@ -423,13 +423,19 @@ def series_verified(out: Path, entry: dict) -> bool:
         return False
 
 
-def symbol_verified(out: Path, manifest: dict, symbol: str) -> bool:
+def symbol_verified(out: Path, manifest: dict, symbol: str, max_pages: int) -> bool:
     adjusted = manifest["symbols"].get(symbol) or {}
     raw = manifest["unadjusted"].get(symbol) or {}
     if not adjusted or not raw or symbol in manifest["errors"] or "adjustment_audit" not in adjusted:
         return False
-    if {adjusted.get("stop_reason"), raw.get("stop_reason")} & SUSPECT_STOPS:
-        return False
+    for entry in (adjusted, raw):
+        reason = entry.get("stop_reason")
+        if reason == STOP_NO_PROGRESS:
+            return False
+        # A MAX_PAGES series is final for this cap: re-collecting with the same (or a lower)
+        # --max-pages returns the same truncated window. Only a higher cap justifies a refetch.
+        if reason == STOP_MAX_PAGES and len(entry.get("pages") or []) < max_pages:
+            return False
     return series_verified(out, adjusted) and series_verified(out, raw)
 
 
@@ -529,7 +535,7 @@ def main(argv: list[str] | None = None, sleep=time.sleep) -> int:
 
     halted = False
     for symbol in [s.strip().upper() for s in args.symbols.split(",") if s.strip()]:
-        if args.resume and symbol_verified(out, manifest, symbol):
+        if args.resume and symbol_verified(out, manifest, symbol, args.max_pages):
             print(f"{symbol}: verified in earlier run, skipped")
             continue
         drop_symbol(manifest, symbol)

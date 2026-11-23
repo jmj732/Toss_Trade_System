@@ -247,6 +247,18 @@ class ResumeAndAuthTest(CollectorTest):
         self.assertEqual(manifest["symbols"]["QQQ"]["sha256"],
                          hashlib.sha256((self.out / "QQQ.csv").read_bytes()).hexdigest())
 
+    def test_resume_keeps_max_pages_series_unless_cap_is_raised(self):
+        backend = self.start_backend(serving({"SPY": [100.0, 101.0]}))
+        self.run_collector(backend, "--symbols", "SPY")
+        manifest = self.read_manifest()
+        for key in ("symbols", "unadjusted"):
+            manifest[key]["SPY"]["stop_reason"] = "MAX_PAGES"
+            manifest[key]["SPY"]["pages"] = manifest[key]["SPY"]["pages"] * 2
+        self.assertTrue(module.symbol_verified(self.out, manifest, "SPY", 2))
+        self.assertFalse(module.symbol_verified(self.out, manifest, "SPY", 3))
+        manifest["unadjusted"]["SPY"]["stop_reason"] = "NO_PROGRESS"
+        self.assertFalse(module.symbol_verified(self.out, manifest, "SPY", 2))
+
     def test_existing_manifest_is_refused_without_resume(self):
         backend = self.start_backend(serving({"SPY": [100.0]}))
         self.assertEqual(0, self.run_collector(backend, "--symbols", "SPY")[0])
