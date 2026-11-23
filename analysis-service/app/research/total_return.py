@@ -57,6 +57,15 @@ TOTAL_RETURN_RULE_VERSION = "ll1-total-return-v1"
 TOTAL_RETURN_BASIS = "SPLIT_AND_DIVIDEND"
 DIVIDEND_SOURCE = "yahoo-finance-chart-events-div"
 SUSPECT_STOP_REASONS = frozenset({"NO_PROGRESS", "MAX_PAGES"})
+MAX_PAGES_STOP = "MAX_PAGES"
+# Pre-registered amendment (claudedocs/leadlag-preregistration.md, 부록 A): a MAX_PAGES stop truncates only
+# the oldest history. It is accepted when both series reach back to this date or earlier. The default is the
+# first trading day of the sector SPDR ETFs (XLE..XLY first bar 1998-12-22 in the collection), and the
+# walk-forward folds start after it, so older bars are never used by the analysis.
+DEFAULT_ANALYSIS_START = date(1998, 12, 22)
+TRUNCATED_BEFORE_ANALYSIS_START = "TRUNCATED_BEFORE_ANALYSIS_START"
+TRUNCATED_AFTER_ANALYSIS_START = "TRUNCATED_AFTER_ANALYSIS_START"
+NOT_TRUNCATED = "NOT_TRUNCATED"
 OHLC_RATIO_TOLERANCE = 1e-4
 RATIO_CHANGE_EPSILON = 1e-6
 SPLIT_STEP_THRESHOLD = 0.01
@@ -172,11 +181,44 @@ def _ratio_steps(adjusted: Sequence[Bar], unadjusted: Sequence[Bar]) -> list[tup
     return steps
 
 
+def _history_truncation(
+    adjusted: Sequence[Bar],
+    unadjusted: Sequence[Bar],
+    stop_reasons: tuple[str | None, str | None],
+    analysis_start: date,
+) -> tuple[bool, dict[str, Any]]:
+    """Whether MAX_PAGES truncation is acceptable: both series' first bar is on or before analysis_start.
+
+    NO_PROGRESS is never accepted here. Returns (accepted, record). The record always holds both first dates.
+    """
+    first = {
+        "adjusted": adjusted[0].date.isoformat() if adjusted else None,
+        "unadjusted": unadjusted[0].date.isoformat() if unadjusted else None,
+    }
+    truncated = [label for label, reason in zip(("adjusted", "unadjusted"), stop_reasons)
+                 if reason == MAX_PAGES_STOP]
+    record: dict[str, Any] = {"analysis_start": analysis_start.isoformat(), "first_date": first,
+                              "max_pages_series": truncated}
+    if not truncated:
+        record["result"] = NOT_TRUNCATED
+        return False, record
+    accepted = all(first[label] is not None and date.fromisoformat(first[label]) <= analysis_start
+                   for label in ("adjusted", "unadjusted"))
+    record["result"] = TRUNCATED_BEFORE_ANALYSIS_START if accepted else TRUNCATED_AFTER_ANALYSIS_START
+    return accepted, record
+
+
 def _integrity_failures(
-    adjusted: Sequence[Bar], unadjusted: Sequence[Bar], stop_reasons: tuple[str | None, str | None]
-) -> list[str]:
+    adjusted: Sequence[Bar],
+    unadjusted: Sequence[Bar],
+    stop_reasons: tuple[str | None, str | None],
+    analysis_start: date,
+) -> tuple[list[str], dict[str, Any]]:
     failures: list[str] = []
+    truncation_accepted, truncation = _history_truncation(adjusted, unadjusted, stop_reasons, analysis_start)
     for label, reason in zip(("adjusted", "unadjusted"), stop_reasons):
+        if reason == MAX_PAGES_STOP and truncation_accepted:
+            continue
         if reason in SUSPECT_STOP_REASONS:
             failures.append(f"toss_suspect_stop_{label}:{reason}")
     adjusted_dates = {bar.date for bar in adjusted}
@@ -193,7 +235,7 @@ def _integrity_failures(
         if max(ratios) / min(ratios) - 1.0 > OHLC_RATIO_TOLERANCE:
             failures.append("toss_ohlc_ratio_mismatch")
             break
-    return failures
+    return failures, truncation
 
 
 def verify_symbol(
@@ -204,12 +246,15 @@ def verify_symbol(
     *,
     stop_reasons: tuple[str | None, str | None],
     provenance: Mapping[str, Any] | None,
+    analysis_start: date = DEFAULT_ANALYSIS_START,
 ) -> SymbolVerdict:
     """Apply the pre-registered checks to one symbol. Pure: no I/O."""
     verdict = SymbolVerdict(symbol=symbol)
     if provenance is not None:
         verdict.dividend_provenance = dict(provenance)
-    for failure in _integrity_failures(adjusted, unadjusted, stop_reasons):
+    integrity_failures, truncation = _integrity_failures(adjusted, unadjusted, stop_reasons, analysis_start)
+    verdict.checks["history_truncation"] = truncation
+    for failure in integrity_failures:
         verdict.fail(failure)
     if verdict.failures or not adjusted:
         verdict.checks["integrity"] = CHECK_FAILED if verdict.failures else CHECK_PASSED
@@ -348,7 +393,11 @@ def _load_unadjusted(toss: Path, manifest: Mapping[str, Any], symbol: str, cutof
 
 
 def build_total_return_dataset(
-    toss_dir: str | Path, dividends_dir: str | Path, out_dir: str | Path
+    toss_dir: str | Path,
+    dividends_dir: str | Path,
+    out_dir: str | Path,
+    *,
+    analysis_start: date = DEFAULT_ANALYSIS_START,
 ) -> dict[str, Any]:
     """Verify every Toss symbol, write the passing ones back-adjusted, and return the summary."""
     toss = Path(toss_dir)
@@ -374,14 +423,16 @@ def build_total_return_dataset(
             unadjusted_entry.get("stop_reason") if unadjusted_entry is not None else None,
         )
         if unadjusted_entry is None:
-            verdict = verify_symbol(symbol, adjusted, [], [], stop_reasons=stop_reasons, provenance=None)
+            verdict = verify_symbol(symbol, adjusted, [], [], stop_reasons=stop_reasons, provenance=None,
+                                    analysis_start=analysis_start)
             verdict.fail("toss_unadjusted_missing")
             verdicts[symbol] = verdict
             continue
         try:
             unadjusted = _load_unadjusted(toss, manifest, symbol, cutoff)
         except DataIntegrityError as error:
-            verdict = verify_symbol(symbol, adjusted, [], [], stop_reasons=stop_reasons, provenance=None)
+            verdict = verify_symbol(symbol, adjusted, [], [], stop_reasons=stop_reasons, provenance=None,
+                                    analysis_start=analysis_start)
             verdict.fail(f"toss_unadjusted_unreadable:{error}")
             verdicts[symbol] = verdict
             continue
@@ -456,6 +507,7 @@ def build_total_return_dataset(
                 "toss_adjustment_classification": manifest.get("adjustment_classification"),
             },
             "rules": {
+                "analysis_start": analysis_start.isoformat(),
                 "yield_range": [0.0, YIELD_MAX],
                 "split_step_threshold": SPLIT_STEP_THRESHOLD,
                 "split_window_bars": SPLIT_WINDOW_BARS,
@@ -481,6 +533,13 @@ def _write_atomic(path: Path, data: bytes) -> None:
     os.replace(temporary, path)
 
 
+def _iso_date(text: str) -> date:
+    try:
+        return date.fromisoformat(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"not an ISO date: {text!r}") from error
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m app.research.total_return",
@@ -489,9 +548,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--toss", required=True, type=Path, help="Toss collection directory with manifest.json")
     parser.add_argument("--dividends", required=True, type=Path, help="directory from fetch-yahoo-dividends.py")
     parser.add_argument("--out", required=True, type=Path, help="derived dataset directory")
+    parser.add_argument("--analysis-start", type=_iso_date, default=DEFAULT_ANALYSIS_START,
+                        help="MAX_PAGES truncation is accepted when both series start on or before this date")
     args = parser.parse_args(argv)
     try:
-        summary = build_total_return_dataset(args.toss, args.dividends, args.out)
+        summary = build_total_return_dataset(args.toss, args.dividends, args.out,
+                                             analysis_start=args.analysis_start)
     except (ResearchError, OSError, json.JSONDecodeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

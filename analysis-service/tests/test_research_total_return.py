@@ -12,6 +12,7 @@ from research_fixtures import COLLECTED_AT, synthetic_rows, weekdays
 from app.research.data import Bar, FLOAT_DECIMALS, load_dataset
 from app.research.total_return import (
     CHECK_FAILED,
+    DEFAULT_ANALYSIS_START,
     CHECK_PASSED,
     DIVIDEND_SOURCE,
     DividendEvent,
@@ -168,6 +169,86 @@ def test_toss_suspect_stop_reason_excludes_symbol() -> None:
     assert any(f.startswith("toss_suspect_stop_adjusted") for f in verdict.failures)
 
 
+def _early(start: date, count: int = 300) -> list[Bar]:
+    return flat_bars(count, start=start)
+
+
+def test_max_pages_is_accepted_when_both_series_start_on_or_before_analysis_start() -> None:
+    bars = _early(date(1995, 2, 9))
+    verdict = verify_symbol("AAPL", bars, bars, [], stop_reasons=("MAX_PAGES", "MAX_PAGES"), provenance=None)
+    assert verdict.status == CHECK_PASSED
+    truncation = verdict.checks["history_truncation"]
+    assert truncation["result"] == "TRUNCATED_BEFORE_ANALYSIS_START"
+    assert truncation["first_date"] == {"adjusted": "1995-02-09", "unadjusted": "1995-02-09"}
+    assert truncation["analysis_start"] == "1998-12-22"
+
+
+def test_default_analysis_start_is_the_sector_etf_inception_date() -> None:
+    assert DEFAULT_ANALYSIS_START == date(1998, 12, 22)
+
+
+def test_max_pages_is_rejected_when_the_first_bar_is_after_analysis_start() -> None:
+    bars = _early(date(2001, 1, 2))
+    verdict = verify_symbol("LATE", bars, bars, [], stop_reasons=("MAX_PAGES", "MAX_PAGES"), provenance=None)
+    assert verdict.status == CHECK_FAILED
+    assert "toss_suspect_stop_adjusted:MAX_PAGES" in verdict.failures
+    assert verdict.checks["history_truncation"]["result"] == "TRUNCATED_AFTER_ANALYSIS_START"
+
+
+def test_max_pages_requires_both_series_to_reach_back_to_analysis_start() -> None:
+    adjusted = _early(date(1995, 2, 9))
+    raw = _early(date(2001, 1, 2))
+    verdict = verify_symbol("MIXED", adjusted, raw, [], stop_reasons=("MAX_PAGES", "MAX_PAGES"), provenance=None)
+    assert verdict.status == CHECK_FAILED
+    assert "toss_suspect_stop_unadjusted:MAX_PAGES" in verdict.failures
+
+
+def test_no_progress_still_fails_even_when_the_first_bar_is_early() -> None:
+    bars = _early(date(1995, 2, 9))
+    verdict = verify_symbol("AAPL", bars, bars, [], stop_reasons=("NO_PROGRESS", "NO_PROGRESS"), provenance=None)
+    assert verdict.status == CHECK_FAILED
+    assert "toss_suspect_stop_adjusted:NO_PROGRESS" in verdict.failures
+
+
+def test_analysis_start_is_a_parameter() -> None:
+    bars = _early(date(2001, 1, 2))
+    verdict = verify_symbol("LATE", bars, bars, [], stop_reasons=("MAX_PAGES", "MAX_PAGES"), provenance=None,
+                            analysis_start=date(2002, 1, 1))
+    assert verdict.status == CHECK_PASSED
+
+
+def test_pipeline_accepts_truncated_early_history_and_excludes_late_truncation(tmp_path: Path) -> None:
+    early_rows = synthetic_rows(17, 300, start=date(1995, 2, 9))
+    late_rows = synthetic_rows(18, 300, start=date(2001, 1, 2))
+    early = [Bar(d, o, h, lo, c, float(v)) for d, o, h, lo, c, v in early_rows]
+    late = [Bar(d, o, h, lo, c, float(v)) for d, o, h, lo, c, v in late_rows]
+    toss = write_toss_dir(tmp_path / "toss", {"AAPL": (early, early), "LATE": (late, late)},
+                          stop_reasons={"AAPL": ("MAX_PAGES", "MAX_PAGES"), "LATE": ("MAX_PAGES", "MAX_PAGES")})
+    dividends = tmp_path / "div"
+    write_dividends(dividends, "AAPL", [])
+    write_dividends(dividends, "LATE", [])
+    out = tmp_path / "derived"
+    summary = build_total_return_dataset(toss, dividends, out)
+    assert summary["included"] == ["AAPL"]
+    assert "LATE" in summary["excluded"]
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    per_symbol = manifest["total_return"]["per_symbol"]["AAPL"]["checks"]["history_truncation"]
+    assert per_symbol["result"] == "TRUNCATED_BEFORE_ANALYSIS_START"
+    assert per_symbol["first_date"]["adjusted"] == "1995-02-09"
+    assert manifest["total_return"]["rules"]["analysis_start"] == "1998-12-22"
+
+
+def test_pipeline_no_progress_is_never_accepted(tmp_path: Path) -> None:
+    early_rows = synthetic_rows(19, 300, start=date(1995, 2, 9))
+    early = [Bar(d, o, h, lo, c, float(v)) for d, o, h, lo, c, v in early_rows]
+    toss = write_toss_dir(tmp_path / "toss", {"STALL": (early, early)},
+                          stop_reasons={"STALL": ("NO_PROGRESS", "NO_PROGRESS")})
+    dividends = tmp_path / "div"
+    write_dividends(dividends, "STALL", [])
+    with pytest.raises(TotalReturnError):
+        build_total_return_dataset(toss, dividends, tmp_path / "derived")
+
+
 def test_toss_ohlc_ratio_mismatch_excludes_symbol() -> None:
     raw = flat_bars(300)
     # Only the last adjusted bar's close moves, so its open/close ratios to raw disagree.
@@ -190,19 +271,22 @@ def _write_csv(path: Path, bars: list[Bar]) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def write_toss_dir(root: Path, series: dict[str, tuple[list[Bar], list[Bar]]]) -> Path:
+def write_toss_dir(root: Path, series: dict[str, tuple[list[Bar], list[Bar]]],
+                   stop_reasons: dict[str, tuple[str, str]] | None = None) -> Path:
     symbols: dict[str, dict] = {}
     unadjusted: dict[str, dict] = {}
+    stops = stop_reasons or {}
     for symbol, (adjusted, raw) in series.items():
+        adjusted_stop, raw_stop = stops.get(symbol, ("NO_CURSOR", "NO_CURSOR"))
         digest = _write_csv(root / f"{symbol}.csv", adjusted)
         raw_digest = _write_csv(root / "unadjusted" / f"{symbol}.csv", raw)
         pages = [{"before": None, "count": 200, "observed_at": COLLECTED_AT}]
         symbols[symbol] = {"file": f"{symbol}.csv", "sha256": digest, "rows": len(adjusted),
                            "first_date": adjusted[0].date.isoformat(), "last_date": adjusted[-1].date.isoformat(),
-                           "pages": pages, "stop_reason": "NO_CURSOR", "retries": 0, "retry_reasons": {}}
+                           "pages": pages, "stop_reason": adjusted_stop, "retries": 0, "retry_reasons": {}}
         unadjusted[symbol] = {"file": f"unadjusted/{symbol}.csv", "sha256": raw_digest, "rows": len(raw),
                               "first_date": raw[0].date.isoformat(), "last_date": raw[-1].date.isoformat(),
-                              "pages": pages, "stop_reason": "NO_CURSOR", "retries": 0, "retry_reasons": {}}
+                              "pages": pages, "stop_reason": raw_stop, "retries": 0, "retry_reasons": {}}
     manifest = {"provider": "TOSS", "endpoint": "/api/v1/candles", "interval": "1d", "adjusted": True,
                 "adjustment_basis": "UNVERIFIED", "collected_at": COLLECTED_AT, "resumed_at": [],
                 "date_basis": "America/New_York date of candle timestamp", "symbols": symbols,
