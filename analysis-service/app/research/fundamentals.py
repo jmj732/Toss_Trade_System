@@ -101,6 +101,8 @@ class Quarter:
     filed: date
     available_at: datetime
     availability_source: str
+    fiscal_year: int | None = None  # provenance only: describes the filing, not the period
+    fiscal_period: str | None = None
 
 
 def parse_date(value) -> date | None:
@@ -122,6 +124,15 @@ def parse_acceptance(value) -> datetime | None:
     except ValueError:
         return None
     return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def acceptance_value(value) -> datetime | None:
+    """Exact 00:00:00 New York time is a date-only placeholder (every pre-2005 midnight acceptance in the collected
+    data is exact). It is treated as missing, so the filed-date fallback applies."""
+    acceptance = parse_acceptance(value)
+    if acceptance is not None and acceptance.astimezone(NEW_YORK).time() == time(0, 0, 0):
+        return None
+    return acceptance
 
 
 def end_of_filing_day(filed: date) -> datetime:
@@ -148,7 +159,7 @@ def filing_index(submission_pages: list[dict]) -> dict[str, Filing]:
             if form not in ELIGIBLE_FORMS or filed is None or not isinstance(accession, str):
                 continue
             index[accession] = Filing(accession, form, filed, parse_date(_at(columns[2], position)),
-                                      parse_acceptance(_at(columns[3], position)))
+                                      acceptance_value(_at(columns[3], position)))
     return index
 
 
@@ -262,10 +273,10 @@ def _derive_one_concept(rows: list[Row], group: str, filings: dict[str, Filing])
                     candidates.append((start, row.end, row.value - prior.value, row.concept, "FY_MINUS_9M",
                                        row.accession, row.filed, row.form, row))
     quarters = []
-    for start, end, value, concept, method, accession, filed, form, _ in candidates:
+    for start, end, value, concept, method, accession, filed, form, source_row in candidates:
         available_at, source = availability(filings, accession, filed)
         quarters.append(Quarter(group, start, end, value, concept, method, accession, form, filed,
-                                available_at, source))
+                                available_at, source, source_row.fy, source_row.fp))
     return quarters
 
 
@@ -355,6 +366,7 @@ def _index_by_end(resolved_group: dict[tuple[date, date], Resolved]):
 
 
 def _assets(facts: dict, filings: dict[str, Filing]) -> dict[date, dict]:
+    """Total assets per balance-sheet date: first print (earliest availability) and latest print (latest filed)."""
     rows = []
     namespace = facts.get("facts", {}).get("us-gaap", {})
     for item in namespace.get(ASSETS_TAG, {}).get("units", {}).get("USD", []):
@@ -362,84 +374,114 @@ def _assets(facts: dict, filings: dict[str, Filing]) -> dict[date, dict]:
         filed = parse_date(item.get("filed"))
         value = _decimal(item.get("val"))
         if item.get("form") in ELIGIBLE_FORMS and end and filed and value is not None and item.get("accn"):
-            rows.append((end, value, item["accn"], filed, item["form"]))
+            rows.append({"end": end, "value": value, "accession": item["accn"], "filed": filed,
+                         "form": item["form"], "fy": _int(item.get("fy")), "fp": item.get("fp") or None})
     result: dict[date, dict] = {}
-    for end in {row[0] for row in rows}:
-        versions = [row for row in rows if row[0] == end]
-        ordered = sorted(versions, key=lambda row: (availability(filings, row[2], row[3])[0], row[2]))
+    for end in {row["end"] for row in rows}:
+        versions = [row for row in rows if row["end"] == end]
+        ordered = sorted(versions, key=lambda r: (availability(filings, r["accession"], r["filed"])[0], r["accession"]))
         head = ordered[0]
-        head_at = availability(filings, head[2], head[3])
-        same_time = [row for row in ordered if availability(filings, row[2], row[3]) == head_at]
-        first_value = head[1] if all(row[1] == head[1] for row in same_time) else None
-        latest_filed = max(row[3] for row in versions)
-        latest_rows = [row for row in versions if row[3] == latest_filed]
-        latest_value = latest_rows[0][1] if all(row[1] == latest_rows[0][1] for row in latest_rows) else None
-        result[end] = {"first": first_value, "first_at": head_at[0], "first_source": head_at[1],
-                       "latest": latest_value, "accession": head[2], "concept": ASSETS_TAG}
+        head_at, head_source = availability(filings, head["accession"], head["filed"])
+        same_time = [r for r in ordered if availability(filings, r["accession"], r["filed"])[0] == head_at]
+        first_value = head["value"] if all(r["value"] == head["value"] for r in same_time) else None
+        latest_filed = max(r["filed"] for r in versions)
+        latest_rows = [r for r in versions if r["filed"] == latest_filed]
+        latest_value = (latest_rows[0]["value"]
+                        if all(r["value"] == latest_rows[0]["value"] for r in latest_rows) else None)
+        result[end] = {"first": first_value, "first_at": head_at, "first_source": head_source,
+                       "accession": head["accession"], "form": head["form"], "filed": head["filed"],
+                       "fiscal_year": head["fy"], "fiscal_period": head["fp"], "latest": latest_value,
+                       "latest_accession": latest_rows[0]["accession"], "latest_filed": latest_filed}
     return result
+
+
+def _iso(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def _component(quarter: Quarter, latest: Quarter | None) -> dict:
+    data = {"group": quarter.group, "start": quarter.start.isoformat(), "end": quarter.end.isoformat(),
+            "method": quarter.method, "concept": quarter.concept, "value": str(quarter.value),
+            "accession": quarter.accession, "form": quarter.form, "filed": quarter.filed.isoformat(),
+            "available_at": _iso(quarter.available_at), "availability_source": quarter.availability_source,
+            "fiscal_year": quarter.fiscal_year, "fiscal_period": quarter.fiscal_period,
+            "latest_value": None, "latest_accession": None, "latest_filed": None}
+    if latest is not None:
+        data.update({"latest_value": str(latest.value), "latest_accession": latest.accession,
+                     "latest_filed": latest.filed.isoformat()})
+    return data
 
 
 def _panel_row(symbol, cik, end, by_end, filings, assets) -> dict:
     row: dict = {"symbol": symbol, "cik": cik, "period_end": end.isoformat(), "status": "OK",
-                 "gp_a_first": None, "gp_a_latest": None, "gross_profit_method": None,
-                 "revenue_ttm_first": None, "cogs_ttm_first": None, "gross_profit_ttm_first": None,
-                 "assets_first": None, "available_at": None, "availability_source": None,
-                 "revenue_concepts": None, "cogs_concepts": None, "assets_concept": None,
-                 "amended_components": [], "quarter_method": None}
-    components = {}
-    for group in ("revenue", "cogs", "gross_profit"):
-        first = ttm_components(end, by_end[group], "first")
-        latest = ttm_components(end, by_end[group], "latest")
-        components[group] = (first, latest)
-    rev_first, rev_latest = components["revenue"]
-    cogs_first, cogs_latest = components["cogs"]
-    gp_first, gp_latest = components["gross_profit"]
-    asset = assets.get(end)
+                 "revenue_ttm_first": None, "revenue_ttm_latest": None, "revenue_concepts": None,
+                 "cogs_ttm_first": None, "cogs_ttm_latest": None, "cogs_concepts": None,
+                 "gross_profit_ttm_first": None, "gross_profit_ttm_latest": None, "gross_profit_method": None,
+                 "assets_first": None, "assets_latest": None, "assets_concept": None,
+                 "gp_a_first": None, "gp_a_latest": None, "quarter_method": None,
+                 "available_at": None, "availability_source": None, "fallback_components": 0,
+                 "amended_components": [], "components": []}
+    chains = {group: (ttm_components(end, by_end[group], "first"), ttm_components(end, by_end[group], "latest"))
+              for group in ("revenue", "cogs", "gross_profit")}
+    rev_first, rev_latest = chains["revenue"]
     if rev_first is None:
         row["status"] = "NO_REVENUE_TTM"
         return row
     revenue_first = sum(q.value for q in rev_first)
     row["revenue_ttm_first"] = str(revenue_first)
     row["revenue_concepts"] = [q.concept for q in rev_first]
+    row["quarter_method"] = rev_first[0].method
+    if rev_latest:
+        row["revenue_ttm_latest"] = str(sum(q.value for q in rev_latest))
+    components = [_component(q, rev_latest[i] if rev_latest else None) for i, q in enumerate(rev_first)]
     used = list(rev_first)
+    cogs_first, cogs_latest = chains["cogs"]
+    gp_first, gp_latest = chains["gross_profit"]
     if cogs_first is not None:
         cogs_value = sum(q.value for q in cogs_first)
         gross = revenue_first - cogs_value
+        cogs_latest_value = sum(q.value for q in cogs_latest) if cogs_latest else None
+        gross_latest = (sum(q.value for q in rev_latest) - cogs_latest_value
+                        if rev_latest and cogs_latest_value is not None else None)
         method = "REVENUE_MINUS_COGS"
-        used += cogs_first
         row["cogs_ttm_first"] = str(cogs_value)
         row["cogs_concepts"] = [q.concept for q in cogs_first]
-        gross_latest = None
-        if rev_latest and cogs_latest:
-            gross_latest = sum(q.value for q in rev_latest) - sum(q.value for q in cogs_latest)
+        if cogs_latest_value is not None:
+            row["cogs_ttm_latest"] = str(cogs_latest_value)
+        components += [_component(q, cogs_latest[i] if cogs_latest else None) for i, q in enumerate(cogs_first)]
+        used += cogs_first
     elif gp_first is not None:
         gross = sum(q.value for q in gp_first)
-        method = "GROSS_PROFIT_TAG"
-        used += gp_first
         gross_latest = sum(q.value for q in gp_latest) if gp_latest else None
+        method = "GROSS_PROFIT_TAG"
         row["cogs_concepts"] = [GROSS_PROFIT_TAG]
+        components += [_component(q, gp_latest[i] if gp_latest else None) for i, q in enumerate(gp_first)]
+        used += gp_first
     else:
         row["status"] = "NO_COGS_OR_GROSS_PROFIT_TTM"
         return row
     row["gross_profit_method"] = method
     row["gross_profit_ttm_first"] = str(gross)
+    if gross_latest is not None:
+        row["gross_profit_ttm_latest"] = str(gross_latest)
+    asset = assets.get(end)
     if asset is None or asset["first"] is None:
         row["status"] = "NO_ASSETS"
         return row
     row["assets_first"] = str(asset["first"])
     row["assets_concept"] = ASSETS_TAG
-    used_at = [q.available_at for q in used] + [asset["first_at"]]
-    available = max(used_at)
-    row["available_at"] = available.isoformat().replace("+00:00", "Z")
+    if asset["latest"] is not None:
+        row["assets_latest"] = str(asset["latest"])
+    available = max([q.available_at for q in used] + [asset["first_at"]])
     fallback_count = sum(1 for q in used if q.availability_source == FALLBACK_SOURCE)
     fallback_count += 1 if asset["first_source"] == FALLBACK_SOURCE else 0
+    row["available_at"] = _iso(available)
     row["availability_source"] = FALLBACK_SOURCE if fallback_count else ACCEPTANCE_SOURCE
     row["fallback_components"] = fallback_count
     if asset["first"] > 0:
         row["gp_a_first"] = float(gross / asset["first"])
-    latest_assets = asset["latest"]
-    if gross_latest is not None and latest_assets:
-        row["gp_a_latest"] = float(gross_latest / latest_assets)
+    if gross_latest is not None and asset["latest"]:
+        row["gp_a_latest"] = float(gross_latest / asset["latest"])
     amended = []
     for name, first_chain, latest_chain in (("revenue", rev_first, rev_latest), ("cogs", cogs_first, cogs_latest),
                                             ("gross_profit", gp_first, gp_latest)):
@@ -448,7 +490,15 @@ def _panel_row(symbol, cik, end, by_end, filings, assets) -> dict:
     if asset["latest"] is not None and asset["latest"] != asset["first"]:
         amended.append("assets")
     row["amended_components"] = amended
-    row["quarter_method"] = rev_first[0].method
+    components.append({"group": "assets", "end": end.isoformat(), "method": "INSTANT", "concept": ASSETS_TAG,
+                       "value": str(asset["first"]), "accession": asset["accession"], "form": asset["form"],
+                       "filed": asset["filed"].isoformat(), "available_at": _iso(asset["first_at"]),
+                       "availability_source": asset["first_source"], "fiscal_year": asset["fiscal_year"],
+                       "fiscal_period": asset["fiscal_period"],
+                       "latest_value": None if asset["latest"] is None else str(asset["latest"]),
+                       "latest_accession": asset["latest_accession"],
+                       "latest_filed": asset["latest_filed"].isoformat()})
+    row["components"] = components
     return row
 
 

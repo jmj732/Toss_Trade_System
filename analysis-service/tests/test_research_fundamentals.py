@@ -96,6 +96,22 @@ class AcceptanceAndTimestampTest(unittest.TestCase):
         self.assertEqual(index["OLD1"].report_date, date(2008, 12, 31))
 
 
+class PlaceholderAndProvenanceTest(unittest.TestCase):
+    def test_exact_new_york_midnight_acceptance_is_treated_as_a_placeholder(self):
+        self.assertIsNone(f.acceptance_value("2004-03-01T05:00:00.000Z"))  # 00:00 EST
+        self.assertIsNotNone(f.acceptance_value("2004-03-01T05:00:01.000Z"))
+
+    def test_components_carry_fiscal_provenance_and_latest_values(self):
+        row = row_at(panel_for(base_us_gaap()), "2020-12-31")
+        self.assertEqual(len(row["components"]), 9)  # four revenue, four COGS, one assets
+        revenue = [c for c in row["components"] if c["group"] == "revenue"]
+        self.assertEqual(sorted(c["fiscal_year"] for c in revenue), [2020, 2020, 2020, 2020])
+        self.assertEqual(row["components"][-1]["group"], "assets")
+        self.assertEqual(row["revenue_ttm_latest"], row["revenue_ttm_first"])
+        self.assertEqual(row["assets_latest"], "1000")
+        self.assertEqual(revenue[0]["latest_value"], revenue[0]["value"])
+
+
 class QuarterDerivationTest(unittest.TestCase):
     def test_fy_end_ttm_matches_annual_and_uses_q4_from_fy_minus_9m(self):
         panel = panel_for(base_us_gaap())
