@@ -148,25 +148,33 @@ def parse(body: bytes, expected_symbol: str) -> tuple[list[dict], dict]:
     if any(not isinstance(values, list) or len(values) != len(timestamps) for values in arrays.values()):
         raise CollectionError("indicator arrays do not match timestamps")
     rows = []
+    skipped_null_rows = 0
+    skipped_invalid_rows = 0
     for index, stamp in enumerate(timestamps):
         values = {key: arrays[key][index] for key in arrays}
         if any(value is None for value in values.values()):
+            skipped_null_rows += 1
             continue
         date = datetime.fromtimestamp(int(stamp), tz=timezone.utc).astimezone(NEW_YORK).date().isoformat()
         parsed = {key: _finite(value, f"{date}.{key}") for key, value in values.items()}
         if min(parsed[k] for k in ("open", "high", "low", "close", "adjclose")) <= 0:
             raise CollectionError(f"{date}: prices must be positive")
-        if parsed["volume"] < 0 or parsed["high"] < max(parsed["open"], parsed["close"], parsed["low"]):
-            raise CollectionError(f"{date}: invalid OHLCV")
-        if parsed["low"] > min(parsed["open"], parsed["close"], parsed["high"]):
-            raise CollectionError(f"{date}: invalid low")
+        if (parsed["volume"] < 0
+                or parsed["high"] < max(parsed["open"], parsed["close"], parsed["low"])
+                or parsed["low"] > min(parsed["open"], parsed["close"], parsed["high"])):
+            # Preserve provider defects as a count rather than synthesizing a corrected bar.
+            # Any event whose entry/exit date lands on this omitted row is later excluded.
+            skipped_invalid_rows += 1
+            continue
         factor = parsed["adjclose"] / parsed["close"]
         rows.append({"date": date, **parsed, "adjustment_factor": factor,
                      "adjusted_open": parsed["open"] * factor})
     if not rows or any(a["date"] >= b["date"] for a, b in zip(rows, rows[1:])):
         raise CollectionError("rows are empty, duplicate, or unordered")
     return rows, {"exchange_timezone": meta.get("exchangeTimezoneName"),
-                  "currency": meta.get("currency"), "instrument_type": meta.get("instrumentType")}
+                  "currency": meta.get("currency"), "instrument_type": meta.get("instrumentType"),
+                  "skipped_null_rows": skipped_null_rows,
+                  "skipped_invalid_rows": skipped_invalid_rows}
 
 
 def atomic(path: Path, data: bytes) -> None:

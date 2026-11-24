@@ -50,6 +50,10 @@ def main() -> None:
         path = Path(directory) / "x.csv"
         module.atomic(path, encoded)
         assert path.read_bytes() == encoded
+    invalid_bar = json.loads(sample())
+    invalid_bar["chart"]["result"][0]["indicators"]["quote"][0]["low"][1] = 11.5
+    filtered, filtered_meta = module.parse(json.dumps(invalid_bar).encode(), "BRK-B")
+    assert len(filtered) == 1 and filtered_meta["skipped_invalid_rows"] == 1
     broken = json.loads(sample())
     broken["chart"]["result"][0]["meta"]["symbol"] = "OTHER"
     expect_error(lambda: module.parse(json.dumps(broken).encode(), "BRK-B"))
