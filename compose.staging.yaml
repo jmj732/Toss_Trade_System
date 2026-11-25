@@ -39,6 +39,17 @@ services:
           memory: ${STAGING_ANALYSIS_MEMORY_LIMIT:-256m}
           cpus: "${STAGING_ANALYSIS_CPU_LIMIT:-0.5}"
 
+  ev1:
+    image: ${EV1_IMAGE:-trade-ev1:staging}
+    build:
+      context: .
+      dockerfile: scripts/ev1/Dockerfile
+    deploy:
+      resources:
+        limits:
+          memory: ${STAGING_EV1_MEMORY_LIMIT:-512m}
+          cpus: "${STAGING_EV1_CPU_LIMIT:-0.5}"
+
   # One-shot Flyway migration. Runs before any backend replica starts and exits; backend
   # itself has SPRING_FLYWAY_ENABLED=false below, so migration happens exactly once
   # regardless of how many backend replicas are started. See

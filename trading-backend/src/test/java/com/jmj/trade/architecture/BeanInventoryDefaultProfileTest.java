@@ -67,6 +67,7 @@ class BeanInventoryDefaultProfileTest extends PostgresIntegrationTest {
             "dashboardReadModelController : com.jmj.trade.dashboard.DashboardReadModelController",
             "dashboardReadModelService : com.jmj.trade.dashboard.DashboardReadModelService",
             "dashboardRedirects : com.jmj.trade.security.DashboardRedirects",
+            "ev1StatusReader : com.jmj.trade.connector.Ev1StatusReader",
             "eventIntelligenceController : com.jmj.trade.intelligence.EventIntelligenceController",
             "eventIntelligenceService : com.jmj.trade.intelligence.EventIntelligenceService",
             "eventReviewWorkflowService : com.jmj.trade.intelligence.EventReviewWorkflowService",

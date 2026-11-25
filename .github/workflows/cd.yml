@@ -61,11 +61,23 @@ jobs:
           cache-to: type=gha,scope=cd-dashboard,mode=max,ignore-error=true
           build-args: BACKEND_URL=http://backend:8080
 
+      - name: Build EV-1 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: scripts/ev1/Dockerfile
+          pull: true
+          load: true
+          tags: trade-ev1:${{ env.DEPLOY_SHA }}
+          cache-from: type=gha,scope=cd-ev1
+          cache-to: type=gha,scope=cd-ev1,mode=max,ignore-error=true
+
       - name: Stream image and deploy over pinned SSH
         env:
           IMAGE_TAG: trade-backend:${{ env.DEPLOY_SHA }}
           ANALYSIS_IMAGE: trade-analysis:${{ env.DEPLOY_SHA }}
           DASHBOARD_IMAGE: trade-dashboard:${{ env.DEPLOY_SHA }}
+          EV1_IMAGE: trade-ev1:${{ env.DEPLOY_SHA }}
           BACKEND_DEPLOY_HOST: ${{ secrets.BACKEND_DEPLOY_HOST }}
           BACKEND_DEPLOY_PORT: ${{ secrets.BACKEND_DEPLOY_PORT }}
           BACKEND_DEPLOY_USER: ${{ secrets.BACKEND_DEPLOY_USER }}
@@ -114,13 +126,14 @@ jobs:
             \( \
               -name '.[0-9a-f]*-trade-backend_*.tar.gz' -o \
               -name '.[0-9a-f]*-trade-analysis_*.tar.gz' -o \
-              -name '.[0-9a-f]*-trade-dashboard_*.tar.gz' \
+              -name '.[0-9a-f]*-trade-dashboard_*.tar.gz' -o \
+              -name '.[0-9a-f]*-trade-ev1_*.tar.gz' \
             \) -delete
           container_image_refs="$(docker ps -aq | while IFS= read -r container_id; do
             docker inspect --format '{{.Config.Image}}' "$container_id"
           done)"
           docker image ls --format '{{.Repository}}:{{.Tag}}' |
-            awk '/^trade-(backend|analysis|dashboard):/ { print }' |
+            awk '/^trade-(backend|analysis|dashboard|ev1):/ { print }' |
             while IFS= read -r image; do
               if grep -Fqx "$image" <<<"$container_image_refs"; then
                 printf 'keeping container image %s\n' "$image"
@@ -178,11 +191,13 @@ jobs:
           stream_image "$IMAGE_TAG"
           stream_image "$ANALYSIS_IMAGE"
           stream_image "$DASHBOARD_IMAGE"
+          stream_image "$EV1_IMAGE"
 
           remote_path="$(printf '%q' "$BACKEND_DEPLOY_PATH")"
           remote_image="$(printf '%q' "$IMAGE_TAG")"
           remote_analysis_image="$(printf '%q' "$ANALYSIS_IMAGE")"
           remote_dashboard_image="$(printf '%q' "$DASHBOARD_IMAGE")"
+          remote_ev1_image="$(printf '%q' "$EV1_IMAGE")"
           # The quoted path is intentionally expanded locally into the remote command.
           # shellcheck disable=SC2029
           tar -czf - compose.yaml compose.staging.yaml compose.staging.credentialed.yaml |
@@ -192,7 +207,7 @@ jobs:
           # The quoted values are intentionally expanded locally into the remote command.
           # shellcheck disable=SC2029
           ssh "${ssh_args[@]}" "$BACKEND_DEPLOY_USER@$BACKEND_DEPLOY_HOST" \
-            "DEPLOY_PATH=$remote_path IMAGE_TAG=$remote_image ANALYSIS_IMAGE=$remote_analysis_image DASHBOARD_IMAGE=$remote_dashboard_image bash -s" <<'REMOTE'
+            "DEPLOY_PATH=$remote_path IMAGE_TAG=$remote_image ANALYSIS_IMAGE=$remote_analysis_image DASHBOARD_IMAGE=$remote_dashboard_image EV1_IMAGE=$remote_ev1_image bash -s" <<'REMOTE'
           set -euo pipefail
           cd -- "$DEPLOY_PATH"
           export PATH="$HOME/bin:$PATH"
@@ -204,12 +219,20 @@ jobs:
             BACKEND_IMAGE="$IMAGE_TAG" \
             ANALYSIS_IMAGE="$ANALYSIS_IMAGE" \
             DASHBOARD_IMAGE="$DASHBOARD_IMAGE" \
+            EV1_IMAGE="$EV1_IMAGE" \
             docker compose \
               -f compose.yaml \
               -f compose.staging.yaml \
               -f compose.staging.credentialed.yaml \
-              up --no-build -d --wait migrate backend dashboard
+              --profile ev1 \
+              up --no-build -d --wait migrate backend dashboard ev1
           curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null
+          doppler run --project trade --config stg -- env EV1_IMAGE="$EV1_IMAGE" \
+            docker compose -f compose.yaml -f compose.staging.yaml -f compose.staging.credentialed.yaml \
+              --profile ev1 exec -T ev1 python3 /app/scripts/ev1-status.py \
+              --manifest /var/lib/ev1/forward/manifest.json \
+              --runner-status /var/lib/ev1/runner-health.json \
+              --max-age-seconds "${EV1_MAX_AGE_SECONDS:-3600}"
           REMOTE
 
   deploy-vercel:

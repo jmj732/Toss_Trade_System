@@ -52,6 +52,7 @@ public final class ConnectorMcpProtocol {
     private final InvestmentRiskEventService investmentRiskEventService;
     private final com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService;
     private final InvestmentStrategicBuyRevalidationService strategicBuyRevalidationService;
+    private final Ev1StatusReader ev1StatusReader;
     private final ObjectMapper objectMapper;
     private static final Logger LOG = LoggerFactory.getLogger(ConnectorMcpProtocol.class);
 
@@ -70,6 +71,7 @@ public final class ConnectorMcpProtocol {
                          ObjectProvider<InvestmentRiskEventService> investmentRiskEventService,
                          ObjectProvider<com.jmj.trade.investment.InvestmentSellReadinessService> sellReadinessService,
                          ObjectProvider<InvestmentStrategicBuyRevalidationService> strategicBuyRevalidationService,
+                         ObjectProvider<Ev1StatusReader> ev1StatusReader,
                          ObjectMapper objectMapper) {
         this(service, tradeService.getIfAvailable(), investmentContextService.getIfAvailable(),
                 investmentReviewService.getIfAvailable(), thesisVerificationService.getIfAvailable(),
@@ -77,6 +79,7 @@ public final class ConnectorMcpProtocol {
                 investmentRiskEventService.getIfAvailable(),
                 sellReadinessService.getIfAvailable(),
                 strategicBuyRevalidationService.getIfAvailable(),
+                ev1StatusReader.getIfAvailable(),
                 objectMapper);
     }
 
@@ -153,6 +156,23 @@ public final class ConnectorMcpProtocol {
                          com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService,
                          InvestmentStrategicBuyRevalidationService strategicBuyRevalidationService,
                          ObjectMapper objectMapper) {
+        this(service, tradeService, investmentContextService, investmentReviewService,
+                thesisVerificationService, investmentOnboardingService, investmentRiskPreflightService,
+                investmentRiskEventService, sellReadinessService, strategicBuyRevalidationService,
+                null, objectMapper);
+    }
+
+    ConnectorMcpProtocol(ConnectorService service, McpOrderExecutionService tradeService,
+                         InvestmentContextService investmentContextService,
+                         InvestmentReviewService investmentReviewService,
+                         InvestmentThesisVerificationService thesisVerificationService,
+                         InvestmentOnboardingService investmentOnboardingService,
+                         InvestmentRiskPreflightService investmentRiskPreflightService,
+                         InvestmentRiskEventService investmentRiskEventService,
+                         com.jmj.trade.investment.InvestmentSellReadinessService sellReadinessService,
+                         InvestmentStrategicBuyRevalidationService strategicBuyRevalidationService,
+                         Ev1StatusReader ev1StatusReader,
+                         ObjectMapper objectMapper) {
         this.service = service;
         this.tradeService = tradeService;
         this.investmentContextService = investmentContextService;
@@ -163,6 +183,7 @@ public final class ConnectorMcpProtocol {
         this.investmentRiskEventService = investmentRiskEventService;
         this.sellReadinessService = sellReadinessService;
         this.strategicBuyRevalidationService = strategicBuyRevalidationService;
+        this.ev1StatusReader = ev1StatusReader;
         this.objectMapper = objectMapper;
     }
 
@@ -254,6 +275,13 @@ public final class ConnectorMcpProtocol {
                 "Get portfolio",
                 "Read the latest Toss Invest portfolio snapshot. If stale or partial is true, treat the data as uncertain and do not size or submit trades.",
                 emptySchema(), objectSchema()));
+        if (ev1StatusReader != null) {
+            tools.add(tool(
+                    "get_ev1_status",
+                    "Get EV-1 status",
+                    "Read the persisted EV-1 forward-validation recorder status and metrics. This is read-only, does not refresh providers, alter preregistration rules, access a database, or place orders.",
+                    emptySchema(), ev1StatusSchema()));
+        }
         tools.add(tool(
                 "get_orders",
                 "Get orders",
@@ -385,6 +413,7 @@ public final class ConnectorMcpProtocol {
             var arguments = params.path("arguments");
             var response = switch (name) {
                 case "get_portfolio" -> toolResult(request, service.portfolio(userId, connectionId));
+                case "get_ev1_status" -> ev1Status(request);
                 case "get_orders" -> toolResult(request, envelope("orders", service.orders(userId, connectionId,
                         optionalText(arguments, "group", "OPEN"))));
                 case "get_recent_fills" -> toolResult(request, envelope("fills", service.fills(userId, connectionId,
@@ -488,6 +517,13 @@ public final class ConnectorMcpProtocol {
             }
             return toolError(request, "CONNECTOR_ERROR", "Connector tool failed", false, false);
         }
+    }
+
+    private ObjectNode ev1Status(ObjectNode request) {
+        if (ev1StatusReader == null) {
+            return toolError(request, "EV1_STATUS_UNAVAILABLE", "EV-1 status is unavailable", true, false);
+        }
+        return toolResult(request, ev1StatusReader.read());
     }
 
     private ObjectNode toolResult(ObjectNode request, Object value) {
@@ -1412,6 +1448,22 @@ public final class ConnectorMcpProtocol {
     private ObjectNode emptySchema() {
         return objectMapper.createObjectNode().put("type", "object")
                 .set("properties", objectMapper.createObjectNode());
+    }
+
+    private ObjectNode ev1StatusSchema() {
+        var properties = objectMapper.createObjectNode();
+        properties.set("status", enumSchema("healthy", "stale", "error", "missing", "malformed"));
+        properties.set("health", enumSchema("green", "red"));
+        properties.set("manifest", stringSchema());
+        properties.set("error_count", nullableIntegerSchema());
+        properties.set("last_poll_age_seconds", nullableNumberSchema());
+        properties.set("stale", booleanSchema());
+        properties.set("progress", objectMapper.createObjectNode().put("type", "object"));
+        properties.set("metrics", objectMapper.createObjectNode().put("type", "object"));
+        properties.set("runner_status", objectMapper.createObjectNode().put("type", "object"));
+        properties.set("error", nullableStringSchema());
+        return closedObject(properties, "status", "health", "manifest", "error_count",
+                "last_poll_age_seconds", "stale", "progress", "metrics", "runner_status", "error");
     }
 
     private ObjectNode ordersSchema() {
