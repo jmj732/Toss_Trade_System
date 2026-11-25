@@ -66,13 +66,10 @@ refresh_prices() {
 }
 
 while :; do
-  PRICE_REFRESH_ATTEMPTED=0
-  PRICE_REFRESH_FAILED=0
-  if ! refresh_prices; then
-    PRICE_REFRESH_FAILED=1
-    write_runner_status "error" "yahoo_refresh" || true
-    printf '%s\n' 'EV-1 Yahoo refresh failed; retained prior price files' >&2
-  fi
+  # Poll SEC first so manifest/observed_at/health exist before the expensive
+  # full-universe Yahoo refresh. Events without a price bar are retained and
+  # re-evaluated on the next poll after refresh completes.
+  poll_ok=0
   if python3 /app/scripts/ev1-recorder.py \
     --universe "$UNIVERSE" \
     --price-dir "$PRICE_DIR" \
@@ -81,12 +78,19 @@ while :; do
     --min-interval "${EV1_SEC_MIN_INTERVAL_SECONDS:-0.2}" \
     --max-retries "${EV1_SEC_MAX_RETRIES:-4}" \
     --backoff "${EV1_SEC_BACKOFF_SECONDS:-2.0}"; then
-    if [ "$PRICE_REFRESH_FAILED" -eq 0 ] && [ "$PRICE_REFRESH_ATTEMPTED" -eq 1 ]; then
-      write_runner_status "healthy" "all" || true
-    fi
+    poll_ok=1
+    write_runner_status "healthy" "sec_poll" || true
   else
     write_runner_status "error" "sec_poll" || true
     printf '%s\n' 'EV-1 SEC poll failed; retained manifest and will retry' >&2
+  fi
+  if [ "$poll_ok" -eq 1 ]; then
+    if ! refresh_prices; then
+      write_runner_status "error" "yahoo_refresh" || true
+      printf '%s\n' 'EV-1 Yahoo refresh failed; retained prior price files' >&2
+    else
+      write_runner_status "healthy" "all" || true
+    fi
   fi
   sleep "$POLL_INTERVAL"
 done
