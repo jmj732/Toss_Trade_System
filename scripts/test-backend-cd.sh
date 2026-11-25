@@ -91,7 +91,7 @@ if grep -En 'BEGIN (RSA|OPENSSH) PRIVATE KEY|ghp_[A-Za-z0-9]|DOPPLER_TOKEN=' \
   fail "credential-like value found in CD configuration"
 fi
 
-grep -q 'up --no-build -d --wait migrate backend dashboard' "$workflow" ||
+grep -q 'up --no-build -d --wait migrate backend dashboard ev1' "$workflow" ||
   fail "server deploy must use only the transferred images"
 grep -q 'cleanup_on_exit()' "$workflow" ||
   fail "server deploy must define an exit cleanup"
@@ -118,6 +118,14 @@ grep -Fq -- "-name '.[0-9a-f]*-trade-analysis_*.tar.gz'" "$workflow" ||
   fail "server deploy must clean analysis transfer archives"
 grep -Fq -- "-name '.[0-9a-f]*-trade-dashboard_*.tar.gz'" "$workflow" ||
   fail "server deploy must clean dashboard transfer archives"
+grep -Fq -- "-name '.[0-9a-f]*-trade-ev1_*.tar.gz'" "$workflow" ||
+  fail "server deploy must clean EV1 transfer archives"
+grep -q 'python3 /app/scripts/ev1-status.py' "$workflow" ||
+  fail "server deploy must verify EV1 status"
+grep -q -- '--manifest /var/lib/ev1/forward/manifest.json' "$workflow" ||
+  fail "server deploy must verify the EV1 manifest"
+grep -q -- '--runner-status /var/lib/ev1/runner-health.json' "$workflow" ||
+  fail "server deploy must verify EV1 runner health"
 if bash -c '
   cleanup_on_exit() {
     local exit_status=$?
