@@ -50,6 +50,24 @@ if ! awk '
 ' compose.staging.yaml; then
   fail "the one-shot migration service must keep overriding the backend Java entrypoint"
 fi
+grep -q 'memory: ${STAGING_EV1_MEMORY_LIMIT:-1024m}' compose.staging.yaml ||
+  fail "EV-1 staging memory default must be 1024m"
+for diagnostic_field in OOMKilled ExitCode Status; do
+  grep -q "{{.State.$diagnostic_field}}" "$workflow" ||
+    fail "EV-1 deploy failure diagnostics must include $diagnostic_field"
+done
+if ! awk '
+  /EV-1 deployment failed; collecting non-secret Compose diagnostics/ { in_failure=1 }
+  in_failure && /docker inspect --format/ { found_inspect=1 }
+  in_failure && /^            exit 1$/ {
+    if (!found_inspect) exit 1
+    found_failure=1
+    exit
+  }
+  END { if (!found_failure) exit 1 }
+' "$workflow"; then
+  fail "EV-1 state diagnostics must run before deployment failure exits"
+fi
 grep -q 'context: analysis-service' "$workflow" || fail "missing analysis build context"
 grep -q 'context: web-dashboard' "$workflow" || fail "missing dashboard build context"
 grep -q 'build-args: BACKEND_URL=http://backend:8080' "$workflow" ||
