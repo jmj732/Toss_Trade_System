@@ -233,6 +233,15 @@ jobs:
             doppler run --project trade --config stg -- env EV1_IMAGE="$EV1_IMAGE" \
               docker compose -f compose.yaml -f compose.staging.yaml -f compose.staging.credentialed.yaml \
                 --profile ev1 logs --no-color --tail=300 ev1 || true
+            ev1_container_id="$(doppler run --project trade --config stg -- env EV1_IMAGE="$EV1_IMAGE" \
+              docker compose -f compose.yaml -f compose.staging.yaml -f compose.staging.credentialed.yaml \
+                --profile ev1 ps -aq ev1 || true)"
+            if [[ -n "$ev1_container_id" ]]; then
+              docker inspect --format 'EV-1 state: OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} Status={{.State.Status}}' \
+                "$ev1_container_id" || true
+            else
+              echo 'EV-1 container state unavailable: no container found' >&2
+            fi
             exit 1
           fi
           curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null

@@ -47,7 +47,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${STAGING_EV1_MEMORY_LIMIT:-512m}
+          memory: ${STAGING_EV1_MEMORY_LIMIT:-1024m}
           cpus: "${STAGING_EV1_CPU_LIMIT:-0.5}"
 
   # One-shot Flyway migration. Runs before any backend replica starts and exits; backend

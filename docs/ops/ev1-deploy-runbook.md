@@ -36,6 +36,12 @@ The recorder persists a non-secret SEC CIK/SIC mapping in `universe-metadata.jso
    Doppler supplies `SEC_USER_AGENT`; no credential is written to YAML, the workflow, the image, or the manifest.
 7. CD waits for Compose health and checks backend readiness plus the EV-1 status command. It prunes unused EV-1 image archives/images using the same cleanup path as the other images.
 
+## EV-1 memory and failure diagnosis
+
+CD run `45611134098` recorded `Killed` in the remote EV-1 Compose log during an SEC poll while the backend and dashboard remained healthy. This is treated as EV-1 process/container memory pressure, not an order, database, or rule-path failure. The staging overlay now defaults `STAGING_EV1_MEMORY_LIMIT` to `1024m`; the existing CPU limit, restart policy, named volume, and healthcheck remain unchanged.
+
+When an EV-1 deployment fails, CD prints only the non-secret Docker state fields `OOMKilled`, `ExitCode`, and `Status` for the EV-1 container before cleanup. Use those fields together with the Compose log to distinguish a confirmed Docker OOM kill from another process exit. Do not print environment values or Doppler output.
+
 ## Health and status commands
 
 On the deployment host, use the service health and read-only status command. Do not read or print secret environment values.
