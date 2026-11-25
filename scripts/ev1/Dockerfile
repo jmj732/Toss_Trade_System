@@ -9,12 +9,13 @@ RUN chmod 0555 /app/scripts/*.py /app/scripts/ev1-runner.sh \
     && chown -R ev1:ev1 /var/lib/ev1
 USER ev1:ev1
 VOLUME ["/var/lib/ev1"]
-ENV EV1_DATA_DIR=/var/lib/ev1 \
+ENV PYTHONUNBUFFERED=1 \
+    EV1_DATA_DIR=/var/lib/ev1 \
     EV1_UNIVERSE=/app/config/q1-universe.csv \
     EV1_PRICE_DIR=/var/lib/ev1/prices \
     EV1_OUT_DIR=/var/lib/ev1/forward \
     EV1_MAX_AGE_SECONDS=3600
-HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=1800s --retries=3 \
   CMD python3 /app/scripts/ev1-status.py --manifest /var/lib/ev1/forward/manifest.json \
     --runner-status /var/lib/ev1/runner-health.json --max-age-seconds "$EV1_MAX_AGE_SECONDS"
 ENTRYPOINT ["/app/scripts/ev1-runner.sh"]
