@@ -20,9 +20,13 @@ def main() -> None:
     require(".dockerignore", ".git", ".env*", "research-data", "target", ".venv", "node_modules", ".next")
     require("scripts/ev1/Dockerfile", "VOLUME [\"/var/lib/ev1\"]", "HEALTHCHECK", "ev1-runner.sh", "runner-health.json", "--runner-status")
     require("scripts/ev1-status.py", "--runner-status", "runner_status")
+    runner = (ROOT / "scripts/ev1-runner.sh").read_text(encoding="utf-8")
     require("scripts/ev1-runner.sh", "runner-health.json", "write_runner_status")
     require("scripts/collect-yahoo-daily.py", "--refresh")
     require("scripts/ev1-runner.sh", "collect-yahoo-daily.py", "--refresh", "ev1-recorder.py", "--once", "sleep \"$POLL_INTERVAL\"", "datetime.now(timezone.utc)", "SEC_USER_AGENT")
+    loop = runner[runner.index("while :"):]
+    if loop.index("ev1-recorder.py") > loop.index("refresh_prices"):
+        raise AssertionError("SEC poll must run before the expensive full-universe Yahoo refresh")
     require(".github/workflows/cd.yml", "Build EV-1 image", "trade-ev1:", "EV1_IMAGE", "stream_image \"$EV1_IMAGE\"",
             "--profile ev1", "up --no-build -d --wait migrate backend dashboard ev1", "ev1-status.py")
     print("EV-1 deployment wiring contract: OK")
