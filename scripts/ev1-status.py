@@ -27,11 +27,27 @@ def _error_result(path: Path, status: str, message: str) -> dict:
         "last_poll_age_seconds": None,
         "progress": {},
         "metrics": None,
+        "runner_status": None,
+    }
+
+
+def _load_runner_status(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"status": "error", "component": "runner_status", "error": "runner status is malformed"}
+    if not isinstance(value, dict) or value.get("status") not in {"healthy", "error"}:
+        return {"status": "error", "component": "runner_status", "error": "runner status is malformed"}
+    return {key: value[key] for key in ("status", "component", "observed_at") if key in value} | {
+        "error": value.get("error") if isinstance(value.get("error"), str) else None,
     }
 
 
 def manifest_status(manifest_path: Path, max_age_seconds: float,
-                    now: datetime | None = None) -> tuple[dict, int]:
+                    now: datetime | None = None,
+                    runner_status_path: Path | None = None) -> tuple[dict, int]:
     """Return JSON-safe status data and a process exit code without network I/O."""
     path = Path(manifest_path)
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
@@ -65,7 +81,9 @@ def manifest_status(manifest_path: Path, max_age_seconds: float,
         except (TypeError, ValueError):
             return _error_result(path, "malformed", "last_poll must be a timezone-aware timestamp"), 1
     stale = age is None or age > max_age_seconds
-    status = "error" if error_count > 0 else "stale" if stale else "healthy"
+    runner_status = _load_runner_status(runner_status_path) if runner_status_path else None
+    runner_error = runner_status is not None and runner_status.get("status") == "error"
+    status = "error" if error_count > 0 or runner_error else "stale" if stale else "healthy"
     result = {
         "status": status,
         "health": "green" if status == "healthy" else "red",
@@ -75,9 +93,12 @@ def manifest_status(manifest_path: Path, max_age_seconds: float,
         "stale": stale,
         "progress": {key: value for key, value in progress.items() if key != "metrics"},
         "metrics": progress.get("metrics"),
+        "runner_status": runner_status,
     }
     if error_count > 0:
         result["error"] = "manifest contains recorder errors"
+    elif runner_error:
+        result["error"] = "EV-1 runner dependency failed"
     elif stale:
         result["error"] = "manifest last poll is missing or stale"
     return result, 1 if status != "healthy" else 0
@@ -87,6 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--max-age-seconds", type=float, required=True)
+    parser.add_argument("--runner-status", type=Path)
     return parser
 
 
@@ -96,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "malformed", "health": "red",
                           "error": "--max-age-seconds must be non-negative"}, sort_keys=True))
         return 1
-    result, exit_code = manifest_status(args.manifest, args.max_age_seconds)
+    result, exit_code = manifest_status(args.manifest, args.max_age_seconds,
+                                        runner_status_path=args.runner_status)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return exit_code
 
