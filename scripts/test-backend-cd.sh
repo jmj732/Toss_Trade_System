@@ -30,15 +30,15 @@ grep -q '^  stack:' "$ci_workflow" || fail "CI must include stack gates"
 grep -q '^  ci-gate:' "$ci_workflow" || fail "CI must expose a single release gate"
 grep -q 'cancel-in-progress: false' "$workflow" ||
   fail "an active backend deploy must not be cancelled by a newer push"
-test "$(grep -c 'uses: docker/build-push-action@v7' "$workflow")" -eq 3 ||
-  fail "all three runtime images must build in the verified checkout"
-for component in backend analysis dashboard; do
+test "$(grep -c 'uses: docker/build-push-action@v7' "$workflow")" -eq 4 ||
+  fail "all four runtime images must build in the verified checkout"
+for component in backend analysis dashboard ev1; do
   grep -q "cache-from: type=gha,scope=cd-$component" "$workflow" ||
     fail "runtime images must reuse separate build caches"
   grep -q "tags: trade-$component:" "$workflow" || fail "missing runtime image tag"
 done
-test "$(grep -c 'load: true' "$workflow")" -eq 3 || fail "built images must load for SSH transfer"
-test "$(grep -c 'pull: true' "$workflow")" -eq 3 || fail "base images must still be refreshed"
+test "$(grep -c 'load: true' "$workflow")" -eq 4 || fail "built images must load for SSH transfer"
+test "$(grep -c 'pull: true' "$workflow")" -eq 4 || fail "base images must still be refreshed"
 grep -q 'context: trading-backend' "$workflow" || fail "missing backend build context"
 grep -Fq 'ENTRYPOINT ["java", "-XX:+ExitOnOutOfMemoryError", "-XX:MaxRAMPercentage=50.0", "-jar", "app.jar"]' trading-backend/Dockerfile ||
   fail "backend JVM must reserve container memory outside the heap and exit on heap exhaustion"
@@ -59,6 +59,7 @@ grep -q 'stream_image()' "$workflow" ||
 grep -q 'stream_image "\$IMAGE_TAG"' "$workflow" || fail "backend image must transfer"
 grep -q 'stream_image "\$ANALYSIS_IMAGE"' "$workflow" || fail "analysis image must transfer"
 grep -q 'stream_image "\$DASHBOARD_IMAGE"' "$workflow" || fail "dashboard image must transfer"
+grep -q 'stream_image "\$EV1_IMAGE"' "$workflow" || fail "EV1 image must transfer"
 grep -q 'tar -czf - compose.yaml' "$workflow" ||
   fail "deploy must sync the compose files to the server"
 grep -q 'tar -xzf - -C' "$workflow" ||
@@ -73,6 +74,8 @@ grep -q 'ANALYSIS_IMAGE="\$ANALYSIS_IMAGE"' "$workflow" ||
   fail "server deploy must select the transferred analysis image"
 grep -q 'DASHBOARD_IMAGE="\$DASHBOARD_IMAGE"' "$workflow" ||
   fail "server deploy must select the transferred dashboard image"
+grep -q 'EV1_IMAGE="\$EV1_IMAGE"' "$workflow" ||
+  fail "server deploy must select the transferred EV1 image"
 grep -q 'PATH="\$HOME/bin:\$PATH"' "$workflow" ||
   fail "server deploy must find a user-local Doppler CLI"
 grep -q 'compose.staging.credentialed.yaml' "$workflow" ||
