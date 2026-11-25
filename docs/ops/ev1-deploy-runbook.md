@@ -51,7 +51,7 @@ docker compose -f compose.yaml -f compose.staging.yaml \
   --runner-status /var/lib/ev1/runner-health.json --max-age-seconds 3600
 ```
 
-A healthy status has `status=healthy`, `health=green`, `error_count=0`, a recent `last_poll`, and a metrics object. `NO_DATA` before the first future event is valid and must not be changed to a zero return. The MCP equivalent is the authenticated read-only `get_ev1_status` tool; it never refreshes providers or writes state.
+A healthy status has `status=healthy`, `health=green`, `error_count=0`, a recent `last_poll`, a metrics object, and `runner_status.status=healthy` when the marker exists. A runner marker with `status=error` makes the result red even if the manifest itself is recent; this surfaces Yahoo/SEC dependency failures without rewriting event data. `NO_DATA` before the first future event is valid and must not be changed to a zero return. The MCP equivalent is the authenticated read-only `get_ev1_status` tool; it never refreshes providers or writes state.
 
 ## First-event verification
 
