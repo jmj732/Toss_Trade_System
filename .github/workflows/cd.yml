@@ -215,7 +215,7 @@ jobs:
             echo "Doppler CLI is required at $HOME/bin/doppler or on PATH" >&2
             exit 1
           }
-          doppler run --project trade --config stg -- env \
+          if ! doppler run --project trade --config stg -- env \
             BACKEND_IMAGE="$IMAGE_TAG" \
             ANALYSIS_IMAGE="$ANALYSIS_IMAGE" \
             DASHBOARD_IMAGE="$DASHBOARD_IMAGE" \
@@ -225,7 +225,16 @@ jobs:
               -f compose.staging.yaml \
               -f compose.staging.credentialed.yaml \
               --profile ev1 \
-              up --no-build -d --wait migrate backend dashboard ev1
+              up --no-build -d --wait migrate backend dashboard ev1; then
+            echo 'EV-1 deployment failed; collecting non-secret Compose diagnostics' >&2
+            doppler run --project trade --config stg -- env EV1_IMAGE="$EV1_IMAGE" \
+              docker compose -f compose.yaml -f compose.staging.yaml -f compose.staging.credentialed.yaml \
+                --profile ev1 ps -a || true
+            doppler run --project trade --config stg -- env EV1_IMAGE="$EV1_IMAGE" \
+              docker compose -f compose.yaml -f compose.staging.yaml -f compose.staging.credentialed.yaml \
+                --profile ev1 logs --no-color --tail=300 ev1 || true
+            exit 1
+          fi
           curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null
           doppler run --project trade --config stg -- env EV1_IMAGE="$EV1_IMAGE" \
             docker compose -f compose.yaml -f compose.staging.yaml -f compose.staging.credentialed.yaml \
