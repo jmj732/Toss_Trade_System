@@ -73,7 +73,8 @@ services:
       timeout: 5s
       # Initial Yahoo refresh plus SEC universe bootstrap/poll can take several minutes.
       # Keep health red during bootstrap instead of declaring a healthy container before manifest creation.
-      start_period: 900s
+      # Initial Yahoo refresh and SEC bootstrap/poll can require >15 minutes.
+      start_period: 1800s
       retries: 3
     restart: unless-stopped
     stop_grace_period: 20s

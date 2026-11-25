@@ -242,6 +242,12 @@ jobs:
             else
               echo 'EV-1 container state unavailable: no container found' >&2
             fi
+            doppler run --project trade --config stg -- env EV1_IMAGE="$EV1_IMAGE" \
+              docker compose -f compose.yaml -f compose.staging.yaml -f compose.staging.credentialed.yaml \
+                --profile ev1 exec -T ev1 python3 /app/scripts/ev1-status.py \
+                --manifest /var/lib/ev1/forward/manifest.json \
+                --runner-status /var/lib/ev1/runner-health.json \
+                --max-age-seconds "${EV1_MAX_AGE_SECONDS:-3600}" || true
             exit 1
           fi
           curl -fsS http://127.0.0.1:8080/actuator/health/readiness >/dev/null
