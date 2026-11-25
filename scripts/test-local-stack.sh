@@ -42,9 +42,28 @@ grep -q '^      MARKET_EVENTS_SEC_ENABLED: "false"$' compose.staging.credentiale
   fail "SEC market-events environment flag must be disabled"
 grep -q '^      MARKET_EVENTS_IR_ENABLED: "false"$' compose.staging.credentialed.yaml ||
   fail "IR market-events environment flag must be disabled"
-if grep -Eq 'data\.sec\.gov|SEC_BASE_URL|SEC_USER_AGENT' compose.staging.credentialed.yaml; then
-  fail "disabled SEC collection must not require endpoint credentials"
-fi
+credentialed_ev1_block=$(
+  awk '
+    /^  ev1:/ { in_ev1=1 }
+    in_ev1 && /^  [^[:space:]][^:]*:/ && $0 !~ /^  ev1:/ { exit }
+    in_ev1 { print }
+  ' compose.staging.credentialed.yaml
+)
+credentialed_backend_block=$(
+  awk '
+    /^  backend:/ { in_backend=1 }
+    in_backend && /^  [^[:space:]][^:]*:/ && $0 !~ /^  backend:/ { exit }
+    in_backend { print }
+  ' compose.staging.credentialed.yaml
+)
+printf '%s\n' "$credentialed_ev1_block" |
+  grep -q '^      SEC_USER_AGENT: ${SEC_USER_AGENT:?set SEC_USER_AGENT in Doppler}$' ||
+  fail "EV1 service must receive SEC_USER_AGENT from Doppler"
+printf '%s\n' "$credentialed_backend_block" |
+  grep -Eq 'data\.sec\.gov|SEC_BASE_URL|SEC_USER_AGENT' &&
+  fail "backend must not require SEC endpoint credentials"
+test "$(grep -Ec '^      SEC_USER_AGENT:' compose.staging.credentialed.yaml)" -eq 1 ||
+  fail "only EV1 service may own SEC_USER_AGENT"
 grep -q 'generativelanguage.googleapis.com/v1beta' compose.staging.credentialed.yaml ||
   fail "missing Gemini endpoint"
 grep -q '"as-of-path":"/0/timestamp"' compose.staging.credentialed.yaml ||
@@ -96,13 +115,26 @@ git check-ignore -q .env.local || fail ".env.local is not ignored"
 git check-ignore -q .env.smoke || fail ".env.smoke is not ignored"
 
 for service in postgres redis analysis backend dashboard; do
-  grep -q "^  $service:" compose.yaml || fail "missing $service service"
+  grep -q "^  $service:" compose.yaml || fail "missing $service default service"
 done
 
-test "$(grep -c 'restart: unless-stopped' compose.yaml)" -eq 5 ||
-  fail "every base service needs restart policy"
-test "$(grep -c 'healthcheck:' compose.yaml)" -eq 5 ||
-  fail "every base service needs a healthcheck"
+test "$(grep -c 'restart: unless-stopped' compose.yaml)" -eq 6 ||
+  fail "every default and profile service needs restart policy"
+test "$(grep -c 'healthcheck:' compose.yaml)" -eq 6 ||
+  fail "every default and profile service needs a healthcheck"
+ev1_service_block=$(
+  awk '
+    /^  ev1:/ { in_ev1=1 }
+    in_ev1 && /^  [^[:space:]][^:]*:/ && $0 !~ /^  ev1:/ { exit }
+    in_ev1 { print }
+  ' compose.yaml
+)
+printf '%s\n' "$ev1_service_block" | grep -q '^    profiles: \["ev1"\]$' ||
+  fail "EV1 must remain a profile service"
+printf '%s\n' "$ev1_service_block" | grep -q '^    restart: unless-stopped$' ||
+  fail "EV1 profile service needs restart policy"
+printf '%s\n' "$ev1_service_block" | grep -q '^    healthcheck:$' ||
+  fail "EV1 profile service needs a healthcheck"
 
 grep -q '^  oidc-mock:' compose.mock.yaml || fail "missing OIDC mock"
 grep -q '^  toss-mock:' compose.mock.yaml || fail "missing Toss mock"
