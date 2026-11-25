@@ -17,6 +17,7 @@ import html
 import json
 import math
 import os
+import random
 import re
 import sys
 import time
@@ -47,6 +48,9 @@ COST_BPS = (30, 40, 70)
 PRIMARY_HORIZON = 5
 SECONDARY_HORIZONS = (3, 10, 20)
 MANIFEST_NAME = "manifest.json"
+METRICS_CI_METHOD = "entry-date block bootstrap"
+METRICS_CI_SEED = 1729
+METRICS_CI_REPETITIONS = 2000
 
 # SEC routes are checked before any request is handed to urllib.
 SEC_SUBMISSIONS_RE = re.compile(r"/submissions/CIK\d{10}\.json")
@@ -928,6 +932,170 @@ def _submission_raw_path(out: Path, cik: str, body: bytes) -> Path:
     return out / "raw" / "submissions" / f"CIK{int(cik):010d}-{digest}.json"
 
 
+def _percentile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    weight = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * weight
+
+
+def _entry_date_for_metrics(event: dict) -> str | None:
+    entry = event.get("entry")
+    value = entry.get("entry_date") if isinstance(entry, dict) else event.get("entry_date")
+    try:
+        return date.fromisoformat(str(value)).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _net_metric_value(event: dict, horizon: int, kind: str) -> float | None:
+    container = event.get("active_returns" if kind == "active" else "absolute_net_returns")
+    if not isinstance(container, dict):
+        if kind == "absolute":
+            returns = event.get("returns")
+            container = returns if isinstance(returns, dict) else {}
+        else:
+            container = {}
+    row = container.get(str(horizon))
+    if not isinstance(row, dict):
+        return None
+    net_returns = row.get("net_returns")
+    value = net_returns.get("40bp") if isinstance(net_returns, dict) else None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _bootstrap_mean_ci(blocks: dict[str, list[float]], seed: int,
+                       repetitions: int) -> list[float] | None:
+    if not blocks:
+        return None
+    dates = sorted(blocks)
+    randomizer = random.Random(seed)
+    means: list[float] = []
+    for _ in range(repetitions):
+        sample = [value for _ in dates for value in blocks[randomizer.choice(dates)]]
+        means.append(sum(sample) / len(sample))
+    return [_percentile(means, 0.025), _percentile(means, 0.975)]
+
+
+def _metric_summary(observations: list[tuple[str, float]], seed: int,
+                    repetitions: int) -> dict:
+    blocks: dict[str, list[float]] = defaultdict(list)
+    for entry_date, value in observations:
+        blocks[entry_date].append(value)
+    values = [value for _, value in observations]
+    if not values:
+        return {
+            "status": "NO_DATA", "n": 0, "mean": None, "median": None,
+            "p10": None, "p90": None, "positive_fraction": None,
+            "mean_ci95": None,
+        }
+    ci = _bootstrap_mean_ci(blocks, seed, repetitions)
+    return {
+        "status": "OK", "n": len(values), "mean": sum(values) / len(values),
+        "median": _median(values), "p10": _percentile(values, 0.10),
+        "p90": _percentile(values, 0.90),
+        "positive_fraction": sum(value > 0 for value in values) / len(values),
+        "mean_ci95": {"lower": ci[0], "upper": ci[1]} if ci else None,
+    }
+
+
+def _metric_observations(events: list[dict], statuses: set[str], package: str,
+                         horizon: int, kind: str) -> list[tuple[str, float]]:
+    observations: list[tuple[str, float]] = []
+    for event in events:
+        if event.get("status") not in statuses or event.get("package_class") != package:
+            continue
+        entry_date = _entry_date_for_metrics(event)
+        value = _net_metric_value(event, horizon, kind)
+        if entry_date is not None and value is not None:
+            observations.append((entry_date, value))
+    return observations
+
+
+def _data_quality(events: list[dict]) -> dict:
+    observed_at_present = 0
+    missing_controls = 0
+    missing_exits = 0
+    for event in events:
+        try:
+            parse_timestamp(event.get("observed_at", ""))
+        except (TypeError, ValueError):
+            pass
+        else:
+            observed_at_present += 1
+        reasons = set(event.get("exclusion_reasons") or [])
+        control_count = event.get("control_count")
+        if "INSUFFICIENT_CONTROLS" in reasons or (
+                isinstance(control_count, (int, float)) and control_count < 3):
+            missing_controls += 1
+        package = event.get("package_class")
+        required_horizon = PRIMARY_HORIZON if package == "CORE_EARNINGS" else SECONDARY_HORIZONS[0]
+        required = event.get("returns", {}).get(str(required_horizon)) \
+            if isinstance(event.get("returns"), dict) else None
+        if ("MISSING_PRIMARY_EXIT_BAR" in reasons or "MISSING_SECONDARY_EXIT_BAR" in reasons
+                or (event.get("status") in {"ADMITTED", "SECONDARY_DIAGNOSTIC"}
+                    and (not isinstance(required, dict) or required.get("status") != "AVAILABLE"))):
+            missing_exits += 1
+    admitted = sum(event.get("status") == "ADMITTED" for event in events)
+    excluded = sum(event.get("status") == "EXCLUDED" for event in events)
+    secondary = sum(event.get("status") == "SECONDARY_DIAGNOSTIC" for event in events)
+    return {
+        "events_total": len(events), "events_admitted": admitted,
+        "events_excluded": excluded, "events_secondary_diagnostic": secondary,
+        "observed_at_present": observed_at_present,
+        "observed_at_missing": len(events) - observed_at_present,
+        "observed_at_coverage": observed_at_present / len(events) if events else None,
+        "missing_controls": missing_controls, "missing_exits": missing_exits,
+    }
+
+
+def recompute_progress_metrics(manifest: dict, clock: Callable[[], datetime] | None = None) -> dict:
+    """Recompute all progress metrics solely from persisted event records."""
+    raw_events = manifest.get("events", {})
+    events = ([event for event in raw_events.values() if isinstance(event, dict)]
+              if isinstance(raw_events, dict) else [])
+    primary = {
+        "horizon_days": PRIMARY_HORIZON, "cost_bps": 40,
+        "absolute": _metric_summary(
+            _metric_observations(events, {"ADMITTED"}, "CORE_EARNINGS", PRIMARY_HORIZON, "absolute"),
+            METRICS_CI_SEED, METRICS_CI_REPETITIONS),
+        "active": _metric_summary(
+            _metric_observations(events, {"ADMITTED"}, "CORE_EARNINGS", PRIMARY_HORIZON, "active"),
+            METRICS_CI_SEED, METRICS_CI_REPETITIONS),
+    }
+    secondary: dict[str, dict] = {}
+    for horizon in SECONDARY_HORIZONS:
+        secondary[str(horizon)] = {
+            "horizon_days": horizon, "cost_bps": 40,
+            "absolute": _metric_summary(
+                _metric_observations(events, {"SECONDARY_DIAGNOSTIC"}, "EARNINGS_PACKAGE", horizon, "absolute"),
+                METRICS_CI_SEED, METRICS_CI_REPETITIONS),
+            "active": _metric_summary(
+                _metric_observations(events, {"SECONDARY_DIAGNOSTIC"}, "EARNINGS_PACKAGE", horizon, "active"),
+                METRICS_CI_SEED, METRICS_CI_REPETITIONS),
+        }
+    metrics = {
+        "status": "OK" if primary["absolute"]["n"] or primary["active"]["n"] else "NO_DATA",
+        "ci": {"method": METRICS_CI_METHOD, "seed": METRICS_CI_SEED,
+               "repetitions": METRICS_CI_REPETITIONS, "confidence": 0.95},
+        "primary": primary, "secondary": secondary,
+        "metrics_updated_at_utc": utc_now(clock),
+        "data_quality": _data_quality(events),
+    }
+    manifest.setdefault("progress", {})["metrics"] = metrics
+    return metrics
+
+
 def _refresh_progress(manifest: dict, client: SecClient) -> None:
     progress = manifest.setdefault("progress", {})
     events = manifest.get("events", {})
@@ -1005,6 +1173,7 @@ def poll_once(manifest: dict, universe: list[dict], client: SecClient, out: Path
     progress["last_poll"] = utc_now()
     manifest["last_poll"] = progress["last_poll"]
     evaluate_prices(manifest, universe, price_dir)
+    recompute_progress_metrics(manifest)
     _refresh_progress(manifest, client)
     if persist:
         persist(manifest)

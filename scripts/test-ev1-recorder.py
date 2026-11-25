@@ -18,6 +18,11 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 assert spec.loader is not None
 spec.loader.exec_module(module)
+status_spec = importlib.util.spec_from_file_location("ev1_status", Path(__file__).with_name("ev1-status.py"))
+status_module = importlib.util.module_from_spec(status_spec)
+sys.modules[status_spec.name] = status_module
+assert status_spec.loader is not None
+status_spec.loader.exec_module(status_module)
 
 
 class FakeResponse:
@@ -242,6 +247,84 @@ class ControlsAndAtomicOutputTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertFalse(list(output.parent.glob("*.tmp")))
             self.assertEqual(json.loads(output.read_text())["progress"]["events_seen"], 2)
+
+
+class MetricsAndStatusTests(unittest.TestCase):
+    @staticmethod
+    def metric_event(entry_date: str, absolute: float, active: float,
+                     status: str = "ADMITTED", package: str = "CORE_EARNINGS") -> dict:
+        def row(value: float) -> dict:
+            return {"status": "AVAILABLE", "net_returns": {"40bp": value}}
+        return {
+            "status": status, "package_class": package,
+            "entry": {"entry_date": entry_date},
+            "observed_at": "2026-12-02T13:00:00Z", "control_count": 3,
+            "returns": {"5": row(absolute), "3": row(absolute), "10": row(absolute), "20": row(absolute)},
+            "absolute_net_returns": {"5": row(absolute), "3": row(absolute), "10": row(absolute), "20": row(absolute)},
+            "active_returns": {"5": row(active), "3": row(active), "10": row(active), "20": row(active)},
+        }
+
+    def test_primary_metrics_and_ci_are_deterministic_date_blocks(self):
+        manifest = {"progress": {}, "events": {
+            "a": self.metric_event("2026-12-01", 0.10, 0.04),
+            "b": self.metric_event("2026-12-01", 0.20, 0.02),
+            "c": self.metric_event("2026-12-02", -0.05, -0.01),
+        }}
+        clock = lambda: datetime(2026, 12, 3, 13, 0, tzinfo=timezone.utc)
+        first = module.recompute_progress_metrics(manifest, clock=clock)
+        second = module.recompute_progress_metrics(manifest, clock=clock)
+        absolute = first["primary"]["absolute"]
+        self.assertEqual(absolute["n"], 3)
+        self.assertAlmostEqual(absolute["mean"], 0.25 / 3)
+        self.assertEqual(first["ci"], {"method": "entry-date block bootstrap", "seed": 1729,
+                                      "repetitions": 2000, "confidence": 0.95})
+        self.assertEqual(first["primary"]["absolute"]["mean_ci95"],
+                         second["primary"]["absolute"]["mean_ci95"])
+        self.assertEqual(first["primary"]["active"]["n"], 3)
+        self.assertEqual(first["data_quality"]["observed_at_coverage"], 1.0)
+        one_date = {"progress": {}, "events": {
+            "a": self.metric_event("2026-12-01", 0.0, 0.0),
+            "b": self.metric_event("2026-12-01", 1.0, 1.0),
+        }}
+        one_date_metrics = module.recompute_progress_metrics(one_date, clock=clock)
+        self.assertEqual(one_date_metrics["primary"]["absolute"]["mean_ci95"],
+                         {"lower": 0.5, "upper": 0.5})
+
+    def test_metrics_recover_from_persisted_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            original = {"progress": {}, "events": {
+                "a": self.metric_event("2026-12-01", 0.1, 0.03),
+                "b": self.metric_event("2026-12-02", 0.2, 0.04),
+            }}
+            module.write_manifest_atomic(path, original)
+            recovered = json.loads(path.read_text(encoding="utf-8"))
+            metrics = module.recompute_progress_metrics(recovered,
+                clock=lambda: datetime(2026, 12, 3, 13, 0, tzinfo=timezone.utc))
+            self.assertEqual(metrics["primary"]["absolute"]["n"], 2)
+            self.assertEqual(recovered["progress"]["metrics"], metrics)
+
+    def test_status_checker_healthy_stale_and_error(self):
+        now = datetime(2026, 12, 3, 13, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            base = {"progress": {"polls": 1, "error_count": 0, "metrics": {"status": "NO_DATA"}},
+                    "last_poll": "2026-12-03T12:59:00Z", "errors": []}
+            path.write_text(json.dumps(base), encoding="utf-8")
+            healthy, code = status_module.manifest_status(path, 120, now=now)
+            self.assertEqual(code, 0)
+            self.assertEqual(healthy["status"], "healthy")
+            self.assertEqual(healthy["health"], "green")
+            stale, code = status_module.manifest_status(path, 30, now=now)
+            self.assertNotEqual(code, 0)
+            self.assertEqual(stale["status"], "stale")
+            base["progress"]["error_count"] = 1
+            base["errors"] = [{"message": "poll failed"}]
+            path.write_text(json.dumps(base), encoding="utf-8")
+            errored, code = status_module.manifest_status(path, 120, now=now)
+            self.assertNotEqual(code, 0)
+            self.assertEqual(errored["status"], "error")
+            self.assertEqual(errored["health"], "red")
 
 
 if __name__ == "__main__":
