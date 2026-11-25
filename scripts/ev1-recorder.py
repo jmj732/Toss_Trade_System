@@ -40,6 +40,7 @@ SEC_USER_AGENT_ENV = "SEC_USER_AGENT"
 SEC_MIN_INTERVAL = 0.2
 SEC_RETRY_STATUS = frozenset({429, *range(500, 600)})
 SEC_ARCHIVE_PREFIX = "https://www.sec.gov/Archives/edgar/data/"
+SEC_TICKER_MAP_PATH = "/files/company_tickers.json"
 ITEM_202_RE = re.compile(r"(?:^|[,;\s])2\.02(?:$|[,;\s])")
 ITEM_RE = re.compile(r"\d+\.\d{2}")
 MATERIAL_ITEMS = frozenset({"1.01", "2.01", "2.03", "2.04", "2.05", "2.06", "5.02"})
@@ -143,6 +144,8 @@ def check_sec_url(url: str) -> str:
     host = parts.hostname.lower()
     if host == SEC_DATA_HOST and SEC_SUBMISSIONS_RE.fullmatch(parts.path):
         return f"{host}{parts.path}"
+    if host == SEC_WWW_HOST and parts.path == SEC_TICKER_MAP_PATH:
+        return f"{host}{parts.path}"
     if host == SEC_WWW_HOST and SEC_ARCHIVE_RE.fullmatch(parts.path):
         return f"{host}{parts.path}"
     raise FetchError(f"SEC route {host}{parts.path} is outside the allowlist")
@@ -150,6 +153,10 @@ def check_sec_url(url: str) -> str:
 
 def submissions_url(cik: str) -> str:
     return f"https://{SEC_DATA_HOST}/submissions/CIK{int(cik):010d}.json"
+
+
+def company_tickers_url() -> str:
+    return f"https://{SEC_WWW_HOST}{SEC_TICKER_MAP_PATH}"
 
 
 def archive_url(cik: str, accession: str, filename: str) -> str:
@@ -213,7 +220,8 @@ class SecClient:
             self.throttle.wait()
             request = urllib.request.Request(url, method="GET", headers={
                 "User-Agent": self.user_agent,
-                "Accept": "application/json" if "/submissions/" in url else "text/html,*/*",
+                "Accept": "application/json" if "/submissions/" in url or SEC_TICKER_MAP_PATH in url
+                else "text/html,*/*",
             })
             try:
                 with self.opener.open(request, timeout=self.timeout) as response:
@@ -283,14 +291,7 @@ def _norm_ticker(value: str) -> str:
     return value.strip().upper().replace(".", "-")
 
 
-def load_universe(universe_csv: Path, sec_manifest_path: Path) -> list[dict]:
-    """Map frozen CSV rows to CIK/SIC from the existing SEC full-universe manifest."""
-    sec_manifest = load_json(sec_manifest_path)
-    symbols = sec_manifest.get("symbols")
-    if not isinstance(symbols, dict):
-        raise SetupError("SEC full-universe manifest has no symbols map")
-    by_ticker = {_norm_ticker(str(ticker)): entry for ticker, entry in symbols.items()
-                 if isinstance(entry, dict)}
+def _universe_rows(universe_csv: Path, by_ticker: dict[str, dict]) -> list[dict]:
     rows: list[dict] = []
     try:
         handle = universe_csv.open(newline="", encoding="utf-8")
@@ -301,9 +302,9 @@ def load_universe(universe_csv: Path, sec_manifest_path: Path) -> list[dict]:
             ticker = _norm_ticker(row.get("ticker", ""))
             if not ticker:
                 continue
-            entry = by_ticker.get(ticker)
-            cik = str(entry.get("cik", "")) if entry else ""
-            sic = str(entry.get("sic", "")) if entry else ""
+            entry = by_ticker.get(ticker) or {}
+            cik = str(entry.get("cik", ""))
+            sic = str(entry.get("sic", ""))
             valid_cik = bool(re.fullmatch(r"\d{1,10}", cik))
             valid_sic = bool(re.fullmatch(r"\d{4}", sic))
             rows.append({
@@ -320,6 +321,75 @@ def load_universe(universe_csv: Path, sec_manifest_path: Path) -> list[dict]:
     if not rows:
         raise SetupError("frozen universe CSV contains no ticker rows")
     return rows
+
+
+def load_universe(universe_csv: Path, sec_manifest_path: Path | None = None,
+                  metadata_path: Path | None = None) -> list[dict]:
+    """Map the frozen CSV using persisted SEC metadata or the legacy full manifest."""
+    if metadata_path and metadata_path.is_file():
+        metadata = load_json(metadata_path)
+        mapping = metadata.get("symbols")
+        if not isinstance(mapping, dict):
+            raise SetupError("EV-1 universe metadata has no symbols map")
+        return _universe_rows(universe_csv, mapping)
+    if sec_manifest_path and sec_manifest_path.is_file():
+        sec_manifest = load_json(sec_manifest_path)
+        symbols = sec_manifest.get("symbols")
+        if not isinstance(symbols, dict):
+            raise SetupError("SEC full-universe manifest has no symbols map")
+        return _universe_rows(universe_csv, symbols)
+    raise SetupError("no persisted SEC universe metadata; bootstrap is required")
+
+
+def _submission_sic(payload: dict) -> str | None:
+    value = payload.get("sic") if isinstance(payload, dict) else None
+    text = str(value or "")
+    return text if re.fullmatch(r"\d{4}", text) else None
+
+
+def bootstrap_universe(client: SecClient, universe_csv: Path, metadata_path: Path) -> list[dict]:
+    """Bootstrap CIK/SIC from public SEC mapping and submissions only.
+
+    This metadata is persisted separately from the forward manifest so a restart
+    does not repeat the bootstrap. It is never used as an event or XBRL signal.
+    """
+    ticker_response = client.get(company_tickers_url())
+    try:
+        ticker_payload = json.loads(ticker_response.body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise FetchError("SEC ticker map is not JSON") from None
+    if not isinstance(ticker_payload, dict):
+        raise FetchError("SEC ticker map is not an object")
+    by_ticker: dict[str, dict] = {}
+    for entry in ticker_payload.values():
+        if not isinstance(entry, dict):
+            continue
+        ticker = _norm_ticker(str(entry.get("ticker", "")))
+        cik = entry.get("cik_str")
+        if ticker and isinstance(cik, int) and 0 < cik <= 9999999999:
+            by_ticker[ticker] = {"cik": f"{cik:010d}", "name": entry.get("title")}
+    frozen = _universe_rows(universe_csv, by_ticker)
+    for issuer in frozen:
+        if not issuer.get("cik"):
+            continue
+        response = client.get(submissions_url(issuer["cik"]))
+        payload = _read_raw_json(response.body)
+        sic = _submission_sic(payload)
+        issuer["sic"] = sic
+        issuer["sic2"] = sic[:2] if sic else None
+        issuer["mapping_status"] = "MAPPED" if sic else "MAPPING_INVALID"
+        issuer["metadata_observed_at"] = response.observed_at
+    metadata = {
+        "schema_version": 1,
+        "source": "SEC company_tickers.json and submissions",
+        "ticker_map_url": company_tickers_url(),
+        "ticker_map_sha256": sha256(ticker_response.body),
+        "frozen_universe_csv": str(universe_csv),
+        "frozen_universe_sha256": sha256(universe_csv.read_bytes()),
+        "symbols": {row["ticker"]: row for row in frozen},
+    }
+    write_manifest_atomic(metadata_path, metadata)
+    return frozen
 
 
 class _VisibleText(HTMLParser):
@@ -864,7 +934,22 @@ def evaluate_event_document(event: dict, documents: list[dict], release_text: st
         event["rule_match"] = True
 
 
-def _new_manifest(universe_csv: Path, sec_manifest: Path) -> dict:
+def _new_manifest(universe_csv: Path, sec_manifest: Path | None,
+                  metadata_path: Path | None = None) -> dict:
+    inputs = {
+        "frozen_universe_csv": str(universe_csv),
+        "frozen_universe_sha256": sha256(universe_csv.read_bytes()),
+    }
+    if sec_manifest and sec_manifest.is_file():
+        inputs.update({
+            "sec_full_universe_manifest": str(sec_manifest),
+            "sec_full_universe_manifest_sha256": sha256(sec_manifest.read_bytes()),
+        })
+    elif metadata_path:
+        inputs.update({
+            "sec_universe_metadata": str(metadata_path),
+            "sec_universe_metadata_sha256": None,
+        })
     return {
         "schema_version": 1,
         "protocol": "EV-1",
@@ -884,12 +969,7 @@ def _new_manifest(universe_csv: Path, sec_manifest: Path) -> dict:
             "order_route": "none",
             "xbrl_signal_fallback": "none",
         },
-        "inputs": {
-            "frozen_universe_csv": str(universe_csv),
-            "frozen_universe_sha256": sha256(universe_csv.read_bytes()),
-            "sec_full_universe_manifest": str(sec_manifest),
-            "sec_full_universe_manifest_sha256": sha256(sec_manifest.read_bytes()),
-        },
+        "inputs": inputs,
         "progress": {
             "polls": 0, "responses": 0, "events_seen": 0, "events_admitted": 0,
             "events_excluded": 0, "events_secondary_diagnostic": 0,
@@ -903,7 +983,8 @@ def _new_manifest(universe_csv: Path, sec_manifest: Path) -> dict:
     }
 
 
-def _ensure_manifest(out: Path, universe_csv: Path, sec_manifest: Path) -> dict:
+def _ensure_manifest(out: Path, universe_csv: Path, sec_manifest: Path | None,
+                     metadata_path: Path | None = None) -> dict:
     path = out / MANIFEST_NAME
     if path.is_file():
         manifest = load_json(path)
@@ -912,7 +993,7 @@ def _ensure_manifest(out: Path, universe_csv: Path, sec_manifest: Path) -> dict:
         manifest.setdefault("responses", {})
         manifest.setdefault("events", {})
         return manifest
-    manifest = _new_manifest(universe_csv, sec_manifest)
+    manifest = _new_manifest(universe_csv, sec_manifest, metadata_path)
     write_manifest_atomic(path, manifest)
     return manifest
 
@@ -1407,15 +1488,24 @@ def run(args, environ=None, opener=None, sleep: Callable[[float], None] = time.s
         raise SetupError("--min-interval must be at least 0.2 seconds (maximum 5 requests/s)")
     universe_path = args.universe.resolve()
     sec_manifest_path = args.sec_manifest.resolve()
-    out = args.out
-    price_dir = args.price_dir
-    universe = load_universe(universe_path, sec_manifest_path)
-    manifest = _ensure_manifest(out, universe_path, sec_manifest_path)
+    out = args.out.resolve()
+    price_dir = args.price_dir.resolve()
+    metadata_path = out / "universe-metadata.json"
+    manifest = _ensure_manifest(out, universe_path, sec_manifest_path, metadata_path)
     persist = lambda value: write_manifest_atomic(out / MANIFEST_NAME, value)
     client = SecClient(user_agent, opener=opener,
                        throttle=Throttle(args.min_interval, sleep=sleep, clock=mono_clock),
                        timeout=args.timeout, max_retries=args.max_retries,
                        backoff=args.backoff, sleep=sleep, clock=wall_clock)
+    try:
+        universe = load_universe(universe_path, sec_manifest_path, metadata_path)
+    except SetupError as error:
+        if "bootstrap is required" not in str(error):
+            raise
+        universe = bootstrap_universe(client, universe_path, metadata_path)
+    manifest.setdefault("inputs", {})["sec_universe_metadata"] = str(metadata_path)
+    manifest["inputs"]["sec_universe_metadata_sha256"] = sha256(metadata_path.read_bytes())
+    persist(manifest)
     while True:
         poll_once(manifest, universe, client, out, price_dir, persist=persist)
         if args.once:

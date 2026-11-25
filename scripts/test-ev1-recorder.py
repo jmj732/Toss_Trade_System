@@ -153,6 +153,27 @@ class AllowlistAndObservationTests(unittest.TestCase):
         self.assertEqual(client.retries, 1)
         self.assertTrue(all("contact@example.invalid" not in str(call) for call in opener.calls))
 
+    def test_public_sec_bootstrap_persists_cik_and_sic_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            universe_csv = root / "universe.csv"
+            universe_csv.write_text("ticker,name,weight\nTEST,Test Inc,1\n", encoding="utf-8")
+            metadata = root / "universe-metadata.json"
+            ticker_url = module.company_tickers_url()
+            submissions = module.submissions_url("0000002488")
+            opener = FakeOpener({
+                ticker_url: [b'{"0":{"ticker":"TEST","cik_str":2488,"title":"Test Inc"}}'],
+                submissions: [b'{"sic":"3571","name":"Test Inc"}'],
+            })
+            client = module.SecClient("contact@example.invalid", opener=opener,
+                                      throttle=module.Throttle(min_interval=0.2, sleep=lambda _: None),
+                                      clock=lambda: datetime(2026, 11, 26, 13, 0, 2, tzinfo=timezone.utc))
+            rows = module.bootstrap_universe(client, universe_csv, metadata)
+            self.assertEqual(rows[0]["cik"], "0000002488")
+            self.assertEqual(rows[0]["sic2"], "35")
+            self.assertEqual(module.load_universe(universe_csv, metadata_path=metadata)[0]["sic"], "3571")
+            self.assertEqual(len(opener.calls), 2)
+
 
 class ParserAndTimingTests(unittest.TestCase):
     def test_positive_gaap_diluted_pair_is_strong25(self):
@@ -315,6 +336,14 @@ class MetricsAndStatusTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(healthy["status"], "healthy")
             self.assertEqual(healthy["health"], "green")
+            runner_status = path.with_name("runner-health.json")
+            runner_status.write_text(json.dumps({"status": "error", "component": "yahoo_refresh",
+                                                  "observed_at": "2026-12-03T12:59:30Z"}), encoding="utf-8")
+            degraded, code = status_module.manifest_status(path, 120, now=now,
+                                                           runner_status_path=runner_status)
+            self.assertNotEqual(code, 0)
+            self.assertEqual(degraded["status"], "error")
+            self.assertEqual(degraded["runner_status"]["component"], "yahoo_refresh")
             stale, code = status_module.manifest_status(path, 30, now=now)
             self.assertNotEqual(code, 0)
             self.assertEqual(stale["status"], "stale")

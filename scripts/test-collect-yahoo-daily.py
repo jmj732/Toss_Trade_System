@@ -36,6 +36,14 @@ def expect_error(callable_):
 
 def main() -> None:
     assert module.validate_symbol("BRK.B") == "BRK-B"
+    refresh_args = module.build_parser().parse_args(["--symbols", "BRK.B", "--out", "/tmp/prices", "--refresh"])
+    assert refresh_args.refresh and not refresh_args.resume
+    try:
+        module.build_parser().parse_args(["--symbols", "BRK.B", "--out", "/tmp/prices", "--refresh", "--resume"])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("--refresh and --resume must be mutually exclusive")
     url = module.build_url("BRK.B", 1, 2)
     module.check_request(url)
     expect_error(lambda: module.check_request(url + "&crumb=secret"))
@@ -50,6 +58,24 @@ def main() -> None:
         path = Path(directory) / "x.csv"
         module.atomic(path, encoded)
         assert path.read_bytes() == encoded
+        original_fetch = module.fetch
+        try:
+            module.fetch = lambda *args, **kwargs: sample()
+            assert module.main(["--symbols", "BRK.B", "--out", directory,
+                                "--start", "2018-01-01", "--end-exclusive", "2026-11-21",
+                                "--pause", "0", "--max-retries", "0"]) == 0
+            manifest_path = Path(directory) / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["errors"]["retained"] = "prior failure"
+            manifest_path.write_text(json.dumps(manifest))
+            assert module.main(["--symbols", "BRK.B", "--out", directory,
+                                "--start", "2018-01-01", "--end-exclusive", "2026-11-22",
+                                "--pause", "0", "--max-retries", "0", "--refresh"]) == 0
+            refreshed = json.loads(manifest_path.read_text())
+            assert refreshed["end_exclusive"] == "2026-11-22"
+            assert refreshed["errors"]["retained"] == "prior failure"
+        finally:
+            module.fetch = original_fetch
     invalid_bar = json.loads(sample())
     invalid_bar["chart"]["result"][0]["indicators"]["quote"][0]["low"][1] = 11.5
     filtered, filtered_meta = module.parse(json.dumps(invalid_bar).encode(), "BRK-B")

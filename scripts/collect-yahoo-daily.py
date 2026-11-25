@@ -194,7 +194,7 @@ def csv_bytes(rows: list[dict]) -> bytes:
     return stream.getvalue().encode("utf-8")
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbols", required=True, help="comma-separated Yahoo symbols")
     parser.add_argument("--out", required=True, type=Path)
@@ -204,7 +204,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--max-retries", type=int, default=4)
     parser.add_argument("--backoff", type=float, default=2.0)
-    parser.add_argument("--resume", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--resume", action="store_true",
+                      help="skip symbols whose persisted CSV hash is still valid")
+    mode.add_argument("--refresh", action="store_true",
+                      help="refresh every symbol while preserving the existing manifest")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.pause < 0 or args.max_retries < 0:
         parser.error("pause/retries must be nonnegative")
@@ -217,9 +226,15 @@ def main(argv: list[str] | None = None) -> int:
     if not symbols or len(set(symbols)) != len(symbols):
         parser.error("symbols must be nonempty and unique after normalization")
     manifest_path = args.out / "manifest.json"
-    manifest = json.loads(manifest_path.read_text()) if args.resume and manifest_path.exists() else {
+    manifest = json.loads(manifest_path.read_text()) if (args.resume or args.refresh) and manifest_path.exists() else {
         "provider": "Yahoo Finance chart", "interval": INTERVAL, "events": EVENTS,
         "start": args.start, "end_exclusive": args.end_exclusive, "symbols": {}, "errors": {}}
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("symbols"), dict):
+        parser.error("existing Yahoo manifest must contain a symbols object")
+    if not isinstance(manifest.get("errors"), dict):
+        manifest["errors"] = {}
+    manifest["start"] = args.start
+    manifest["end_exclusive"] = args.end_exclusive
     failures = 0
     for position, symbol in enumerate(symbols):
         existing = manifest["symbols"].get(symbol)

@@ -54,6 +54,28 @@ services:
     restart: unless-stopped
     stop_grace_period: 10s
 
+  ev1:
+    profiles: ["ev1"]
+    image: ${EV1_IMAGE:-trade-ev1:local}
+    build:
+      context: .
+      dockerfile: scripts/ev1/Dockerfile
+    environment:
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
+      EV1_POLL_INTERVAL_SECONDS: ${EV1_POLL_INTERVAL_SECONDS:-900}
+      EV1_PRICE_REFRESH_INTERVAL_SECONDS: ${EV1_PRICE_REFRESH_INTERVAL_SECONDS:-86400}
+      EV1_MAX_AGE_SECONDS: ${EV1_MAX_AGE_SECONDS:-3600}
+    volumes:
+      - ev1-data:/var/lib/ev1
+    healthcheck:
+      test: ["CMD-SHELL", "python3 /app/scripts/ev1-status.py --manifest /var/lib/ev1/forward/manifest.json --runner-status /var/lib/ev1/runner-health.json --max-age-seconds $$EV1_MAX_AGE_SECONDS"]
+      interval: 30s
+      timeout: 5s
+      start_period: 300s
+      retries: 3
+    restart: unless-stopped
+    stop_grace_period: 20s
+
   backend:
     build: ./trading-backend
     environment:
@@ -70,6 +92,9 @@ services:
       ANALYSIS_SERVICE_BASE_URL: http://analysis:8000
       ANALYSIS_SERVICE_CONNECT_TIMEOUT: ${ANALYSIS_CONNECT_TIMEOUT:-PT2S}
       ANALYSIS_SERVICE_READ_TIMEOUT: ${ANALYSIS_READ_TIMEOUT:-PT5S}
+      EV1_MANIFEST_PATH: ${EV1_MANIFEST_PATH:-/var/lib/ev1/forward/manifest.json}
+      EV1_RUNNER_STATUS_PATH: ${EV1_RUNNER_STATUS_PATH:-/var/lib/ev1/runner-health.json}
+      EV1_MAX_AGE_SECONDS: ${EV1_MAX_AGE_SECONDS:-3600}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL_ID: ${GEMINI_MODEL_ID:-gemini-2.5-flash}
       GEMINI_PROMPT_VERSION: ${GEMINI_PROMPT_VERSION:-stock-analysis-explain-v1}
@@ -134,6 +159,8 @@ services:
       SERVER_SHUTDOWN: graceful
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - ev1-data:/var/lib/ev1:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -175,3 +202,4 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  ev1-data:
