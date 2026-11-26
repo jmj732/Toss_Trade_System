@@ -1,7 +1,7 @@
 # 실거래 canary 운영 런북
 
 대상: 명시적으로 활성화된 `feature/real-order-canary-readiness` canary 실행.
-Toss 주문 요청·응답 필드와 상태는 저장소에 고정된 Toss OpenAPI 1.2.5 계약과 adapter를 따른다.
+Toss 주문 요청·응답 필드와 상태는 저장소에 고정된 Toss OpenAPI 1.2.28 계약과 adapter를 따른다.
 계약에 없는 값은 운영자가 추측해 입력하지 않는다.
 
 ## 사전 점검

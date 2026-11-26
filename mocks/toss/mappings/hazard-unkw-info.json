@@ -1,0 +1,41 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/stocks",
+    "queryParameters": {
+      "symbols": {
+        "equalTo": "UNKW"
+      }
+    }
+  },
+  "priority": 1,
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": [
+        {
+          "symbol": "UNKW",
+          "name": "Hazard Scenario UNKW",
+          "englishName": "Hazard UNKW",
+          "isinCode": "US0000000000",
+          "market": "NASDAQ",
+          "securityType": "STOCK",
+          "isCommonShare": true,
+          "status": "ACTIVE",
+          "currency": "USD",
+          "listDate": null,
+          "delistDate": null,
+          "sharesOutstanding": "1000000000",
+          "leverageFactor": null
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock-hazard"
+    }
+  },
+  "metadata": {
+    "scenario": "unknown warning code"
+  }
+}

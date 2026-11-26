@@ -523,7 +523,8 @@ public final class LiveOrderActivationService {
         var attemptId = submissions.createInitialAttempt(
                 orderIntentId, clientOrderId, hash, clientOrderId, Instant.now(), actor);
         submissions.startDispatch(attemptId, Instant.now(),
-                new DispatchEvidence(clientOrderId, "toss-1.2.5"), actor);
+                new DispatchEvidence(clientOrderId,
+                        com.jmj.trade.broker.toss.TossOpenApiContract.dispatchEvidenceLabel()), actor);
         return new Prepared(attemptId, reservation.account(), request, true);
     }
 

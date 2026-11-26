@@ -1,0 +1,33 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/stocks"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": [
+        {
+          "symbol": "{{request.query.symbols}}",
+          "name": "Local Mock Stock",
+          "englishName": "Local Mock Stock",
+          "isinCode": "US0000000000",
+          "market": "NASDAQ",
+          "securityType": "STOCK",
+          "isCommonShare": true,
+          "status": "ACTIVE",
+          "currency": "USD",
+          "listDate": null,
+          "delistDate": null,
+          "sharesOutstanding": "1000000000",
+          "leverageFactor": null
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock"
+    },
+    "transformers": ["response-template"]
+  }
+}

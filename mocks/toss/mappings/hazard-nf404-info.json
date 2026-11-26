@@ -1,0 +1,41 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/stocks",
+    "queryParameters": {
+      "symbols": {
+        "equalTo": "NF404"
+      }
+    }
+  },
+  "priority": 1,
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": [
+        {
+          "symbol": "NF404",
+          "name": "Hazard Scenario NF404",
+          "englishName": "Hazard NF404",
+          "isinCode": "US0000000000",
+          "market": "NASDAQ",
+          "securityType": "STOCK",
+          "isCommonShare": true,
+          "status": "ACTIVE",
+          "currency": "USD",
+          "listDate": null,
+          "delistDate": null,
+          "sharesOutstanding": "1000000000",
+          "leverageFactor": null
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock-hazard"
+    }
+  },
+  "metadata": {
+    "scenario": "warnings endpoint 404"
+  }
+}

@@ -5,6 +5,8 @@ import com.jmj.trade.investment.tactical.MarketRiskEvaluator;
 import com.jmj.trade.investment.tactical.TacticalOverlayService;
 import com.jmj.trade.account.BrokerSurfaceService;
 import com.jmj.trade.account.PortfolioReadService;
+import com.jmj.trade.broker.BrokerConnectionRef;
+import com.jmj.trade.broker.MarketDataAdapter;
 import com.jmj.trade.broker.connection.BrokerSurfaceResponse;
 import com.jmj.trade.analysis.StockAnalysisSnapshotHasher;
 import com.jmj.trade.marketdata.StockAnalysisInput;
@@ -61,6 +63,8 @@ public final class InvestmentContextService {
     private static final Pattern TOSS_MARKET_SYMBOL = Pattern.compile("[A-Z0-9.-]+");
     private static final ZoneId NEW_YORK = ZoneId.of("America/New_York");
     private static final ZoneId MANUAL_SHEET_ZONE = ZoneId.of("Asia/Seoul");
+    /** Toss reference dates are KST, so the KST calendar day is the conservative "today" for delisting checks. */
+    private static final ZoneId TOSS_REFERENCE_ZONE = ZoneId.of("Asia/Seoul");
     private static final Duration MANUAL_SHEET_STALE_AFTER = Duration.ofDays(7);
     private static final List<String> FUNDAMENTAL_FIELDS = List.of(
             "marketCap", "fullyDilutedMarketCap", "enterpriseValue", "cash", "debt",
@@ -107,6 +111,13 @@ public final class InvestmentContextService {
 
     @Value("${investment.data.additional-symbols:}")
     private String additionalSymbols = "";
+
+    @Value("${investment.data.fundamental-source-policy:PROVIDERS}")
+    private String fundamentalSourcePolicy = InvestmentBuyRiskGate.POLICY_PROVIDERS;
+
+    private MarketDataAdapter stockReference;
+    private final Map<String, CachedHazards> hazardViewCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Duration HAZARD_VIEW_TTL = Duration.ofMinutes(5);
 
     @Autowired
     public InvestmentContextService(
@@ -174,6 +185,11 @@ public final class InvestmentContextService {
         this.reviewService = service;
     }
 
+    @Autowired(required = false)
+    public void setStockReferenceAdapter(MarketDataAdapter adapter) {
+        this.stockReference = adapter;
+    }
+
     private boolean configuredSheetOwner(UUID userId) {
         return investmentOsSheetProperties != null && investmentOsSheetProperties.enabled()
                 && userId != null && userId.equals(investmentOsSheetProperties.userId());
@@ -190,7 +206,7 @@ public final class InvestmentContextService {
         var now = clock.instant();
         if (!InvestmentOsSheetModel.manualRowsStructurallyValid(table)
                 || !InvestmentOsSheetModel.manualRowsHaveVerifiedMetadata(table,
-                now.atZone(MANUAL_SHEET_ZONE).toLocalDate())) return Map.of();
+                now.atZone(TOSS_REFERENCE_ZONE).toLocalDate())) return Map.of();
         var result = new LinkedHashMap<String, LocalDate>();
         for (var row : table.rows()) {
             if (!InvestmentOsSheetModel.ACCOUNT_2.equalsIgnoreCase(sheetCell(table, row, "Account"))) continue;
@@ -229,7 +245,7 @@ public final class InvestmentContextService {
         var now = clock.instant();
         var manualRowsPresent = accountState.rows().stream().anyMatch(row ->
                 InvestmentOsSheetModel.ACCOUNT_2.equalsIgnoreCase(sheetCell(accountState, row, "Account")));
-        var today = now.atZone(MANUAL_SHEET_ZONE).toLocalDate();
+        var today = now.atZone(TOSS_REFERENCE_ZONE).toLocalDate();
         var manualStale = manualRowsPresent && "OK".equals(manualStatus)
                 && (manualAsOf == null || manualAsOf.isAfter(today)
                 || manualAsOf.isBefore(today.minusDays(MANUAL_SHEET_STALE_AFTER.toDays())));
@@ -421,7 +437,7 @@ public final class InvestmentContextService {
 
     private boolean isFreshDate(LocalDate asOf, Instant now) {
         if (asOf == null) return false;
-        var today = now.atZone(MANUAL_SHEET_ZONE).toLocalDate();
+        var today = now.atZone(TOSS_REFERENCE_ZONE).toLocalDate();
         return !asOf.isAfter(today) && !asOf.isBefore(today.minusDays(MANUAL_SHEET_STALE_AFTER.toDays()));
     }
 
@@ -557,6 +573,7 @@ public final class InvestmentContextService {
                         dataStatus(text(readiness.get("balanceSheetStatus"))),
                         risk.status());
                 readiness.put("overallDataStatus", overall(statuses).name());
+                annotateSourcePolicy(readiness, risk.investmentBuyGate());
             }
             return new SecurityView(
                     symbol,
@@ -2231,9 +2248,52 @@ public final class InvestmentContextService {
         var symbol = ticker(rawTicker);
         var snapshot = latestSecuritySnapshot(userId, symbol);
         var assessedAt = clock.instant();
+        var policy = InvestmentBuyRiskGate.parsePolicy(fundamentalSourcePolicy);
+        var buyEvidence = new InvestmentBuyRiskGate.BuyEvidence(policy, priceStaleAfter,
+                tossStockHazards(userId, symbol, assessedAt));
         return InvestmentBuyRiskGate.evaluate(
                 marketRiskAssessment(userId, symbol, livePrice, livePriceAsOf, snapshot, assessedAt),
-                fundamentalVerification(snapshot, assessedAt), assessedAt);
+                fundamentalVerification(snapshot, assessedAt, policy), assessedAt, buyEvidence);
+    }
+
+    /** Short-lived hazard cache for portfolio views only. Prepare, submit and review start always read live. */
+    InvestmentBuyRiskGate.TossStockHazards cachedTossStockHazards(UUID userId, String symbol, Instant now) {
+        var key = userId + ":" + symbol;
+        var cached = hazardViewCache.get(key);
+        if (cached != null && now.isBefore(cached.expiresAt())) return cached.hazards();
+        var hazards = tossStockHazards(userId, symbol, now);
+        if (!InvestmentBuyRiskGate.HAZARD_UNAVAILABLE.equals(hazards.status())) {
+            hazardViewCache.put(key, new CachedHazards(hazards, now.plus(HAZARD_VIEW_TTL)));
+        }
+        return hazards;
+    }
+
+    /** Current Toss hazards for one ticker, used when a strategic review records its identity cross-check. */
+    public InvestmentBuyRiskGate.TossStockHazards currentTossStockHazards(UUID userId, String rawTicker) {
+        requireUser(userId);
+        return tossStockHazards(userId, ticker(rawTicker), clock.instant());
+    }
+
+    /** Live Toss hazards for the user's active Toss connection. Any failure is UNAVAILABLE, never CLEAR. */
+    private InvestmentBuyRiskGate.TossStockHazards tossStockHazards(UUID userId, String symbol, Instant now) {
+        if (stockReference == null) return InvestmentBuyRiskGate.TossStockHazards.unavailable();
+        var connectionId = jdbc.query("""
+                SELECT id FROM broker_connections
+                 WHERE user_id = ? AND broker_type = 'TOSS_INVEST' AND status = 'ACTIVE'
+                   AND deleted_at IS NULL
+                 ORDER BY id
+                """, (resultSet, rowNum) -> resultSet.getObject(1, UUID.class), userId)
+                .stream().findFirst().orElse(null);
+        if (connectionId == null) return InvestmentBuyRiskGate.TossStockHazards.unavailable();
+        try {
+            var connection = new BrokerConnectionRef(connectionId);
+            var info = stockReference.getStockInfo(connection, symbol).value();
+            var warnings = stockReference.getStockWarnings(connection, symbol).value();
+            return TossStockHazardEvaluator.evaluate(info, warnings,
+                    now.atZone(TOSS_REFERENCE_ZONE).toLocalDate());
+        } catch (RuntimeException exception) {
+            return InvestmentBuyRiskGate.TossStockHazards.unavailable();
+        }
     }
 
     private MarketRiskEvaluator.Assessment marketRiskAssessment(UUID userId, String symbol,
@@ -4353,6 +4413,22 @@ public final class InvestmentContextService {
                 "PARSE_FAILED", "REFERENCE_REJECTED").contains(reason));
     }
 
+    /**
+     * Readiness annotations for the source policy. Under TOSS_ONLY, an absent or non-Toss group is shown as
+     * TOSS_SOURCE_UNSUPPORTED, and legacy provider values are listed with LEGACY_PROVIDER_EXCLUDED.
+     */
+    void annotateSourcePolicy(ObjectNode readiness,
+                                      InvestmentBuyRiskGate.Decision buyGate) {
+        var policy = InvestmentBuyRiskGate.parsePolicy(fundamentalSourcePolicy);
+        readiness.put("sourcePolicy", policy);
+        var verification = buyGate == null ? null : buyGate.fundamentalVerification();
+        var unsupported = verification != null
+                && verification.reasons().contains(InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED);
+        readiness.put("tossSourceUnsupported", unsupported);
+        readiness.set("legacyProviderData", objectMapper.valueToTree(
+                verification == null ? List.of() : verification.legacyProviderData()));
+    }
+
     private static InvestmentDataCalculator.DataStatus dataStatus(String value) {
         if (value == null) return InvestmentDataCalculator.DataStatus.DATA_MISSING;
         try {
@@ -4393,6 +4469,7 @@ public final class InvestmentContextService {
             Map<String, BigDecimal> weights, PortfolioView portfolio, Map<String, ThesisView> theses,
             Map<String, JsonNode> analysis, List<PositionMandateView> positionMandates,
             Map<String, SecurityTacticalOverlayView> tacticalViews, Instant evaluatedAt) {
+        var sourcePolicy = InvestmentBuyRiskGate.parsePolicy(fundamentalSourcePolicy);
         var portfolioDataStatus = dataStatus(portfolio.status());
         var portfolioNumbersAvailable = portfolio.riskNumbersAvailable();
         var portfolioCurrent = portfolioDataStatus == InvestmentDataCalculator.DataStatus.OK;
@@ -4442,8 +4519,13 @@ public final class InvestmentContextService {
                     mandate == null ? null : mandate.riskPriceRole(), confirmed && trustedMark && tossMark,
                     triggerPrice, trustedMark && tossMark ? price : null,
                     trustedMark && tossMark ? priceAsOf : null, evaluatedAt, regularCloseStaleAfter);
-            var buyGate = InvestmentBuyRiskGate.evaluate(marketRisk,
-                    fundamentalVerification(analysis.get(symbol), evaluatedAt), evaluatedAt);
+            var fundamentalGate = fundamentalVerification(analysis.get(symbol), evaluatedAt, sourcePolicy);
+            // Under TOSS_ONLY the view uses the same buy mapping as prepare, with cached live Toss hazards.
+            var buyGate = InvestmentBuyRiskGate.POLICY_TOSS_ONLY.equals(sourcePolicy)
+                    ? InvestmentBuyRiskGate.evaluate(marketRisk, fundamentalGate, evaluatedAt,
+                    new InvestmentBuyRiskGate.BuyEvidence(sourcePolicy, priceStaleAfter,
+                            cachedTossStockHazards(userId, symbol, evaluatedAt)))
+                    : InvestmentBuyRiskGate.evaluate(marketRisk, fundamentalGate, evaluatedAt);
             if (!"ELIGIBLE".equals(buyGate.status())) {
                 reasons.addAll(buyGate.reasons());
                 eligible = false;
@@ -4491,7 +4573,13 @@ public final class InvestmentContextService {
         return Map.copyOf(risks);
     }
 
-    private InvestmentBuyRiskGate.FundamentalVerification fundamentalVerification(JsonNode snapshot, Instant now) {
+    /**
+     * Gate inputs for fundamentals, consensus and revision. Under TOSS_ONLY, Toss supplies none of these, so an absent
+     * group and any group stored by a non-Toss provider both report TOSS_SOURCE_UNSUPPORTED. Legacy values are returned
+     * separately with LEGACY_PROVIDER_EXCLUDED and never count as evidence. Toss-sourced values keep their checks.
+     */
+    InvestmentBuyRiskGate.FundamentalVerification fundamentalVerification(JsonNode snapshot, Instant now,
+                                                                          String policy) {
         var fundamentals = node(snapshot, "fundamentals");
         var revision = node(snapshot, "revision");
         var consensus = node(snapshot, "consensus");
@@ -4502,21 +4590,64 @@ public final class InvestmentContextService {
         var consensusStatus = dataStatus(text(consensus.get("status"))).name();
         var consensusAsOf = instant(consensus.get("asOf"));
         var consensusSource = clean(text(consensus.get("source")));
+        var tossOnly = InvestmentBuyRiskGate.POLICY_TOSS_ONLY.equals(policy);
         var reasons = new ArrayList<String>();
-        if (!"OK".equals(fundamentalStatus)) reasons.add("FUNDAMENTALS_" + fundamentalStatus);
-        else if (fundamentalSource == null) reasons.add("FUNDAMENTAL_SOURCE_MISSING");
-        if (fundamentalAsOf == null) reasons.add("FUNDAMENTAL_AS_OF_MISSING");
-        else if (fundamentalAsOf.isAfter(now)) reasons.add("FUNDAMENTAL_AS_OF_IN_FUTURE");
-        else if (fundamentalAsOf.isBefore(now.minus(fundamentalStaleAfter))) reasons.add("FUNDAMENTALS_STALE");
-        if (!"OK".equals(revisionStatus)) reasons.add("REVISION_" + revisionStatus);
-        if (!"OK".equals(consensusStatus)) reasons.add("CONSENSUS_" + consensusStatus);
-        if (consensusSource == null) reasons.add("CONSENSUS_SOURCE_MISSING");
-        if (consensusAsOf == null) reasons.add("CONSENSUS_AS_OF_MISSING");
-        else if (consensusAsOf.isAfter(now)) reasons.add("CONSENSUS_AS_OF_IN_FUTURE");
-        else if (consensusAsOf.isBefore(now.minus(consensusStaleAfter))) reasons.add("CONSENSUS_STALE");
-        return new InvestmentBuyRiskGate.FundamentalVerification(reasons.isEmpty() ? "AVAILABLE" : "UNAVAILABLE",
-                reasons, fundamentalStatus, fundamentalSource, fundamentalAsOf,
-                revisionStatus, consensusSource, consensusAsOf);
+        var legacy = new ArrayList<InvestmentBuyRiskGate.LegacyProviderData>();
+        var unsupported = InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED;
+        if (tossOnly && isAbsent(fundamentals, fundamentalStatus)) {
+            reasons.add(unsupported);
+        } else if (tossOnly && isLegacy(fundamentalSource)) {
+            reasons.add(unsupported);
+            legacy.add(new InvestmentBuyRiskGate.LegacyProviderData("fundamentals", fundamentalStatus,
+                    fundamentalSource, fundamentalAsOf, InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED));
+        } else {
+            if (!"OK".equals(fundamentalStatus)) reasons.add("FUNDAMENTALS_" + fundamentalStatus);
+            else if (fundamentalSource == null) reasons.add("FUNDAMENTAL_SOURCE_MISSING");
+            if (fundamentalAsOf == null) reasons.add("FUNDAMENTAL_AS_OF_MISSING");
+            else if (fundamentalAsOf.isAfter(now)) reasons.add("FUNDAMENTAL_AS_OF_IN_FUTURE");
+            else if (fundamentalAsOf.isBefore(now.minus(fundamentalStaleAfter))) reasons.add("FUNDAMENTALS_STALE");
+        }
+        if (tossOnly && isAbsent(revision, revisionStatus)) {
+            reasons.add(unsupported);
+        } else if (tossOnly) {
+            // Toss never supplies revisions, so any stored revision value is legacy provider data.
+            reasons.add(unsupported);
+            legacy.add(new InvestmentBuyRiskGate.LegacyProviderData("revision", revisionStatus,
+                    consensusSource, null, InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED));
+        } else if (!"OK".equals(revisionStatus)) {
+            reasons.add("REVISION_" + revisionStatus);
+        }
+        if (tossOnly && isAbsent(consensus, consensusStatus)) {
+            reasons.add(unsupported);
+        } else if (tossOnly && isLegacy(consensusSource)) {
+            reasons.add(unsupported);
+            legacy.add(new InvestmentBuyRiskGate.LegacyProviderData("consensus", consensusStatus,
+                    consensusSource, consensusAsOf, InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED));
+        } else {
+            if (!"OK".equals(consensusStatus)) reasons.add("CONSENSUS_" + consensusStatus);
+            if (consensusSource == null) reasons.add("CONSENSUS_SOURCE_MISSING");
+            if (consensusAsOf == null) reasons.add("CONSENSUS_AS_OF_MISSING");
+            else if (consensusAsOf.isAfter(now)) reasons.add("CONSENSUS_AS_OF_IN_FUTURE");
+            else if (consensusAsOf.isBefore(now.minus(consensusStaleAfter))) reasons.add("CONSENSUS_STALE");
+        }
+        var distinctReasons = reasons.stream().distinct().toList();
+        return new InvestmentBuyRiskGate.FundamentalVerification(
+                distinctReasons.isEmpty() ? "AVAILABLE" : "UNAVAILABLE", distinctReasons, fundamentalStatus,
+                fundamentalSource, fundamentalAsOf, revisionStatus, consensusSource, consensusAsOf, legacy);
+    }
+
+    /** Toss never sources fundamentals or consensus, so any non-Toss source names legacy provider data. */
+    private static boolean isLegacy(String source) {
+        return source != null && !source.startsWith("TOSS");
+    }
+
+    private static boolean isAbsent(JsonNode group, String status) {
+        return ("DATA_MISSING".equals(status) || "NOT_CONFIGURED".equals(status))
+                && isNullish(group.get("asOf")) && isNullish(group.get("source"));
+    }
+
+    private static boolean isNullish(JsonNode value) {
+        return value == null || value.isNull();
     }
 
     private static ThesisEvidenceView thesisEvidence(PositionMandateView mandate, ThesisView thesis,
@@ -5617,6 +5748,9 @@ public final class InvestmentContextService {
                     "metricProvenance", metricProvenance,
                     "status", status.name());
         }
+    }
+
+    private record CachedHazards(InvestmentBuyRiskGate.TossStockHazards hazards, Instant expiresAt) {
     }
 
     private record ReadinessData(

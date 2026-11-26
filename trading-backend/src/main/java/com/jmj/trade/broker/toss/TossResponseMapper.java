@@ -22,6 +22,7 @@ import com.jmj.trade.broker.SellableQuantitySnapshot;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.EnumMap;
 import java.util.List;
@@ -194,6 +195,56 @@ final class TossResponseMapper {
                 metadata.observedAt());
     }
 
+    MarketDataAdapter.StockInfo stockInfo(String symbol, List<TossApiDtos.StockInfo> items) {
+        if (items == null || items.size() != 1 || items.getFirst() == null) {
+            throw contract();
+        }
+        var item = items.getFirst();
+        if (symbol == null || item.symbol() == null || !symbol.equalsIgnoreCase(item.symbol())
+                || blank(item.status()) || blank(item.securityType()) || blank(item.currency())
+                || item.sharesOutstanding() == null) {
+            throw contract();
+        }
+        return new MarketDataAdapter.StockInfo(
+                item.symbol().toUpperCase(Locale.ROOT),
+                item.status(),
+                item.securityType(),
+                item.isCommonShare(),
+                nullableDate(item.delistDate()),
+                nullableDecimal(item.leverageFactor()),
+                nonNegativeDecimal(item.sharesOutstanding()),
+                item.currency());
+    }
+
+    List<MarketDataAdapter.StockWarning> stockWarnings(List<TossApiDtos.StockWarning> items) {
+        if (items == null) {
+            throw contract();
+        }
+        return items.stream()
+                .map(item -> {
+                    if (item == null || blank(item.warningType())) {
+                        throw contract();
+                    }
+                    return new MarketDataAdapter.StockWarning(item.warningType());
+                })
+                .toList();
+    }
+
+    private LocalDate nullableDate(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(raw);
+        } catch (DateTimeParseException exception) {
+            throw contract();
+        }
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
     SellableQuantitySnapshot sellableQuantity(
             BrokerAccountRef account,
             String symbol,
@@ -351,7 +402,7 @@ final class TossResponseMapper {
             throw contract();
         }
         return new MarketDataAdapter.RankingItem(
-                nullableInteger(source.rank()),
+                source.rank(),
                 optionalText(source.symbol()),
                 optionalCurrency(source.currency()),
                 source.price() == null ? null : nullableDecimal(source.price().lastPrice()),

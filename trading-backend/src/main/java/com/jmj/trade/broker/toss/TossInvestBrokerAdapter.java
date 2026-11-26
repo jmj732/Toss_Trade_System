@@ -189,6 +189,22 @@ final class TossInvestBrokerAdapter implements BrokerAdapter, MarketDataAdapter,
     }
 
     @Override
+    public BrokerResponse<StockInfo> getStockInfo(BrokerConnectionRef connection, String symbol) {
+        mapper.requireToss(connection);
+        var normalized = mapper.normalizeSymbol(symbol);
+        var response = apiClient.getStockInfo(connection.brokerConnectionId(), normalized);
+        return new BrokerResponse<>(mapper.stockInfo(normalized, response.value()), response.metadata());
+    }
+
+    @Override
+    public BrokerResponse<List<StockWarning>> getStockWarnings(BrokerConnectionRef connection, String symbol) {
+        mapper.requireToss(connection);
+        var normalized = mapper.normalizeSymbol(symbol);
+        var response = apiClient.getStockWarnings(connection.brokerConnectionId(), normalized);
+        return new BrokerResponse<>(mapper.stockWarnings(response.value()), response.metadata());
+    }
+
+    @Override
     public BrokerResponse<Ranking> getRanking(
             BrokerConnectionRef connection,
             String type,

@@ -358,7 +358,63 @@ public final class PaperOrderWorkflowService {
         }
         var snapshot = displaySnapshot(target, serverPrice(target));
         return new ApprovalPreview(
-                snapshot.quantity(), snapshot.maxLoss(), snapshot.currency(), null);
+                snapshot.quantity(), snapshot.maxLoss(), snapshot.currency(), null,
+                linkedBuyEvidence(userId, orderIntentId));
+    }
+
+    /**
+     * Latest strategic review of the BUY's linked ADD decision, shown before approval. Read-only: the submit path
+     * re-checks the same review, so this surfaces what submission will rely on.
+     */
+    private BuyEvidenceView linkedBuyEvidence(UUID userId, UUID orderIntentId) {
+        var decisionId = jdbc.query("""
+                SELECT investment_buy_decision_id FROM order_intents WHERE id = ? AND user_id = ?
+                """, (resultSet, rowNumber) -> resultSet.getObject("investment_buy_decision_id", UUID.class),
+                orderIntentId, userId).stream().findFirst().orElse(null);
+        if (decisionId == null) return null;
+        return jdbc.query("""
+                SELECT review_id, evidence_mode, verification_status, sources::text AS sources_json,
+                       structured_evidence::text AS structured_json, created_at
+                  FROM investment_strategic_buy_revalidations
+                 WHERE user_id = ? AND decision_id = ?
+                 ORDER BY created_at DESC, review_id DESC LIMIT 1
+                """, (resultSet, rowNumber) -> new BuyEvidenceView(
+                resultSet.getString("evidence_mode"), resultSet.getString("verification_status"),
+                resultSet.getObject("review_id", UUID.class),
+                resultSet.getObject("created_at", java.time.OffsetDateTime.class).toInstant(),
+                citedSources(resultSet.getString("sources_json")),
+                readJsonOrNull(resultSet.getString("structured_json"))),
+                userId, decisionId).stream().findFirst().orElse(null);
+    }
+
+    static List<CitedSource> citedSources(String json) {
+        var nodes = readJsonOrNull(json);
+        if (nodes == null || !nodes.isArray()) return List.of();
+        var sources = new java.util.ArrayList<CitedSource>();
+        for (var node : nodes) {
+            sources.add(new CitedSource(textOf(node, "type"), textOf(node, "url"),
+                    instantOrNull(textOf(node, "asOf"))));
+        }
+        return List.copyOf(sources);
+    }
+
+    private static tools.jackson.databind.JsonNode readJsonOrNull(String json) {
+        if (json == null) return null;
+        return new tools.jackson.databind.ObjectMapper().readTree(json);
+    }
+
+    private static String textOf(tools.jackson.databind.JsonNode node, String field) {
+        var value = node.get(field);
+        return value == null || value.isNull() ? null : value.asText();
+    }
+
+    private static Instant instantOrNull(String value) {
+        if (value == null) return null;
+        try {
+            return Instant.parse(value);
+        } catch (java.time.format.DateTimeParseException exception) {
+            return null;
+        }
     }
 
     private BigDecimal serverPrice(QuoteTarget target) {
@@ -723,8 +779,25 @@ public final class PaperOrderWorkflowService {
             BigDecimal displayedQuantity,
             BigDecimal displayedMaxLoss,
             Currency displayedCurrency,
-            Long proposalVersion
+            Long proposalVersion,
+            BuyEvidenceView buyEvidence
     ) {
+        public ApprovalPreview(BigDecimal displayedQuantity, BigDecimal displayedMaxLoss, Currency displayedCurrency,
+                               Long proposalVersion) {
+            this(displayedQuantity, displayedMaxLoss, displayedCurrency, proposalVersion, null);
+        }
+    }
+
+    /**
+     * Evidence the BUY relies on. EXTERNAL_CITED reviews carry verificationStatus SOURCE_NOT_VERIFIED, so cited URLs,
+     * values and as-of dates are shown as stored and not as verified facts.
+     */
+    public record BuyEvidenceView(String evidenceMode, String verificationStatus, UUID reviewId,
+                                  Instant reviewCreatedAt, List<CitedSource> citedSources,
+                                  tools.jackson.databind.JsonNode structuredEvidence) {
+    }
+
+    public record CitedSource(String type, String url, Instant asOf) {
     }
 
     public record ProposeCommand(

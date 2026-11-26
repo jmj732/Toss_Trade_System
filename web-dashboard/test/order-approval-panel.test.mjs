@@ -3,7 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { OrderApprovalPanel, isStatusActionable } from "../app/order-approval-panel.jsx";
+import { BuyEvidenceSummary, OrderApprovalPanel, isStatusActionable } from "../app/order-approval-panel.jsx";
 
 // renderToStaticMarkup 은 effect 를 실행하지 않으므로 preview 는 로드되지 않는다.
 // 따라서 preview 에 의존하지 않는 만료 처리(D-42)만 정적으로 검증한다.
@@ -88,4 +88,51 @@ test("does not leak undefined/NaN/Invalid Date for a bare order", () => {
   for (const forbidden of ["undefined", "NaN", "Invalid Date", ">null<"]) {
     assert.ok(!html.includes(forbidden), `markup leaked "${forbidden}"`);
   }
+});
+
+// 매수 근거: EXTERNAL_CITED 는 서버가 원문을 검증하지 않았음을 명시해야 하고, 출처는 저장된 값 그대로 보여준다.
+test("external evidence is labelled as cited and not verified before approval", () => {
+  const html = renderToStaticMarkup(createElement(BuyEvidenceSummary, {
+    evidence: {
+      evidenceMode: "EXTERNAL_CITED",
+      verificationStatus: "SOURCE_NOT_VERIFIED",
+      citedSources: [{
+        type: "FUNDAMENTAL",
+        url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000100/filing.htm",
+        asOf: "2026-11-05T00:00:00Z"
+      }],
+      structuredEvidence: {
+        consensus: { revenueConsensus: 1000000000, epsConsensus: 2.5 },
+        revision: { eps90dChangePct: 4.5 },
+        fundamental: { sharesOutstanding: 1000000000 }
+      }
+    }
+  }));
+  assert.match(html, /외부 인용 근거 \(ChatGPT 제시\)/);
+  assert.match(html, /원문 미검증 \(SOURCE_NOT_VERIFIED\)/);
+  assert.match(html, /data-verification-status="SOURCE_NOT_VERIFIED"/);
+  assert.match(html, /컨센서스 EPS/);
+  assert.match(html, /EPS 90일 변화율\(%\)/);
+  assert.match(html, /href="https:\/\/www\.sec\.gov\/Archives/);
+});
+
+test("provider evidence renders no verification warning and no empty structured rows", () => {
+  const html = renderToStaticMarkup(createElement(BuyEvidenceSummary, {
+    evidence: { evidenceMode: "PROVIDERS", verificationStatus: null, citedSources: [], structuredEvidence: null }
+  }));
+  assert.match(html, /제공자 데이터 근거/);
+  assert.doesNotMatch(html, /원문 미검증/);
+  assert.doesNotMatch(html, /컨센서스/);
+});
+
+test("absent buy evidence renders nothing and non-https sources are not linked", () => {
+  assert.equal(renderToStaticMarkup(createElement(BuyEvidenceSummary, { evidence: null })), "");
+  const html = renderToStaticMarkup(createElement(BuyEvidenceSummary, {
+    evidence: {
+      evidenceMode: "EXTERNAL_CITED", verificationStatus: "SOURCE_NOT_VERIFIED",
+      citedSources: [{ type: "RISK", url: "javascript:alert(1)", asOf: null }], structuredEvidence: null
+    }
+  }));
+  assert.doesNotMatch(html, /<a /);
+  assert.match(html, /javascript:alert\(1\)/);
 });

@@ -1,0 +1,23 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/stocks/ERR500/warnings"
+  },
+  "priority": 1,
+  "response": {
+    "status": 500,
+    "jsonBody": {
+      "error": {
+        "code": "internal-error",
+        "message": "temporary failure"
+      }
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock-hazard"
+    }
+  },
+  "metadata": {
+    "scenario": "warnings endpoint 500"
+  }
+}

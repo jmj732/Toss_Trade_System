@@ -1,0 +1,14 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPathPattern": "/api/v1/stocks/[A-Za-z0-9.-]+/warnings"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {"result": []},
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock"
+    }
+  }
+}

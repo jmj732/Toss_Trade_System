@@ -175,6 +175,24 @@ final class TossApiClient {
                 .map(TossApiDtos.BuyingPowerEnvelope::result);
     }
 
+    TossApiResponse<List<TossApiDtos.StockInfo>> getStockInfo(UUID brokerConnectionId, String symbol) {
+        return withTokenRefresh(brokerConnectionId, token -> restClient.get()
+                .uri(builder -> builder.path("/api/v1/stocks").queryParam("symbols", symbol).build())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.StocksEnvelope.class)
+                .map(TossApiDtos.StocksEnvelope::result);
+    }
+
+    TossApiResponse<List<TossApiDtos.StockWarning>> getStockWarnings(UUID brokerConnectionId, String symbol) {
+        return withTokenRefresh(brokerConnectionId, token -> restClient.get()
+                .uri(builder -> builder.path("/api/v1/stocks/{symbol}/warnings").build(symbol))
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .retrieve()
+                .toEntity(String.class), TossApiDtos.StockWarningsEnvelope.class)
+                .map(TossApiDtos.StockWarningsEnvelope::result);
+    }
+
     TossApiResponse<TossApiDtos.SellableQuantity> getSellableQuantity(
             UUID brokerConnectionId,
             String accountSeq,
@@ -378,6 +396,12 @@ final class TossApiClient {
             return typed.result();
         }
         if (envelope instanceof TossApiDtos.PricesEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.StocksEnvelope typed) {
+            return typed.result();
+        }
+        if (envelope instanceof TossApiDtos.StockWarningsEnvelope typed) {
             return typed.result();
         }
         if (envelope instanceof TossApiDtos.OrderBookEnvelope typed) {

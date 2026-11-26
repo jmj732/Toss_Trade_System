@@ -91,6 +91,11 @@ investment:
     regular-close-stale-after: ${INVESTMENT_REGULAR_CLOSE_STALE_AFTER:P7D}
     fundamental-stale-after: ${INVESTMENT_FUNDAMENTAL_STALE_AFTER:P210D}
     consensus-stale-after: ${INVESTMENT_CONSENSUS_STALE_AFTER:P10D}
+    fundamental-source-policy: ${INVESTMENT_FUNDAMENTAL_SOURCE_POLICY:PROVIDERS}
+  revalidation:
+    external-evidence-domains: ${INVESTMENT_REVALIDATION_EXTERNAL_EVIDENCE_DOMAINS:nasdaq.com,zacks.com,marketbeat.com,finance.yahoo.com,stockanalysis.com,tipranks.com}
+    external-evidence-max-ttl: ${INVESTMENT_REVALIDATION_EXTERNAL_EVIDENCE_MAX_TTL:PT15M}
+    external-evidence-max-notional: ${INVESTMENT_REVALIDATION_EXTERNAL_EVIDENCE_MAX_NOTIONAL:1000}
 market-events:
   scheduler:
     enabled: ${MARKET_EVENTS_SCHEDULER_ENABLED:false}

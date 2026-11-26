@@ -249,6 +249,137 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
                 .isEqualTo(InvestmentException.Code.CONFLICT);
     }
 
+    @Test
+    void tossOnlyExternalReviewStoresStructuredEvidenceAndPassesWhenEveryCheckHolds() {
+        enableExternalPolicy();
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+
+        var saved = service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                externalCompletion(run, validEvidence(), passAssessment(), BigDecimal.valueOf(5)));
+
+        assertThat(run.evidenceMode()).isEqualTo("EXTERNAL_CITED");
+        assertThat(run.expiresAt()).isBeforeOrEqualTo(NOW.plusSeconds(15 * 60L));
+        assertThat(saved.verdict()).isEqualTo("PASS");
+        assertThat(saved.evidenceMode()).isEqualTo("EXTERNAL_CITED");
+        assertThat(saved.verificationStatus()).isEqualTo("SOURCE_NOT_VERIFIED");
+        assertThat(saved.structuredEvidence().path("fundamental").path("accessionNumber").asText())
+                .isEqualTo("0000320193-26-000100");
+        assertThat(saved.verdictReasons().size()).isZero();
+    }
+
+    @Test
+    void externalRunRequiresStructuredEvidenceAndProvidersRunRejectsIt() {
+        enableExternalPolicy();
+        var external = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        assertInvalid(() -> service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                completion(external, sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"),
+                        passAssessment())));
+
+        resetToProvidersPolicy();
+        var providers = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        assertInvalid(() -> service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                externalCompletion(providers, validEvidence(), passAssessment(), BigDecimal.valueOf(5))));
+    }
+
+    @Test
+    void eachStructuredEvidenceRuleRejectsTheRequestWithoutStoringAPass() {
+        enableExternalPolicy();
+        var cases = new java.util.LinkedHashMap<String, java.util.function.UnaryOperator<StructuredEvidenceMutation>>();
+        cases.put("unsupported filing form", e -> e.withFundamental(f -> f.form("8-K")));
+        cases.put("malformed accession number", e -> e.withFundamental(f -> f.accession("0000320193-26-1")));
+        cases.put("non-SEC host", e -> e.withFundamental(f -> f.url("https://sec.gov.example.com/a/000032019326000100/x")));
+        cases.put("SEC path without accession", e -> e.withFundamental(f -> f.url("https://www.sec.gov/Archives/other")));
+        cases.put("period end after filing", e -> e.withFundamental(f -> f.periodEnd(LocalDate.parse("2026-11-06"))));
+        cases.put("filing in the future", e -> e.withFundamental(f -> f.filedAt(NOW.plusSeconds(60))));
+        cases.put("stale filing", e -> e.withFundamental(f -> f.filedAt(NOW.minusSeconds(211L * 86400))));
+        cases.put("non-positive shares", e -> e.withFundamental(f -> f.shares(BigDecimal.ZERO)));
+        cases.put("horizon not after now", e -> e.withConsensus(c -> c.horizon(LocalDate.parse("2026-11-07"))));
+        cases.put("zero analysts", e -> e.withConsensus(c -> c.analysts(0)));
+        cases.put("non-USD consensus", e -> e.withConsensus(c -> c.currency("EUR")));
+        cases.put("stale consensus", e -> e.withConsensus(c -> c.asOf(NOW.minusSeconds(11L * 86400))));
+        cases.put("consensus host outside allow-list", e -> e.withConsensus(c -> c.url("https://nasdaq.com.evil.io/x")));
+        cases.put("look-alike consensus host", e -> e.withConsensus(c -> c.url("https://evilnasdaq.com/x")));
+        cases.put("revision baseline too short", e -> e.withRevision(r -> r.baseline(NOW.minusSeconds(30L * 86400))));
+        cases.put("revision baseline too long", e -> e.withRevision(r -> r.baseline(NOW.minusSeconds(120L * 86400))));
+        cases.put("revision host outside allow-list", e -> e.withRevision(r -> r.url("https://example.com/r")));
+        for (var entry : cases.entrySet()) {
+            var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+            var completion = externalCompletion(run, entry.getValue().apply(validEvidence()), passAssessment(),
+                    BigDecimal.valueOf(5));
+            assertInvalid(() -> service.completeChatGptRun(userId, CONNECTION, apiKeyId, completion));
+            assertThat(countReviewsFor(run.runId())).as(entry.getKey()).isZero();
+        }
+    }
+
+    @Test
+    void revisionContradictingAssessmentIsStoredAsBlocked() {
+        enableExternalPolicy();
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        var evidence = validEvidence().withRevision(r -> r.eps90(BigDecimal.valueOf(-2)));
+
+        var saved = service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                externalCompletion(run, evidence, passAssessment(), BigDecimal.valueOf(5)));
+
+        assertThat(saved.verdict()).isEqualTo("BLOCKED");
+        assertThat(saved.verdictReasons().toString()).contains("REVISION_CONTRADICTS_ASSESSMENT");
+    }
+
+    @Test
+    void shareCountMismatchOrMissingTossValueIsStoredAsBlocked() {
+        enableExternalPolicy();
+        var mismatchRun = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        when(context.currentTossStockHazards(userId, "LUNR")).thenReturn(new InvestmentBuyRiskGate.TossStockHazards(
+                "CLEAR", List.of(), BigDecimal.valueOf(2_000_000_000L)));
+        var mismatch = service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                externalCompletion(mismatchRun, validEvidence(), passAssessment(), BigDecimal.valueOf(5)));
+
+        var missingRun = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        when(context.currentTossStockHazards(userId, "LUNR")).thenReturn(
+                InvestmentBuyRiskGate.TossStockHazards.unavailable());
+        var missing = service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                externalCompletion(missingRun, validEvidence(), passAssessment(), BigDecimal.valueOf(5)));
+
+        assertThat(mismatch.verdict()).isEqualTo("BLOCKED");
+        assertThat(mismatch.verdictReasons().toString()).contains("EVIDENCE_IDENTITY_MISMATCH");
+        assertThat(missing.verdict()).isEqualTo("BLOCKED");
+        assertThat(missing.verdictReasons().toString()).contains("EVIDENCE_IDENTITY_MISMATCH");
+    }
+
+    @Test
+    void externalReviewCannotStartWhenGateIsBlockedOrEvidenceModeDoesNotMatchPolicy() {
+        enableExternalPolicy();
+        when(context.investmentBuyRiskGate(userId, "LUNR", null, null)).thenReturn(
+                new InvestmentBuyRiskGate.Decision("BLOCKED", List.of("TOSS_STOCK_HAZARD_UNAVAILABLE"),
+                        "STRATEGIC", "OK", "INTACT", "CLEAR", null, NOW, "EXTERNAL_CITED"));
+        assertInvalid(() -> service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId));
+
+        when(context.investmentBuyRiskGate(userId, "LUNR", null, null)).thenReturn(
+                new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("STRATEGIC_MARKET_REVIEW"),
+                        "STRATEGIC", "OK", "IMPAIRED", "TRIGGER_BREACHED", null, NOW));
+        assertInvalid(() -> service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId));
+    }
+
+    @Test
+    void policyFlipAfterRunStartBlocksCompletion() {
+        enableExternalPolicy();
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        resetToProvidersPolicy();
+
+        assertInvalid(() -> service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                externalCompletion(run, validEvidence(), passAssessment(), BigDecimal.valueOf(5))));
+    }
+
+    @Test
+    void externalReviewTtlIsCappedAtConfiguredMaximum() {
+        enableExternalPolicy();
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "externalMaxTtl",
+                java.time.Duration.ofMinutes(5));
+
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+
+        assertThat(run.expiresAt()).isEqualTo(NOW.plusSeconds(5 * 60L));
+    }
+
     private InvestmentStrategicBuyRevalidationService.RevalidationInput input(
             UUID reviewId, InvestmentStrategicBuyRevalidationService.Assessment assessment) {
         var sources = sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK");
@@ -282,6 +413,264 @@ class InvestmentStrategicBuyRevalidationIntegrationTest extends PostgresIntegrat
 
     private static InvestmentStrategicBuyRevalidationService.Criterion criterion(String status) {
         return new InvestmentStrategicBuyRevalidationService.Criterion(status, "Reviewed evidence supports " + status);
+    }
+
+    private void enableExternalPolicy() {
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "fundamentalSourcePolicy", "TOSS_ONLY");
+        when(context.investmentBuyRiskGate(userId, "LUNR", null, null)).thenReturn(
+                new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED"),
+                        "STRATEGIC", "OK", "INTACT", "CLEAR", null, NOW, "EXTERNAL_CITED"));
+        when(context.currentTossStockHazards(userId, "LUNR")).thenReturn(new InvestmentBuyRiskGate.TossStockHazards(
+                "CLEAR", List.of(), BigDecimal.valueOf(1_000_000_000L)));
+    }
+
+    private void resetToProvidersPolicy() {
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "fundamentalSourcePolicy", "PROVIDERS");
+        when(context.investmentBuyRiskGate(userId, "LUNR", null, null)).thenReturn(
+                new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("STRATEGIC_MARKET_REVIEW"),
+                        "STRATEGIC", "OK", "IMPAIRED", "TRIGGER_BREACHED", null, NOW));
+    }
+
+    @Test
+    void externalReviewWithinNotionalCapIsAllowedAndLargerOrdersAreBlocked() {
+        enableExternalPolicy();
+        createExternalPassingReview(BigDecimal.valueOf(50));
+
+        var within = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.valueOf(5),
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), externalGate());
+        var tooLarge = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.valueOf(20),
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), externalGate());
+
+        assertThat(within.allowed()).isTrue();
+        assertThat(within.reason()).isEqualTo("STRATEGIC_REVALIDATION_PASS");
+        assertThat(within.verificationStatus()).isEqualTo("SOURCE_NOT_VERIFIED");
+        assertThat(tooLarge.allowed()).isFalse();
+        assertThat(tooLarge.reason()).isEqualTo("STRATEGIC_EXTERNAL_EVIDENCE_NOTIONAL_EXCEEDED");
+    }
+
+    @Test
+    void externalReviewStoredBeforeTtlCapWasLoweredCannotSubmit() {
+        enableExternalPolicy();
+        createExternalPassingReview(BigDecimal.valueOf(5));
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "externalMaxTtl",
+                java.time.Duration.ofMinutes(5));
+
+        var result = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), externalGate());
+
+        assertThat(result.allowed()).isFalse();
+        assertThat(result.reason()).isEqualTo("STRATEGIC_EXTERNAL_EVIDENCE_TTL_EXCEEDED");
+    }
+
+    @Test
+    void policyFlipToProvidersAfterExternalReviewBlocksSubmitInBothDirections() {
+        enableExternalPolicy();
+        createExternalPassingReview(BigDecimal.valueOf(5));
+
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "fundamentalSourcePolicy", "PROVIDERS");
+        var gateFlippedToProviders = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), externalGate());
+        var providersGate = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), providersGate());
+
+        assertThat(gateFlippedToProviders.reason()).isEqualTo("STRATEGIC_EXTERNAL_EVIDENCE_POLICY_CHANGED");
+        assertThat(providersGate.reason()).isEqualTo("STRATEGIC_EVIDENCE_MODE_CHANGED");
+    }
+
+    @Test
+    void tossHazardAppearingAfterExternalReviewBlocksSubmit() {
+        enableExternalPolicy();
+        createExternalPassingReview(BigDecimal.valueOf(5));
+        var hazard = new InvestmentBuyRiskGate.Decision("BLOCKED", List.of("TOSS_STOCK_WARNING_VI_STATIC"),
+                "STRATEGIC", "OK", "INTACT", "CLEAR", null, NOW, "EXTERNAL_CITED");
+
+        var result = service.validateForSubmit(userId, decisionId, "LUNR", BigDecimal.ONE,
+                BigDecimal.valueOf(100), BigDecimal.valueOf(100), hazard);
+
+        assertThat(result.allowed()).isFalse();
+        assertThat(result.reason()).isEqualTo("STRATEGIC_REVIEW_STATE_CHANGED");
+    }
+
+    @Test
+    void providersReviewIsNotMarkedSourceNotVerified() {
+        resetToProvidersPolicy();
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+
+        var saved = service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                completion(run, sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"), passAssessment()));
+
+        assertThat(saved.evidenceMode()).isEqualTo("PROVIDERS");
+        assertThat(saved.verificationStatus()).isNull();
+    }
+
+    @Test
+    void reviewStartSnapshotShowsLegacyProviderDataWithoutCountingItAsEvidence() {
+        enableExternalPolicy();
+        var legacy = new InvestmentBuyRiskGate.LegacyProviderData("consensus", "STALE", "ALPHA_VANTAGE",
+                NOW.minusSeconds(60L * 86400), InvestmentBuyRiskGate.LEGACY_PROVIDER_EXCLUDED);
+        when(context.investmentBuyRiskGate(userId, "LUNR", null, null)).thenReturn(
+                new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED"),
+                        "STRATEGIC", "OK", "INTACT", "CLEAR",
+                        new InvestmentBuyRiskGate.FundamentalVerification("UNAVAILABLE",
+                                List.of(InvestmentBuyRiskGate.TOSS_SOURCE_UNSUPPORTED), "DATA_MISSING", null, null,
+                                "DATA_MISSING", "ALPHA_VANTAGE", NOW.minusSeconds(60L * 86400), List.of(legacy)),
+                        NOW, "EXTERNAL_CITED"));
+
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+
+        assertThat(run.legacyProviderData()).singleElement().satisfies(item -> {
+            assertThat(item.source()).isEqualTo("ALPHA_VANTAGE");
+            assertThat(item.flag()).isEqualTo("LEGACY_PROVIDER_EXCLUDED");
+        });
+        assertThat(run.evidenceMode()).isEqualTo("EXTERNAL_CITED");
+    }
+
+    private InvestmentStrategicBuyRevalidationService.RevalidationView createExternalPassingReview(
+            BigDecimal maxQuantity) {
+        var run = service.beginChatGptRun(userId, CONNECTION, apiKeyId, decisionId);
+        return service.completeChatGptRun(userId, CONNECTION, apiKeyId,
+                externalCompletion(run, validEvidence(), passAssessment(), maxQuantity));
+    }
+
+    private static InvestmentBuyRiskGate.Decision externalGate() {
+        return new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("FUNDAMENTALS_EXTERNAL_EVIDENCE_REQUIRED"),
+                "STRATEGIC", "OK", "INTACT", "CLEAR", null, NOW, "EXTERNAL_CITED");
+    }
+
+    private static InvestmentBuyRiskGate.Decision providersGate() {
+        return new InvestmentBuyRiskGate.Decision("REVIEW_REQUIRED", List.of("STRATEGIC_MARKET_REVIEW"),
+                "STRATEGIC", "OK", "INTACT", "CLEAR", null, NOW, "PROVIDERS");
+    }
+
+    private static void assertInvalid(Runnable call) {
+        assertThatThrownBy(call::run)
+                .isInstanceOf(InvestmentException.class)
+                .extracting(error -> ((InvestmentException) error).code())
+                .isEqualTo(InvestmentException.Code.INVALID_INPUT);
+    }
+
+    private int countReviewsFor(UUID runId) {
+        return jdbc.queryForObject("SELECT count(*) FROM investment_strategic_buy_revalidations WHERE run_id = ?",
+                Integer.class, runId);
+    }
+
+    private InvestmentStrategicBuyRevalidationService.RunCompletion externalCompletion(
+            InvestmentStrategicBuyRevalidationService.ReviewRun run,
+            StructuredEvidenceMutation evidence,
+            InvestmentStrategicBuyRevalidationService.Assessment assessment, BigDecimal maxQuantity) {
+        return new InvestmentStrategicBuyRevalidationService.RunCompletion(
+                run.runId(), run.challenge(), NOW.minusSeconds(300), "ChatGPT reviewed cited filings and estimates.",
+                sources("THESIS", "FUNDAMENTAL", "REVISION", "EXPECTATIONS", "RISK"), assessment,
+                BigDecimal.valueOf(90), BigDecimal.valueOf(110), maxQuantity, evidence.build());
+    }
+
+    private static InvestmentStrategicBuyRevalidationService.Assessment passAssessment() {
+        return assessment("INTACT", "SUPPORTED", "OPPORTUNITY", "FAVORABLE", "PASS", "CLEAR");
+    }
+
+    /** Valid cited evidence for LUNR; each rule test mutates one field. */
+    private static StructuredEvidenceMutation validEvidence() {
+        return new StructuredEvidenceMutation()
+                .withFundamental(f -> f
+                        .form("10-Q").accession("0000320193-26-000100")
+                        .periodEnd(LocalDate.parse("2026-09-30")).filedAt(NOW.minusSeconds(2 * 86400L))
+                        .shares(BigDecimal.valueOf(1_000_000_000L))
+                        .url("https://www.sec.gov/Archives/edgar/data/320193/000032019326000100/filing.htm"))
+                .withConsensus(c -> c
+                        .horizon(LocalDate.parse("2026-12-31")).revenue(BigDecimal.valueOf(1_000_000_000L))
+                        .eps(BigDecimal.valueOf(2.5)).analysts(12).currency("USD")
+                        .asOf(NOW.minusSeconds(3600)).url("https://www.nasdaq.com/market-activity/stocks/lunr/earnings"))
+                .withRevision(r -> r
+                        .eps90(BigDecimal.valueOf(4.5)).revenue90(BigDecimal.valueOf(6.0))
+                        .asOf(NOW.minusSeconds(3600)).baseline(NOW.minusSeconds(3600 + 90 * 86400L))
+                        .url("https://www.zacks.com/stock/quote/LUNR"));
+    }
+
+    /** Mutable builder for one structured-evidence payload, so each rule test changes exactly one field. */
+    private static final class StructuredEvidenceMutation {
+        private final FundamentalBuilder fundamental = new FundamentalBuilder();
+        private final ConsensusBuilder consensus = new ConsensusBuilder();
+        private final RevisionBuilder revision = new RevisionBuilder();
+
+        StructuredEvidenceMutation withFundamental(java.util.function.UnaryOperator<FundamentalBuilder> change) {
+            change.apply(fundamental);
+            return this;
+        }
+
+        StructuredEvidenceMutation withConsensus(java.util.function.UnaryOperator<ConsensusBuilder> change) {
+            change.apply(consensus);
+            return this;
+        }
+
+        StructuredEvidenceMutation withRevision(java.util.function.UnaryOperator<RevisionBuilder> change) {
+            change.apply(revision);
+            return this;
+        }
+
+        InvestmentStrategicBuyRevalidationService.StructuredEvidence build() {
+            return new InvestmentStrategicBuyRevalidationService.StructuredEvidence(fundamental.build(),
+                    consensus.build(), revision.build());
+        }
+    }
+
+    private static final class FundamentalBuilder {
+        private String form = "10-Q", accession = "0000320193-26-000100", url;
+        private LocalDate periodEnd = LocalDate.parse("2026-09-30");
+        private Instant filedAt = NOW.minusSeconds(2 * 86400L);
+        private BigDecimal shares = BigDecimal.valueOf(1_000_000_000L);
+
+        FundamentalBuilder form(String value) { form = value; return this; }
+        FundamentalBuilder accession(String value) { accession = value; return this; }
+        FundamentalBuilder url(String value) { url = value; return this; }
+        FundamentalBuilder periodEnd(LocalDate value) { periodEnd = value; return this; }
+        FundamentalBuilder filedAt(Instant value) { filedAt = value; return this; }
+        FundamentalBuilder shares(BigDecimal value) { shares = value; return this; }
+
+        InvestmentStrategicBuyRevalidationService.FundamentalEvidence build() {
+            var link = url == null ? "https://www.sec.gov/Archives/edgar/data/320193/"
+                    + accession.replace("-", "") + "/filing.htm" : url;
+            return new InvestmentStrategicBuyRevalidationService.FundamentalEvidence(form, accession, periodEnd,
+                    filedAt, shares, link);
+        }
+    }
+
+    private static final class ConsensusBuilder {
+        private LocalDate horizon = LocalDate.parse("2026-12-31");
+        private BigDecimal revenue = BigDecimal.valueOf(1_000_000_000L), eps = BigDecimal.valueOf(2.5);
+        private Integer analysts = 12;
+        private String currency = "USD";
+        private Instant asOf = NOW.minusSeconds(3600);
+        private String url = "https://www.nasdaq.com/market-activity/stocks/lunr/earnings";
+
+        ConsensusBuilder horizon(LocalDate value) { horizon = value; return this; }
+        ConsensusBuilder revenue(BigDecimal value) { revenue = value; return this; }
+        ConsensusBuilder eps(BigDecimal value) { eps = value; return this; }
+        ConsensusBuilder analysts(Integer value) { analysts = value; return this; }
+        ConsensusBuilder currency(String value) { currency = value; return this; }
+        ConsensusBuilder asOf(Instant value) { asOf = value; return this; }
+        ConsensusBuilder url(String value) { url = value; return this; }
+
+        InvestmentStrategicBuyRevalidationService.ConsensusEvidence build() {
+            return new InvestmentStrategicBuyRevalidationService.ConsensusEvidence(horizon, revenue, eps, analysts,
+                    currency, asOf, url);
+        }
+    }
+
+    private static final class RevisionBuilder {
+        private BigDecimal eps90 = BigDecimal.valueOf(4.5), revenue90 = BigDecimal.valueOf(6.0);
+        private Instant asOf = NOW.minusSeconds(3600);
+        private Instant baseline = NOW.minusSeconds(3600 + 90 * 86400L);
+        private String url = "https://www.zacks.com/stock/quote/LUNR";
+
+        RevisionBuilder eps90(BigDecimal value) { eps90 = value; return this; }
+        RevisionBuilder revenue90(BigDecimal value) { revenue90 = value; return this; }
+        RevisionBuilder asOf(Instant value) { asOf = value; return this; }
+        RevisionBuilder baseline(Instant value) { baseline = value; return this; }
+        RevisionBuilder url(String value) { url = value; return this; }
+
+        InvestmentStrategicBuyRevalidationService.RevisionEvidence build() {
+            return new InvestmentStrategicBuyRevalidationService.RevisionEvidence(eps90, revenue90, asOf, baseline, url);
+        }
     }
 
     private static java.time.OffsetDateTime timestamp(Instant value) {

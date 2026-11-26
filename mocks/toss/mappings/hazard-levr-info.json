@@ -1,0 +1,41 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/stocks",
+    "queryParameters": {
+      "symbols": {
+        "equalTo": "LEVR"
+      }
+    }
+  },
+  "priority": 1,
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": [
+        {
+          "symbol": "LEVR",
+          "name": "Hazard Scenario LEVR",
+          "englishName": "Hazard LEVR",
+          "isinCode": "US0000000000",
+          "market": "NASDAQ",
+          "securityType": "ETF",
+          "isCommonShare": true,
+          "status": "ACTIVE",
+          "currency": "USD",
+          "listDate": null,
+          "delistDate": null,
+          "sharesOutstanding": "1000000000",
+          "leverageFactor": "2.0"
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock-hazard"
+    }
+  },
+  "metadata": {
+    "scenario": "leveraged ETF (factor 2.0)"
+  }
+}

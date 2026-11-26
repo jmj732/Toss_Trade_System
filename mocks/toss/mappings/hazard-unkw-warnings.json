@@ -1,0 +1,27 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/api/v1/stocks/UNKW/warnings"
+  },
+  "priority": 1,
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "result": [
+        {
+          "warningType": "FUTURE_WARNING_CODE",
+          "exchange": "NASDAQ",
+          "startDate": "2026-11-01",
+          "endDate": null
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Request-Id": "local-toss-mock-hazard"
+    }
+  },
+  "metadata": {
+    "scenario": "unknown warning code"
+  }
+}
